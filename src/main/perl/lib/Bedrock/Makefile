@@ -2,6 +2,10 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.8  2000/11/01 18:37:44  sridhar
+# Adding XML capability to Bedrock. Basically we have a class here which
+# can read and write arbitrary perl data structures in XML format.
+#
 # Revision 1.7  2000/09/18 18:50:05  sridhar
 # Some BLMs moved from Perl/BLM and Perl/BLM/Startup to Perl/Bedrock/BLM
 # and Perl/Bedrock/BLM/Startup
@@ -21,12 +25,33 @@ include ../make.pre
 
      CURRENT_PATH = Bedrock
 
-          TARGETS = 
+          TARGETS = XML.pm
 
-all install:
-	cd PDF		&& $(MAKE) $@
-	cd Text		&& $(MAKE) $@
-	cd SIS		&& $(MAKE) $@
-	cd BLM		&& $(MAKE) $@
+all: PDF Text SIS BLM XML
+
+PDF::
+	cd $@		&& $(MAKE) all
+
+Text::
+	cd $@		&& $(MAKE) all
+
+SIS::
+	cd $@		&& $(MAKE) all
+
+BLM::
+	cd $@		&& $(MAKE) all
+
+XML::
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) XML.pm
+	cd $@		&& $(MAKE) all
+
+PDF-install Text-install SIS-install BLM-install::
+	cd $(@:%-install=%)		&& $(MAKE) install
+
+XML-install::
+	$(INSTALL) XML.pm	$(CURRENT_TARGET)
+	cd $(@:%-install=%)	&& $(MAKE) install
+
+install: PDF-install Text-install SIS-install BLM-install XML-install
 
 include ../make.post

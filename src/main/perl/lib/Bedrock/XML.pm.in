@@ -1,0 +1,127 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package Bedrock::XML;
+
+use strict;
+use XML::Parser;
+use Bedrock::XML::Container::Scalar;
+use Bedrock::XML::Container::Object;
+use Bedrock::XML::Container::Array;
+
+sub start_handler
+{
+    my $self = shift;
+    my $p = shift;
+    my $e = shift;
+    my $obj = $self->{'obj'};
+    if (lc($e) eq 'object') {
+	my $newObj = Bedrock::XML::Container::Object->new( $p, @_);
+	$obj = $obj ? $obj->new_object( $p, $e, $newObj ) : $newObj;
+    } elsif ( lc($e) eq 'array' ) {
+	my $newArray = Bedrock::XML::Container::Array->new( $p, @_);
+	$obj = $obj ? $obj->new_array( $p, $e, $newArray ) : $newArray;
+    } elsif ( lc($e) eq 'scalar' ) {
+	$p->xpcroak( "<scalar> must be contained in <object> or <array>" ) unless $obj;
+	my $newScalar = Bedrock::XML::Container::Scalar->new( $p, @_);
+	$obj = $obj->new_scalar( $p, $e, $newScalar );
+    } else {
+	$p->xpcroak( "unsupported tag <$e> encountered" );
+    }
+    $self->{'obj'} = $obj;
+}
+
+sub end_handler
+{
+    my $self = shift;
+    my $obj = $self->{'obj'};
+    my $parent = $obj->end_body(@_);
+    $self->{'obj'} = $parent if defined($parent);
+}
+
+sub char_handler
+{
+    my $self = shift;
+    $self->{'obj'}->text(@_);
+}
+
+sub final_handler
+{
+    my $self = shift;
+    $self->{'obj'}->finalize;
+}
+
+sub new
+{
+    my $class = shift;
+    my $file = shift;
+    my $self = bless {}, $class;
+    my $parser = XML::Parser->new(ErrorContext => 2);
+    $parser->setHandlers(Char => sub { $self->char_handler(@_) },
+			 Start => sub { $self->start_handler(@_) },
+			 End => sub { $self->end_handler(@_) },
+			 Final => sub { $self->final_handler(@_) });
+    my $ref = $parser->parsefile($file);
+    $ref;
+}
+
+sub printxml
+{
+    my ($fd, $id, $ref, $nspaces) = @_;
+    $nspaces = 0 unless defined($nspaces);
+    my $spaces = ' ' x $nspaces;
+    if ( &UNIVERSAL::isa($ref, 'HASH') ) {
+	print $fd $spaces, qq(<object $id>\n);
+	for my $key (sort keys %{$ref}) {
+	    my $value = $ref->{$key};
+	    if ( ref($value) ) {
+		&printxml($fd, qq(name="$key"), $value, $nspaces + 1);
+	    } else {
+		print $fd $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
+	    }
+	}
+	print $fd $spaces, "</object>\n";
+    } elsif ( &UNIVERSAL::isa($ref, 'ARRAY') ) {
+	print $fd $spaces, qq(<array $id>\n);
+	for my $value (@{$ref}) {
+	    if ( ref($value) ) {
+		&printxml($fd, '', $value, $nspaces + 2);
+	    } else {
+		print $fd $spaces, " <scalar>", $value, "</scalar>\n";
+	    }
+	}
+	print $fd $spaces, "</array>\n";
+    } else {
+	die "Invalid reference type encountered: $ref";
+    }
+}
+
+sub writeXML
+{
+    my $ref = shift;
+    my $file_or_fd = shift;
+    my $opened = 0;
+    my $fd;
+    if ( ref($file_or_fd) ) {
+	$fd = $file_or_fd;
+    } else {
+	open( FILE, ">$file_or_fd" ) or die "Unable to open $file_or_fd: $!\n";
+	$fd = *FILE;
+	$opened = 1;
+    }
+    &printxml( $fd, '', $ref);
+    close $fd if $opened;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/11/01 18:37:44  sridhar
+# Adding XML capability to Bedrock. Basically we have a class here which
+# can read and write arbitrary perl data structures in XML format.
+#
+#
