@@ -6,7 +6,6 @@
 package Bedrock::XML;
 
 use strict;
-use XML::Parser;
 use IO::Scalar;
 use Symbol;
 use Bedrock::XML::Container::Scalar;
@@ -46,7 +45,7 @@ sub end_handler
 sub char_handler
 {
     my $self = shift;
-    $self->{'obj'}->text(@_);
+    $self->{'obj'}->text( @_ );
 }
 
 sub final_handler
@@ -55,17 +54,171 @@ sub final_handler
     $self->{'obj'}->finalize;
 }
 
+sub unquote_xml
+{
+    $_[0] =~ s/&lt;/</g;
+    $_[0] =~ s/&gt;/>/g;
+    $_[0] =~ s/&apos;/\'/g;
+    $_[0] =~ s/&quot;/\"/g;
+    $_[0] =~ s/&amp;/\&/g;
+    $_[0];
+}
+
+sub quote_xml
+{
+    $_[0] =~ s/&/&amp;/g;
+    $_[0] =~ s/</&lt;/g;
+    $_[0] =~ s/>/&gt;/g;
+    $_[0] =~ s/\'/&apos;/g;
+    $_[0] =~ s/\"/&quot;/g;
+    $_[0];
+}
+
+sub split_opts
+{
+    my $str = shift;
+    return unless length($str) > 0;
+    local($_);
+    $_ = $str;
+    my @options;
+    while ( length ) {
+	s/^\s+// and next;
+
+	unless ( s/^([\w-]+)\s*=\s*// ) {
+	    die "Invalid option name at: [$_]";
+	}
+	push @options, $1;
+
+	unless ( s/^(\x22([^\x22]*)\x22|\x27([^\x27]*)\x27)// ) {
+	    die "Invalid option value at: [$_]";
+	}
+	my $value = $2;
+	push @options, &unquote_xml($value);
+    }
+    @options;
+}
+
+sub parse
+{
+    my $self = shift;
+    my $newscan = 1;
+
+    my $input = $self->{'input'};
+    my $optstring = '';
+    my $text = '';
+    my ($element);
+
+    my $tag_start = '^(scalar|object|array)(?=\W)';
+    my $tag_end   = '^(/scalar|/object|/array)>';
+    my $opt_esc   = '^([^>]*)>';
+
+  INPUT:
+    while (<$input>) {
+      MAIN: {
+
+	  #
+	  # Check whether we are into a new scan or collecting options
+	  # for a matched tag
+	  #
+	  unless ( $newscan ) {
+
+	      # Collecting options for a matched tag -- Look for tag end which is
+	      # an un-escaped '>'
+	      if ( s/$opt_esc//o ) {
+
+		  # Found an un-escaped '>', which terminates the current tag and its options
+		  # $optstring contains the options collected so far
+		  $optstring .= $1;
+		  $self->start_handler($self, $element, &split_opts($optstring));
+		  $element = $optstring = '';
+
+		  # Start a new scan after this
+		  $newscan = 1;
+
+		  # Handle possible left over stuff after the '>'
+		  redo MAIN;
+	      } else {
+
+		  # No terminating '>' in entire line -- start by reading input again
+		  $optstring .= $_;
+		  next INPUT;
+	      }
+	  }
+
+	  # New scan from here -- scan afresh for tags.
+	  # if no '<' found in line, skip line
+	  unless ( s/^(.*?)<//oi ) {
+	      $text .= $_;
+	      next INPUT;
+	  }
+
+	  # We did find a '<' -- could be we have a possible supported tag next
+	  # The text before the '<' needs to be processed.
+	  $text .= $1;
+	  $self->char_handler( $self, $text ) if length($text);
+	  $text = '';
+
+	  # Check if we have a supported tag
+	  if ( s/$tag_start//oi ) {
+	      $element = $1;
+
+	      # After creating object of suitable type depending on the tag, check
+	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
+	      if ( s/$opt_esc//oi ) {
+
+		  # The tag definition ended on same line -- all options specified on
+		  # one line
+		  $optstring = $1;
+		  $self->start_handler($self, $element, &split_opts($optstring));
+		  $element = $optstring = '';
+
+		  # And rescan the string for more tags -- Note that $newscan is unchanged
+		  # from its value of 1, so we don't need to set it here
+		  redo MAIN;
+	      } else {
+
+		  # Tag definition did not end on one line -- Further input is consumed for
+		  # looking for the tag ending
+		  $newscan = 0;
+
+		  # Start collection of the options string
+		  $optstring = $_;
+	      }
+
+	  } elsif ( s/$tag_end//oi ) {
+
+	      # Check whether we have hit a tag-body-ending tag
+	      # and if so, end the current object
+	      $self->end_handler( $self );
+
+	      # And rescan string for more tags
+	      redo MAIN;
+	  } elsif ( s/^!--// ) {
+	      # Consume comments
+	      do {
+		  last if ( s/.*?-->// );
+	      } while ( <$input> );
+	      redo MAIN;
+	  } else {
+
+	      # Unsupported tag hit -- croak hard
+	      die "What is this: <$_>\n";
+	  }
+      }
+    }
+    $self->final_handler($self);
+}
+
 sub new
 {
     my $class = shift;
     my $file = shift;
     my $self = bless {}, $class;
-    my $parser = XML::Parser->new(ErrorContext => 2);
-    $parser->setHandlers(Char => sub { $self->char_handler(@_) },
-			 Start => sub { $self->start_handler(@_) },
-			 End => sub { $self->end_handler(@_) },
-			 Final => sub { $self->final_handler(@_) });
-    my $ref = $parser->parsefile($file);
+    local(*FILE);
+    open(FILE, $file) or die "Unable to open $file: $!\n";
+    $self->{'input'} = *FILE;
+    my $ref = $self->parse;
+    close FILE;
     $ref;
 }
 
@@ -74,12 +227,10 @@ sub newFromString
     my $class = shift;
     my $string = shift;
     my $self = bless {}, $class;
-    my $parser = XML::Parser->new(ErrorContext => 2);
-    $parser->setHandlers(Char => sub { $self->char_handler(@_) },
-			 Start => sub { $self->start_handler(@_) },
-			 End => sub { $self->end_handler(@_) },
-			 Final => sub { $self->final_handler(@_) });
-    my $ref = $parser->parse($string);
+    my $fd = gensym;
+    tie *{$fd}, 'IO::Scalar', \$string;
+    $self->{'input'} = $fd;
+    my $ref = $self->parse;
     $ref;
 }
 
@@ -92,9 +243,11 @@ sub printxml
 	print $fd $spaces, qq(<object $id>\n);
 	for my $key (sort keys %{$ref}) {
 	    my $value = $ref->{$key};
+	    &quote_xml($key);
 	    if ( ref($value) ) {
 		&printxml($fd, qq(name="$key"), $value, $nspaces + 1);
 	    } else {
+		&quote_xml($value);
 		print $fd $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
 	    }
 	}
@@ -105,6 +258,7 @@ sub printxml
 	    if ( ref($value) ) {
 		&printxml($fd, '', $value, $nspaces + 2);
 	    } else {
+		&quote_xml($value);
 		print $fd $spaces, " <scalar>", $value, "</scalar>\n";
 	    }
 	}
@@ -119,18 +273,23 @@ sub printxml
 sub writeXML
 {
     my $ref = shift;
-    my $file_or_fd = shift;
-    my $opened = 0;
-    my $fd;
-    if ( ref($file_or_fd) ) {
-	$fd = $file_or_fd;
+
+    if ( @_ == 1 ) {
+	if ( ref($_[0]) ) {
+	    &printxml( $_[0], '', $ref);
+	} else {
+	    my $file = shift;
+	    open( FILE, ">$file" ) or die "Unable to open $file: $!\n";
+	    &printxml( *FILE, '', $ref);
+	    close FILE;
+	}
     } else {
-	open( FILE, ">$file_or_fd" ) or die "Unable to open $file_or_fd: $!\n";
-	$fd = *FILE;
-	$opened = 1;
+	my $string;
+	my $fd = gensym;
+	tie *{$fd}, 'IO::Scalar', \$string;
+	&printxml( $fd, '', $ref);
+	return $string;
     }
-    &printxml( $fd, '', $ref);
-    close $fd if $opened;
 }
 
 sub writeXMLString
@@ -143,11 +302,21 @@ sub writeXMLString
     $string;
 }
 
+sub xpcroak
+{
+    my $self = shift;
+    die "Error encountered: @_";
+}
+
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.3  2000/11/09 19:12:03  sridhar
+# Kicked out usage of XML::Parser -- was giving SIGSEGV inside
+# mod_perl. Using a limited parser based on Bedrock's parser.
+#
 # Revision 1.2  2000/11/07 13:51:18  sridhar
 # Added methods for reading making an object from XML in string, and
 # writing XML to a string.
