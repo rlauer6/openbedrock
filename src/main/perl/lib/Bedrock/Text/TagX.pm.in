@@ -42,88 +42,195 @@ sub output
     my $obj = TagX::TAG::WithBody->new( $self );
     my $input = $self->{'input'};
     my $optstring = '';
+
+  INPUT:
     while (<$input>) {
       MAIN: {
-	  if ( $newscan ) {
-	      unless ( s/^(.*?)<//oi ) {
-		  $obj->text( $_ );
-		  next;
-	      }
 
-	      $obj->text ( $1 );
+	  #
+	  # Check whether we are into a new scan or collecting options
+	  # for a matched tag
+	  #
+	  unless ( $newscan ) {
 
-	      if ( s/^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|elseif)\s+//oi ) {
-		  for ($1) {
-		      /^var$/oi		and do {
-			  $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
-			  last;
-		      };
+	      # Collecting options for a matched tag -- Look for tag end which is
+	      # an un-escaped '>'
+	      if ( s/^(.*?[^\\])>// ) {
 
-		      /^sqlconnect$/oi	and do {
-			  $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
-			  last;
-		      };
+		  # Found an un-escaped '>', which terminates the current tag and its options
+		  # $optstring contains the options collected so far
+		  $optstring .= $1;
 
-		      /^sql$/oi		and do {
-			  $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
-			  last;
-		      };
+		  # Remove escapes from the option string
+		  $optstring =~ s/\\([^\\])/$1/g;
+		  $optstring =~ s/\\\\/\\/g;
 
-		      /^include$/oi	and do {
-			  $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
-			  last;
-		      };
+		  # And set the current object options
+		  $obj = $obj->options ( $optstring );
 
-		      /^foreach$/oi	and do {
-			  $obj = $obj->new_child( TagX::TAG::WithBody::Foreach->new );
-			  last;
-		      };
-
-		      /^sqlselect$/oi	and do {
-			  $obj = $obj->new_child( TagX::TAG::WithBody::SQLSelect->new );
-			  last;
-		      };
-
-		      /^if$/oi		and do {
-			  $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
-			  last;
-		      };
-
-		      /^elseif$/oi		and do {
-			  $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-			  last;
-		      };
-
-		      die "Tag <$_> NYI";
-		  }
-		  if ( s/^(.*?)>//oi ) {
-		      $obj = $obj->options ( $1 );
-		      redo MAIN;
-		  } else {
-		      $newscan = 0;
-		      $optstring = $_;
-		  }
-	      } elsif ( s/^else>//oi ) {
-		  $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-		  redo MAIN;
-	      } elsif ( s:^(/sqlselect|/foreach|/doc|/if)>::oi) {
-		  $obj = $obj->end_child;
-		  redo MAIN;
-	      } else {
-		  $obj->text( '<' );
-		  redo MAIN;
-	      }
-	  } else {
-	      if ( s/^(.*?)>// ) {
-		  $obj = $obj->options ( $optstring . $1 );
+		  # Start a new scan after this
 		  $newscan = 1;
+
+		  # Handle possible left over stuff after the '>'
 		  redo MAIN;
 	      } else {
+
+		  # No terminating '>' in entire line -- start by reading input again
 		  $optstring .= $_;
+		  next INPUT;
 	      }
+	  }
+
+	  # New scan from here -- scan afresh for tags.
+	  # if no '<' found in line, skip line
+	  unless ( s/^(.*?)<//oi ) {
+	      $obj->text( $_ );
+	      next INPUT;
+	  }
+
+	  # We did find a '<' -- could be we have a possible supported tag next
+	  # The text before the '<' needs to be processed.
+	  $obj->text ( $1 );
+
+	  # Check if we have a supported tag
+	  if ( s/^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|elseif)\s+//oi ) {
+
+	      # Yes we do
+	      for ($1) {
+		  /^var$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
+		      last;
+		  };
+
+		  /^sqlconnect$/oi	and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
+		      last;
+		  };
+
+		  /^sql$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
+		      last;
+		  };
+
+		  /^include$/oi	and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
+		      last;
+		  };
+
+		  /^foreach$/oi	and do {
+		      $obj = $obj->new_child( TagX::TAG::WithBody::Foreach->new );
+		      last;
+		  };
+
+		  /^sqlselect$/oi	and do {
+		      $obj = $obj->new_child( TagX::TAG::WithBody::SQLSelect->new );
+		      last;
+		  };
+
+		  /^if$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
+		      last;
+		  };
+
+		  /^elseif$/oi		and do {
+		      $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+		      last;
+		  };
+
+		  die "Tag <$_> NYI";
+	      }
+
+	      # After creating object of suitable type depending on the tag, check
+	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
+	      if ( s/^(.*?[^\\])>//oi ) {
+
+		  # The tag definition ended on same line -- all options specified on
+		  # one line
+		  my $options = $1;
+
+		  # Unescape the options
+		  $options =~ s/\\([^\\])/$1/g;
+		  $options =~ s/\\\\/\\/g;
+
+		  # And set the current object options
+		  $obj = $obj->options ( $options );
+
+		  # And rescan the string for more tags -- Note that $newscan is unchanged
+		  # from its value of 1, so we don't need to set it here
+		  redo MAIN;
+	      } else {
+
+		  # Tag definition did not end on one line -- Further input is consumed for
+		  # looking for the tag ending
+		  $newscan = 0;
+
+		  # Start collection of the options string
+		  $optstring = $_;
+	      }
+
+	  } elsif ( s/^else>//oi ) {
+
+	      # Check for more supported tags -- specifically '<else>' which
+	      # can have no options
+	      $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+
+	      # Rescan string for more tags
+	      redo MAIN;
+	  } elsif ( s:^(/sqlselect|/foreach|/doc|/if)>::oi) {
+
+	      # Check whether we have hit a tag-body-ending tag
+	      # and if so, end the current object
+	      $obj = $obj->end_child;
+
+	      # And rescan string for more tags
+	      redo MAIN;
+	  } else {
+
+	      # Unsupported tag hit -- output the '<' since we don't consume it
+	      $obj->text( '<' );
+
+	      # And rescan for more tags
+	      redo MAIN;
 	  }
       }
     }
+}
+
+sub define_name
+{
+    my ($self, $name, $value) = @_;
+    my @components = split /\./oi, $name;
+    return unless @components;
+
+    my $found = $self->{'VARS'};
+    for (@components) {
+
+	if ( /^\Q[\E(\d+)\Q]\E/oi ) {
+	    # array element
+	    if ( ref( $found ) eq 'ARRAY' ) {
+		$found = $found->[$1];
+		next;
+	    } else {
+		$self->log_message ( MSG_WARNING => "Cannot define $name: not an array ref" );
+		return;
+	    }
+	}
+
+	if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
+	    # hash element
+	    if ( ref( $found ) eq 'HASH' ) {
+		$found = $found->{$1};
+		next;
+	    } else {
+		$self->log_message ( MSG_WARNING => "Cannot define $name: not a hash ref" );
+		return;
+	    }
+	}
+
+	# illegal
+	return;
+    }
+    $found = $value;
 }
 
 sub param
@@ -132,7 +239,12 @@ sub param
     my %args = @_;
     my ( $name, $value );
     while ( ( $name, $value) = each %args ) {
-	$self->{'VARS'}->{$name} = $value;
+	if ( $name =~ /\./oi ) {
+	    # more expensive resolve operation
+	    $self->define_name ( $name, $value );
+	} else {
+	    $self->{'VARS'}->{$name} = $value;
+	}
     }
 }
 
@@ -195,6 +307,11 @@ sub new
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2000/02/23 13:40:33  sridhar
+# 1. Rearragement of program control
+# 2. Added support for escaped '>' (does not terminate tag definition).
+# 3. Added support for defining names other than at global level.
+#
 # Revision 1.1  2000/02/08 15:24:56  sridhar
 # Added TagX
 #
