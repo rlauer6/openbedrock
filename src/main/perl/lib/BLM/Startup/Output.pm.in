@@ -1,0 +1,151 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package BLM::Startup::Output;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Text::URLEncode;
+use TagX::Log 1.01;
+use SIS::Hash 1.01;
+@ISA = qw(SIS::Hash);
+
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+    my $self = bless {}, $class;
+    $self->{'context'} = $ctx;
+    $self->{'verbose'} = $config->{'verbose'};
+    $self->{'frames'} = [];
+    $self->{'frames'}->[0] = $self->{'curframe'} = {};
+    $self;
+}
+
+sub FETCH
+{
+    my ($self, $key) = @_;
+
+    my @values;
+    for my $curframe (reverse @{$self->{'frames'}}) {
+	push @values, $curframe->{$key} if exists $curframe->{$key};
+    }
+
+    return @values > 1 ? SIS::Array->new(@values) : $values[0];
+}
+
+sub STORE
+{
+    my $self = shift;
+    $self->{'curframe'}->{$_[0]} = $_[1];
+}
+
+sub FIRSTKEY
+{
+    my $self = shift;
+    my $a = scalar keys %{$self->{'vars'}};
+    each %{$self->{'vars'}};
+}
+
+sub NEXTKEY
+{
+    each %{shift->{'vars'}};
+}
+
+sub EXISTS
+{
+    exists $_[0]->{'vars'}->{$_[1]};
+}
+
+sub CLEAR
+{
+    %{shift->{'vars'}} = ();
+}
+
+sub DELETE
+{
+    delete $_[0]->{'vars'}->{$_[1]};
+}
+
+sub new_frame
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my $newframe = {};
+    push @{$self->{'frames'}}, $newframe;
+    $self->{'curframe'} = $newframe;
+}
+
+sub end_frame
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    return unless @{$self->{'frames'}} > 1;
+    pop @{$self->{'frames'}};
+}
+
+sub pairs
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my $keyname = shift || 'NAME';
+    my $valname = shift || 'VALUE';
+    my $aref = SIS::Array->new;
+    for my $curframe (@{$self->{'frames'}}) {
+	for my $key (keys %{$curframe}) {
+	    my $href = {$keyname => $key,
+			$valname => $curframe->{$key}};
+	    push @{$aref}, $href;
+	}
+    }
+    $aref;
+}
+
+sub local_uri
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my $uri = shift || $ENV{'BEDROCK_URI'};
+
+    if ( length( $uri ) and $uri =~ /\?/ ) {
+	$uri .= '&' unless $uri =~ /\?$/;
+    } else {
+	$uri .= '?';
+    }
+
+    for my $curframe (@{$self->{'frames'}}) {
+	for my $key (keys %{$curframe}) {
+	    $uri .= $key . '=' . &Text::URLEncode::Encode( $curframe->{$key} ) . '&';
+	}
+    }
+
+    if ( @_ ) {
+	my %args = @_;
+	for my $key (keys %args) {
+	    $uri .= $key . '=' . &Text::URLEncode::Encode( $args{$key} ) . '&';
+	}
+    }
+
+    $uri =~ s/\&$//;
+
+    $uri;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/12/15 15:48:26  sridhar
+# Output startup module: currently has some alpha-level routines for
+# making local URIs
+#
+#
