@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.6  2000/10/26 20:43:12  rlauer
+# - added SIMPLEFTP
+#
 # Revision 1.5  2000/10/19 20:52:05  sridhar
 # Added SMTP.pm
 #
@@ -58,7 +61,7 @@ include ../make.pre
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
 		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm \
-		    Recycle.pm Stat.pm SMTP.pm
+		    Recycle.pm Stat.pm SMTP.pm SIMPLEFTP.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Timenow.pm
@@ -78,6 +81,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Recycle.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Stat.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) SMTP.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) SIMPLEFTP.pm
 	cd Startup && $(MAKE) $@
 
 install:
@@ -98,6 +102,7 @@ install:
 	$(INSTALL) Recycle.pm	$(CURRENT_TARGET)
 	$(INSTALL) Stat.pm	$(CURRENT_TARGET)
 	$(INSTALL) SMTP.pm	$(CURRENT_TARGET)
+	$(INSTALL) SIMPLEFTP.pm	$(CURRENT_TARGET)
 	cd Startup && $(MAKE) $@
 
 include ../make.post
