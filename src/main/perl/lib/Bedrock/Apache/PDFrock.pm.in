@@ -1,0 +1,274 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package Apache::PDFrock;
+
+use strict;
+use File::Basename;
+use Apache::Constants qw (:common);
+use Symbol;
+use Cwd;
+
+use Bedrock::Context;
+use PDF::Handle;
+
+my $PWD;
+
+#
+# Routine sends content back to client
+# Invoked as content($r, $dataref)
+#     where $dataref is a reference to the PDF data
+#
+sub show_pdf
+{
+    my $r = shift;
+    my $dataref = shift;
+
+    $r->cgi_header_out('Accept-ranges', 'bytes');
+    $r->cgi_header_out('Content-length', length($$dataref));
+    $r->cgi_header_out('Content-type', 'application/pdf');
+    $r->send_http_header;
+
+    $r->print($$dataref);
+    return OK;
+}
+
+sub dump_header
+{
+    my $r = shift;
+    my $header = $r->headers_in;
+    my $str = "Incoming header with request [" . $r->filename . "]\n";
+    for my $key (sort keys %{$header}) {
+	$str .= "  $key => $header->{$key}\n";
+    }
+    $r->warn($str);
+}
+
+sub config
+{
+    my $dir = shift;
+    $dir =~ s!/$!!;
+
+    my $conf = SIS::Config->new( 'pdfrock.xml' );
+
+    # Look for application config
+    my $dir_conffile = $conf->{'APP_CONFIG'};
+    return $conf unless $dir_conffile;
+
+    # Load the directory config
+    my $dir_conf = SIS::Config->new( $dir_conffile );
+
+    # Look up the app config, based on directory of current request
+    my $app_conf = $dir_conf->{$dir} || $dir_conf->{$dir . '/'};
+
+    # Extract startup modules from app config
+    my $app_modules = delete $app_conf->{'MODULES'};
+
+    # merge generic bedrock conf with app config. Note that app config
+    # overrides default config
+    for my $key (keys %{$app_conf}) {
+	$conf->{$key} = $app_conf->{$key};
+    }
+
+    # Append app startup modules to master startup module list
+    push @{$conf->{'MODULES'}}, @{$app_modules} if $app_modules;
+
+    # And voila! we have the merged config
+    $conf;
+}
+
+sub error
+{
+    my $r = shift;
+    my $mesg = shift;
+    my $code = shift || SERVER_ERROR;
+
+    $r->log_error( $mesg );
+    chdir $PWD;
+    return $code;
+}
+
+sub handler
+{
+    my $r = shift;
+    return DECLINED unless $r->content_type eq 'application/pdf';
+
+    my $file = $r->filename;
+    if ( -e $r->finfo ) {
+	unless ( open( INPUT, $file ) ) {
+	    $r->log_error( "Unable to open $file: $!" );
+	    return SERVER_ERROR;
+	}
+
+	local($/) = undef;
+	my $data = <INPUT>;
+	close INPUT;
+
+	return &show_pdf($r, \$data);
+    }
+
+    $PWD = &fastcwd unless defined($PWD);
+
+    local($SIG{__DIE__}, $SIG{__WARN__});
+
+    # Parse for the URI components
+    my ($uri_name, $uri_dir) = &fileparse( $r->uri );
+
+    # Shove the URI params in environment.
+    local($ENV{'BEDROCK_URI'}) = $r->uri;
+    local($ENV{'BEDROCK_URIDIR'}) = $uri_dir;
+    local($ENV{'BEDROCK_URINAME'}) = $uri_name;
+
+    # We look at file extensions in the following order: .txt, ''(no ext), .roc
+    my ($base, $dir, $suf) = &fileparse( $file, "\.pdf");
+    my $nosuffix = $dir . $base;
+    my $txtfile = $nosuffix . ".txt";
+    my $rocfile = $nosuffix . ".roc";
+    my ($type, $source) = do {
+	if	( -e $nosuffix )	{('txt', $nosuffix)}
+	elsif	( -e $txtfile )		{$base .= '.txt'; ('txt', $txtfile)}
+	elsif	( -e $rocfile )		{$base .= '.roc'; ('roc', $rocfile)}
+	else {
+	    $r->log_error ("File does exist: $file");
+	    return NOT_FOUND;
+	}
+    };
+
+    # Parse the file components
+    my ($file_name, $file_dir) = &fileparse( $r->filename );
+
+    # Shove the file params into the environment too.
+    local($ENV{'BEDROCK_FILE'}) = $source;
+    local($ENV{'BEDROCK_FILEDIR'}) = $dir;
+    local($ENV{'BEDROCK_FILENAME'}) = $base;
+
+    # Construct output handle
+    my $outh = PDF::Handle->new;
+
+    # Construct context object
+    my $conf = &config($uri_dir);
+    my $ctx = Bedrock::Context->new ('CONFIG_FILE' => 'pdfrock.cfg',
+				     'OUTPUT_HANDLE' => $outh,
+				     'APACHE_HANDLER' => $r);
+
+    # Set options for pdf
+    my $format = $conf->{'page_format'};
+    $outh->setOptions($format) if defined($format);
+
+    # Text handler if doing only text.
+    if ( $type eq 'txt' ) {
+	unless ( open( INPUT, $source ) ) {
+	    $r->log_error( "Unable to open $source: $!" );
+	    return SERVER_ERROR;
+	}
+
+	while (<INPUT>) {
+	    $outh->print($_);
+	}
+	close INPUT;
+
+	return &show_pdf($r, $outh->close);
+    }
+
+    unless ( chdir $file_dir ) {
+	$r->log_error( "chdir($file_dir) failed: $!" );
+	return SERVER_ERROR;
+    }
+
+    my $tx = Text::TagX->new ($source, $outh);
+
+    #
+    # Set logging parameters
+    #
+    my $f = ($conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp') . '/' . $uri_name;
+    my $sz = $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000;
+    $tx->options(LOG_PREFIX =>  $f, LOG_MAXSIZE => $sz);
+
+    #
+    # Load Generic startup BLMs
+    #
+    my $modules = $conf->{'MODULES'};
+    unless ( $modules ) {
+	return &error( $r, "Error in config file: MODULES is not defined." );
+    }
+
+    my @startup = @{$modules};
+    my $i = 0; my $header;
+    for my $modconf (@startup) {
+
+	unless ( defined( $modconf->{'binding'} ) ) {
+	    return &error( $r, "PID [$$]: Error in config: `binding' not defined for MODULES->[$i]" );
+	}
+
+	my $type = $modconf->{'type'} || 'hash';
+	unless ( $type =~ /^(hash|array|handle|object)$/ ) {
+	    return &error( $r, "PID [$$]: Error in config: MODULES->[$i] defined with invalid `type'($type)" );
+	}
+
+	# BLM specific configuration
+	my $config = $modconf->{'config'};
+
+	# bind a subroutine to the names so the constructor gets
+	# invoked ONLY if the variable is accessed from the script.
+	$tx->param( $modconf->{'binding'}, sub {
+	    my $obj;
+	    my $modfile = $modconf->{'module'};
+	    $modfile =~ s!::!/!g;
+	    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+	    require $modfile;
+	    if ( $type eq 'hash' or $type eq 'object' ) {
+		$obj = bless {}, $modconf->{'module'};
+		tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'array' ) {
+		$obj = bless [], $modconf->{'module'};
+		tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'handle' ) {
+		$obj = bless gensym, $modconf->{'module'};
+		tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+	    }
+	    $obj;
+	});
+    } continue {
+	$i++;
+    }
+
+    # Additional module to invoke PDF methods on
+    $tx->param( 'pdf' => $outh );
+
+    eval { $tx->output };
+    $tx->close;
+    if ( $@ ) {
+	return &error( $r, "Script $file encountered the following error\n    $@" );
+    }
+
+    # Show the output
+    &show_pdf($r, $outh->close);
+    chdir $PWD;
+    return OK;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/12/18 18:04:31  sridhar
+# 1. Moved Perl/apps/PDFrock/PDFrock.pm to Bedrock/Apache/PDFrock.pm
+# 2. Doesn't work with IE yet
+#
+# Revision 1.3  2000/12/15 19:02:38  sridhar
+# Kicked out BLM::Startup::Modules.
+#
+# Revision 1.2  2000/09/27 15:32:07  sridhar
+# 1. Using cgi_header_out() method to set outgoing headers.
+# 2. If script has an exception, catch it and echo error message
+#
+# Revision 1.1  2000/09/15 14:32:31  sridhar
+# Module PDFrock is an Apache mod_perl handler for serving PDFs from
+#  1) plain PDFs -- sets content length appropriately
+#  2) text files -- converted to PDFs with a nice header, footers, etc.
+#  3) Bedrock files -- full Bedrock implementation
+#
+#
