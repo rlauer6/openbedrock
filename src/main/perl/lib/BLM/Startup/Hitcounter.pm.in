@@ -21,12 +21,17 @@ use SIS::Hash;
 
 sub TIEHASH
 {
-    my $class = shift;
-    my $ctx = shift;
+    my ($class, $ctx, $config) = @_;
 
-    my $self = bless SIS::Hash->new, $class;
-    $self->{'me'} = $ENV{'SCRIPT_NAME'} || $ENV{'REQUEST_URI'} || $ENV{'SCRIPT_URL'};
-    $self->{'config'} = $ctx->getConfigValue('HIT_COUNTER');
+    die "$class->TIEHASH(): `db_path' not defined in config.\n"
+	unless $config->{'db_path'};
+
+    die "BEDROCK_URI not set in environment: Cannot continue.\n"
+	unless $ENV{'BEDROCK_URI'};
+
+    my $self = bless {}, $class;
+    $self->{'me'} = $ENV{'BEDROCK_URI'};
+    $self->{'config'} = $config;
     $self;
 }
 
@@ -35,16 +40,21 @@ sub FETCH
     my $self = shift;
     my $key = shift;
     return $self->{$key} if exists $self->{$key};
-    if ( $key eq 'count' ) {
+    if ( $key =~ /^(count|dated|viewed_by)$/ ) {
 	# First time thru'
-	# 1. Get the hitcount database path
+	# Get the hitcount database path
 	my $db = $self->{'config'}->{'db_path'};
 	return unless $db;
-	warn "db_path is <$db>";
 	my %counts;
 	tie %counts, 'SDBM_File', $db, O_CREAT|O_RDWR, 0640;
-	$counts{$self->{'me'}}++;
-	return $self->{'count'} = $counts{$self->{'me'}};
+	my $str = $counts{$self->{'me'}};
+	my ($count, $dated, $viewed_by) = split /:/, $str;
+	$count++;
+	$counts{$self->{'me'}} = sprintf "%d:%ld:%s", $count, time, $ENV{'REMOTE_ADDR'};
+	$self->{'count'} = $count;
+	$self->{'dated'} = $dated;
+	$self->{'viewed_by'} = $viewed_by;
+	return $self->{$key};
     }
     undef;
 }
@@ -54,6 +64,11 @@ sub FETCH
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2000/11/07 21:52:05  sridhar
+# 1. Using BEDROCK_URI as the key instead of some junk.
+# 2. Dying if some required vars not set in config.
+# 3. Can retrieve `count', `dated' and `viewed_by'.
+#
 # Revision 1.1  2000/10/12 15:22:48  sridhar
 # Bedrock can now boast of hit counter capability.
 #
