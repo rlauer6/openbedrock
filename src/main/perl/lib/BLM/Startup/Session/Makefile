@@ -3,6 +3,9 @@
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2001/02/14 14:19:06  sridhar
+# Improved makefile with macros
+#
 # Revision 1.1  2000/11/07 14:08:25  sridhar
 # Adding SDBM.pm and GDBM.pm
 #
@@ -14,12 +17,8 @@ include ../../../make.pre
 
           TARGETS = SDBM.pm GDBM.pm
 
-all:
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) SDBM.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) GDBM.pm
+all: $(TARGETS)
 
-install:
-	$(INSTALL) SDBM.pm	$(CURRENT_TARGET)
-	$(INSTALL) GDBM.pm	$(CURRENT_TARGET)
+install:: $(TARGETS:%=%-install)
 
 include ../../../make.post
