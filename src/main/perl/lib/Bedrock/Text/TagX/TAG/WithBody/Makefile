@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.5  2000/10/19 20:57:54  sridhar
+# Moved Hush.pm to Sink.pm
+#
 # Revision 1.4  2000/10/18 18:15:33  sridhar
 # Added Hush.pm
 #
@@ -28,7 +31,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) If.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Try.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Catch.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Hush.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Sink.pm
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
@@ -37,7 +40,7 @@ install:
 	$(INSTALL) Try.pm		$(CURRENT_TARGET)
 	$(INSTALL) Catch.pm		$(CURRENT_TARGET)
 	$(INSTALL) Loop.pm		$(CURRENT_TARGET)
-	$(INSTALL) Hush.pm		$(CURRENT_TARGET)
+	$(INSTALL) Sink.pm		$(CURRENT_TARGET)
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
