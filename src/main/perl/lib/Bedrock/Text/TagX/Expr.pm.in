@@ -16,79 +16,53 @@ BEGIN
 }
 
 use TagX::Log 1.01;
-use TagX::Term 1.06;
-use TagX::Term::Var 1.02;
-use TagX::Term::String 1.02;
 
-use vars qw($_delimiters %_delimiter_end);
 my $Verbose;
-
-#
-# Arg separators are single-quote, double quote, ..
-# Note the following ascii codes
-# " (double-quote)	=> \x22
-# ' (single-quote)	=> \x27
-# ( (open-paren)	=> \x28
-# ) (close-paren)	=> \x29
-# [ (open-bracket)	=> \x5b
-# ] (close-bracket)	=> \x5d
-# { (open-brace)	=> \x7b
-# } (close-brace)	=> \x7d
-# : (colon)		=> \x3a
-$_delimiters		= "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
-%_delimiter_end		= ("\x22"	=> "\x22",
-			   "\x27"	=> "\x27",
-			   "q("		=> ")",
-			   "q["		=> "]",
-			   "q{"		=> "}",
-			   "q:"		=> ":",			   
-			   "qq("	=> ")",
-			   "qq["	=> "]",
-			   "qq{"	=> "}",
-			   "qq:"	=> ":");
 
 sub new
 {
     my $class = shift;
     my $self = bless [], $class;
-    while ( length ) {
-	s/^\s*//;
+    my $nargs = @_;
 
-	# beginning of new expr with '('
-	if ( s/^\x28\s*//oi ) {
-	    push @{$self}, TagX::Expr->new;
-	    next;
-	}
-
-	# end current expr with ')'
-	if ( s/^\x29\s*//oi ) {
-	    return $self;
-	}
-
-	# Check for operator
-	if ( s/^(--(not|exists|eq|ne|gt|ge|lt|le|re|or|and)|\+)(?=\W)//oi ) {
-	    push @{$self}, lc($1);
-	    next;
-	}
-
-	# arg value delimited by special chars
-	if ( s/^$_delimiters//oi ) {
-
-	    # Yup, check for ending delimiter
-	    if ( s/^([^\Q$_delimiter_end{$1}\E]*)\Q$_delimiter_end{$1}\E?// ) {
-		push @{$self}, TagX::Term::String->new( $1 );
-	    } else {
-		push @{$self}, TagX::Term::String->new( $_ );
+    # Check whether unary or binary operator
+    my $op_or_lhs = shift @_;
+    if ( ref( $op_or_lhs ) ) {
+	my $op = shift @_;
+	die "Expr->new: Invalid operator ($op)" if ref( $op );
+	if ( $op eq '+' ) {
+	    die "Expr->new: Invalid number of arguments($nargs) to operator `$op'"
+		unless $nargs > 2;
+	    @{$self} = ($op_or_lhs, $op);
+	    while ( @_ > 0 ) {
+		$op_or_lhs = shift @_;
+		die "Expr->new: Illegal token `$op_or_lhs' encountered."
+		    unless ref( $op_or_lhs );
+		push @{$self}, $op_or_lhs;
+		if ( @_ > 1 ) {
+		    $op_or_lhs = shift @_;
+		    die "Expr->new: Invalid operator `$op_or_lhs' -- must be `+' only"
+			if ref( $op_or_lhs ) or $op_or_lhs ne '+';
+		    push @{$self}, $op_or_lhs;
+		}
 	    }
-	    next;
+	} elsif ( $op =~ /^--(eq|ne|gt|ge|lt|le|re|or|and)$/i ) {
+	    die "Expr->new: Invalid number of arguments ($nargs) to operator `$op'"
+		if $nargs != 3;
+	    my $rhs = shift @_;
+	    die "Expr->new: Invalid RHS ($rhs)" unless ref( $rhs );
+	    @{$self} = ($op_or_lhs, $op, $rhs);
+	} else {
+	    die "Expr->new: Invalid operator ($op)";
 	}
-
-	# arg delimited by spaces
-	if ( s/^([^\s\x28\x29]+)//oi ) {
-	    my $arg = $1;
-	    push @{$self}, ($arg =~ /^\$/o ? TagX::Term::Var->new( $arg ) : TagX::Term::String->new( $arg ));
-	    next;
-	}
+    } else {
+	die "Expr->new: Invalid number of arguments ($nargs): must be 2"
+	    unless $nargs == 2;
+	my $rhs = shift @_;
+	die "Expr->new: Unsupported or invalid operator($op_or_lhs)" 
+ 	    unless $op_or_lhs =~ /^--(not|exists)$/i;
+	die "Expr->new: Invalid RHS ($rhs)" unless ref( $rhs );
+	@{$self} = ($op_or_lhs, $rhs);
     }
     $self;
 }
@@ -199,6 +173,11 @@ sub eval
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.8  2000/06/01 18:36:53  sridhar
+# Brand new version with
+# 1. Use of a package for parsing statements
+# 2. Support for invocation of object methods
+#
 # Revision 1.7  2000/05/31 14:31:52  sridhar
 # Yuck! compilation error for not declaring @ISA
 #
