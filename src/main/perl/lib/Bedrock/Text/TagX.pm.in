@@ -1,0 +1,203 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package Text::TagX;
+
+use strict;
+use Carp;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+use TagX::TAG::WithBody;
+use TagX::TAG::NoBody::Var;
+use TagX::TAG::NoBody::Include;
+use TagX::TAG::NoBody::SQL;
+use TagX::TAG::NoBody::SQLConnect;
+use TagX::TAG::NoBody::Trace;
+use TagX::TAG::WithBody::Foreach;
+use TagX::TAG::WithBody::SQLSelect;
+use TagX::TAG::WithBody::If;
+use TagX::TAG::WithBody::If::Else;
+
+my %ErrorLevels = (MSG_DEBUG          => 1 << 1,
+		   MSG_INFO           => 1 << 2,
+		   MSG_STATUS         => 1 << 3,
+		   MSG_WARNING        => 1 << 4,
+		   MSG_ERROR          => 1 << 5,
+		   MSG_FATAL          => 1 << 6);
+
+sub output
+{
+    my $self = shift;
+    my $newscan = 1;
+
+    my $obj = TagX::TAG::WithBody->new( $self );
+    my $input = $self->{'input'};
+    my $optstring = '';
+    while (<$input>) {
+      MAIN: {
+	  if ( $newscan ) {
+	      unless ( s/^(.*?)<//oi ) {
+		  $obj->text( $_ );
+		  next;
+	      }
+
+	      $obj->text ( $1 );
+
+	      if ( s/^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|elseif)\s+//oi ) {
+		  for ($1) {
+		      /^var$/oi		and do {
+			  $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
+			  last;
+		      };
+
+		      /^sqlconnect$/oi	and do {
+			  $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
+			  last;
+		      };
+
+		      /^sql$/oi		and do {
+			  $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
+			  last;
+		      };
+
+		      /^include$/oi	and do {
+			  $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
+			  last;
+		      };
+
+		      /^foreach$/oi	and do {
+			  $obj = $obj->new_child( TagX::TAG::WithBody::Foreach->new );
+			  last;
+		      };
+
+		      /^sqlselect$/oi	and do {
+			  $obj = $obj->new_child( TagX::TAG::WithBody::SQLSelect->new );
+			  last;
+		      };
+
+		      /^if$/oi		and do {
+			  $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
+			  last;
+		      };
+
+		      /^elseif$/oi		and do {
+			  $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+			  last;
+		      };
+
+		      die "Tag <$_> NYI";
+		  }
+		  if ( s/^(.*?)>//oi ) {
+		      $obj = $obj->options ( $1 );
+		      redo MAIN;
+		  } else {
+		      $newscan = 0;
+		      $optstring = $_;
+		  }
+	      } elsif ( s/^else>//oi ) {
+		  $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+		  redo MAIN;
+	      } elsif ( s:^(/sqlselect|/foreach|/doc|/if)>::oi) {
+		  $obj = $obj->end_child;
+		  redo MAIN;
+	      } else {
+		  $obj->text( '<' );
+		  redo MAIN;
+	      }
+	  } else {
+	      if ( s/^(.*?)>// ) {
+		  $obj = $obj->options ( $optstring . $1 );
+		  $newscan = 1;
+		  redo MAIN;
+	      } else {
+		  $optstring .= $_;
+	      }
+	  }
+      }
+    }
+}
+
+sub param
+{
+    my $self = shift;
+    my %args = @_;
+    my ( $name, $value );
+    while ( ( $name, $value) = each %args ) {
+	$self->{'VARS'}->{$name} = $value;
+    }
+}
+
+sub log_message
+{
+    my $self = shift;
+    return unless exists $self->{'error_handler'};
+    my $level = shift;
+    return unless $self->{'ErrorLevels'}->{uc $level} >= $self->{'error_level'};
+    goto &{$self->{'error_handler'}};
+}
+
+#
+# Constructor -- Invoked as follows
+#    $Class_or_Object->new( $Input_Handle [, $Output_Handle [, $Error_Handler ] ] )
+# Return the constructed object
+#
+sub new
+{
+    my $proto = shift;
+    my $input = shift;
+    my $output = shift;
+    my $error_handler = shift;
+    my %args = @_;
+
+    confess qq(Input filehandle is not valid -- must support a method getline().\n)
+	unless ref($input) and $input->can( 'getline' );
+
+    my ($class, $self);
+    if ( $class = ref( $proto ) ) {
+	$self = bless {}, $class;
+	$self->{'ErrorLevels'} = $proto->{'ErrorLevels'};
+	$self->{'error_handler'} = $error_handler || $proto->{'error_handler'};
+	$self->{'error_level'} = $proto->{'error_level'};
+	$self->{'input'} = $input;
+	$self->{'output'} = $output || $proto->{'output'};
+	$self->{'VARS'} = $proto->{'VARS'};
+	$self->{'DB'} = $proto->{'DB'} if exists $proto->{'DB'};
+    } else {
+	confess qq(Output filehandle is not valid -- must support a method print().\n)
+	    unless ref($output) and $output->can( 'print' );
+
+	$self = bless {}, $proto;
+	$self->{'ErrorLevels'} = \%ErrorLevels;
+	$self->{'error_handler'} = $error_handler if ref ($error_handler) eq 'CODE';
+	$self->{'error_level'} = $self->{'ErrorLevels'}->{'MSG_DEBUG'};
+	$self->{'input'} = $input;
+	$self->{'output'} = $output;
+	$self->{'VARS'} = {};
+    }
+
+    for (keys %args) {
+	$self->{'VARS'}->{$_} = $args{$_};
+    }
+
+    $self->log_message ( MSG_DEBUG => "Created $self" );
+    $self;
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/02/08 15:24:56  sridhar
+# Added TagX
+#
+#
+
+1;

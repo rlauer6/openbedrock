@@ -1,0 +1,94 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::TAG::WithBody::SQLSelect;
+
+use strict;
+use vars qw (@ISA);
+use Getopt::Long;
+use DBI;
+
+use TagX::TAG::WithBody;
+@ISA = qw (TagX::TAG::WithBody);
+
+sub finalize
+{
+    my ($self, $tx, @context) = @_;
+
+    $tx->log_message( MSG_DEBUG => "Finalizing $self with\n@{$self->{'argv'}}" );
+    local (@ARGV) = @{$self->{'argv'}};
+    my %valid = ('dbname'	=> '_anonymous_');
+    &GetOptions(\%valid,
+		'dbname=s',
+		'arg=s@',
+		'statement=s',
+		'bind=s@',
+		'define-var=s');
+    $tx->log_message ( MSG_DEBUG => "Statement is <$valid{'statement'}>" );
+    return unless exists $valid{'statement'};
+    my $name = $valid{'dbname'};
+    $tx->log_message ( MSG_DEBUG => "dbname is <$name>, handle is <$tx->{'DB'}->{$name}>" );
+    return unless exists $tx->{'DB'}->{$name};
+
+    my $dbh = $tx->{'DB'}->{$name};
+    my $statement = $valid{'statement'};
+    my @args = @{$valid{'arg'}} if exists $valid{'arg'};
+
+    # my @bind = @{$valid{'bind'}} if exists $valid{'bind'};
+
+    # my @bindvals = map { $self->resolve_name ( $_, @context ) } @bind;
+
+    my @argvals = map { $self->resolve_name ( $_, @context ) } @args;
+    $statement = sprintf ($statement, @argvals) if @args > 0;
+    my $sth = $dbh->prepare ( $statement );
+
+    my $i = 1;
+    for my $varname (@{$valid{'bind'}}) {
+	my $type = $1 if $varname =~ s/\s*\(\s*(\d+)\s*\)\s*$//oi;
+	my $value = $self->resolve_name ( $varname, @context );
+	if ( defined( $type ) ) { $sth->bind_param ( $i, $value, {TYPE => $type}) }
+	else { $sth->bind_param ( $i, $value ); }
+	$tx->log_message( MSG_DEBUG => "Bound ($i, $varname, $type, $value)" );
+    } continue {
+	$i++;
+    }
+
+    $sth->execute;
+
+    my ($href, @rows, $defined);
+    $defined = $valid{'define-var'} if exists $valid{'define-var'};
+    $tx->log_message( MSG_DEBUG => "Need to define <$defined>" ) if $defined;
+    while ( defined ($href = $sth->fetchrow_hashref) ) {
+
+	if ( defined ( $defined ) ) {
+	    my %hash = %{$href};
+	    push @rows, \%hash;
+	}
+
+	for my $child (@{$self->{'subobjs'}}) {
+	    next unless $child;
+	    if ( ref ($child) ) {
+		$child->finalize ( $tx, $href, @context );
+	    } else {
+		$tx->{'output'}->print( $child );
+	    }
+	}
+
+    }
+
+    $tx->param ( $defined => \@rows );
+    $self->{'nobjs'}--;
+    @{$self->{'subobjs'}} = ();
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/02/08 15:25:03  sridhar
+# Added TagX
+#
+#
+
+1;

@@ -1,0 +1,299 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::TAG;
+
+use strict;
+use Getopt::Long;
+
+#
+# Arg separators are single-quote, double quote, ..
+#
+my $_delimiters		= "'\x22[{(:";
+my %_delim_ending	= qw/" " ' ' [ ] { } ( ) : :/;
+
+sub new
+{
+    my $class = shift;
+    my $self = bless {}, $class;
+    $self->{'nobjs'} = 0;
+    $self->{'subobjs'} = [];
+    $self->{'parent'} = undef;
+    my $tx = shift if @_ == 1;
+    $self->{'TagX'} = $tx;
+    $self;
+}
+
+sub resolve_name
+{
+    my $self = shift;
+    my $name = shift;
+    my @components = split /\./oi, $name;
+    my $first = shift @components;
+    return unless $first;
+    my $found;
+    for my $context (@_) {
+	if ( exists $context->{$first} ) {
+	    $found = $context->{$first};
+	    last;
+	}
+    }
+    return unless defined( $found );
+    for (@components) {
+	if ( /^\Q[\E(\d+)\Q]\E/oi ) {
+	    # array element
+	    return unless ref( $found ) eq 'ARRAY';
+	    $found = $found->[$1];
+	    next;
+	}
+
+	if ( /^{(.*?)}/oi ) {
+	    # hash element
+	    return unless ref( $found ) eq 'HASH';
+	    $found = $found->{$1};
+	    next;
+	}
+
+	if ( /^([^.]+)/oi ) {
+	    # hash element
+	    return unless ref( $found ) eq 'HASH';
+	    $found = $found->{$1};
+	    next;
+	}
+
+	# illegal
+	return;
+    }
+    $found;
+}
+
+sub name
+{
+    my $self = shift;
+    $self->{'name'} = shift if @_ == 1;
+    $self->{'name'};
+}
+
+sub parent
+{
+    my $self = shift;
+    $self->{'parent'} = shift if @_ == 1;
+    $self->{'parent'};
+}
+
+#
+# Parse Tag options, and return a hash of parsed options. Takes a hash reference to populate
+# the options, and the string to parse. Returns the hash reference
+#
+sub tagOptions_as_hash
+{
+    my $args = shift;
+    local $_ = shift;
+    while ( length ) {
+	s/^\s*//;
+
+	# Check for option with value
+	if ( s/^--([\w-]+)\s*=\s*//oi ) {
+	    my $opt = lc($1);
+
+	    # value delimited by special chars
+	    if ( s/^([\Q$_delimiters\E])//oi ) {
+
+		# Found a delimiter after '='
+		# Check for value composed of non-delimiter, ended by the matching delimiter
+		if ( s/^([^\Q$_delim_ending{$1}\E]*)\Q$_delim_ending{$1}\E?// ) {
+
+		    # If tag defined more than once shove into array
+		    if ( exists $args->{$opt} ) {
+			$args->{$opt} = [$args->{$opt}] unless ref( $args->{$opt} ) eq 'ARRAY';
+			push @{$args->{$opt}}, $1;
+		    } else {
+			$args->{$opt} = $1;
+		    }
+		} else {
+		    # Found starting delimiter, but no ending delimiter till the end.
+		    # Use the entire string as option value
+		    if ( exists $args->{$opt} ) {
+			$args->{$opt} = [$args->{$opt}] unless ref( $args->{$opt} ) eq 'ARRAY';
+			push @{$args->{$opt}}, $_;
+		    } else {
+			$args->{$opt} = $_;
+		    }
+		}
+
+		# continue parsing for more options
+		next;
+	    }
+
+	    # option with value continued. No starting delimiter after '='
+	    # Assume value delimited by spaces
+	    if ( s/^(\S+)//oi ) {
+
+		# Found non-space stuff. store as value
+		if ( exists $args->{$opt} ) {
+		    $args->{$opt} = [$args->{$opt}] unless ref( $args->{$opt} ) eq 'ARRAY';
+		    push @{$args->{$opt}}, $1;
+		} else {
+		    $args->{$opt} = $1;
+		}
+
+		# continue parsing for more options
+		next;
+	    } else {
+
+		# No non-space stuff after '='
+		# Make option null, or push a NULL value into array
+		if ( exists $args->{$opt} ) {
+		    $args->{$opt} = [$args->{$opt}] unless ref( $args->{$opt} ) eq 'ARRAY';
+		    push @{$args->{$opt}}, undef;
+		} else {
+		    $args->{$opt} = undef;
+		}
+
+		# continue parsing for more options
+		next;
+	    }
+	}			# end of parsing option with value
+
+	# Check for flag option -- option without '='
+	if ( s/^--([\w-]+)\s+//oi ) {
+
+	    # increment option value -- useful for tracing how many times a flag appeared
+	    $args->{lc($1)}++;
+
+	    # continue parsing for more options
+	    next;
+	}
+
+	# Non-option -- text not preceded by '--'
+	# Check if value delimited by special chars
+	if ( s/^([\Q$_delimiters\E])//oi ) {
+
+	    # Yup, check for ending delimiter
+	    if ( s/^([^\Q$_delim_ending{$1}\E]*)\Q$_delim_ending{$1}\E?// ) {
+
+		# Append to a hash entry called `non-options'
+		push @{$args->{'non-options'}}, $1;
+	    } else {
+
+		# Found starting delimiter, but no ending -- means entire string
+		push @{$args->{'non-options'}}, $_;
+	    }
+
+	    # continue parsing for more options
+	    next;
+	}
+
+	# Non-option continued
+	# No starting delimiter, assume value delimited by spaces
+	if ( s/^(\S+)//oi ) {
+	    push @{$args->{'non-options'}}, $1;
+	    next;
+	}
+    }
+    $args;
+}
+
+#
+# Parse Tag options, and return an array of parsed options. Takes an array reference to populate
+# the options, and the string to parse. Returns the array reference
+#
+sub tagOptions_as_array
+{
+    my $args = shift;
+    local $_ = shift;
+    while ( length ) {
+	s/^\s*//;
+
+	# Check for option with value
+	if ( s/^--([\w-]+)\s*=\s*//oi ) {
+	    push @{$args}, '--' . lc($1);
+
+	    # value delimited by special chars
+	    if ( s/^([\Q$_delimiters\E])//oi ) {
+
+		# Found a delimiter after '='
+		# Check for value composed of non-delimiter, ended by the matching delimiter
+		if ( s/^([^\Q$_delim_ending{$1}\E]*)\Q$_delim_ending{$1}\E?// ) {
+		    push @{$args}, $1;
+		} else {
+		    push @{$args}, $_;
+		}
+
+		# continue parsing for more options
+		next;
+	    }
+
+	    # option with value continued. No starting delimiter after '='
+	    # Assume value delimited by spaces
+	    if ( s/^(\S+)//oi ) {
+		push @{$args}, $1;
+
+		# continue parsing for more options
+		next;
+	    } else {
+
+		# No non-space stuff after '='
+		# push a NULL value into array
+		push @{$args}, undef;
+
+		# continue parsing for more options
+		next;
+	    }
+	}			# end of parsing option with value
+
+	# Check for flag option -- option without '='
+	if ( s/^--([\w-]+)\s+//oi ) {
+	    push @{$args}, '--' . lc($1);
+	    next;
+	}
+
+	# Non-option -- text not preceded by '--'
+	# Check if value delimited by special chars
+	if ( s/^([\Q$_delimiters\E])//oi ) {
+
+	    # Yup, check for ending delimiter
+	    if ( s/^([^\Q$_delim_ending{$1}\E]*)\Q$_delim_ending{$1}\E?// ) {
+		push @{$args}, $1;
+	    } else {
+		push @{$args}, $_;
+	    }
+	    next;
+	}
+
+	# Non-option continued
+	# No starting delimiter, assume value delimited by spaces
+	if ( s/^(\S+)//oi ) {
+	    push @{$args}, $1;
+	    next;
+	}
+    }
+    $args;
+}
+
+sub getoptions
+{
+    my $self = shift;
+    local @ARGV = $self->{'argv'};
+    &GetOptions (@_);
+}
+
+sub options
+{
+    my $self = shift;
+    my $optstring = shift;
+    return unless $optstring;
+    $self->{'argv'} = &tagOptions_as_array ([], $optstring);
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/02/08 15:24:57  sridhar
+# Added TagX
+#
+#
+
+1;
