@@ -46,11 +46,11 @@ sub output
     my $obj = TagX::TAG::WithBody->new( $self );
     my $input = $self->{'input'};
     my $optstring = '';
-    $self->{'_line'} = 0;
+    $self->{'__line'} = 0;
 
   INPUT:
     while (<$input>) {
-	$self->{'_line'}++;
+	$self->{'__line'}++;
       MAIN: {
 
 	  #
@@ -171,7 +171,7 @@ sub output
 		  die "Tag <$_> NYI";
 	      }
 
-	      $obj->start_location( $self->{'_line'} );
+	      $obj->start_location( $self->{'__line'} );
 
 	      # After creating object of suitable type depending on the tag, check
 	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
@@ -279,7 +279,7 @@ sub log_message
     return unless exists $self->{'error_handler'};
     my $level = shift;
     return unless $self->{'ErrorLevels'}->{uc $level} >= $self->{'error_level'};
-    unshift @_, "[Line $self->{'_line'}]" if exists $self->{'_line'};
+    unshift @_, "[$self->{'__input'}($self->{'__line'})]" if exists $self->{'__line'};
     goto &{$self->{'error_handler'}};
 }
 
@@ -303,16 +303,13 @@ sub new
     my $error_handler = shift;
     my %args = @_;
 
-    confess qq(Input filehandle is not valid -- must support a method getline().\n)
-	unless ref($input) and $input->can( 'getline' );
-
     my ($class, $self);
     if ( $class = ref( $proto ) ) {
 	$self = bless {}, $class;
 	$self->{'ErrorLevels'} = $proto->{'ErrorLevels'};
 	$self->{'error_handler'} = $error_handler || $proto->{'error_handler'};
 	$self->{'error_level'} = $proto->{'error_level'};
-	$self->{'input'} = $input;
+	$self->{'__input'} = $input;
 	if ( $output ) {
 	    $self->out_handle( TagX::Output->new( $output ) );
 	} else {
@@ -325,11 +322,21 @@ sub new
 	$self->{'ErrorLevels'} = \%ErrorLevels;
 	$self->{'error_handler'} = $error_handler if ref ($error_handler) eq 'CODE';
 	$self->{'error_level'} = $self->{'ErrorLevels'}->{'MSG_DEBUG'};
-	$self->{'input'} = $input;
+	$self->{'__input'} = $input;
 	$self->out_handle( TagX::Output->new( $output ) );
 	$self->{'VARS'} = {};
 	$self->{'DB'} = {};
     }
+
+    unless ( ref ($input) =~ /IO/o ) {
+	$input = ref( $input ) ? IO::Handle->new_from_fd( $input ) : IO::File->new ( $input );
+	confess "Unable to open $input for input: $!" unless $input;
+    }
+
+    $self->{'input'} = $input;
+
+    $SIG{__WARN__} = sub { $self->log_message( MSG_WARNING => @_ ) };
+    $SIG{__DIE__} = sub { $self->log_message( MSG_ERROR => @_ ) };
 
     for (keys %args) {
 	$self->{'VARS'}->{$_} = $args{$_};
@@ -342,6 +349,11 @@ sub new
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.9  2000/04/13 15:04:46  sridhar
+# 1. Input can be a filename, handle or IO::
+# 2. Handlers for warn and die.
+# 3. Input filename logged with message logging
+#
 # Revision 1.8  2000/03/21 16:07:16  sridhar
 # 1. Moved handling for <else> into main loop with others
 # 2. <elseif> and <elsif> are both supported.
