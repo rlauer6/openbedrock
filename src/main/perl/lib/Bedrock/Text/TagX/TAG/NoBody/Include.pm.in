@@ -13,7 +13,6 @@ BEGIN
     $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
 }
 
-use Getopt::Long;
 use POSIX qw (strftime);
 
 use TagX::TAG::NoBody;
@@ -24,69 +23,75 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    local (@ARGV) = @{$self->{'argv'}};
-    my %valid;
-    &GetOptions(\%valid,
-		'verbose',
-		'file=s',
-		'dir-prefix=s',
-		'access-time=s',
-		'access-time-format=s',
-		'modify-time=s',
-		'modify-time-format=s',
-		'change-time=s',
-		'change-time-format=s');
-
-    my $verbose = delete $valid{'verbose'};
+    my %options = ('file=s'			=> undef,
+		   'dir-prefix=s'		=> undef,
+		   'access-time=s'		=> undef,
+		   'access-time-format=s'	=> undef,
+		   'modify-time=s'		=> undef,
+		   'modify-time-format=s'	=> undef,
+		   'change-time=s'		=> undef,
+		   'change-time-format=s'	=> undef);
+    my @argv = $self->parse_options (\%options, @context);
+    my $verbose = $self->verbose;
 
     if ( $verbose ) {
 	my ($key, $value);
 	my $str = "$self: Options are\n";
-	while (($key, $value) = each %valid) {
+	while (($key, $value) = each %options) {
 	    $str .= "\t$key .. ($value)\n";
 	}
+	$str .= "Arguments are\n@argv";
 	$tx->log_message( MSG_DEBUG => $str );
     }
 
-    unless ( exists $valid{'file'} ) {
+    my $file;
+    if ( exists $options{'file'} ) {
+	$file = delete $options{'file'};
+    } elsif ( @argv ) {
+	$file = shift @argv;
+    } else {
 	$tx->log_message( MSG_ERROR => "$self: No file specified" );
 	return;
     }
 
-    my $file = $valid{'file'};
-    if ( $valid{'dir-prefix'} ) {
-	my $dir = $self->resolve_name ( $valid{'dir-prefix'}, @context );
-	$tx->log_message( MSG_DEBUG => "Dir prefix resolved to <$dir>" ) if $verbose;
-	$file = $dir . '/' . $file if $dir;
+    my $dir;
+    if ( defined( $dir = delete $options{'dir-prefix'} ) ) {
+	$tx->log_message( MSG_DEBUG => "Dir prefix is <$dir>" ) if $verbose;
+	$file = $dir . '/' . $file;
     }
 
     $tx->log_message( MSG_DEBUG => "Including file <$file>" ) if $verbose;
 
-    my @sv = stat ( $file );
-    return unless @sv;
-    my $input = IO::File->new ( $file );
-    return unless $input;
-    my $subform = $tx->new ( $input );
-
-    if ( exists $valid{'access-time'} ) {
-	my $value = $sv[8];
-	$value = &strftime ( $valid{'access-time-format'}, localtime( $value ) )
-	    if exists $valid{'access-time-format'};
-	$subform->param ( $valid{'access-time'}, $value );
+    my $more = keys %options;
+    my @sv;
+    if ( $more ) {
+	@sv = stat ( $file );
+	return unless @sv;
     }
 
-    if ( exists $valid{'modify-time'} ) {
-	my $value = $sv[9];
-	$value = &strftime ( $valid{'modify-time-format'}, localtime( $value ) )
-	    if exists $valid{'modify-time-format'};
-	$subform->param ( $valid{'modify-time'}, $value );
-    }
+    my $subform = $tx->new ( $file );
 
-    if ( exists $valid{'change-time'} ) {
-	my $value = $sv[10];
-	$value = &strftime ( $valid{'change-time-format'}, localtime( $value ) )
-	    if exists $valid{'change-time-format'};
-	$subform->param ( $valid{'change-time'}, $value );
+    if ( $more ) {
+	if ( exists $options{'access-time'} ) {
+	    my $value = $sv[8];
+	    $value = &strftime ( $options{'access-time-format'}, localtime( $value ) )
+		if exists $options{'access-time-format'};
+	    $subform->param ( $options{'access-time'}, $value );
+	}
+
+	if ( exists $options{'modify-time'} ) {
+	    my $value = $sv[9];
+	    $value = &strftime ( $options{'modify-time-format'}, localtime( $value ) )
+		if exists $options{'modify-time-format'};
+	    $subform->param ( $options{'modify-time'}, $value );
+	}
+
+	if ( exists $options{'change-time'} ) {
+	    my $value = $sv[10];
+	    $value = &strftime ( $options{'change-time-format'}, localtime( $value ) )
+		if exists $options{'change-time-format'};
+	    $subform->param ( $options{'change-time'}, $value );
+	}
     }
 
     $subform->output;
@@ -95,6 +100,11 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.5  2000/04/13 15:16:48  sridhar
+# 1. Using new parse_options method with support for expressions
+# 2. Passing filename to TagX->new() method to enable filename logging
+# with log messages.
+#
 # Revision 1.4  2000/03/09 14:16:32  sridhar
 # Added new option --dir-prefix, the value of which should be a
 # variable resolving into a directory.
