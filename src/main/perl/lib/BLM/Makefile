@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.4  2000/09/29 19:15:37  sridhar
+# Added Stat.pm
+#
 # Revision 1.3  2000/09/27 15:35:03  sridhar
 # Added Recycle.pm
 #
@@ -52,7 +55,7 @@ include ../make.pre
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
 		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm \
-		    Recycle.pm
+		    Recycle.pm Stat.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Timenow.pm
@@ -70,6 +73,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Benchmark.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) String.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Recycle.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Stat.pm
 	cd Startup && $(MAKE) $@
 
 install:
@@ -88,6 +92,7 @@ install:
 	$(INSTALL) Benchmark.pm	$(CURRENT_TARGET)
 	$(INSTALL) String.pm	$(CURRENT_TARGET)
 	$(INSTALL) Recycle.pm	$(CURRENT_TARGET)
+	$(INSTALL) Stat.pm	$(CURRENT_TARGET)
 	cd Startup && $(MAKE) $@
 
 include ../make.post
