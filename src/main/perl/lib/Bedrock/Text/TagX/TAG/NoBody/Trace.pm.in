@@ -13,11 +13,110 @@ BEGIN
     $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
 }
 
+use Getopt::Long;
+
+use TagX::TAG::NoBody;
+
 @ISA = qw (TagX::TAG::NoBody);
+
+sub regular_dump
+{
+    my ($ref, $nspaces, $string) = @_;
+    $nspaces = 2 unless defined( $nspaces );
+    $string = '' unless defined( $string );
+    if ( ref( $ref ) eq 'HASH' ) {
+	$string .= "{\n";
+	for my $key (sort keys %$ref) {
+	    my $value = $ref->{$key};
+	    $string .= ' ' x $nspaces . "$key => ";
+	    if ( ref( $value ) ) {
+		$string = &regular_dump( $value, $nspaces + 2, $string );
+	    } else {
+		$string .= defined( $value ) ? "($value)\n" : "*** Undefined ***\n";
+	    }
+	}
+	$string .= ' ' x $nspaces . "}\n";
+    } elsif ( ref( $ref ) eq 'ARRAY' ) {
+	$string .= "[\n";
+	my ($i, $value);
+	for ($i = 0 ; $i < @{$ref} ; $i++ ) {
+	    $value = $ref->[$i];
+	    $string .= ' ' x $nspaces . "[$i] .. ";
+	    if ( ref( $value ) ) {
+		$string = &regular_dump( $value, $nspaces + 2, $string );
+	    } else {
+		$string .= "($value)\n";
+	    }
+	}
+	$string .= ' ' x $nspaces . "]\n";
+    }
+    $string;
+}
+
+sub compact_dump
+{
+    my ($ref, $ctx, $string) = @_;
+    $ctx = '' unless defined( $ctx);
+    my $l = length( $ctx ); 
+    if ( ref( $ref ) eq 'HASH' ) {
+	my $i = 0;
+	for my $key (sort keys %$ref) {
+	    my $value = $ref->{$key};
+	    if ( ref( $value ) ) {
+		$string = &compact_dump( $value, $ctx ? "$ctx.$key" : $key, $string );
+	    } else {
+		$string .= ($i ? ' ' x $l . ".$key = " : "$ctx.$key = " ) .
+		    (defined( $value ) ? "($value)\n" : "*** Undefined ***\n");
+	    }
+	    $i++;
+	}
+    } elsif ( ref( $ref ) eq 'ARRAY' ) {
+	my ($i, $value);
+	for ($i = 0 ; $i < @$ref ; $i++ ) {
+	    $value = $ref->[$i];
+	    if ( ref( $value ) ) {
+		$string = &compact_dump( $value,
+				    $ctx ? ($i > 0 ? (' ' x $l . ".[$i]") : ("$ctx.[$i]")) : "[$i]",
+				    $string );
+	    } else {
+		if ( $i ) {
+		    $string .= ' ' x $l . ".[$i] = ($value)\n";
+		} else {
+		    $string .= "$ctx.[$i] = ($value)\n";
+		}
+	    }
+	}
+    }
+    $string;
+}
+
+sub finalize
+{
+    my ($self, $tx, @context) = @_;
+
+    local (@ARGV) = @{$self->{'argv'}};
+    my %options = ('output' => 1);
+    &GetOptions(\%options,
+		'dump-vars',
+		'output!',
+		'compact!');
+
+    my $string = $options{'compact'} ?
+	&compact_dump ( $tx->{'VARS'} ) : &regular_dump ( $tx->{'VARS'} );
+    $tx->{'output'}->print($string) if $options{'output'};
+    $tx->log_message( MSG_DEBUG => "\n$string" );
+}
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.3  2000/03/06 18:34:26  sridhar
+# 1. Added option --dump-vars which dumps all defined vars into log
+# file.
+# 2. Have an option --output which can also print variable information
+# into the output stream
+# 3. Have a --compact option affecting the output of --dump-vars.
+#
 # Revision 1.2  2000/02/08 15:37:45  sridhar
 # Added support for being able to use Exporter version numbers
 #
