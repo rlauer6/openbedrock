@@ -7,6 +7,10 @@ package PDF::Maker;
 
 use strict;
 
+# This is a STUPID kludge and should be the nail in the coffin
+# for this implementation. 
+my $hanging_text = '';
+
 BEGIN
 {
     use Exporter ();
@@ -43,6 +47,7 @@ my %PDFDefaults =
    "footer_font_color"		=> [0.0, 0.0, 0.0],
    "header_valign"		=> "center",
    "footer_valign"		=> "center",
+   "align"			=> "left",
 );
 
 my $verbose = 1;
@@ -151,7 +156,8 @@ sub content
 
    my 	$left_margin = ($$this{"page_left_margin"} + $$options{"margin"})*72;
 
-   my 	$align = defined($$options{'align'}) ? "\L$$options{'align'}" : "LEFT";
+   my 	$align = defined($$options{'align'}) ? "\L$$options{'align'}" : 
+			 $$this{'align'};
 
    my   $font = $pdf->font('Subtype'  => 'Type1',
  	   	           'Encoding' => 'WinAnsiEncoding',
@@ -166,10 +172,46 @@ sub content
    # split() will truncate to the right, so we need to preserve 
    # trailing newlines.
    my $newlines = ($content =~ tr/\n//);
+   if( !$newlines )
+   {
+      $hanging_text .= $content;
+      return;
+   }
+   else
+   {
+      $content = "$hanging_text $content";
+      $hanging_text = '';
+   }
+   
    Log("There are $newlines newlines\n");
 
    my @lines 	= split(/\n/, $content);
-   #print("Split: ", $content, " into ", scalar @lines, " lines\n");
+   Log("Split: [", $content, "] into ", scalar @lines, " lines\n");
+
+   # Detect widows and orphans if specified, note that this
+   # ignores trailing newlines by virtue of split() discarding them,
+   # which is good.
+   if(   (defined($$options{'page_upon_widow'}) && $$options{'page_upon_widow'})
+      || (defined($$this{'page_upon_widow'}) && $$this{'page_upon_widow'}) )
+   {
+     # Ignore the option is paging will be futile, i.e. the paragraph
+     # exceeds the size of the page.
+     my $height_used = $font_size*scalar(@lines); 
+
+     Log("Paragraph height of $height_used and page height of ".
+	 "$$this{'page_height'}\n".
+         "operation will ".($$this{'page_height'} >= $height_used) ?
+	 "be considered" : "be ignored");
+
+     
+     if( $$this{'page_height'} >= $height_used &&
+         $$this{'active_page_y'}-($font_size*scalar(@lines)) 
+         <= $$this{'header_margin'}*72 )
+     {
+        $this->page;
+        $page = $$this{'active_page'};
+     }
+   }
 
    foreach my $line (@lines)
    {
@@ -189,7 +231,6 @@ sub content
      $line =~ s.\}.\\176.g;
      $line =~ s.%.\\25.g;
 
-
      if( $align eq "right" )
      {
         $page->stringr($font, $font_size, $$this{'page_width'}+$$this{'active_page_x'},
@@ -208,9 +249,8 @@ sub content
         $page->string($font, $font_size, $left_margin+$$this{'active_page_x'},
                       $$this{'active_page_y'}, $line);
      }
-     #$$this{'active_page_x'} += $font_size*length($line);
      $$this{'active_page_x'} += $page->string_width($font, $line)*$font_size;
-     Log("Value of string width " . $page->string_width($font, $line)."\n");
+
      if( $newlines > 0 )
      {
         $$this{"active_page_y"} -= $font_size;
@@ -230,6 +270,10 @@ sub content
 sub close
 {
    my $this 	= shift();
+
+   if( length($hanging_text) )
+   { $this->content($hanging_text . "\n"); }
+
    my $pdf 	= $$this{'pdf'};
 
    my $header_margin_height  = $$this{"header_margin"}*72;
@@ -276,13 +320,52 @@ sub close
 	  $var =~ s.%.\\25.g;
       }
 
-      my ($font, $size, $color, $align);
+      my ($font, $size, $color, $align, @lines, $lines);
+
+      my $set_header_y = sub
+      {
+	 my $height = $size*$lines;
+
+         if( $align eq 'top' )
+         {
+            $header_y = $$this{'page_height'}-$size-1;
+         }
+         elsif( $align eq 'bottom' )
+         {
+            $header_y = $$this{'page_height'}-$header_margin_height+($size*$lines);
+         }
+         else # Center
+         {
+	    $header_y = $$this{'page_height'}-
+	                (($header_margin_height-$height)/2+$size/2);
+         }
+      };
+
+      my $set_footer_y = sub
+      {
+	 my $height = $size*$lines;
+
+         if( $align eq 'top' )
+         {
+            $footer_y = $header_margin_height-$size;
+         }
+         elsif( $align eq 'bottom' )
+         {
+            $footer_y = $size*($lines-1);
+         }
+         else # Center
+         {
+	    $footer_y = ($header_margin_height-$height)/2+$size/2;
+         }
+      };
 
       #warn "Current options are\n";
       while( my ($key, $value) = each %$this )
       {
       #   warn "$key => $value";
       }
+
+      my($header_i, $footer_i) = (0, 0);
 
       # Left Header
       $font = $this->getAltFont($$this{'left_header_font'}, 
@@ -295,21 +378,16 @@ sub close
       $align = $$this{'left_header_valign'};
       $align = $$this{'header_valign'} unless defined($align);
       $align = "\L${align}";
+      @lines = split "\n", $leftheader;
+      $lines = @lines;
 
-      if( $align eq 'top' )
-      {
-         $header_y = $$this{'page_height'}-$size-1;
-      }
-      elsif( $align eq 'bottom' )
-      {
-         $header_y = $$this{'page_height'}-$header_margin_height-1;
-      }
-      else # Center
-      {
-         $header_y = $$this{'page_height'}-(($header_margin_height-$size)/2);
-      }
 
-      $page->string($font, $size, 0, $header_y, " $leftheader");
+      foreach my $line (split "\n", $leftheader)
+      {
+	 $set_header_y->();
+         $page->string($font, $size, 0, $header_y - $size*$header_i, " $line");
+	 $header_i++;
+      }
 
       # Left Footer
       $font = $this->getAltFont($$this{'left_footer_font'}, 
@@ -322,21 +400,16 @@ sub close
       $align = $$this{'left_footer_valign'};
       $align = $$this{'footer_valign'} unless defined($align);
       $align = "\L$align";
+      $footer_i = 0;
+      @lines = split "\n", $leftfooter;
+      $lines = @lines;
+      $set_footer_y->();
 
-      if( $align eq 'top' )
+      foreach my $line (split "\n", $leftfooter)
       {
-         $footer_y = $header_margin_height+$size;
+         $page->string($font, $size, 0, $footer_y - $size*$footer_i, " $line");
+	 $footer_i++;
       }
-      elsif( $align eq 'bottom' )
-      {
-         $footer_y = 0;
-      }
-      else # Center
-      {
-         $footer_y = ($header_margin_height-$size)/2;
-      }
-
-      $page->string($font, $size, 0, $footer_y, " $leftfooter");
 
       # Right Header
       $font = $this->getAltFont($$this{'right_header_font'}, 
@@ -349,21 +422,17 @@ sub close
       $align = $$this{'right_header_valign'};
       $align = $$this{'header_valign'} unless defined($align);
       $align = "\L$align";
-      if( $align eq 'top' )
-      {
-         $header_y = $$this{'page_height'}-$size-1;
-      }
-      elsif( $align eq 'bottom' )
-      {
-         $header_y = $$this{'page_height'}-$header_margin_height-1;
-      }
-      else # Center
-      {
-         $header_y = $$this{'page_height'}-(($header_margin_height-$size)/2);
-      }
+      @lines = split "\n", $rightheader;
+      $lines = @lines;
+      $header_i = 0;
+      $set_header_y->();
 
-      $page->stringr($font, $size, $$this{'page_width'}, $header_y,
-		    "$rightheader ");
+      foreach my $line (split "\n", $rightheader)
+      {
+         $page->stringr($font, $size, $$this{'page_width'}, 
+                        $header_y - $size*$header_i, "$line ");
+	 $header_i++;
+      }
 
       # Right Footer
       $font = $this->getAltFont($$this{'right_footer_font'}, 
@@ -376,22 +445,17 @@ sub close
       $align = $$this{'right_footer_valign'};
       $align = $$this{'footer_valign'} unless defined($align);
       $align = "\L$align";
+      @lines = split "\n", $rightfooter;
+      $lines = @lines;
+      $footer_i = 0;
+      $set_footer_y->();
 
-      if( $align eq 'top' )
+      foreach my $line (split "\n", $rightfooter)
       {
-         $footer_y = $header_margin_height+$size;
+         $page->stringr($font, $size, $$this{'page_width'} - $size*$footer_i, 
+                        $footer_y, "$line ");
+	 $footer_i++;
       }
-      elsif( $align eq 'bottom' )
-      {
-         $footer_y = 0;
-      }
-      else # Center
-      {
-         $footer_y = ($header_margin_height-$size)/2;
-      }
-
-      $page->stringr($font, $size, $$this{'page_width'}, $footer_y, 
-                     "$rightfooter ");
 
       my $center_x = ($$this{'page_width'}-
 	 	     $page->string_width($font,$centerheader))/2;
@@ -407,20 +471,16 @@ sub close
       $align = $$this{'center_header_valign'};
       $align = $$this{'header_valign'} unless defined($align);
       $align = "\L$align";
-      if( $align eq 'top' )
-      {
-         $header_y = $$this{'page_height'}-$size-1;
-      }
-      elsif( $align eq 'bottom' )
-      {
-         $header_y = $$this{'page_height'}-$header_margin_height-1;
-      }
-      else # Center
-      {
-         $header_y = $$this{'page_height'}-(($header_margin_height-$size)/2);
-      }
+      @lines = split "\n", $centerheader;
+      $lines = @lines;
+      $header_i = 0;
+      $set_header_y->();
 
-      $page->stringc($font, $size, $center_x, $header_y, $centerheader);
+      foreach my $line (split "\n", $centerheader)
+      {
+         $page->stringc($font, $size, $center_x, $header_y - $size*$header_i, $line);
+         $header_i++;
+      }
 
       # Center Footer
       $font = $this->getAltFont($$this{'center_footer_font'}, 
@@ -433,21 +493,17 @@ sub close
       $align = $$this{'center_footer_valign'};
       $align = $$this{'footer_valign'} unless defined($align);
       $align = "\L$align";
+      @lines = split "\n", $centerfooter;
+      $lines = @lines;
+      $footer_i = 0;
+      $set_footer_y->();
 
-      if( $align eq 'top' )
+      foreach my $line (@lines)
       {
-         $footer_y = $header_margin_height+$size;
+         $page->stringc($font, $size, $center_x, 
+                        $footer_y - $size*$footer_i, $line);
+         $footer_i++;
       }
-      elsif( $align eq 'bottom' )
-      {
-         $footer_y = 0;
-      }
-      else # Center
-      {
-         $footer_y = ($header_margin_height-$size)/2;
-      }
-
-      $page->stringc($font, $size, $center_x, $footer_y, $centerfooter);
    }
 
    $pdf->close();
@@ -505,7 +561,24 @@ sub setOptions
 
    while( my ($key, $value) = each(%$options) )
    {
-      $$this{"\L$key"} = $value;
+      $key = "\L$key";
+      $$this{$key} = $value;
+
+      # A nasty hack to allow multiple line headers
+      if( $key =~ 'header$' )
+      {
+         my @lines = split "\n", $value;
+ 	 my $lines = @lines;
+
+         my $needed_margin = int $$this{'header_font_size'} * $lines / 72 + 1;
+         
+         Log("$key => $value\n");
+         Log("$needed_margin' needed to accomadate $lines line, $$this{'header_font_size'} ".
+	     "point header\n");
+
+         $$this{'header_margin'} = $needed_margin unless $$this{'header_margin'} 
+                                   >= $needed_margin;
+      }
    }
    # this is a nasty hack to unnaturally update options
    # variables that have side-effects on the output
@@ -522,6 +595,9 @@ sub setOptions
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.9  2000/10/11 16:52:48  aviert
+# Added support for multiple line headers and footers.
+#
 # Revision 1.8  2000/09/20 16:10:27  aviert
 # Corrected newline output problem.
 #
