@@ -15,7 +15,7 @@ BEGIN
     @ISA	= qw (Exporter);
 }
 
-use UNIVERSAL qw (isa);
+use UNIVERSAL;
 use TagX::Log 1.01;
 
 my $Verbose;
@@ -30,40 +30,42 @@ sub new
     my $op_or_lhs = shift @_;
     if ( ref( $op_or_lhs ) ) {
 	my $op = shift @_;
-	die "Expr->new: Invalid operator ($op)" if ref( $op );
+	die "Invalid operator in expression\n" if ref( $op );
 	if ( $op eq '+' ) {
-	    die "Expr->new: Invalid number of arguments($nargs) to operator `$op'"
+	    die "Insufficient number of arguments(", $nargs - 1, ") to operator `$op'\n"
 		unless $nargs > 2;
 	    @{$self} = ($op_or_lhs, $op);
 	    while ( @_ > 0 ) {
 		$op_or_lhs = shift @_;
-		die "Expr->new: Illegal token `$op_or_lhs' encountered."
+		die "Operator `$op_or_lhs' is illegal here.\n"
 		    unless ref( $op_or_lhs );
 		push @{$self}, $op_or_lhs;
 		if ( @_ > 1 ) {
 		    $op_or_lhs = shift @_;
-		    die "Expr->new: Invalid operator `$op_or_lhs' -- must be `+' only"
+		    die "Operator `$op_or_lhs' is illegal here: must be `+' only.\n"
 			if ref( $op_or_lhs ) or $op_or_lhs ne '+';
 		    push @{$self}, $op_or_lhs;
 		}
 	    }
 	} elsif ( $op =~ /^--(eq|ne|gt|ge|lt|le|re|or|and)$/i ) {
-	    die "Expr->new: Invalid number of arguments ($nargs) to operator `$op'"
+	    die "Invalid number of arguments(", $nargs - 1, ") for operator `$op'.\n"
 		if $nargs != 3;
 	    my $rhs = shift @_;
-	    die "Expr->new: Invalid RHS ($rhs)" unless ref( $rhs );
+	    die "Token `$rhs' is illegal here.\n" unless ref( $rhs );
 	    @{$self} = ($op_or_lhs, $op, $rhs);
+	} elsif ( $nargs == 1 ) {
+	    @{$self} = ($op_or_lhs);
 	} else {
-	    die "Expr->new: Invalid operator ($op)";
+	    die "Token `$op' is illegal here.\n";
 	}
-    } else {
-	die "Expr->new: Invalid number of arguments ($nargs): must be 2"
+    } elsif ( $op_or_lhs =~ /^--(not|exists)$/i ) {
+	die "Unary operator `$op_or_lhs' requires a single argument: found ", $nargs - 1, " instead.\n"
 	    unless $nargs == 2;
 	my $rhs = shift @_;
-	die "Expr->new: Unsupported or invalid operator($op_or_lhs)" 
- 	    unless $op_or_lhs =~ /^--(not|exists)$/i;
-	die "Expr->new: Invalid RHS ($rhs)" unless ref( $rhs );
+	die "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n" unless ref( $rhs );
 	@{$self} = ($op_or_lhs, $rhs);
+    } else {
+	die "Token `$op_or_lhs' is not a valid unary operator.\n";
     }
     $self;
 }
@@ -92,10 +94,9 @@ sub eval
 	if ( @args > 0 ) {
 	    # binary operators
 	    $op = shift @args;
-	    die "invalid operator `$op'.\n"
+	    die "Invalid operator `$op'.\n"
 		unless $op =~ /^(--(eq|ne|gt|ge|lt|le|re|or|and)|\+)$/i;
 	    $op = lc($1);
-	    die "required arg after `$op' missing.\n" unless @args > 0;
 	    &log_message( undef, "op is [$op]" ) if $Verbose;
 	    if ( $op eq '+' ) {
 		$l->verbose(1) if $Verbose;
@@ -104,19 +105,13 @@ sub eval
 		&log_message( undef, "$l eval'ed to [$str]" ) if $Verbose;
 		do {
 		    $l = shift @args;
-		    die "illegal token `$l' encountered.\n" unless ref( $l );
 		    $l->verbose(1) if $Verbose;
 		    $str .= $l->eval( @_ );
 		    $l->verbose(0) if $Verbose;
-		    if ( @args > 1 ) {
-			$op = shift @args;
-			die "invalid operator `$op' -- must be `+' only.\n"
-			    unless $op eq '+';
-		    }
+		    $op = shift @args if @args > 1;
 		} while ( @args > 0 );
 		return $str;
 	    } else {
-		die "extra args after RHS expr.\n" if @args > 1;
 		$r = shift @args;
 		$l->verbose(1) if $Verbose;
 		my $lval = $l->eval( @_ );
@@ -146,16 +141,15 @@ sub eval
 	&log_message( undef, "LHS [$l] is an operator" ) if $Verbose;
 	# unary operators
 	$op = lc( $l );
-	die "no expression after unary(`$op') operator.\n" unless @args > 0;
-	die "extra args specified for unary(`$op') operator.\n" if @args > 1;
 	$l = shift @args;
 	&log_message( undef, "Argument to unary(`op') operator is [$l]" ) if $Verbose;
 	if ( $op eq '--exists' ) {
-	    die "invalid argument for `--exists' operator.\n" unless isa($l, 'TagX::Term');
+	    die "Invalid argument for `--exists' operator.\n"
+		unless &UNIVERSAL::isa($l, 'TagX::Term::Var');
 	    $l->verbose(1) if $Verbose;
-	    my $value = $l->eval (@_);
+	    my $exists = $l->exists (@_);
 	    $l->verbose(0) if $Verbose;
-	    return defined($value) ? 1 : 0;
+	    return $exists;
 	} else {
 	    die "invalid argument for unary(`$op') operator.\n" unless $l->can('eval');
 	    $l->verbose(1) if $Verbose;
@@ -177,6 +171,11 @@ sub eval
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.12  2000/11/16 19:22:39  sridhar
+# 1. Better error trapping.
+# 2. Fixed error messages so exceptions don't have perl source code
+# locations in them.
+#
 # Revision 1.11  2000/07/18 14:34:44  sridhar
 # Proper checking of object type as `TagX::Term' instead of just `Term'
 #
