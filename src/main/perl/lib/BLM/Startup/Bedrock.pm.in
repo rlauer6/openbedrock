@@ -20,10 +20,13 @@ use TagX::Log 1.01;
 use SIS::Hash;
 @ISA = qw(SIS::Hash);
 
+my @keys = qw (version script_fullpath script_file script_dir script_relative_uri script_absolute_uri);
+
 sub TIEHASH
 {
-    my $class = shift;
+    my ($class, $ctx, $config) = shift;
     my $self = bless {}, $class;
+    $self->{'config'} = $config;
     $self->{'version'} = $Text::TagX::VERSION;
 
     if ( exists $ENV{'HTTP_HOST'} ) {
@@ -40,6 +43,21 @@ sub TIEHASH
     }
 
     $self;
+}
+
+sub FIRSTKEY
+{
+    my $self = shift;
+    $self->{'keys'} = [@keys];
+    my $key = shift @{$self->{'keys'}};
+    wantarray ? ($key, $self->{$key}) : $key;
+}
+
+sub NEXTKEY
+{
+    my $self = shift;
+    my $key = shift @{$self->{'keys'}};
+    wantarray ? ($key, $self->{$key}) : $key;
 }
 
 sub require_version
@@ -69,7 +87,8 @@ sub new
 {
     my $self = shift;
     my $class = shift;
-    &log_message( undef, "$self: creating an object of class $class" );
+    my $verbose = $self->{'config'}->{'verbose'};
+    &log_message( undef, "$self: creating an object of class $class" ) if $verbose;
     $self->loadModule( $class );
     my $href = {};
     tie %{$href}, $class, @_;
@@ -154,13 +173,32 @@ sub loadModule
     my $self = shift;
     my @mods = @_;
 
+    my $verbose = $self->{'config'}->{'verbose'};
     for my $class (@mods) {
 	$class =~ s!::!/!g;
 	$class =~ s!$!.pm! unless $class =~ /\.pm$/;
 	next if $INC{$class};
 	require $class;
-	&log_message( undef, "$class loaded successfully" );
+	&log_message( undef, "$class loaded successfully" ) if $verbose;
     }
+}
+
+sub BLMDoc
+{
+    my $self = shift;
+    my $class = shift;
+    $self->loadModule( $class );
+    no strict;
+    local *stab = *{$class . '::' };
+    my $handle = $stab{DATA};
+    return "Sorry! Class $class has no documentation." unless $handle;
+    my $ioref = *{$handle}{IO};
+    use strict;
+    my $doc;
+    while (<$ioref>) {
+	$doc .= $_;
+    }
+    $doc;
 }
 
 1;
@@ -168,6 +206,11 @@ sub loadModule
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.11  2000/12/11 15:07:07  sridhar
+# 1. Defined FIRSTKEY() and NEXTKEY() methods.
+# 2. Can specify `verbose' under `config' in config file
+# 3. Added `BLMDoc()' method.
+#
 # Revision 1.10  2000/11/30 15:44:07  sridhar
 # Fixed `require_version()' to handle previous single-period version
 # numbering and present double-period version numbering.
