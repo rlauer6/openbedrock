@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.3  2000/10/16 13:58:00  sridhar
+# Added InputSource directory.
+#
 # Revision 1.2  2000/09/18 15:18:25  sridhar
 # Oops! Need to include make.{pre,post} in parent dir (..) and not grand
 # parent (../..) since this hierarchy is installed under Bedrock/
@@ -47,6 +50,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Dump.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) BufferStream.pm
 	cd Base		&& $(MAKE) $@
+	cd InputSource	&& $(MAKE) $@
 
 install:
 	$(INSTALL) Base.pm		$(CURRENT_TARGET)
@@ -58,5 +62,6 @@ install:
 	$(INSTALL) Dump.pm		$(CURRENT_TARGET)
 	$(INSTALL) BufferStream.pm	$(CURRENT_TARGET)
 	cd Base		&& $(MAKE) $@
+	cd InputSource	&& $(MAKE) $@
 
 include ../make.post
