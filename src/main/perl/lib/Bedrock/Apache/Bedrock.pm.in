@@ -1,0 +1,294 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package Apache::Bedrock;
+
+use strict;
+
+#
+# Define the following mod_perl constants since we could be using
+# this module both as a mod_perl module and in a CGI
+#
+use constant	NOT_FOUND	=> 404;
+use constant	SERVER_ERROR 	=> 500;
+use constant	FORBIDDEN 	=> 403;
+use constant	OK		=> 0;
+use constant	DECLINED 	=> -1;
+
+use BLM::Startup::Modules;
+use SIS::Base;
+use File::Basename;
+use Text::TagX;
+use SIS::Config;
+use Symbol;
+use Cwd;
+
+my $PWD;
+
+sub config
+{
+    my $dir = shift;
+    $dir =~ s!/$!!;
+
+    my $conf = SIS::Config->new( 'tagx.xml' );
+
+    # Look for application config
+    my $dir_conffile = $conf->{'APP_CONFIG'};
+    return $conf unless $dir_conffile;
+
+    # Load the directory config
+    my $dir_conf = SIS::Config->new( $dir_conffile );
+
+    # Look up the app config, based on directory of current request
+    my $app_conf = $dir_conf->{$dir} || $dir_conf->{$dir . '/'};
+
+    # Extract startup modules from app config
+    my $app_modules = delete $app_conf->{'MODULES'};
+
+    # merge generic bedrock conf with app config. Note that app config
+    # overrides default config
+    for my $key (keys %{$app_conf}) {
+	$conf->{$key} = $app_conf->{$key};
+    }
+
+    # Append app startup modules to master startup module list
+    push @{$conf->{'MODULES'}}, @{$app_modules} if $app_modules;
+
+    # And voila! we have the merged config
+    $conf;
+}
+
+sub error
+{
+    my $r = shift;
+    my $mesg = shift;
+    my $code = shift || SERVER_ERROR;
+
+    $r->log_error( $mesg );
+    chdir $PWD;
+    return $code;
+}
+
+sub handler
+{
+    my $r = shift;
+    return DECLINED unless $r->content_type eq 'text/html';
+
+    my $file = $r->filename;
+    unless ( -e $r->finfo ) {
+	$r->log_error ("File does not exist: $file");
+	return NOT_FOUND;
+    }
+
+    unless ( -r _ ) {
+	$r->log_error ("File permissions deny access: $file");
+	return FORBIDDEN;
+    }
+
+    $PWD = &fastcwd unless defined($PWD);
+
+    local($SIG{__DIE__}, $SIG{__WARN__});
+
+    # Parse for the URI components
+    my ($uri_name, $uri_dir) = &fileparse( $r->uri );
+
+    # Shove the URI params in environment.
+    local($ENV{'BEDROCK_URI'}) = $r->uri;
+    local($ENV{'BEDROCK_URIDIR'}) = $uri_dir;
+    local($ENV{'BEDROCK_URINAME'}) = $uri_name;
+
+    # Parse the file components
+    my ($file_name, $file_dir) = &fileparse( $r->filename );
+
+    # And the file params too.
+    local($ENV{'BEDROCK_FILE'}) = $r->filename;
+    local($ENV{'BEDROCK_FILEDIR'}) = $file_dir;
+    local($ENV{'BEDROCK_FILENAME'}) = $file_name;
+
+    my $conf = &config($uri_dir);
+    my $ctx = SIS::Base->new ('CONFIG' => $conf,
+			      'APACHE_HANDLER' => $r);
+
+    unless ( chdir $file_dir ) {
+	$r->log_error( "chdir($file_dir) failed: $!" );
+	return SERVER_ERROR;
+    }
+
+    my $tx = Text::TagX->new ($file, $ctx);
+
+    #
+    # Set logging parameters
+    #
+    my $f = ($conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp') . '/' . $uri_name;
+    my $sz = $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000;
+    $tx->options(LOG_PREFIX =>  $f,
+		 LOG_MAXSIZE => $sz,
+		 PEBBLE_DIR => $conf->{'PEBBLE_DIR'});
+
+    #
+    # Load Generic startup BLMs
+    #
+    my $modules = $conf->{'MODULES'};
+    unless ( $modules ) {
+	return &error( $r, "Error in config file: MODULES is not defined." );
+    }
+
+    my @startup = @{$modules};
+    my $i = 0; my $header;
+    for my $modconf (@startup) {
+
+	unless ( defined( $modconf->{'binding'} ) ) {
+	    return &error( $r, "PID [$$]: Error in config: `binding' not defined for MODULES->[$i]" );
+	}
+
+	my $type = $modconf->{'type'} || 'hash';
+	unless ( $type =~ /^(hash|array|handle|object)$/ ) {
+	    return &error( $r, "PID [$$]: Error in config: MODULES->[$i] defined with invalid `type'($type)" );
+	}
+
+	# BLM specific configuration
+	my $config = $modconf->{'config'};
+
+	# Special handling for header module. We create the object immediately
+	# and bind it
+	if ( exists $modconf->{'header'} ) {
+	    # Croak if more than one module tries to become header module
+	    if ( $header ) {
+		return &error( $r, "PID [$$]: Error in config: Multiple modules defined with `header': ($header, $modconf->{'binding'})" );
+	    }
+
+	    # Bind the header
+	    $header = $modconf->{'binding'};
+	    my $obj;
+	    if ( $type eq 'hash' or $type eq 'object' ) {
+		$obj = bless {}, $modconf->{'module'};
+		tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'array' ) {
+		$obj = bless [], $modconf->{'module'};
+		tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'handle' ) {
+		$obj = bless gensym, $modconf->{'module'};
+		tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+	    }
+	    $tx->param($header => $obj);
+	    $tx->options('HEADER' => $obj);
+	    next;
+	}
+
+	# bind a subroutine to the names so the constructor gets
+	# invoked ONLY if the variable is accessed from the script.
+	$tx->param( $modconf->{'binding'}, sub {
+	    my $obj;
+	    if ( $type eq 'hash' or $type eq 'object' ) {
+		$obj = bless {}, $modconf->{'module'};
+		tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'array' ) {
+		$obj = bless [], $modconf->{'module'};
+		tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+	    } elsif ( $type eq 'handle' ) {
+		$obj = bless gensym, $modconf->{'module'};
+		tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+	    }
+	    $obj;
+	});
+    } continue {
+	$i++;
+    }
+
+    # Croak if no header module
+    unless ( $header ) {
+	return &error( $r, "PID [$$]: Error in config file: No header module" );
+    }
+
+    eval { $tx->output };
+    if ( $@ ) {
+	$r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
+	$tx->show_error( $ENV{'DOCUMENT_ROOT'} . $conf->{'ERROR_LOCATION'} );
+    }
+    $tx->close;
+    chdir $PWD;
+    return OK;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/12/12 18:58:56  sridhar
+# 1. Bedrock.pm, the main bedrock request handler now lives inside
+# Bedrock
+# 2. Same handler is used by the bedrock CGI too, by just mimicking the
+# apache request handler object
+# 3. Not using Apache::Constants since this module will now be used by
+# the CGI too. Have the required constants hardcoded instead.
+# 4. SIS::Base::Apache no longer used. Replaced by SIS::Base.
+#
+# Revision 1.13  2000/11/29 20:49:55  sridhar
+# Can specify PEBBLE_DIR in the config
+#
+# Revision 1.12  2000/11/16 20:14:10  sridhar
+# 1. chdir's to script directory and changes back on return from
+# handler.
+# 2. Uses `fastcwd' to find current dir for changing back.
+# 3. Have a generic `error' function which changes back dir on return.
+# 4. If script has an error, invokes `$tx->show_error()' with an error
+# page.
+#
+# Revision 1.11  2000/11/13 14:51:50  sridhar
+# Kicked out config cacheing till things stabilize a bit.
+#
+# Revision 1.10  2000/11/07 21:26:29  sridhar
+# 1. Load configuration from disk for every request only if `RELOAD' set
+# to `yes'
+# 2. Defines a bunch of environment vars `BEDROCK_*' to contain the
+# current script name, file, dir, etc.
+# 3. Log message includes PID
+#
+# Revision 1.9  2000/11/07 14:16:51  sridhar
+# 1. Major changes implementing directory-specific configuration, including
+# Startup modules per directory.
+# 2. Module takes care of loading config file `tagx.cfg' and creating
+# the config object for each request based on the request directory, and
+# merging the startup module list for each directory with the site-wide
+# startup module list
+# 3. Creates a subroutine for as the binding for each startup object
+# which gets invoked for constructing the object only if needed. So one
+# could have 100 startup modules for a directory, but use only 3 of them
+# in a script; the other 97 wouldn't be constructed at all. All this
+# magic happens behind the scenes so nobody is any the wiser.
+#
+# Revision 1.8  2000/11/01 21:02:17  sridhar
+# Using XML file for Configuration
+#
+# Revision 1.7  2000/08/11 17:56:47  sridhar
+# Catch unhandled exceptions and log an error.
+#
+# Revision 1.6  2000/07/19 19:41:59  sridhar
+# Using BLM::Startup::Modules instead of BLM::Modules since dynamic BLMs
+# no longer need to be pre-declared.
+#
+# Revision 1.5  2000/07/11 20:58:50  sridhar
+# Localized $SIG{__DIE__} and __WARN__ so that state is restored on exit
+# from handler.
+#
+# Revision 1.4  2000/07/06 18:36:15  sridhar
+# Pass the SIS::Base::Apache object directly as the output handle to
+# TagX since all necessary methods are supported in it (done for uniform
+# header handling between mod_perl and CGI environments).
+#
+# Revision 1.3  2000/07/06 17:23:09  sridhar
+# 1. MODULES config variable is now expected to have startup modules
+# under MODULES->STARTUP.
+# 2. MODULES->HEADER can be the name of a startup module object which
+# generates HTTP headers.
+#
+# Revision 1.2  2000/06/15 19:35:29  sridhar
+# New version with support for BLMs
+#
+# Revision 1.1  2000/06/07 19:53:41  sridhar
+# Added mod_perl module for bedrock
+#
+#
