@@ -1,0 +1,165 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package SIS::Config;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use IO::File;
+use File::Basename;
+use SIS::Hash 1.01;
+@ISA	= qw (SIS::Hash);
+
+sub _locate_file
+{
+    my $file = shift;
+
+    if ( $file =~ m!/! ) {
+	# No search for config file if filename specified with path
+	die "_locate_file: Config file $file not found" unless -e $file;
+	die "_locate_file: Cannot open config file $file for reading."
+	    unless -r $file;
+	return $file;
+    } elsif ( -e $file ) {
+	# look for file in current dir
+	die "_locate_file: Cannot open config file $file for reading."
+	    unless -r $file;
+	return $file;
+    } else {
+	# search for config file in path
+	my $path = $ENV{'CONFIG_PATH'};
+	die "_locate_file: Could not locate $file and CONFIG_PATH not set in environment"
+	    unless $path;
+	for my $dir (split ':', $path) {
+	    my $fullpath = $dir . '/' . $file;
+	    next unless -e $fullpath;
+	    die "_locate_file: Cannot open config file $fullpath for reading."
+		unless -r $fullpath;
+	    return $fullpath;
+	}
+	die "_locate_file: Could not locate $file in $path";
+    }
+}
+
+sub _load
+{
+    my $self = shift;
+    my $fd = shift;
+
+    my (@keys, $line, $var, $value, $include_file);
+    while ( $line = <$fd> ) {
+	chomp $line;
+	for ($line) {
+	    # Skip comments
+	    /^\s*\#/ and last;
+
+	    # kick out comments on the same line as a var defn.
+	    s/\s*\#.*//;
+
+	    # End of subobject
+	    /^\s*\}/ and return;
+
+	    # Definition of a variable
+	    /^\s*(\w+)\s*(.*)$/oi and do {
+		($var, $value) = ($1, $2);
+		push @keys, $var unless exists $self->{$var};
+		if ( $value =~ /^\s*\{\s*$/oi ) {
+		    # Begin subobject
+		    $self->{$var} = $self->new ( $fd );
+		} else {
+		    # var definition
+		    $self->{$var} = $value;
+		}
+		last;
+	    };
+
+	    # file inclusion directive
+	    /^<include\s+(\S+)\s*>$/oi and do {
+		$include_file = $1;
+		my $newObj = $self->new ( $include_file );
+		my ($key, $value);
+		while (($key, $value) = each %{$newObj}) {
+		    push @keys, $key unless exists $self->{$key};
+		    $self->{$key} = $value;
+		}
+		last;
+	    };
+
+	    # begin environment export
+	    /^<export_env>$/oi and do {
+		my $env = $self->new ($fd)->flatten;
+		my ($key, $value);
+		while (($key, $value) = each %{$env}) {
+		    next if ref( $value );
+		    $key =~ s!^/!!o; $key =~ s!/!_!g;
+		    $ENV{$key} = $value;
+		}
+		last;
+	    };
+
+	    # end environment export
+	    m!^</export_env>$!oi and return;
+
+	    # Skip line if no match with above
+	}
+    }
+    $fd->close;
+}
+
+sub _interp_vars
+{
+    my $self = shift;
+    for my $key (keys %{$self}) {
+	$self->{$key} =~ s/(?<!\\)\~(\w+)/$self->{$1}/g;
+    }
+}
+
+sub new
+{
+    my $proto = shift;
+    my $class = ref ($proto) || $proto;
+    my $self = bless $class->SUPER::new, $class;
+    return $self unless @_ > 0;
+
+    my $fd = shift;
+    unless ( ref( $fd ) ) {
+	my $file = $fd;
+	if ( $file =~ m!/! ) {
+	    my $dir = dirname ( $file );
+	    if ( $ENV{'CONFIG_PATH'} ) {
+		$ENV{'CONFIG_PATH'} = $dir . ':' . $ENV{'CONFIG_PATH'};
+	    } else {
+		$ENV{'CONFIG_PATH'} = $dir;
+	    }
+	}
+	$fd = IO::File->new ( &_locate_file( $file ) );
+	die "$self: Unable to open $file: $!\n" unless $fd;
+    }
+    $self->_load( $fd );
+    $self->_interp_vars;
+    $self;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/09/18 14:20:26  sridhar
+# Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
+#
+# Revision 1.5  2000/06/06 19:52:38  sridhar
+# 1. Brand new implementation in terms of a tied hash class SIS::Hash
+# 2. Support concept of CONFIG_PATH for locating config file
+# 3. All accesses are direct accesses
+#
+#

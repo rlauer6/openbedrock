@@ -1,0 +1,294 @@
+#!/export/home/perl5/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package SIS::Base;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA $__DEFAULT_CONFIG);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+ 
+use Carp;
+use IO::File;
+
+use Text::URLEncode;
+use SIS::InputSource;
+use SIS::Config;
+use SIS::Log;
+
+#
+# Use this config file if nothing specified.
+#
+$__DEFAULT_CONFIG = 'sis.cfg';
+
+#
+# Object initialization at construction
+# Does the following:
+#    1. Open config file.
+#    2. Parse input.
+#    3. Enable Logging
+#    4. Collect and store output file handle
+# Returns the CGI object
+#
+sub _initialize
+{
+    my $self = shift;
+    $self->{'CONFIG_FILE'} = $__DEFAULT_CONFIG unless exists $self->{'CONFIG_FILE'};
+
+    my %args = @_;
+    $self->{'INPUT'} = new SIS::InputSource ( $args{'QUERY'} );
+    $self->{'CONFIG'} = new SIS::Config ( $self->{'CONFIG_FILE'} );
+
+    &SIS::Log::StartLogger ( LOGDIR	=> $self->{'CONFIG'}->{'LOGDIR'},
+			     LOGLEVEL	=> $self->{'CONFIG'}->{'LOGLEVEL'} );
+
+    my @input = $self->getInputValue;
+    my $str = '';
+    for my $name (@input) {
+	$str = $str . "  <$name> = <" . $self->getInputValue ($name) . ">\n";
+    }
+
+    $self->{'OUTPUT'} = IO::Handle->new;
+    $self->{'OUTPUT'}->fdopen( 'STDOUT', 'w' );
+
+    LOG_MESSAGE ( MSG_DEBUG, "Input to CGI:\n$str" );
+    $self;
+}
+
+#
+# Close method is used when CGI wants to close browser connection and go off
+# to do something else and not keep the user waiting
+#
+sub close
+{
+    my $self = shift;
+    $self->{'OUTPUT'}->close;
+    close STDOUT;
+}
+
+#
+# Used to print to browser
+#
+sub print
+{
+    my $self = shift;
+    $self->{'OUTPUT'}->print(@_);
+}
+
+#
+# Get HTTP headers --empty because CGIs cannot have access to server headers
+#
+sub cgi_header_in
+{
+}
+
+#
+# Used to set HTTP headers
+#
+sub cgi_header_out
+{
+    my $self = shift;
+    my ($header, $value) = @_;
+    $self->{'headers'} .= "$header: $value\r\n";
+}
+
+#
+# And finally send the HTTP headers
+#
+sub send_http_header
+{
+    my $self = shift;
+    $self->{'OUTPUT'}->print( "$self->{'headers'}\r\n" );
+}
+
+#
+# Object constructor.
+# Options are as follows:
+#    CONFIG_FILE	=> Name of the config file
+#
+sub new
+{
+    my $class = shift;
+    my %args = @_;
+    my $self = bless {}, $class;
+    $self->{'CONFIG_FILE'} = $args{'CONFIG_FILE'} if exists( $args{'CONFIG_FILE'} );
+    $self->_initialize (@_);
+    $self;
+}
+
+#
+# Method returns CGI input parameter value. Used to hide CGI object from the public.
+#
+sub getInputValue
+{
+    my $self = shift;
+    $self->{'INPUT'}->param (@_);
+}
+
+#
+# Method returns a config parameter value. Used to hide the Config object from the public.
+#
+sub getConfigValue
+{
+    my $self = shift;
+    if ( @_ > 0 ) {
+	wantarray ? @{$self->{'CONFIG'}}{@_} : $self->{'CONFIG'}->{$_[0]};
+    } else {
+	keys %{$self->{'CONFIG'}};
+    }
+}
+
+#
+# Method for management of cookies
+#
+sub getCookieValue
+{
+    my $self = shift;
+    return unless exists $ENV{'HTTP_COOKIE'};
+    unless ( exists $self->{'__cookies__'} ) {
+	$self->{'__cookies__'} = {};
+	for my $cookie (split(';', $ENV{'HTTP_COOKIE'} )) {
+	    $cookie =~ s/^\s*(.*?)\s*$/$1/;
+	    my ($key, $value) = split ('=', $cookie);
+	    $self->{'__cookies__'}->{$key} = &Text::URLEncode::Decode($value);
+	}
+    }
+
+    if ( @_ == 1 ) {
+	$self->{'__cookies__'}->{$_[0]};
+    } elsif ( @_ > 1 ) {
+	my @values;
+	for (@_) {
+	    push @values, $self->{'__cookies__'}->{$_};
+	}
+	@values;
+    } else {
+	sort keys %{$self->{'__cookies__'}};
+    }
+}
+
+# Routine returns the fully qualified name of a template file
+# Parameters:
+#    $file	The name of a template file to be located
+# Returns:
+#    The fully pathname of the located file
+# Notes:
+#    1. Treats XHTML_PATH as a colon separated list of directories to
+#       search for the file
+#    2. Throws exception on error
+sub getTemplate
+{
+    my $self = shift;
+    my $file = shift;
+    my $path = $self->getConfigValue ('XHTML_PATH');
+    die "Base->getTemplate: XHTML_PATH is not defined in config file.\n"
+	unless $path;
+    for my $dir (split ':', $path) {
+	my $fullpath = $dir . '/' . $file;
+	next unless -e $fullpath;
+	die "Base->getTemplate: $fullpath cannot be opened for reading.\n"
+	    unless -r $fullpath;
+	return $fullpath;
+    }
+    die "Base->getTemplate: Unable to locate [$file] in template path [$path]\n";
+}
+
+#
+# Routine opens template file, getting the template dir from the config file.
+# Parameters:
+#    $file	The basename of the template file
+# Returns:
+#    A file descriptor of type IO::File on success
+#    Throws exception on error
+sub openTemplate
+{
+    my $self = shift;
+    my $file = shift;
+    new IO::File ( $self->getTemplate( $file ) );
+}
+
+#
+# Close a template file descriptor
+#
+sub closeTemplate
+{
+    my $self = shift;
+    my $fd = shift;
+    $fd->close;
+}
+
+sub config
+{
+    my $self = shift;
+    $self->{'CONFIG'};
+}
+
+sub input
+{
+    my $self = shift;
+    $self->{'INPUT'};
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/09/18 14:20:26  sridhar
+# Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
+#
+# Revision 1.10  2000/08/23 17:29:44  sridhar
+# Added (empty) method cgi_header_in() which (purportedly) returns a
+# hash or hash ref of header fields.
+#
+# Revision 1.9  2000/07/18 19:26:50  sridhar
+# Closing STDOUT too in object method close().
+#
+# Revision 1.8  2000/07/17 13:57:57  sridhar
+# 1. Some cleanup -- removed code not used by any modules.
+# 2. Added a close() method for use when CGI wants to close browser
+# connection and go off to do something else.
+# 3. more comments
+#
+# Revision 1.7  2000/07/06 18:32:02  sridhar
+# 1. new() creates an output handle from STDOUT
+# 2. Added methods print(), cgi_header_out() and send_http_header() to
+# mirror mod_perl environment
+#
+# Revision 1.6  2000/06/26 13:53:39  sridhar
+# Decoding cookies
+#
+# Revision 1.5  2000/06/09 17:49:46  sridhar
+# 1. Removed _locate_cfg() since same service provided by SIS::Config
+# 2. Removed default CONFIG_PATH. Must be set outside now.
+# 3. Added some comments
+#
+# Revision 1.4  2000/06/07 18:34:15  sridhar
+# Using config object directly as a hash
+#
+# Revision 1.3  2000/05/24 13:49:27  sridhar
+# 1. Support concept of CONFIG_PATH, a set of colon-separated
+# directories where the config file is searched, if the config file is a
+# filename without path info. CONFIG_PATH can be set in the environment,
+# failing which a default value is used
+# 2. The default config file for the class is `sis.cfg' (was `base.cfg'
+# earlier)
+# 3. XHTML_PATH is treated as a colon-separated list of directories in
+# which to look for the template file
+# 4. Added a method `getTemplate' for getting the full pathname of a
+# template file.
+#
+# Revision 1.2  2000/05/08 12:57:46  sridhar
+# Added method for getting cookies.
+#
+# Revision 1.1  2000/02/04 16:18:17  sridhar
+# Added SIS::Base -- the base class of all CGI classes.
+#
+#
+
+1;
