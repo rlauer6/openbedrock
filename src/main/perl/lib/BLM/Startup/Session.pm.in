@@ -16,6 +16,7 @@ BEGIN
 
 use Carp;
 use SIS::Hash;
+use TagX::Log;
 @ISA = qw(SIS::Hash);
 
 # Method which should look up session id from somewhere and return a hash
@@ -26,6 +27,14 @@ sub readData
 {
     my $self = shift;
     die "Session class ", ref($self), " must implement method `readData()'\n";
+}
+
+# Method to construct a new session identifier. Subclasses can override this method
+# to generate a session ID however they want to.
+sub newSessionID
+{
+    # For now let's use Apache's UNIQUE_ID as the session id
+    $ENV{'UNIQUE_ID'};
 }
 
 #
@@ -53,24 +62,35 @@ sub TIEHASH
 
     # Create session object
     my $self = bless {}, $class;
+    $self->{'ctx'} = $ctx;
+    $self->{'name'} = $name;
+    my $verbose = $self->{'verbose'} = $config->{'verbose'};
 
     # Check for an existing session
     my $id = $ctx->getCookieValue($name);
 
     # Get the session data only if a session exists
     if ( defined($id) ) {
+	&log_message( undef, "Read user's cookie: [$id]" ) if $verbose;
+
 	# Get session data as a string
 	my $ses_string = $self->readData($config, $id);
+	&log_message( undef, "User's session data contains\n[$ses_string]" ) if $verbose;
 
 	# Make a hash from the string which should be in our XML format
 	$self->{'data'} = Bedrock::XML->newFromString( $ses_string )
 	    if length($ses_string);
     } else {
-	# For now let's use Apache's UNIQUE_ID as the session id
-	$id = $ENV{'UNIQUE_ID'};
+	$id = $self->newSessionID;
+	&log_message( undef, "User does not have cookie .. using [$id]" ) if $verbose;
+
+	# To enable subclass to perform proper initialization
+	$self->readData( $config, $id );
 
 	# Set the cookie header
-	$ctx->cgi_header_out('Set-Cookie', $name . '=' . $id);
+	my $header = $name . '=' . $id . ';';
+	$ctx->cgi_header_out('Set-Cookie', $header);
+	&log_message( undef, "Set cookie header: [Set-Cookie => $header]" ) if $verbose;
     }
 
     # Initialize data if we don't have any
@@ -95,6 +115,8 @@ sub STORE
 {
     my ($self, $key, $value) = @_;
     $self->{'data'}->{$key} = $value;
+    $self->{'data_changed'}++;
+    &log_message( undef, "Stored [$key] = [$value] into session" ) if $self->{'verbose'};
     $value;
 }
 
@@ -118,12 +140,16 @@ sub EXISTS
 
 sub DELETE
 {
-    delete $_[0]->{'data'}->{$_[1]};
+    my $self = shift;
+    $self->{'data_changed'}++;
+    delete $self->{'data'}->{$_[0]};
 }
 
 sub CLEAR
 {
-    %{$_[0]->{'data'}} = ();
+    my $self = shift;
+    $self->{'data_changed'}++;
+    %{$self->{'data'}} = ();
 }
 
 # This method is invoked at session close. Pack the session data into
@@ -133,8 +159,39 @@ sub closeBLM
 {
     my $obj = shift;
     my $self = tied(%{$obj});
+
+    # Check if data has been purged
+    return unless exists $self->{'id'};
+
+    # Check if data has been changed at all
+    return unless $self->{'data_changed'};
+
     my $xml = Bedrock::XML::writeXMLString($self->{'data'});
+    &log_message( undef, "User's session data contains\n$xml" ) if $self->{'verbose'};
     $self->writeData($xml);
+}
+
+sub clear
+{
+    my $obj = shift;
+    %{$obj} = ();
+}
+
+# Method to remove all traces of the session from everywhere
+#   -- cookie is deleted from browser
+#   -- Data is removed from store
+#   -- No more data can be stored
+sub kill
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->purgeData;
+    my $ctx = $self->{'ctx'};
+    my $name = $self->{'name'};
+    my $id = delete $self->{'id'};
+    my $expiry = 'Thu 09-Nov-2000 20:46:54 GMT';
+    my $header = $name . '=' . $id . '; expires=' . $expiry . ';';
+    $ctx->cgi_header_out('Set-Cookie', $header);
 }
 
 1;
@@ -142,6 +199,12 @@ sub closeBLM
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2000/11/13 14:49:10  sridhar
+# 1. Subclasses can override method newSessionID(). A default method is
+# provided which uses Apache's UNIQUE_ID.
+# 2. More log messages
+# 3. Added methods `clear()' and `kill()'
+#
 # Revision 1.1  2000/11/07 14:04:37  sridhar
 # The Bedrock session module implements a general framework for more
 # specialized session modules. Specifically implements all that is
