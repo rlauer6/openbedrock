@@ -7,6 +7,7 @@ package Text::TagX;
 
 use strict;
 use Carp;
+use UNIVERSAL qw (isa);
 
 BEGIN
 {
@@ -44,7 +45,7 @@ BEGIN
 #         changes which may not break existing scripts (though
 #         nothing is guaranteed), etc.
 #
-$VERSION	= '1.0101';
+$VERSION	= '1.0201';
 
 use TagX::Output 1.02;
 use TagX::Log 1.01;
@@ -53,11 +54,12 @@ use TagX::TAG::NoBody::Var 1.09;
 use TagX::TAG::NoBody::Include 1.07;
 use TagX::TAG::NoBody::SQL 1.08;
 use TagX::TAG::NoBody::SQLConnect 1.07;
-use TagX::TAG::NoBody::Trace 1.07;
+use TagX::TAG::NoBody::Trace 1.08;
 use TagX::TAG::NoBody::Raise 1.04;
+use TagX::TAG::NoBody::NULL 1.01;
 
 use TagX::TAG::WithBody 1.06;
-use TagX::TAG::WithBody::Loop::Foreach 1.05;
+use TagX::TAG::WithBody::Loop::Foreach 1.06;
 use TagX::TAG::WithBody::Loop::SQLSelect 1.08;
 use TagX::TAG::WithBody::If 1.09;
 use TagX::TAG::WithBody::If::Else 1.03;
@@ -74,7 +76,7 @@ sub output
     my $optstring = '';
     $self->{'__line'} = 0;
 
-    my $tag_start = '^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|else?if|try|catch|raise|else)(?=\W)';
+    my $tag_start = '^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|else?if|try|catch|raise|else|null)(?=\W)';
     my $tag_end   = '^(/sqlselect|/foreach|/doc|/if|/try)>';
     my $opt_esc   = '^\s*(([^>\\\\]|\\\\.)*)>';
 
@@ -198,6 +200,11 @@ sub output
 		      last;
 		  };
 
+		  /^null$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::NULL->new );
+		      last;
+		  };
+
 		  die "Tag <$_> NYI";
 	      }
 
@@ -257,34 +264,42 @@ sub define_name
     my @components = split /\./oi, $name;
     return unless @components;
 
+    &log_message( undef, "$self: components are (@components)" );
     my $found = $self->{'VARS'};
     for (@components) {
-
-	if ( /^\Q[\E(\d+)\Q]\E/oi ) {
+	if ( /^\Q[\E(\d+)\Q]\E/ ) {
 	    # array element
-	    if ( ref( $found ) eq 'ARRAY' ) {
+	    if ( &isa( $found, 'ARRAY' ) ) {
 		$found = $found->[$1];
 		next;
 	    } else {
-		&log_message ( undef, "Cannot define $name: not an array ref" );
+		&log_message ( undef, "Cannot define [$_] component in $name: $found is not an array" );
 		return;
 	    }
 	}
 
-	if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
+	if ( /^(\w+)/ ) {
 	    # hash element
-	    if ( ref( $found ) eq 'HASH' ) {
-		$found = $found->{$1};
-		next;
+	    my $key = $1;
+	    if ( &isa( $found, 'HASH' ) ) {
+		$found = $found->{$key};
 	    } else {
-		&log_message ( undef, "Cannot define $name: not a hash ref" );
-		return;
+		# Support syntax for accessing hash contained in an array
+		# if the array contains only one element
+		unless ( &isa( $found, 'ARRAY' ) and @{$found} == 1 ) {
+		    &log_message( undef, "Cannot define [$_] component in [$name]: $found is an array\n"
+				  . "containing more than one element .. cannot access it as a hash" );
+		    return undef;
+		}
+		$found = $found->[0]->{$key};
 	    }
+	    next;
 	}
 
 	# illegal
 	return;
     }
+    &log_message( undef, "$self: finally found [$found]" );
     $found = $value;
 }
 
@@ -298,6 +313,7 @@ sub param
 	    # more expensive resolve operation
 	    $self->define_name ( $name, $value );
 	} else {
+	    &log_message( undef, "$self: defining $name as $value" );
 	    $self->{'VARS'}->{$name} = $value;
 	}
     }
@@ -391,6 +407,12 @@ sub close
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.18  2000/06/06 20:10:28  sridhar
+# 1. Added new tag <null> for object method invocation
+# 2. Support in <foreach> to iterate over an array of ordinary elements
+# 3. <trace> fixed to recognize objects properly
+# 4. Half-finished version of define_name
+#
 # Revision 1.17  2000/06/01 18:51:09  sridhar
 # 1. Support for invoking object methods
 # 2. Brand new parser for parsing expressions.
