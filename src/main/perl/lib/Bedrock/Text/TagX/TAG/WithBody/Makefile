@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.6  2000/11/13 18:45:11  sridhar
+# Added Cache.pm
+#
 # Revision 1.5  2000/10/19 20:57:54  sridhar
 # Moved Hush.pm to Sink.pm
 #
@@ -24,7 +27,7 @@ include ../../../../make.pre
 
      CURRENT_PATH = Text/TagX/TAG/WithBody
 
-          TARGETS = Loop.pm If.pm
+          TARGETS = Loop.pm If.pm Try.pm Catch.pm Sink.pm Cache.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Loop.pm
@@ -32,6 +35,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Try.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Catch.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Sink.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Cache.pm
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
@@ -41,6 +45,7 @@ install:
 	$(INSTALL) Catch.pm		$(CURRENT_TARGET)
 	$(INSTALL) Loop.pm		$(CURRENT_TARGET)
 	$(INSTALL) Sink.pm		$(CURRENT_TARGET)
+	$(INSTALL) Cache.pm		$(CURRENT_TARGET)
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
