@@ -1,0 +1,120 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::TAG::WithBody::Loop::While;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+use UNIVERSAL qw (isa);
+use TagX::Log 1.01;
+use TagX::TAG::WithBody::Loop 1.03;
+
+@ISA = qw (TagX::TAG::WithBody::Loop);
+
+sub finalize
+{
+    my ($self, $tx, @context) = @_;
+
+    my %options = ('define-index=s'	=> undef,
+		   'define-var=s'	=> undef,
+		   'start-index=i'	=> undef,
+		   'end-index=i'	=> undef,
+		   'max-items=i'	=> undef);
+    my @argv = $self->parse_options (\%options, @context);
+    my $verbose = $self->verbose;
+
+    if ( $verbose ) {
+	my ($key, $value);
+	my $str = "$self: Options are\n";
+	while (($key, $value) = each %options) {
+	    $str .= "\t$key .. ($value)\n";
+	}
+	$str .= "Arguments are (@argv)";
+	&log_message( $self, $str );
+    }
+
+    if ( @argv != 1 ) {
+	&log_message( $self, "Invalid number of argument(@{[scalar(@argv)]}):\n\t(@argv)");
+	return;
+    } elsif ( ref($argv[0]) ) {
+	&log_message( $self, "Invalid type of argument (must be a string):\n\t(@argv)");
+	return;
+    }
+
+    unless ( exists $self->{'__term'} ) {
+	local($_) = $argv[0];
+	$self->{'__term'} = &TagX::Parser::parse_stm;
+	&log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
+	    if $verbose;
+    }
+    my $term = $self->{'__term'};
+    my @children = @{$self->{'subobjs'}};
+
+    my $start = defined( $options{'start-index'} ) ? $options{'start-index'} : 0;
+
+    #
+    # Defining these things as options override defaults
+    #
+    my $end;
+    if ( defined( $options{'end-index'} ) ) {
+	$end = $options{'end-index'};
+    } elsif ( defined( $options{'max-items'} ) ) {
+	my $nItems = $options{'max-items'};
+	$end = $start + $nItems - 1;
+    }
+    my $define_index = $options{'define-index'} if exists $options{'define-index'};
+    my $define_var = $options{'define-var'} if exists $options{'define-var'};
+    &log_message( $self, "begin loop with term = [$argv[0]], start = [$start], end = [$end], define-index = [$define_index], define-var = [$define_var]" ) if $verbose;
+
+    for (my $i = 0 ;
+	 ;
+	 $i++ ) {
+	last if defined( $end ) and $i > $end;
+	my $data = defined( $define_index ) ? $term->eval( {$define_index => $i}, @context )
+	    : $term->eval( @context );
+	&log_message( $self, "Loop $i: Condition [$argv[0]] evaluated to [$data] ("
+		      . (defined( $data ) ? "defined" : "undefined") . ")" ) if $verbose;
+	last unless defined( $data );
+	next if $i < $start;
+
+	my $loop_data = {};
+	$loop_data->{$define_var} = $data if defined( $define_var );
+	$loop_data->{$define_index} = $i if defined( $define_index );
+	if ( defined($verbose) and $verbose > 1 ) {
+	    my $str = "Loop $i >>\n";
+	    for my $key (sort keys %{$loop_data}) {
+		$str .= "    $key => $loop_data->{$key}\n";
+	    }
+	    &log_message( $self, $str );
+	}
+
+	for my $child (@children) {
+	    next unless $child;
+	    if ( ref ($child) ) {
+		$child->finalize ( $tx, $loop_data, @context );
+	    } else {
+		$tx->out_handle->print( $child );
+	    }
+	}
+    }
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/07/20 20:09:58  sridhar
+# Adding While.pm -- basically implements logic for <while>.
+#
+#
+
+1;
