@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.9  2000/12/15 15:50:15  sridhar
+# Removed Modules.pm since startup modules are now loaded dynamically too.
+#
 # Revision 1.8  2000/12/11 15:11:59  sridhar
 # Vastly cleaned up.
 #
@@ -32,7 +35,7 @@ include ../../make.pre
 
      CURRENT_PATH = BLM/Startup
 
-          TARGETS = Modules.pm Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm \
+          TARGETS = Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm \
 		    Hitcounter.pm Session.pm AutoDB.pm UserSession.pm Forum.pm Output.pm
 
 all: $(TARGETS)
