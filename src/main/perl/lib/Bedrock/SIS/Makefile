@@ -2,6 +2,12 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.6  2000/12/18 17:56:39  sridhar
+# 1. Moved old Bedrock/SIS/Base.pm to SIS/Base.pm
+# 2. Moved new Bedrock/SIS/Base.pm to Bedrock/Context.pm
+# 3. Moved Bedrock/SIS/Base/Shell.pm to Bedrock/Context/Shell.pm
+# 4. Removed Bedrock/SIS/Base/Apache.pm
+#
 # Revision 1.5  2000/12/08 20:05:27  sridhar
 # Vastly simplified and improved Makefile
 #
@@ -43,15 +49,13 @@ include ../make.pre
 
      CURRENT_PATH = SIS
 
-          TARGETS = Base.pm Config.pm InputSource.pm Log.pm Hash.pm Array.pm Dump.pm \
+          TARGETS = Config.pm InputSource.pm Log.pm Hash.pm Array.pm Dump.pm \
 		    BufferStream.pm Handle.pm
 
 all: $(TARGETS)
-	cd Base		&& $(MAKE) $@
 	cd InputSource	&& $(MAKE) $@
 
 install:: $(TARGETS:%=%-install)
-	cd Base		&& $(MAKE) $@
 	cd InputSource	&& $(MAKE) $@
 
 include ../make.post
