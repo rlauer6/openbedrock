@@ -53,6 +53,7 @@ use TagX::TAG::NoBody::SQLConnect 1.09;
 use TagX::TAG::NoBody::Trace 1.10;
 use TagX::TAG::NoBody::Var 1.11;
 use TagX::TAG::WithBody 1.07;
+use TagX::TAG::WithBody::Cache;
 use TagX::TAG::WithBody::Catch 1.05;
 use TagX::TAG::WithBody::If 1.09;
 use TagX::TAG::WithBody::If::Else 1.03;
@@ -71,7 +72,7 @@ sub output
     my $self = shift;
     my $newscan = 1;
 
-    my $obj = TagX::TAG::WithBody->new( $self );
+    my $obj = TagX::TAG::WithBody::Cache->new( $self );
     my $input = $self->{'input'};
     my $optstring = '';
     $self->{'__line'} = 0;
@@ -79,6 +80,9 @@ sub output
     my $tag_start = '^(var|sink|include|sql|sqlconnect|trace|foreach|sqlselect|while|if|else?if|try|catch|raise|else|null|exec)(?=\W)';
     my $tag_end   = '^(/sink|/sqlselect|/foreach|/while|/if|/try)>';
     my $opt_esc   = '^\s*(([^>\\\\]|\\\\.)*)>';
+
+    my $text = '';
+    local($_);
 
   INPUT:
     while (<$input>) {
@@ -122,18 +126,23 @@ sub output
 	  # New scan from here -- scan afresh for tags.
 	  # if no '<' found in line, skip line
 	  unless ( s/^(.*?)<//oi ) {
-	      $obj->text( $_ ) if length;
+	      $text .= $_ if length;
 	      next INPUT;
 	  }
 
-	  # We did find a '<' -- could be we have a possible supported tag next
-	  # The text before the '<' needs to be processed.
-	  $obj->text ( $1 ) if length($1);
+	  $text .= $1 if length($1);
 
+	  # We did find a '<' -- could be we have a possible supported tag next
 	  # Check if we have a supported tag
 	  if ( s/$tag_start//oi ) {
 
 	      # Yes we do
+	      # The text before the '<' needs to be processed.
+	      if ( length($text) ) {
+		  $obj->text ( $text );
+		  $text = '';
+	      }
+
 	      for ($1) {
 		  /^var$/oi		and do {
 		      $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
@@ -255,6 +264,12 @@ sub output
 
 	  } elsif ( s/$tag_end//oi ) {
 
+	      # A tag has ended. The text before the '<' needs to be processed.
+	      if ( length($text) ) {
+		  $obj->text ( $text );
+		  $text = '';
+	      }
+
 	      # Check whether we have hit a tag-body-ending tag
 	      # and if so, end the current object
 	      $obj = $obj->end_child;
@@ -264,18 +279,22 @@ sub output
 	  } else {
 
 	      # Unsupported tag hit -- output the '<' since we don't consume it
-	      $obj->text( '<' );
+	      $text .= '<';
 
 	      # And rescan for more tags
 	      redo MAIN;
 	  }
       }
     }
-
     die "text not terminated properly at $self->{'__input'}:$self->{'__line'}\n\t(probably a tag has not been ended properly)"
 	if $obj->parent;
+
+    if ( length($text) ) {
+	$obj->text ( $text );
+	$text = '';
+    }
+
     $obj->finalize;
-	
     $self->{'__input_opened'}->close if $self->{'__input_opened'};
 }
 
@@ -447,6 +466,13 @@ sub close
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.39  2000/11/13 18:48:55  sridhar
+# 1. Using TagX::TAG::WithBody::Cache as the outer container since this
+# can cache the output, thus allowing header settings anywhere within
+# the webpage.
+# 2. Text is now accumulated in a variable and $obj-text invoked only
+# when required to -- just before processing a bedrock tag.
+#
 # Revision 1.38  2000/11/07 14:00:05  sridhar
 # 1. Using TagX::Symtab for the symbol tables instead of a plain
 # hash. Allows us to not construct an object till it is needed.
