@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.3  2000/06/06 20:00:37  sridhar
+# Added NULL.pm
+#
 # Revision 1.2  2000/03/09 14:16:54  sridhar
 # Added Raise.pm
 #
@@ -14,7 +17,7 @@ include ../../../../make.pre
 
      CURRENT_PATH = Text/TagX/TAG/NoBody
 
-          TARGETS = Include.pm SQL.pm SQLConnect.pm Trace.pm Var.pm
+          TARGETS = Include.pm SQL.pm SQLConnect.pm Trace.pm Var.pm NULL.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Include.pm
@@ -23,6 +26,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Trace.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Var.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Raise.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) NULL.pm
 
 install:
 	$(INSTALL) Include.pm		$(CURRENT_TARGET)
@@ -31,5 +35,6 @@ install:
 	$(INSTALL) Trace.pm		$(CURRENT_TARGET)
 	$(INSTALL) Var.pm		$(CURRENT_TARGET)
 	$(INSTALL) Raise.pm		$(CURRENT_TARGET)
+	$(INSTALL) NULL.pm		$(CURRENT_TARGET)
 
 include ../../../../make.post
