@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.10  2000/12/18 18:01:25  sridhar
+# Added Context and Context.pm
+#
 # Revision 1.9  2000/12/15 18:48:58  sridhar
 # Improved makefile with more usage of rules.
 #
@@ -28,9 +31,9 @@ include ../make.pre
 
      CURRENT_PATH = Bedrock
 
-          TARGETS = XML.pm VERSION.pm
+          TARGETS = XML.pm VERSION.pm Context.pm
 
-      TARGET_DIRS = PDF Text SIS BLM XML Apache
+      TARGET_DIRS = PDF Text SIS BLM XML Apache Context
 
 all: $(TARGETS) $(TARGET_DIRS)
 
