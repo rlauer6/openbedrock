@@ -18,20 +18,23 @@ use strict;
 
 sub new
 {
-   my $class = shift;
+   my ($class, $root_document) = @_;
    my $this = {};
-
    $$this{'outline_header_text'}= '';
    $$this{'parent'} 		= undef;
-   $$this{'text_properties'}	= new BLM::PDF::Text::TextProperties;
+   $$this{'text_properties'}	= undef; #new BLM::PDF::Text::TextProperties;
+   $$this{'page_properties'}	= undef; #new BLM::PDF::Document::Page::Properties;
    $$this{'components'}		= [];
    $$this{'flow_control'}	= [];
-   $$this{'biggest_font'}       = $this->{'text_properties'}->getFontSize();
+   $$this{'biggest_font'}       = 0; #$this->{'text_properties'}->getFontSize();
    $$this{'drop'}		= new BLM::PDF::Render::Newline;
    $$this{'width'}		= $BLM::PDF::Defaults::Defaults{'page_width'}*72;
    $$this{'height'}		= $BLM::PDF::Defaults::Defaults{'page_height'}*72;
+   $$this{'peer'}		= undef;
 
-   new BLM::PDF::Document::Document->new($this) ;
+   BLM::PDF::Document::Document->new($this);
+   $$this{'root_document'}	= $root_document;
+   $root_document->_incPages();
    bless($this, $class);
    $this->addComponent($this->{'drop'});
 
@@ -40,33 +43,28 @@ sub new
    return $this;
 } # sub new
 
-sub setOutlineHeaderText
+sub setOutlineText
 {
    my $this = shift;
    my $text = shift;
 
    $$this{'outline_header_text'} = $text if defined($text) && length($text);
-} # sub setOutlineHeaderText
+} # sub setOutlineText
 
-sub getHeight	
-{ 
-   my $this = shift;
-   $$this{'height'};
-} # method getHeight
+sub getHeight 		  { ${_[0]}->{'height'}; }
+sub getWidth 		  { ${_[0]}->{'width'}; }
+sub getOutlineText	  { ${_[0]}->{'outline_header_text'}; }
+sub getFlowControlObjects { ${_[0]}->{'flow_control'}; } 
+sub getRootDocument	  { ${_[0]}->{'root_document'}; } 
 
-sub getWidth
+
+sub setPeer
 {
    my $this = shift;
-   $$this{'width'};
-} # method getWidth
+   $$this{'peer'} = shift;
+} # sub setPeer
 
-sub getOutlineHeaderText
-{
-   my $this = shift;
-   my $text = shift;
-
-   return $$this{'outline_header_text'};
-} # sub getOutlineHeaderText
+sub getPeer 		{ return ${_[0]}->{'peer'}; } 
 
 sub setParent
 {
@@ -92,15 +90,24 @@ sub setTextProperties
 {
    my $this = shift;
    my $properties = shift;
-   $$this{'text_properties'} = $properties if ref $properties;
+   $$this{'text_properties'} = $properties->copy() if ref $properties;
 } # sub setTextProperties
+
+sub setPageProperties
+{
+   my $this = shift;
+   my $properties = shift;
+   $$this{'page_properties'} = $properties->copy() if ref $properties;
+} # sub setPageProperties
+
+sub getPageProperties { ${_[0]}->{'page_properties'}->copy(); }
 
 sub addText
 {
    my $this = shift;
    my $text = shift;
 
-   my $properties = $this->getTextProperties();
+   my $properties = $$this{'text_properties'};
    $this->addComponent($properties);
    my $size = $properties->getFontSize();
 
@@ -114,7 +121,8 @@ sub addText
    }
    else
    {
-      $this->{'drop'}->setDrop(-$$this{'biggest_font'});
+      $this->{'drop'}->setDrop(-($$this{'biggest_font'}+
+				 $$this{'page_properties'}->getVerticalPad()));
       $this->{'drop'} = BLM::PDF::Render::Newline->new(-$size);
       $$this{'biggest_font'} = $size;
    }
@@ -141,20 +149,46 @@ sub getTextProperties
    my $parent = $$this{'parent'};
    die "Page has no parent!" unless defined $parent;
    my $properties = $$this{'text_properties'};
-   #return $properties->join($parent->getTextProperties())->copy();
    return $properties->copy();
 } # sub getTextProperties
-
-sub getFlowControlObjects
-{
-   my $this = shift;
-   return $this->{'flow_control'};
-} # sub getFlowControlObjects
 
 sub close
 {
    my $this = shift;
+   # This ensures one-line non newline terminated pages are handled correctly
    $this->addText("\n");
+   # Add headers and footers
+   my $page_properties = $$this{'page_properties'};
+   my @aligns = ('Left', 'Center', 'Right');
+   my @funcs = ('', 'Font', 'Color', 'Size');
+   # Font, Color, Size
+
+   foreach my $type (map { (["${_}Header", $_, 'top',], 
+                            ["${_}Footer", $_, 'bottom']); } @aligns)
+   {
+      #print STDERR "Adding ".$type->[0]." ".$type->[1]."\n";
+      my $text_properties = new BLM::PDF::Text::TextProperties;
+      my $font = $text_properties->getFont();
+      my $prefix = 'get'.$type->[0];
+      #print STDERR "PREFIX: $prefix\n";
+      my $text = $page_properties->${prefix}();
+
+      if( defined $text )
+      {
+         #print STDERR "Text: $text\n";
+         #print STDERR "$prefix => $text\n";
+         #print STDERR "COLOR: ",$page_properties->${\"${prefix}Color"}(), "\n";
+         $text_properties->setAlign($type->[1]);
+         $text_properties->setVAlign($type->[2]);
+         $text_properties->setColor($page_properties->${\"${prefix}Color"}());
+    $text_properties->setFontSize($page_properties->${\"${prefix}FontSize"}());
+         #print STDERR "SIZE: ",$page_properties->${\"${prefix}FontSize"}(), "\n";
+         $font->setFontName($page_properties->${\"${prefix}FontName"}());
+         #print STDERR "FONT: ",$page_properties->${\"${prefix}FontName"}(), "\n";
+         $this->setTextProperties($text_properties);
+	 $this->addText($text);
+      }
+   }
 } # sub close
 
 1;

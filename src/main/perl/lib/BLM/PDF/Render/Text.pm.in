@@ -2,8 +2,11 @@ package BLM::PDF::Render::Text;
 
 use BLM::PDF::Log;
 use BLM::PDF::Render::Cursor;
-use BLM::PDF::Render::TextMetrics;
+use BLM::PDF::Render::Text::Metrics;
 use strict;
+
+# This hash maps font names to metrics objects
+my %cached_metrics = ();
 
 sub new
 {
@@ -29,7 +32,7 @@ sub drawString
 } # sub drawString
 
 sub render
-{
+{ 
    my $this 		= shift;
    my $pagepeer		= $$this{'page'}->getPeer();
    my $rendered 	= '';
@@ -71,8 +74,16 @@ sub render
       );
 
    my $text = $this->{'text'};
-   my $metrics = BLM::PDF::Render::TextMetrics->new($properties, $font);
-   $textwidth = $metrics->stringWidth($text);
+   #print "FONT NAME: " . $fontpeer->getFontName() . "\n";
+   my $metrics = $cached_metrics{$fontpeer->getFontName()};
+
+   unless( ref $metrics )
+   {
+      $metrics = BLM::PDF::Render::Text::Metrics->new($properties, $font);
+      $cached_metrics{$fontpeer->getFontName()} = $metrics;
+   }
+
+   $textwidth = $metrics->stringWidth($text, $fontsize);
    return '' unless $textwidth > 0;
 
    my ($x, $y) = (0, 0);
@@ -84,6 +95,12 @@ sub render
    $text =~ s.\).\\).g;
    $text =~ s.\\.\\\\.g;
 
+   # Escape special characters provided by this suite
+   # What happens to '%%n' where we really mean just '%n'?
+   $text =~ s.%n.$this->{'page'}->getPageNumber().eg;
+   $text =~ s.%N.$pagepeer->getRootDocument()->getNumberOfPages().eg;
+   $text =~ s.%t.localtime.eg;
+ 
    if( $x+$y != 0 )
    { 
       $rendered .= "$x $y Td\n" . "($text) Tj\n" .

@@ -22,150 +22,63 @@ sub new
    return bless $this, $class;
 } # sub new
 
+sub preorder
+{
+   my ($node, $registry, $visit, $children, $parent_output, $level) =  @_;
+   my $output = [];
+   map { preorder($_, $registry, $visit, $children, $output, $level+1); } 
+      $children->($node);
+   $visit->($node, $registry, $parent_output, $output, $level) if $level;
+   return $output;
+} # sub preorder
+
+sub visit
+{
+   my ($page, $registry, $output, $children, $level) = @_;
+   my $item = BLM::PDF::Render::PDFObject->new($registry);
+   $registry->addObject($item);
+   $item->insertString('Title',  $page->getOutlineText());
+   my $array = new BLM::PDF::Render::Array;
+   $array->insertIndirectObject($page->getPeer());
+   $array->insertName('Fit');
+   $item->insertArray('Dest',  $array);
+   my $prev = $output->[-1];
+
+   if( ref $prev )
+   {
+      $item->insertIndirectObject('Prev', $prev);
+      $prev->insertIndirectObject('Next', $item);
+   }
+
+   if( scalar @$children)
+   {
+      $item->insertIndirectObject('First', $children->[0]);
+      $item->insertIndirectObject('Last', $children->[-1]);
+   }
+
+   push @$output, $item;
+} # sub visit
+
+sub children { ${_[0]}->getPages(); }
+
 sub render
 {
    my $this 		= shift;
    my $document		= $$this{'document'};
-   my 
+   my $registry		= $$this{'registry'};
+   my $outline_dict	= BLM::PDF::Render::PDFObject->new($registry);
 
-   for( my($i, $length) = (1, scalar(@$page_info)-1); $i < $length; $i++ )
-   {
-      my $current_info = $page_info->[$i];
-      my $prev_info = $page_info->[$i-1];
-      my $next_info = $page_info->[$i+1];
+   my $top_level = [];
+   $top_level = preorder($document, $registry, \&visit, \&children, $top_level, 0);
 
-      my $first_item; 
-      my $last_item;
+   $outline_dict->insertName('Type', 'Outlines');
+   $outline_dict->insertIndirectObject('First', $top_level->[0]);
+   $outline_dict->insertIndirectObject('Last', $top_level->[-1]);
 
-      if( defined $current_info->{'subpages'} )
-      { 
-	    my $ar_ref = $current_info->{'subpages'};
+   $registry->addObject($outline_dict);
+   my $catalog = $registry->getObject('document_catalog');
+   $catalog->insertIndirectObject('Outlines', $outline_dict);
+   $catalog->insertName('PageMode', 'UseOutlines');
+} # sub render
 
-	    if( scalar(@$ar_ref) > 0 )
-         {
-	      $first_item = $current_info->{'subpages'}->[0]->{'obref'}
-	         if defined $current_info->{'subpages'}->[0]->{'obref'};
-
-	      $last_item = $current_info->{'subpages'}->[-1]->{'obref'}
-	         if defined $current_info->{'subpages'}->[-1]->{'obref'};
-         }
-
-         $this->_buildOutline($$current_info{'subpages'}, 
-                              $$current_info{'obref'});  
-      }
-   
-     # Add the next outline item that has both a previous and next
-
-     my $args = 
-     {
-       "/Title" => "(" . $current_info->{'page'}->getOutlineHeaderText . ")",
-   	  "/Parent" => "$parent 0 R",
-   	  "/Prev" => "$prev_info->{'obref'} 0 R",
-   	  "/Next" => "$next_info->{'obref'} 0 R",
-     };
-
-     $args->{'/First'} = "$first_item 0 R" if defined $first_item;
-     $args->{'/Last'} = "$last_item 0 R" if defined $last_item;
-     my($ref, $ob) = buildPDFObject($args, $current_info->{'obref'});
-     $this->addPDFObject($ob);
-  }
-   
-  # The first and last outline items are special cases
-  if( scalar(@$page_info) == 1 )
-  {
-     my $current_info = $info->[0];
-
-     if( defined $page_info->[0]->{'subpages'} )
-     { $this->_buildOutline($info->[0]->{'subpages'}, 
-                            $info->[0]->{'obref'}); 
-     }
-   
-     my $ar_ref = $current_info->{'subpages'};
-
-     my ($first_item, $last_item);
-
-     if( scalar(@$ar_ref) > 0 )
-     {
-	   $first_item = $current_info->{'subpages'}->[0]->{'obref'}
-	      if defined $current_info->{'subpages'}->[0]->{'obref'};
-
-	   $last_item = $current_info->{'subpages'}->[-1]->{'obref'}
-	      if defined $current_info->{'subpages'}->[-1]->{'obref'};
-     }
-
-     my $args =
-       { "/Title" => "(" . $info->[0]->{'page'}->getOutlineHeaderText . ")",
-   	    "/Parent" => "$parent 0 R",
-   	  };
-
-     $args->{'/First'} = "$first_item 0 R" if defined $first_item;
-     $args->{'/Last'} = "$last_item 0 R" if defined $last_item;
-
-     my ($ref, $ob) =buildPDFObject($args, $info->[0]->{'obref'});
-
-     $this->addPDFObject($ob);
-  }
-  elsif( scalar(@$info) > 1 )
-  {
-     if( defined $info->[0] )
-     { $this->_buildOutline($info->[0]->{'subpages'}, 
-                            $info->[0]->{'obref'}); }
-   
-     if( defined $info->[-1] )
-     { $this->_buildOutline($info->[-1]->{'subpages'}, 
-                            $info->[-1]->{'obref'}); }
-   
-   
-     my $current_info = $info->[0];
-     my $ar_ref = $current_info->{'subpages'};
-     my ($first_item, $last_item);
-
-     if( scalar(@$ar_ref) > 0 )
-     {
-	   $first_item = $current_info->{'subpages'}->[0]->{'obref'}
-	      if defined $current_info->{'subpages'}->[0]->{'obref'};
-
-	   $last_item = $current_info->{'subpages'}->[-1]->{'obref'}
-	      if defined $current_info->{'subpages'}->[-1]->{'obref'};
-     }
-
-     my $args =
-     {
-         "/Title" => "(" . $info->[0]->{'page'}->getOutlineHeaderText . ")",
-   	    "/Parent" => "$parent 0 R",
-   	    "/Next" => "$info->[1]->{'obref'} 0 R",
-     };
-
-     $args->{'/First'} = "$first_item 0 R" if defined $first_item;
-     $args->{'/Last'} = "$last_item 0 R" if defined $last_item;
-     my ($ref, $ob) = buildPDFObject($args,  $info->[0]->{'obref'});
-     $this->addPDFObject($ob);
-   
-     my $current_info = $info->[-1];
-     my $ar_ref = $current_info->{'subpages'};
-
-     if( scalar(@$ar_ref) > 0 )
-     {
-	   $first_item = $current_info->{'subpages'}->[0]->{'obref'}
-	      if defined $current_info->{'subpages'}->[0]->{'obref'};
-
-	   $last_item = $current_info->{'subpages'}->[-1]->{'obref'}
-	      if defined $current_info->{'subpages'}->[-1]->{'obref'};
-     }
-
-     $args =
-     { "/Title" => "(" . 
-          $info->[-1]->{'page'}->getOutlineHeaderText . ")",
-   	  "/Parent" => "$$this{'pdf_obrefs'}{'outlines_dictionary'} 0 R",
-   	  "/Prev" => "$info->[1]->{'obref'} 0 R",
-       "/Title" => "(" . $info->[-1]->{'page'}->getOutlineHeaderText . ")",
-   	  "/Parent" => "$parent 0 R",
-   	  "/Prev" => "$info->[-2]->{'obref'} 0 R",
-     };
-   
-     $args->{'/First'} = "$first_item 0 R" if defined $first_item;
-     $args->{'/Last'} = "$last_item 0 R" if defined $last_item;
-     ($ref, $ob) = buildPDFObject($args, $info->[-1]->{'obref'});
-     $this->addPDFObject($ob);
-   }
-} # sub _buildOutline
+1;
