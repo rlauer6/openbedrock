@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.7  2000/11/20 18:20:04  sridhar
+# Added UserSession.pm
+#
 # Revision 1.6  2000/11/07 14:10:51  sridhar
 # Added Session/, Session.pm and AutoDB.pm
 #
@@ -27,20 +30,13 @@ include ../../make.pre
      CURRENT_PATH = BLM/Startup
 
           TARGETS = Modules.pm Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm \
-		    Hitcounter.pm Session.pm AutoDB.pm
+		    Hitcounter.pm Session.pm AutoDB.pm UserSession.pm
 
-all:
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Modules.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Bedrock.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Config.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Env.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Input.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Cookie.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Header.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Hitcounter.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Session.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) AutoDB.pm
+all: $(TARGETS)
 	cd Session	&& $(MAKE) $@
+
+$(TARGETS)::
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) $@
 
 install:
 	$(INSTALL) Modules.pm	$(CURRENT_TARGET)
@@ -53,6 +49,7 @@ install:
 	$(INSTALL) Hitcounter.pm	$(CURRENT_TARGET)
 	$(INSTALL) Session.pm	$(CURRENT_TARGET)
 	$(INSTALL) AutoDB.pm	$(CURRENT_TARGET)
+	$(INSTALL) UserSession.pm	$(CURRENT_TARGET)
 	cd Session	&& $(MAKE) $@
 
 include ../../make.post
