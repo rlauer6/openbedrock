@@ -17,19 +17,10 @@ use BLM::PDF::Text::Properties;
 @ISA = qw(BLM::PDF::Document::Document PDF::Log);
 use strict;
 
-my %page_dimensions = 
-(
-   'letter'                     => [8.5,  11],
-   'legal'                      => [8.5,  14],
-   'executive'                  => [7.5,  10.5],
-   'a4'                         => [8.27, 11.69],
-   'a5'                         => [5.83, 8.27],
-);
-
 sub new
 {
-   my ($class, $root_document) = @_;
-   my $this = {};
+   my ($class, $root_document)  = @_;
+   my $this 			= {};
    $$this{'outline_header_text'}= '';
    $$this{'parent'} 		= undef;
    $$this{'text_properties'}	= undef; #new BLM::PDF::Text::TextProperties;
@@ -39,7 +30,9 @@ sub new
    $$this{'drop'}		= new BLM::PDF::Render::Newline;
    $$this{'width'}		= $BLM::PDF::Defaults::Defaults{'page_width'}*72;
    $$this{'height'}		= $BLM::PDF::Defaults::Defaults{'page_height'}*72;
+   $$this{'height'}		= $BLM::PDF::Defaults::Defaults{'page_height'}*72;
    $$this{'peer'}		= undef;
+   $$this{'x'}			= 0;
 
    BLM::PDF::Document::Document->new($this);
    $$this{'root_document'}	= $root_document;
@@ -71,7 +64,7 @@ sub setPeer
    $$this{'peer'} = shift;
 } # sub setPeer
 
-sub getPeer 		{ return ${_[0]}->{'peer'}; } 
+sub getPeer 		{ ${_[0]}->{'peer'}; } 
 
 sub setParent
 {
@@ -121,7 +114,7 @@ sub addText
    my $newlines = ($text =~ tr/\n//);
    my $i = $newlines;
 
-   if( $i == 0 ) # Contining the same line, recalculate drop
+   if( 0 == $i ) # Contining the same line, recalculate drop
    {
       $$this{'biggest_font'} = $size if $size > $$this{'biggest_font'};
    }
@@ -135,19 +128,23 @@ sub addText
 
    foreach my $line (@lines)
    {
-      if( $i )
+      $this->addComponent(BLM::PDF::Text::Text->new($properties, $line));
+
+      if( $i > 0 )
       {
          $this->addComponent($this->{'drop'});
       }
       $i--;
-      $this->addComponent(BLM::PDF::Text::Text->new($properties, $line));
    }
 
    while( $i-- > 0 )
    {
       $this->addComponent($this->{'drop'});
    }
+
+   $$this{'x'} = 0 if $newlines >= @lines;
 } # sub addText
+
 
 =begin comment
 
@@ -165,9 +162,10 @@ sub _collapseText
    my $page_properties = $$this{'page_properties'};
    my $left_margin     = 72*$page_properties->getLeftMargin();
    my $right_margin    = $this->getWidth()-(72*$page_properties->getRightMargin());
+   my $line_width      = $right_margin-$left_margin;	
    my $metrics = BLM::PDF::Render::Text::Metrics->new($text_properties, 
 				           $text_properties->getFont());
-   my $fontsize = $text_properties->getFontSize();
+   my $fontsize 	    = $text_properties->getFontSize();
    my $newlines             = ($text =~ tr/\n//);
    my @lines                = split "\n", $text;
    my @collapsed            = ();
@@ -175,50 +173,55 @@ sub _collapseText
 
    push @lines, map { '' } (1..($newlines-@lines+1));
 
+   my $x = $$this{'x'};
+   $x = $left_margin unless $x >= $left_margin;
+
    foreach my $line (@lines)
    {
       my @collected 	= ();
-      my $x 		= $left_margin;
       my $width 	= $metrics->stringWidth($line, $fontsize);
 
-      #print STDERR "LINE: ".($x+$width)." RIGHT: $right_margin\n";
-      if( $x+$width < $right_margin )
-      {
+      if( $x+$width <= $right_margin )
+      {  
          push @collapsed, $line;
+	 $x += $width;
       }
       else
       {
-	 my $panic = 0;
 	 $_ = $line;
-	 #print STDERR "LINE: \"$_\"\n";
 
-         while( length $_ && ++$panic < 20 )
+         while( length $_ )
 	 {
 	    my $is_spaces = 0;
 	    /^\w+/ or  ($is_spaces = $_ =~ /^\s+/) or /^\W+/;
 
-	    #print STDERR "TOKEN: \"$&\"\n";
-	    #print STDERR "IS SPACE: ", $is_spaces ? "YES" : "NO", "\n";
 	    my $word_width = $metrics->stringWidth($&, $fontsize);
-	    #print STDERR "Current Word Width: $word_width\n";
-	    #print STDERR "$x/$right_margin\n";
 
-	    if( $x+$word_width < $right_margin )
+	    if( $x+$word_width <= $right_margin )
 	    {
-	       unless( $is_spaces || $
 	       push @collected, $& unless $ignore_leading_space && 
 			        $is_spaces && 0 == @collected;
 	       $x += $word_width;
 	    }
 	    else
 	    { 
-	       if( @collected > 0 )
+	       push @collapsed, join '', @collected;
+	       $x = $left_margin;
+	       @collected = ();
+
+	       if( $x+$word_width < $line_width )
+	       { 
+		  push @collected, $&; 
+	          $x += $word_width;
+	       }
+               else  
 	       {
-	          push @collapsed, join '', @collected;
-		  $x = $left_margin;
-	          @collected = ();
-		  if( $x+$word_width < $right_margin )
-		  { push @collected, $&; }
+	          my @split =
+                       $this->_splitLongText($text, $metrics, $fontsize,
+			                     $line_width, $right_margin-$x);
+
+	          push @collapsed, @split;
+	          $x += $metrics->stringWidth($split[-1],$fontsize);
 	       }
 	    }
 	    $_ = $';
@@ -226,51 +229,74 @@ sub _collapseText
 	 push @collapsed, join '', @collected;
       }
    }
+   $$this{'x'} = $x;
 
-   #print STDERR "COLLAPSED: [", join("\n", @collapsed), "]\n";
    join "\n", @collapsed;
 } # sub _collapseText
 
-=begin comment
-	       else # An unbroken word extending past the margin 
-	       { # First fit what we can on current line
-                  print STDERR "LONG UNBROKEN [$word]\n";
-	          my ($i, $length) = (1, length $word);
-		  my $sub = substr $word, 0, $i;
-		  my $sub_width = $metrics->stringWidth($sub, $fontsize);
+sub _splitLongText
+{
+   my ($this, $text, $metrics, $fontsize, $line_width, $first_remaining) = @_;
+   my @broken = ();
 
-	          while( $sub_width+$x < $right_margin && $i <= $length )
-	          {
-	            $sub = substr $sub, 0, ++$i;
-		    $sub_width = $metrics->stringWidth($sub, $fontsize);
-	          }
+   print STDERR "Long segment started at: $$this{'x'}\n";
+   my $getFittedSubstring = sub
+   {
+      my ($string, $threshold) = @_;
+      my ($fit, $remain);
+      my $length = $metrics->stringWidth($string, $fontsize);
+      print STDERR "Length: \"$string\"($fontsize) $length Threshold: $threshold\n";
 
-		  chop $sub;
-	          push @collapsed, $sub;
+      if( $metrics->stringWidth($string, $fontsize) <= $threshold )
+      {
+         ($fit, $remain) = ($string, '');
+      }
+      else
+      {
+         $_ = $string;
+         my ($i, $length) = (1, 0);
 
-	 	  $sub = substr $word, $i;
-	         
-	          # Now break the rest of the word into parts that
-	 	  # span entire lines until it is exhausted
-	          while( length )
-		  {
-	             my ($i, $length) = (1, length $sub);
-		
-		     while( $i < $length && $left_margin+
-	                    $metrics->stringWidth(substr($sub, 0, $i), $fontsize) )
-	  	     { $i++ }
-		     push @collapsed, substr $sub, 0, $i;
-		     $sub = substr $sub, $i;
-	          }
-    	       }
-=cut
+         for( ;; $i++ )
+         {
+            /.{$i}?/;
+            $length = $metrics->stringWidth($&, $fontsize);
+
+            if( $length > $threshold )
+	    {
+               ($fit, $remain) = ($&, $');
+               $remain .= chop $fit unless length $remain == 1;
+	       last;
+	    }
+	    last unless length $';
+         } 
+      }
+      ($fit, $remain);
+   }; # sub getFittedSubstring
+   
+   my ($fit, $remain) = 
+     $getFittedSubstring->($text, $first_remaining);
+
+   push @broken, $fit;
+
+   while( length $remain )
+   {
+      ($fit, $remain) = 
+         $getFittedSubstring->($remain, $line_width);
+
+      print STDERR "FIT: $fit REMAIN: $remain\n";
+      push @broken, $fit;
+   }
+
+   @broken;
+} # sub _splitLongText
+
 sub getTextProperties
 {
    my $this = shift;
    my $parent = $$this{'parent'};
    die "Page has no parent!" unless defined $parent;
    my $properties = $$this{'text_properties'};
-   return $properties->copy();
+   $properties->copy();
 } # sub getTextProperties
 
 sub close
@@ -287,25 +313,18 @@ sub close
    foreach my $type (map { (["${_}Header", $_, 'top',], 
                             ["${_}Footer", $_, 'bottom']); } @aligns)
    {
-      #print STDERR "Adding ".$type->[0]." ".$type->[1]."\n";
       my $text_properties = new BLM::PDF::Text::Properties;
       my $font = $text_properties->getFont();
       my $prefix = 'get'.$type->[0];
-      #print STDERR "PREFIX: $prefix\n";
       my $text = $page_properties->${prefix}();
 
       if( defined $text )
       {
-         #print STDERR "Text: $text\n";
-         #print STDERR "$prefix => $text\n";
-         #print STDERR "COLOR: ",$page_properties->${\"${prefix}Color"}(), "\n";
          $text_properties->setAlign($type->[1]);
          $text_properties->setVAlign($type->[2]);
          $text_properties->setColor($page_properties->${\"${prefix}Color"}());
          $text_properties->setFontSize($page_properties->${\"${prefix}FontSize"}());
-         #print STDERR "SIZE: ",$page_properties->${\"${prefix}FontSize"}(), "\n";
          $font->setFontName($page_properties->${\"${prefix}FontName"}());
-         #print STDERR "FONT: ",$page_properties->${\"${prefix}FontName"}(), "\n";
          $this->setTextProperties($text_properties);
 	 $this->addText($text);
       }
