@@ -2,6 +2,10 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.7  2000/09/18 18:50:05  sridhar
+# Some BLMs moved from Perl/BLM and Perl/BLM/Startup to Perl/Bedrock/BLM
+# and Perl/Bedrock/BLM/Startup
+#
 # Revision 1.6  2000/09/18 15:18:56  sridhar
 # Had forgotten to add SIS directory
 #
@@ -23,5 +27,6 @@ all install:
 	cd PDF		&& $(MAKE) $@
 	cd Text		&& $(MAKE) $@
 	cd SIS		&& $(MAKE) $@
+	cd BLM		&& $(MAKE) $@
 
 include ../make.post
