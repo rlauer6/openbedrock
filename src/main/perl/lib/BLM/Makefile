@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.3  2000/09/27 15:35:03  sridhar
+# Added Recycle.pm
+#
 # Revision 1.2  2000/09/25 20:17:36  sridhar
 # Added Benchmark.pm and String.pm
 #
@@ -48,7 +51,8 @@ include ../make.pre
      CURRENT_PATH = BLM
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
-		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm
+		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm \
+		    Recycle.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Timenow.pm
@@ -65,6 +69,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Perldoc.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Benchmark.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) String.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Recycle.pm
 	cd Startup && $(MAKE) $@
 
 install:
@@ -82,6 +87,7 @@ install:
 	$(INSTALL) Perldoc.pm	$(CURRENT_TARGET)
 	$(INSTALL) Benchmark.pm	$(CURRENT_TARGET)
 	$(INSTALL) String.pm	$(CURRENT_TARGET)
+	$(INSTALL) Recycle.pm	$(CURRENT_TARGET)
 	cd Startup && $(MAKE) $@
 
 include ../make.post
