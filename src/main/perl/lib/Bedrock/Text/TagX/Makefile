@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.7  2000/07/05 18:01:18  sridhar
+# Removed Header.pm
+#
 # Revision 1.6  2000/06/28 18:55:57  sridhar
 # Added Header.pm
 #
@@ -26,7 +29,7 @@ include ../../make.pre
 
      CURRENT_PATH = Text/TagX
 
-          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm Header.pm
+          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) TAG.pm
@@ -36,7 +39,6 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Parser.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Func.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Header.pm
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
@@ -49,7 +51,6 @@ install:
 	$(INSTALL) Parser.pm		$(CURRENT_TARGET)
 	$(INSTALL) Func.pm		$(CURRENT_TARGET)
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
-	$(INSTALL) Header.pm		$(CURRENT_TARGET)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
