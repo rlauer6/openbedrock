@@ -6,6 +6,7 @@
 package TagX::TAG;
 
 use strict;
+use TagX::Log;
 use TagX::Expr;
 use TagX::Term;
 use TagX::Term::Var;
@@ -41,53 +42,6 @@ sub start_location
 	$self->{'__start_location'} = shift;
     }
     $self->{'__start_location'};
-}
-
-sub resolve_name
-{
-    my $self = shift;
-    my $name = shift;
-    warn "$self: name = ($name) context = (@_)\n" if $self->options->{'verbose'};
-    $name =~ s/^\$//;
-    my @components = split /\./oi, $name;
-    my $first = shift @components;
-    warn "$self: first = ($first)\n" if $self->options->{'verbose'};
-    return undef unless $first;
-    my $found;
-    for my $context (@_) {
-	if ( exists $context->{$first} ) {
-	    $found = $context->{$first};
-	    last;
-	}
-    }
-    warn "$self: found $first in ($found)\n" if $self->options->{'verbose'};
-    return undef unless defined( $found );
-    for (@components) {
-	if ( /^\Q[\E(\d+)\Q]\E/oi ) {
-	    # array element
-	    return undef unless ref( $found ) eq 'ARRAY';
-	    $found = $found->[$1];
-	    next;
-	}
-
-	if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
-	    # hash element
-	    if ( ref( $found ) eq 'HASH' ) {
-		$found = $found->{$1};
-	    } else {
-		# Support syntax for accessing hash contained in an array
-		# if the array contains only one element
-		# Other cases are failures
-		return undef unless ref( $found ) eq 'ARRAY' and @{$found} == 1;
-		$found = $found->[0]->{$1};
-	    }
-	    next;
-	}
-
-	# illegal
-	return undef;
-    }
-    $found;
 }
 
 sub name
@@ -234,6 +188,18 @@ sub options
 	my %generic = ('verbose' => undef);
 	$self->{'__options'} = &tagOptions_as_array ( $self->{'__argv'}, $optstring, \%generic);
 	map { $self->{'__' . $_} = $generic{$_} if defined $generic{$_} } keys %generic;
+	if ( $self->verbose ) {
+	    my $str = "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
+	    $str .= "  Options are\n";
+	    for my $key (sort keys %{$self->{'__options'}}) {
+		$str .= "\t$key => [" . $self->{'__options'}->{$key} . "]\n";
+	    }
+	    $str .= "  Generic options are\n";
+	    for my $key (sort keys %generic) {
+		$str .= "\t$key => [" . $generic{$key} . "]";
+	    }
+	    &log_message( $self, "$str\n" );
+	}
     }
     $self->{'__options'};
 }
@@ -258,15 +224,20 @@ sub parse_options
     %{$optref} = ();
 
     if ( $self->{'__verbose'} ) {
-	my ($key, $value);
-	$self->log_message( 0, "$self: argv .. (@{$self->{__argv}})" );
+	my ($key, $value, $str);
+	$str = "Arguments [@{[scalar(@{$self->{__argv}})]}] are\n\t(@{$self->{__argv}})\n";
 	while (($key, $value) = each %keys) {
-	    $self->log_message( 0, "$self: keys{$key} => [$value] (default: $defaults{$key})" );
+	    $str .= "  options{$key} => [";
+	    $str .= $value if defined($value);
+	    $str .= "] (default: ";
+	    $str .= $defaults{$key} if defined($defaults{$key});
+	    $str .= ")\n";
 	}
+	&log_message( $self, "$str\n");
     }
 
-    my ($arg, @argv);
-    for ( my $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
+    my ($arg, @argv, $i);
+    for ( $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
 	$arg = $self->{'__argv'}->[$i];
 	if ( ref( $arg ) ) {
 	    push @argv, $arg->eval(@_);
@@ -299,13 +270,24 @@ sub parse_options
 	$optref->{$key} = $defaults{$key};
     }
 
-    $self->log_message( 0, "$self: argv resolved to (@argv)" );
+    if ( $self->verbose ) {
+	my $str = "Options evaluated to\n";
+	for my $key (sort keys %{$optref}) {
+	    $str .= "  $key => [" . $optref->{$key} . "]\n";
+	}
+	$str .= "Arguments evaluated to\n\t(@argv)";
+	&log_message( $self, "$str\n" );
+    }
     @argv;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.9  2000/04/24 12:46:54  sridhar
+# 1. Using TagX::Log for logging messages
+# 2. Kicked out resolve_name
+#
 # Revision 1.8  2000/04/19 20:04:32  sridhar
 # 1. Bug fix: looking for options at the end of a string was failing.
 # 2. More log messages.
