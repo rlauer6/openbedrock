@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.11  2000/11/30 15:05:03  sridhar
+# Removed Doc.pm
+#
 # Revision 1.10  2000/11/16 19:27:35  sridhar
 # Added Error.pm
 #
@@ -38,7 +41,7 @@ include ../../make.pre
 
      CURRENT_PATH = Text/TagX
 
-          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm \
+          TARGETS = TAG.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm \
 		    Scalar.pm Error.pm
 
 all: $(TARGETS)
@@ -51,7 +54,6 @@ $(TARGETS)::
 install:
 	$(INSTALL) TAG.pm		$(CURRENT_TARGET)
 	$(INSTALL) Output.pm		$(CURRENT_TARGET)
-	$(INSTALL) Doc.pm		$(CURRENT_TARGET)
 	$(INSTALL) Expr.pm		$(CURRENT_TARGET)
 	$(INSTALL) Term.pm		$(CURRENT_TARGET)
 	$(INSTALL) Parser.pm		$(CURRENT_TARGET)
