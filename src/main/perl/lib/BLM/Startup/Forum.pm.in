@@ -21,240 +21,54 @@ use TagX::Log;
 use SIS::Hash;
 @ISA = qw(SIS::Hash);
 
-sub TIEHASH
-{
-    my ($class, $ctx, $config) = @_;
-
-    # Create Forum object
-    my $self = bless {}, $class;
-    $self->{'ctx'} = $ctx;
-    $self->{'config'} = $config;
-    my $verbose = $self->{'verbose'} = $config->{'verbose'};
-
-    # Get the required database params
-    my $dsn = $config->{'data_source'};
-    die "$class: param `data_source' must be specified in config\n" unless $dsn;
-
-    my $table = $config->{'table_name'};
-    die "$class: param `table_name' must be specified in config\n" unless $table;
-
-    my $u = $config->{'username'};
-    my $p = $config->{'password'};
-
-    # And do the connect
-    my $dbh = DBI->connect ( $dsn, $u, $p );
-    die "$class: could not connect to database `$dsn': ", $DBI::errstr, "\n" unless $dbh;
-    $self->{'dbh'} = $dbh;
-
-    # And return the session object
-    $self;
-}
-
-sub FETCH
-{
-    my ($self, $id) = @_;
-    my $dbh = $self->{'dbh'};
-
-    my $table = $self->{'config'}->{'table_name'};
-    my $stm = "select * from $table where id = ?";
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-    $sth->bind_param ( 1, $id ) || die "Could not bind id=`$id': ", $sth->errstr, "\n";
-
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-    my ($href, %hash);
-    $rows = 0;
-    while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
-	%hash = %{$href};
-	$rows++;
-    }
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-    die "SQL query error: more than one row($rows) returned for id `$id'.\n" if $rows > 1;
-    return \%hash;
-}
-
-# Just store the value in the session and return the value
-sub STORE
-{
-    my ($self, $key, $value) = @_;
-    if ( $key =~ /^(session|username)$/ ) {
-	die "Cannot set `$key': attribute is read-only.\n";
-    } elsif ( $key =~ /^(firstname|lastname|email|password)$/ ) {
-	die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
-	    unless $self->{'data'}->{'username'};
-	&log_message( undef, "Storing [$key] = [$value]" )
-	    if $self->{'verbose'};
-	return $self->{'data'}->{$key} = $value;
-    } else {
-	&log_message( undef, "Stored [$key] = [$value] into prefs" )
-	    if $self->{'verbose'};
-	return $self->{'data'}->{'prefs'}->{$key} = $value;
-    }
-}
-
-# Invoked to loop over the properties of the session
-sub FIRSTKEY
+sub sql_query
 {
     my $self = shift;
+    my $stm = shift;
 
-    delete $self->{'keys'};
+    my $dbh = $self->{'dbh'};
+    my $verbose = $self->{'config'}->{'verbose'};
+    my $sth = $dbh->prepare($stm);
+    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
+    &log_message( undef, "Prepared SQL query\n$stm" ) if $verbose;
 
-    my $k = {'session' => $self->{'session'},
-	     'username' => $self->{'data'}->{'username'},
-	     'firstname' => $self->{'data'}->{'firstname'},
-	     'lastname' => $self->{'data'}->{'lastname'},
-	     'email' => $self->{'data'}->{'email'}};
+    for ( my $i = 1 ; $i <= @_ ; $i++ ) {
+	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind param $i=`", $_[$i-1], "': ", $sth->errstr, "\n";
+	&log_message( undef, "Bound variable $i=[" . $_[$i-1] . "]" ) if $verbose;
+    }
 
-    my %keys;
-    @keys{keys %{$self->{'data'}->{'prefs'}}, keys %{$self->{'config'}->{'default_prefs'}}} = ();
-    for my $key (keys %keys) {
-	if ( exists $self->{'data'}->{'prefs'}->{$key} ) {
-	    $k->{$key} = $self->{'data'}->{'prefs'}->{$key};
-	} else {
-	    $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+	unless defined $rows;
+
+    my ($href, @rows);
+    while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
+	my %hash = %{$href};
+	push @rows, \%hash;
+    }
+
+    if ( $verbose > 1 ) {
+	my ($key, $value, $str, $i);
+	for ( $i = 0 ; $i < @rows ; $i++ ) {
+	    $str .= "Row $i>\n";
+	    while (($key, $value) = each %{$rows[$i]}) {
+		$str .= "  $key => [$value]\n";
+	    }
 	}
+	&log_message( undef, "Found the following $i row(s)\n" . $str ) if $verbose > 1;
     }
-    $k->{'password'} = $self->{'data'}->{'password'} if
-	exists $self->{'data'}->{'password'};
-    $k->{'password'} =~ s/./\*/g;
-    $self->{'keys'} = $k;
-    each %{$self->{'keys'}};
+
+    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+    return @rows;
 }
 
-sub NEXTKEY
-{
-    each %{shift->{'keys'}};
-}
-
-sub EXISTS
-{
-    my ($self, $key) = @_;
-    if ( $key eq 'session' ) { return 1 }
-    elsif ( $key =~ /^(username|password|firstname|lastname|email)$/ ) { return exists $self->{'data'}->{$key} }
-    elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { return 1 }
-    else { exists $self->{'config'}->{'default_prefs'}->{$key} }
-}
-
-sub DELETE
-{
-    my ($self, $key) = @_;
-    if ( $key =~ /^(session|username|firstname|lastname|email|password)$/ ) {
-	die "Cannot delete `$key': illegal operation.\n";
-    } else {
-	return delete $self->{'data'}->{'prefs'}->{$key};
-    }
-}
-
-sub CLEAR
+sub update_count
 {
     my $self = shift;
-    %{$self->{'data'}->{'prefs'}} = ();
-}
-
-sub threads
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my ($start, $max) = @_;
-    my $dbh = $self->{'dbh'};
-
-    my $table = $self->{'config'}->{'table_name'};
-    my $stm = "select id, parent_id, title, posted_by, nreplies, nmesg, added from $table where parent_id is null";
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-    my $href;
-    my $aref = SIS::Array->new;
-    while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
-	my %hash = %{$href};
-	push @{$aref}, \%hash;
-    }
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-    return $aref;
-}
-
-sub responses
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my ($id, $start, $max) = @_;
-    my $dbh = $self->{'dbh'};
-
-    my $table = $self->{'config'}->{'table_name'};
-    my $stm = "select id, parent_id, title, posted_by, nreplies, nmesg, added from $table where parent_id = ?";
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-    $sth->bind_param ( 1, $id ) || die "Could not bind parent_id=`$id': ", $sth->errstr, "\n";
-
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-    my $href;
-    my $aref = SIS::Array->new;
-    while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
-	my %hash = %{$href};
-	push @{$aref}, \%hash;
-    }
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-    return $aref;
-}
-
-sub wrap
-{
-    my $obj = shift;
-    my $text = shift;
-    $Text::Wrap::columns = shift || 80;
-    my $output;
-    for my $line (split(/\n/, $text)) {
-	if ( $line =~ /^>>/ ) {
-	    $output .= $line;
-	} else {
-	    my $wrapped = &Text::Wrap::wrap("", "", $line);
-	    $output .= $wrapped;
-	}
-    }
-    $output;
-}
-
-sub post
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
     my $parent_id = shift;
 
-    my ($title, $body, $email) = @_;
-    return unless length($body) or length($title);
-
     my $dbh = $self->{'dbh'};
     my $table = $self->{'config'}->{'table_name'};
-
-    if ( $parent_id ) {
-	my $stm = "insert into $table(parent_id, title, body, posted_by, nmesg, updated, added) values(?, ?, ?, ?, 1, null, null)";
-	my $sth = $dbh->prepare($stm);
-	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
-	$sth->bind_param ( 1, $parent_id ) || die "Could not bind parent_id=`$parent_id': ", $sth->errstr, "\n";
-	$sth->bind_param ( 2, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
-	$sth->bind_param ( 3, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
-	$sth->bind_param ( 4, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
-	my $rows = $sth->execute;
-	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
-    } else {
-	my $stm = "insert into $table(title, body, posted_by, nmesg, updated, added) values(?, ?, ?, 1, null, null)";
-	my $sth = $dbh->prepare($stm);
-	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
-	$sth->bind_param ( 1, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
-	$sth->bind_param ( 2, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
-	$sth->bind_param ( 3, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
-	my $rows = $sth->execute;
-	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
-    }
-
-    return unless $parent_id;
 
     $dbh->do(qq{update $table set nreplies = nreplies + 1,
 		nmesg = nmesg + 1, updated = null where id = ?},
@@ -287,6 +101,280 @@ sub post
     } while ( $parent_id );
 }
 
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+
+    # Create Forum object
+    my $self = bless {}, $class;
+    $self->{'ctx'} = $ctx;
+    $self->{'config'} = $config;
+    my $verbose = $self->{'verbose'} = $config->{'verbose'};
+    $self->{'moderated'} = exists $config->{'moderated'} and $config->{'moderated'} ? 1 : 0;
+
+    # Get the required database params
+    my $dsn = $config->{'data_source'};
+    die "$class: param `data_source' must be specified in config\n" unless $dsn;
+
+    my $table = $config->{'table_name'};
+    die "$class: param `table_name' must be specified in config\n" unless $table;
+
+    my $u = $config->{'username'};
+    my $p = $config->{'password'};
+
+    # And do the connect
+    my $dbh = DBI->connect ( $dsn, $u, $p );
+    die "$class: could not connect to database `$dsn': ", $DBI::errstr, "\n" unless $dbh;
+    $self->{'dbh'} = $dbh;
+
+    # And return the session object
+    $self;
+}
+
+sub FETCH
+{
+    my ($self, $id) = @_;
+
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    my $stm;
+    if ( $config->{'moderated'} ) {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated',
+		  body, moderator from $table
+		  where id = ? and moderator is not null);
+    } else {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated',
+		  body from $table where id = ?);
+    }
+
+    my @rows = $self->sql_query( $stm, $id );
+    die "SQL query error: more than one row(", scalar(@rows), " returned for id=`$id'.\n"
+	if @rows > 1;
+    return $rows[0];
+}
+
+sub is_moderated
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->{'config'}->{'moderated'};
+}
+
+sub threads
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my %args = @_;
+
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    my $order_by = $args{'order_by'} || 'added';
+    die "Invalid value of order_by: `$order_by'.\n" unless $order_by =~ /^(added|updated)$/i;
+
+    my $order = $args{'order'} || 'asc';
+    die "Invalid value of order: `$order_by'.\nMust be `ASC' or `DESC' only.\n"
+	unless $order =~ /^(asc|desc)$/i;
+
+    my $limit_clause;
+    if ( exists $args{'row_offset'} or exists $args{'row_count'} ) {
+	$limit_clause = 'limit ';
+	$limit_clause .= $args{'row_offset'} . ', ' if exists $args{'row_offset'};
+	$limit_clause .= $args{'row_count'} || 10;
+    }
+
+    my $stm;
+    if ( $config->{'moderated'} ) {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated',
+		  moderator from $table
+		  where parent_id is null and moderator is not null
+		  order by $order_by $order
+		  $limit_clause);
+    } else {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated'
+		  from $table where parent_id is null
+		  order by $order_by $order
+		  $limit_clause);
+    }
+
+    my $aref = SIS::Array->new($self->sql_query( $stm ));
+    return $aref;
+}
+
+sub unpublished
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    my $stm = qq(select id, parent_id, title, posted_by, nreplies,
+		 nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		 date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		 unix_timestamp(added) as 'added',
+		 unix_timestamp(updated) as 'updated'
+		 from $table where moderator is null order by added);
+
+    my $aref = SIS::Array->new($self->sql_query( $stm ));
+    return $aref;
+}
+
+sub get_raw
+{
+    my $obj = shift;
+    my $id = shift;
+    my $self = tied(%{$obj});
+
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    my $stm = qq(select id, parent_id, title, posted_by, nreplies,
+		 nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		 date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		 unix_timestamp(added) as 'added',
+		 unix_timestamp(updated) as 'updated',
+		 body, moderator from $table where id = ?);
+
+    my @rows = $self->sql_query( $stm, $id );
+    die "SQL query error: more than one row(", scalar(@rows), " returned for id=`$id'.\n"
+	if @rows > 1;
+    return $rows[0];
+}
+
+sub responses
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my ($id, $start, $max) = @_;
+    
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    my $stm;
+    if ( $config->{'moderated'} ) {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated',
+		  moderator from $table
+		  where parent_id = ? and moderator is not null order by added);
+    } else {
+	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
+		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
+		  unix_timestamp(added) as 'added',
+		  unix_timestamp(updated) as 'updated'
+		  from $table where parent_id = ? order by added);
+    }
+
+    my $aref = SIS::Array->new($self->sql_query( $stm, $id ));
+    return $aref;
+}
+
+sub wrap
+{
+    my $obj = shift;
+    my $text = shift;
+    $Text::Wrap::columns = shift || 80;
+    my $output;
+    for my $line (split(/\n/, $text)) {
+	if ( $line =~ /^>>/ ) {
+	    $output .= $line;
+	} else {
+	    my $wrapped = &Text::Wrap::wrap("", "", $line);
+	    $output .= $wrapped;
+	}
+    }
+    $output;
+}
+
+sub post
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my $parent_id = shift;
+
+    my ($title, $body, $email) = @_;
+    return unless length($body) or length($title);
+
+    my $dbh = $self->{'dbh'};
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+
+    if ( $parent_id ) {
+	my $stm = qq(insert into $table(parent_id, title, body, posted_by,
+					nmesg, updated, added)
+		     values(?, ?, ?, ?, 1, null, null));
+	my $sth = $dbh->prepare($stm);
+	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
+	$sth->bind_param ( 1, $parent_id ) || die "Could not bind parent_id=`$parent_id': ", $sth->errstr, "\n";
+	$sth->bind_param ( 2, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
+	$sth->bind_param ( 3, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
+	$sth->bind_param ( 4, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
+	my $rows = $sth->execute;
+	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
+    } else {
+	my $stm = qq(insert into $table(title, body, posted_by,
+					nmesg, updated, added)
+		     values(?, ?, ?, 1, null, null));
+	my $sth = $dbh->prepare($stm);
+	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
+	$sth->bind_param ( 1, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
+	$sth->bind_param ( 2, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
+	$sth->bind_param ( 3, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
+	my $rows = $sth->execute;
+	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
+	return;
+    }
+
+    $self->update_count( $parent_id ) unless $config->{'moderated'};
+}
+
+sub publish
+{
+    my $obj = shift;
+    my $id = shift;
+    my $title = shift;
+    my $body = shift;
+    my $moderator = shift || 'unknown';
+
+    my $self = tied(%{$obj});
+    my $verbose = $self->{'config'}->{'verbose'};
+
+    my $dbh = $self->{'dbh'};
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+    my $stm = qq(update $table set moderator = ?, title = ?, body = ?, added = null
+		 where id = ?);
+    $dbh->do($stm, undef, $moderator, $title, $body, $id)
+	or die "Unable to publish message id = `$id': ", $dbh->errstr, "\n";
+
+    &log_message(undef, "Updating moderator: statement is\n$stm" ) if $verbose;
+
+    my @rows = $self->sql_query( "select parent_id from $table where id = ?", $id );
+    return unless $rows[0]->{'parent_id'};
+    $self->update_count( $rows[0]->{'parent_id'} );
+}
+
 sub mkResponse
 {
     my ($obj, $title, $body) = @_;
@@ -298,255 +386,41 @@ sub mkResponse
     return $href;
 }
 
+sub delete
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    die "No id specified.\n" unless @_ > 0;
+    my $id = shift;
+
+    my $verbose = $self->{'config'}->{'verbose'};
+
+    my $dbh = $self->{'dbh'};
+    my $config = $self->{'config'};
+    my $table = $config->{'table_name'};
+    my $stm = qq(delete from $table where moderator is null and id = ?);
+    my $rows = $dbh->do($stm, undef, $id);
+    die "Unable to delete message id = `$id': ", $dbh->errstr, "\n" unless defined($rows);
+    die "Unable to delete message id = `$id': message does not exist or has been published.\n"
+	unless $rows > 0;
+}
+
+sub closeBLM
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->{'dbh'}->disconnect;
+}
+
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2001/02/14 14:01:46  sridhar
+# Massive restructuring -- Added moderation.
+#
 # Revision 1.1  2000/12/11 15:10:03  sridhar
 # Forum.pm -- startup module implementing a discussion forum.
 #
 #
-
-__DATA__
-<h1>Name</h1>
-<p>
- <b><code>BLM::Startup::Forum</code></b> -- a BLM implementing the abstraction of a discussion
- forum (message board).
-</p>
-
-<h1>Synopsis</h1>
-<p>
-<h2>Get the threads of discussion</h2>
-
-<pre>
-  &lt;null --define-var = "thr" $forum.threads()&gt;
-</pre>
-
-<h2>Get a single message, including the body</h2>
-
-<pre>
-  &lt;null --define-var = "msg" $forum.get($id)&gt;
-</pre>
-
-<h2>Get all the responses to a message</h2>
-
-<pre>
-  &lt;null --define-var = "responses" $forum.responses($id)&gt;
-</pre>
-
-<h2>Start a top level thread</h2>
-
-<pre>
-  &lt;null $forum.post("", $subject, $body, $email)&gt;
-</pre>
-</p>
-
-<h2>Post a reply</h2>
-
-<pre>
-  &lt;null $forum.post($id, $subject, $body, $email)&gt;
-</pre>
-
-<h2>Wrap a message text to fit</h2>
-
-<pre>
-  &lt;var $forum.wrap($body, $cols)&gt;
-</pre>
-
-<h2>Prepare a response</h2>
-
-<pre>
-  &lt;null --define-var = "rsp" $forum.mkResponse($title, $body)&gt;
-  Title is &lt;var $rsp.title&gt;
-  Body is &lt;var $rsp.body&gt;
-</pre>
-
-</p>
-
-<h1>Description</h1>
-<p>
-<code>BLM::Startup::Forum</code> is a startup module implementing
-support for a discussion forum or a message board. Configure it in
-<code>tagx.xml</code> or <code>tagx_apps.xml</code> as described
-below. The example below is a configuration snippet in
-<code>tagx_apps.xml</code> which designates a directory
-<code>/Forum</code> to contain scripts which use this message
-board. The variable <code>$forum</code> is bound to the module, and
-<code>bedrock_forum</code> is the name of the table.
-</p>
-
-<pre>
- &lt;object name="/Forum"&gt;
-  &lt;array name="MODULES"&gt;
-   &lt;object&gt;
-    &lt;scalar name="binding"&gt;forum&lt;/scalar&gt;
-    &lt;scalar name="module"&gt;BLM::Startup::Forum&lt;/scalar&gt;
-    &lt;object name="config"&gt;
-     &lt;scalar name="verbose"&gt;2&lt;/scalar&gt;
-     &lt;scalar name="data_source"&gt;dbi:mysql:bedrock&lt;/scalar&gt;
-     &lt;scalar name="username"&gt;bedrock&lt;/scalar&gt;
-     &lt;scalar name="password"&gt;fred&lt;/scalar&gt;
-     &lt;scalar name="table_name"&gt;bedrock_forum&lt;/scalar&gt;
-    &lt;/object&gt;
-   &lt;/object&gt;
-  &lt;/array&gt;
- &lt;/object&gt;
-</pre>
-
-<h1>Methods</h1>
-
-<h2><code>$forum.threads([$start, $max])</code></h2>
-
-<p>
-
-Returns an array of thread objects, representing the top-level
-discussions. If <code>$start</code> and <code>$max</code> are
-specified, the returned array contains a subset of all the
-discussions. Each object in the array has the following structure:
-Note that the message body is not included in the object since this
-list could be huge. Use <code>$forum.get($id)</code> to get the body
-for a particular message.<p></p>
-
-<div>
-<table border=1>
-<tr>
- <th>Property Name</th>
- <th>Description</th>
-</tr>
-
-<tr>
- <td><code>id</code></td>
- <td>
-An integer uniquely identifying the message
- </td>
-</tr>
-
-<tr>
- <td><code>title</code></td>
- <td>
-The title of the message
- </td>
-</tr>
-
-<tr>
- <td><code>posted_by</code></td>
- <td>
-The author&rsquo;s email address (could be null)
- </td>
-</tr>
-
-<tr>
- <td><code>nreplies</code></td>
- <td>
-The number of replies to this message
- </td>
-</tr>
-
-<tr>
- <td><code>nmesg</code></td>
- <td>
-The total number of messages under this thread, including replies,
-replies to replies, and so forth.
- </td>
-</tr>
-
-<tr>
- <td><code>added</code></td>
- <td>
-The date when the thread first started.
- </td>
-</tr>
-
-<tr>
- <td><code>updated</code></td>
- <td>
-This is updated whenever a reply is added anywhere under the thread,
-could be several levels below the current thread.
- </td>
-</tr>
-</table>
-</div>
-
-</p>
-
-<h2><code>$forum.get($id)</code></h2>
-
-<p>
-Returns a single message object of the specified id. The object has
-the same structure as that returned by <code>$forum.threads()</code>
-with the addition of the following.<p>
-
-<div>
-<table border=1>
-<tr>
- <th>Property Name</th>
- <th>Description</th>
-</tr>
-
-<tr>
- <td><code>body</code></td>
- <td>
-The body of the message
- </td>
-</tr>
-</table>
-</div>
-
-</p>
-
-<h2><code>$forum.responses($id)</code></h2>
-
-<p>
-Returns an array of responses to the message identified by
-<code>$id</code>. Each element in the array is an object having the
-same structure as explained under <code>$forum.threads()</code>.
-</p>
-
-<h2><code>$forum.wrap($body [, $cols ])</code></h2>
-
-<p>
-Returns the body reformatted to fit within <code>$cols</code> columns,
-80 if not specified. The body text is treated as plain text and broken
-up at word boundaries, using newlines. Does <b>not</b> add any prefix to
-the message. See <code>$forum.mkResponse()</code> if that is required.
-</p>
-
-<h2><code>$forum.mkResponse($title, $body)</code></h2>
-
-<p>
-Returns an object with the properties <code>title</code> and
-<code>body</code> "properly" prepared as a response. Specifically, the
-prefix "&gt;&gt;" is added to each line of the body, and the string
-"Re:" is prepended to the title, if it does not already exist.</p>
-
-<h2><code>$forum.post($id, $subject, $body, $email)</code></h2>
-
-<p>
-Post a message with the title <code>$subject</code> and body in
-<code>$body</code>. The author&rsquo;s email is <code>$email</code>. Any of
-these can be empty. To post a reply to a message, specify
-<code>$id</code>. To post a top level message, specify a null value.
-</p>
-
-<h1>Example</h1>
-
-<h1>Notes</h1>
-
-<h1>Version</h1>
-
-<p><code>$Id$</code></p>
-
-<h1>ChangeLog</h1>
-
-<pre>
-$Log$
-Revision 1.1  2000/12/11 15:10:03  sridhar
-Forum.pm -- startup module implementing a discussion forum.
-
-</pre>
-
-<h1>Author</h1>
-<p>
-<a href="mailto:sridhar@cji.com">J Sridhar</a>
-</p>
