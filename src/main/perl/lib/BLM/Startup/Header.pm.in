@@ -6,6 +6,7 @@
 package BLM::Startup::Header;
 
 use strict;
+use MIME::Base64;
 
 BEGIN
 {
@@ -14,8 +15,6 @@ BEGIN
     $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
 }
 
-use UNIVERSAL qw (isa);
-
 use TagX::Log 1.01;
 use SIS::Hash 1.02;
 @ISA = qw(SIS::Hash);
@@ -23,11 +22,36 @@ use SIS::Hash 1.02;
 sub TIEHASH
 {
     my $class = shift;
+    my $ctx = shift;
 
     my $self = bless SIS::Hash->new, $class;
     my $private = {};
     $self->{'__private'} = \$private;
+
+    # Get the headers and store them
+    my %headers = $ctx->cgi_header_in;
+    for my $key (keys %headers) {
+	$self->{lc($key)} = $headers{$key};
+    }
+
+    # Special processing of some headers
+    if ( exists $self->{'authorization'} ) {
+	my ($realm, $ident) = split(' ', $self->{'authorization'} );
+	$self->{'realm'} = $realm;
+	@{$self}{qw(auth_user auth_passwd)} = split(':', decode_base64($ident));
+    }
+
     $self;
+}
+
+sub FETCH
+{
+    my $self = shift;
+    my $key = shift;
+    return $self->{$key} if exists $self->{$key};
+    my $lckey = lc($key);
+    return $self->{$lckey} if exists $self->{$lckey};
+    undef;
 }
 
 sub print_header
@@ -40,7 +64,7 @@ sub print_header
     $private->{'Content-type'} = 'text/html' unless exists $private->{'Content-type'};
     my ($key, $value, $str);
     while (($key, $value) = each %{$private}) {
-	if ( &isa( $value, 'ARRAY' ) ) {
+	if ( &UNIVERSAL::isa( $value, 'ARRAY' ) ) {
 	    for my $item (@{$value}) {
 		$str .= "$key: $item\r\n";
 		$fd->cgi_header_out( $key => $item );
@@ -80,6 +104,12 @@ sub set
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.5  2000/08/23 17:28:27  sridhar
+# Can access HTTP headers now (only in the mod_perl version,
+# though). The header fields are properties of the object.
+# Special treatment to Authorization header. This header in unpacked
+# into 'realm', 'auth_user' and 'auth_passwd'.
+#
 # Revision 1.4  2000/07/06 18:34:06  sridhar
 # More uniformity: no need to handle separately for CGI and mod_perl
 # since the output handle has methods for sending headers for both
