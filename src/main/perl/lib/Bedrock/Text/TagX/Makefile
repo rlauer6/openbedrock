@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.9  2000/11/07 13:58:30  sridhar
+# Added Symtab.pm
+#
 # Revision 1.8  2000/08/25 20:44:21  sridhar
 # Added Scalar.pm
 #
@@ -44,6 +47,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Func.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Scalar.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Symtab.pm
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
@@ -57,6 +61,7 @@ install:
 	$(INSTALL) Func.pm		$(CURRENT_TARGET)
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
 	$(INSTALL) Scalar.pm		$(CURRENT_TARGET)
+	$(INSTALL) Symtab.pm		$(CURRENT_TARGET)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
