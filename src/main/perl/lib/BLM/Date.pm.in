@@ -1,0 +1,143 @@
+#!/usr/local/bin/perl -w
+
+package BLM::Date;
+
+use Date::Calc qw(:all);
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use TagX::Log 1.01;
+use SIS::Hash 1.01;
+use SIS::Array;
+
+@ISA = qw(SIS::Hash);
+
+sub TIEHASH
+{
+    my $class = shift;
+    my @date = @_;
+
+    my $year;
+    my $month;
+    my $day;
+
+    my $self = bless SIS::Hash->new, $class;
+
+    my $digits = join("", @date);
+
+    die ("stupid date".join(" ",@date)) if !($digits =~/^[0-9\-]+$/);
+
+    if (@date == 1) {
+	$self->{'day_of_century'} = $date[0];
+    }
+    else {
+#
+# Junk..for stupid programmers that send 2-digit years.
+#
+    
+	$year = $date[0];
+
+	if ($year < 30) {
+	    $year += 2000;
+	}
+	elsif ($year < 100) {
+	    $year += 1900;
+	}
+
+	die "stupid date (month=$date[1])" if ($date[1] < 1 || $date[1] > 12);
+	die "stupid date (day=$date[2])" if ($date[2] < 1 || $date[2] > 31);
+
+	$self->{'year'} = $year;
+	$self->{'month'} = $date[1];
+	$self->{'day'} = $date[2];
+
+	FETCH ($self, 'day_of_century');
+    }
+
+    $self;
+}
+
+sub FETCH 
+{
+    my $self = shift;
+    my $what = shift;
+
+    if ( $what =~/^(year|month|day)$/ ) {
+
+	my ($year, $month, $day, $hour,$min, $sec) = 
+	    Add_Delta_DHMS(1900,1,1, 0,0,0, $self->{'day_of_century'}-1, 0, 0, 0);
+	$self->{'year'} = $year;
+	$self->{'month'} = $month;
+	$self->{'day'} = $day;
+        warn "$what and done";
+	return $self->{$what};
+    }
+    elsif ($what =~/^day_of_century$/ ) {
+	my $base_date = Date_to_Days(1900, 1, 1) - 1;
+	my $this_date = Date_to_Days($self->{'year'}, $self->{'month'}, $self->{'day'});
+	$self->{'day_of_century'} = $this_date - $base_date;
+	return $self->{$what};
+    }
+    elsif ($what =~/^today$/) {
+	my ($year, $month, $day) = Today();
+    
+	$self->{'year'} = $year;
+	$self->{'month'} = $month;
+	$self->{'day'} = $day;
+
+	FETCH($self, 'day_of_century');
+
+	return Date_to_Text(Today());
+    }
+    elsif ($what =~/^day_of_year$/) {
+	return Day_of_Year($self->{'year'}, $self->{'month'}, $self->{'day'});
+    }
+    elsif ($what =~/^day_of_week$/) {
+	return Day_of_Week($self->{'year'}, $self->{'month'}, $self->{'day'});
+    }
+    elsif ($what =~/^day_text$/) {
+	return Day_of_Week_to_Text(Day_of_Week($self->{'year'}, $self->{'month'}, $self->{'day'}));
+    }
+    elsif ($what =~/^month_text$/) {
+	return Month_to_Text($self->{'month'});
+    }
+}
+
+
+sub calendar 
+{
+    my $self = shift;
+
+    my $cal = Calendar($self->{'year'}, $self->{'month'});
+    my @weeks;
+
+    foreach (split( "\n", $cal)) {
+	push @weeks,$_;
+    }
+
+    splice @weeks, 0, 3;
+
+    my @days_of_the_week = ('SUN', 'MON', 'TUE','WED', 'THUR', 'FRI', 'SAT');
+    $cal = [];
+    
+    foreach (@weeks) {
+	my @line = unpack "A4" x 7, $_;
+	my $day = 0;
+	my $w = SIS::Hash->new;
+	foreach my $item (@line) {
+	    $w->{$days_of_the_week[$day]} = $item ? 0+$item : undef;
+	    $day++;
+	}
+	push @{$cal}, $w;
+    }
+
+    return $cal;
+}
+
+1;
