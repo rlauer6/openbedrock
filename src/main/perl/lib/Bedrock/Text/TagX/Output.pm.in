@@ -1,0 +1,144 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::Output::Frame;
+
+#
+# Create new frame and store the parent output handle
+#
+sub new
+{
+    my ($class, $out_handle) = @_;
+    my $self = bless {}, $class;
+    $self->{'out_handle'} = $out_handle;
+    $self->{'discard'} = 1;
+    $self;
+}
+
+sub end
+{
+    my $self = shift;
+    $self->{'discard'} = 0;
+    $self->{'out_handle'}->end_frame;
+}
+
+#
+# Frame being destroyed due to unhandled exception. Remove
+# me from parent's list of frames
+#
+sub DESTROY
+{
+    my $self = shift;
+    $self->{'out_handle'}->discard_frame if $self->{'discard'};
+}
+
+1;
+
+package TagX::Output;
+
+use strict;
+use IO::Handle;
+use IO::File;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+sub new
+{
+    my $class = shift;
+    my $file_or_handle = shift;
+
+    my $self = bless {}, $class;
+    if ( ref ($file_or_handle) =~ /IO/o ) {
+	$self->{'Handle'} = $file_or_handle;
+    } else {
+	$self->{'Handle'} = ( ref( $file_or_handle )
+			      ? IO::Handle->new_from_fd( $file_or_handle, 'w' )
+			      : IO::File->new ( $file_or_handle, 'w' ) );
+	die "$class: Unable to open $file_or_handle for output: $!" unless $self->{'Handle'};
+    }
+    $self->{'buffers'} = [];
+    $self;
+}
+
+#
+# Make a new frame -- from now on all print data goes to this
+# frame
+#
+sub create_frame
+{
+    my $self = shift;
+    my $frame = TagX::Output::Frame->new ( $self );
+    push @{$self->{'buffers'}}, '';
+    $frame;
+}
+
+#
+# Discard the data from the last frame due to unhandled exception
+#
+sub discard_frame
+{
+    my $self = shift;
+    pop @{$self->{'buffers'}};
+}
+
+#
+# Delete data in frame
+#
+sub empty_frame
+{
+    my $self = shift;
+    $self->{'buffers'}->[-1] = '' if @{$self->{'buffers'}} > 0;
+}
+
+#
+# Done successfully with current frame -- Append current frame's data
+# to previous frame
+#
+sub end_frame
+{
+    my $self = shift;
+    my $data = pop @{$self->{'buffers'}};
+    $self->print( $data );
+}
+
+sub dump_state
+{
+    my $self = shift;
+    my $mesg = shift;
+    warn "$mesg\nNumber of frames: ", scalar(@{$self->{'buffers'}}), "\n";
+    for (my $i = 0 ; $i < scalar(@{$self->{'buffers'}}) ; $i++ ) {
+	warn "Frame ", $i+1, "\n{$self->{'buffers'}->[$i]}\n";
+    }
+}
+
+#
+# Append info to the last frame; if no frames, output it
+#
+sub print
+{
+    my $self = shift;
+    if ( @{$self->{'buffers'}} > 0 ) {
+	$self->{'buffers'}->[-1] .= "@_";
+    } else {
+	$self->{'Handle'}->print( @_ );
+    }
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/03/09 14:12:46  sridhar
+# New class Output.pm -- Used for turning buffering of output on and off
+# at will. Buffered output can be discarded too.
+#
+#
+
+1;
