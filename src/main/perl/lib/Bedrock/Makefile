@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.9  2000/12/15 18:48:58  sridhar
+# Improved makefile with more usage of rules.
+#
 # Revision 1.8  2000/11/01 18:37:44  sridhar
 # Adding XML capability to Bedrock. Basically we have a class here which
 # can read and write arbitrary perl data structures in XML format.
@@ -25,33 +28,18 @@ include ../make.pre
 
      CURRENT_PATH = Bedrock
 
-          TARGETS = XML.pm
+          TARGETS = XML.pm VERSION.pm
 
-all: PDF Text SIS BLM XML
+      TARGET_DIRS = PDF Text SIS BLM XML Apache
 
-PDF::
+all: $(TARGETS) $(TARGET_DIRS)
+
+install:: $(TARGETS:%=%-install) $(TARGET_DIRS:%=%-install)
+
+$(TARGET_DIRS)::
 	cd $@		&& $(MAKE) all
 
-Text::
-	cd $@		&& $(MAKE) all
-
-SIS::
-	cd $@		&& $(MAKE) all
-
-BLM::
-	cd $@		&& $(MAKE) all
-
-XML::
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) XML.pm
-	cd $@		&& $(MAKE) all
-
-PDF-install Text-install SIS-install BLM-install::
-	cd $(@:%-install=%)		&& $(MAKE) install
-
-XML-install::
-	$(INSTALL) XML.pm	$(CURRENT_TARGET)
-	cd $(@:%-install=%)	&& $(MAKE) install
-
-install: PDF-install Text-install SIS-install BLM-install XML-install
+$(TARGET_DIRS:%=%-install)::
+	cd $(@:-install=)       && $(MAKE) install
 
 include ../make.post
