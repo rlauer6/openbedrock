@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.2  2000/09/25 20:17:36  sridhar
+# Added Benchmark.pm and String.pm
+#
 # Revision 1.1  2000/09/18 18:50:05  sridhar
 # Some BLMs moved from Perl/BLM and Perl/BLM/Startup to Perl/Bedrock/BLM
 # and Perl/Bedrock/BLM/Startup
@@ -45,7 +48,7 @@ include ../make.pre
      CURRENT_PATH = BLM
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
-		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm
+		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Timenow.pm
@@ -60,6 +63,8 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Number.pm 
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Series.pm 
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Perldoc.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Benchmark.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) String.pm
 	cd Startup && $(MAKE) $@
 
 install:
@@ -75,6 +80,8 @@ install:
 	$(INSTALL) Number.pm	$(CURRENT_TARGET)
 	$(INSTALL) Series.pm	$(CURRENT_TARGET)
 	$(INSTALL) Perldoc.pm	$(CURRENT_TARGET)
+	$(INSTALL) Benchmark.pm	$(CURRENT_TARGET)
+	$(INSTALL) String.pm	$(CURRENT_TARGET)
 	cd Startup && $(MAKE) $@
 
 include ../make.post
