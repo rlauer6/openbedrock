@@ -13,7 +13,6 @@ BEGIN
     $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
 }
 
-use Getopt::Long;
 use DBI;
 
 use TagX::TAG::WithBody::Loop;
@@ -24,62 +23,64 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    local (@ARGV) = @{$self->{'argv'}};
-    my %valid = ('dbname'	=> '_anonymous_');
-    &GetOptions(\%valid,
-		'verbose',
-		'dbname=s',
-		'arg=s@',
-		'statement=s',
-		'bind=s@',
-		'need-rows=s',
-		'raise=s',
-		'define-var=s');
-
-    my $verbose = delete $valid{'verbose'};
+    my %options = ('dbname=s'		=> '_anonymous_',
+		   'statement=s'	=> undef,
+		   'bind=s'		=> undef,
+		   'arg=s'		=> undef,
+		   'define-var=s'	=> undef,
+		   'need-rows=s'	=> undef,
+		   'raise=s'		=> undef);
+    my @argv = $self->parse_options (\%options, @context);
+    my $verbose = $self->verbose;
 
     if ( $verbose ) {
 	my ($key, $value);
 	my $str = "$self: Options are\n";
-	while (($key, $value) = each %valid) {
+	while (($key, $value) = each %options) {
 	    $str .= "\t$key .. ($value)\n";
 	}
 	$tx->log_message( MSG_DEBUG => $str );
     }
 
-    unless ( exists $valid{'statement'} ) {
-	$tx->log_message( MSG_DEBUG => "$self: No Statement specified" ) if $verbose;
+    unless ( exists $options{'statement'} ) {
+	$tx->log_message( MSG_DEBUG => "$self: No Statement specified" );
 	return;
     }
 
-    my $name = $valid{'dbname'};
+    my $name = $options{'dbname'};
     my $dbh;
     if ( exists $tx->{'DB'}->{$name} ) {
 	$dbh = $tx->{'DB'}->{$name};
     } else {
-	$tx->log_message ( MSG_DEBUG => "$self: No database connection named ($name)" ) if $verbose;
+	$tx->log_message ( MSG_DEBUG => "$self: No database connection named ($name)" );
 	return;
     }
 
     $tx->log_message ( MSG_DEBUG => "$self: Using database handle named ($name) .. ($dbh)")
 	if $verbose;
 
-    my $statement = $valid{'statement'};
-    my @args = @{$valid{'arg'}} if exists $valid{'arg'};
-    my @argvals = map { $self->resolve_name ( $_, @context ) } @args;
-    $statement = sprintf ($statement, @argvals) if @args > 0;
-    $tx->log_message( MSG_DEBUG => "$self: Statement after arg-substitution\n$statement" )
-	if $verbose;
+    my $statement = $options{'statement'};
+    if ( exists $options{'arg'} ) {
+	my @args = ref( $options{'arg'} ) eq 'ARRAY' ? @{$options{'arg'}} : ($options{'arg'});
+	$tx->log_message( MSG_DEBUG => "$self: Substituting following args into statement:\n@args" )
+	    if $verbose;
+	$statement = sprintf ($statement, @args);
+	$tx->log_message( MSG_DEBUG => "$self: Statement after arg-substitution\n$statement" )
+	    if $verbose;
+    }
 
     my $sth = $dbh->prepare ( $statement );
+    my @bind;
+    if ( exists $options{'bind'} ) {
+	@bind = ref( $options{'bind'} ) eq 'ARRAY' ? @{$options{'bind'}} : ($options{'bind'});
+    }
+
     my $i = 1;
-    for my $varname (@{$valid{'bind'}}) {
-	my $type = $1 if $varname =~ s/\s*\(\s*(\d+)\s*\)\s*$//oi;
-	my $value = $self->resolve_name ( $varname, @context );
-	if ( defined( $type ) ) { $sth->bind_param ( $i, $value, {TYPE => $type}) }
-	else { $sth->bind_param ( $i, $value ); }
-	$tx->log_message( MSG_DEBUG => "Bound ($i, $varname, $type, $value)" )
-	    if $verbose;
+    for my $bindval (@bind) {
+	my $type = $1 if $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
+	if ( defined( $type ) ) { $sth->bind_param ( $i, $bindval, {TYPE => $type}) }
+	else { $sth->bind_param ( $i, $bindval ); }
+	$tx->log_message( MSG_DEBUG => "Bound ($i, $type, $bindval)" ) if $verbose;
     } continue {
 	$i++;
     }
@@ -88,8 +89,8 @@ sub finalize
 
     my ($href, @rows, $defined);
 
-    if ( exists $valid{'define-var'} ) {
-	$defined = $valid{'define-var'};
+    if ( exists $options{'define-var'} ) {
+	$defined = $options{'define-var'};
 	$tx->log_message( MSG_DEBUG => "Need to define <$defined>" ) if $verbose;
     }
 
@@ -123,14 +124,14 @@ sub finalize
     }
     $tx->log_message( MSG_DEBUG => "Found <$i> row(s)." ) if $verbose;
 
-    if ( $valid{'need-rows'} ) {
-	if ( $valid{'need-rows'} =~ /^([\+\-]?)(\d+)$/oi ) {
+    if ( $options{'need-rows'} ) {
+	if ( $options{'need-rows'} =~ /^([\+\-]?)(\d+)$/oi ) {
 	    my ($sgn, $num) = ($1, $2);
 	    if ( $sgn eq '+' ) {
 		# need at least $num rows
 		if ( $i < $num ) {
-		    if ( $valid{'raise'} ) {
-			die "$self: $valid{'raise'}\n";
+		    if ( $options{'raise'} ) {
+			die "$self: $options{'raise'}\n";
 		    } else {
 			die "$self: Insufficient number of rows found($i) (at least $num needed)\n";
 		    }
@@ -138,16 +139,16 @@ sub finalize
 	    } elsif ( $sgn eq '-' ) {
 		# need max of $num rows
 		if ( $i > $num ) {
-		    if ( $valid{'raise'} ) {
-			die "$self: $valid{'raise'}\n";
+		    if ( $options{'raise'} ) {
+			die "$self: $options{'raise'}\n";
 		    } else {
 			die "$self: Too many rows found($i) (max of $num exceeded)\n";
 		    }
 		}
 	    } elsif ( $i != $num ) {
 		# need exactly $num rows
-		if ( $valid{'raise'} ) {
-		    die "$self: $valid{'raise'}\n";
+		if ( $options{'raise'} ) {
+		    die "$self: $options{'raise'}\n";
 		} else {
 		    die "$self: Invalid number of rows found($i) (need exactly $num rows)\n";
 		}
@@ -165,6 +166,9 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.5  2000/04/13 15:21:07  sridhar
+# Using new parse_options method with support for expressions
+#
 # Revision 1.4  2000/03/13 15:47:29  sridhar
 # Added two options --need-rows and --raise, first for raising exception
 # when required number of rows are not found, second for specifying the

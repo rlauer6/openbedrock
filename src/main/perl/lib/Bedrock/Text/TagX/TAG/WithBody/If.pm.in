@@ -13,8 +13,6 @@ BEGIN
     $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
 }
 
-use Getopt::Long;
-
 use TagX::TAG::WithBody;
 
 @ISA = qw (TagX::TAG::WithBody);
@@ -44,149 +42,32 @@ sub end_child
 
 sub evaluate
 {
-    my ($lhs, $rhs, $cond) = @_;
-    for (lc($cond)) {
-	$_ eq 'gt' and return $lhs gt $rhs;
-	$_ eq 'ge' and return $lhs ge $rhs;
-	$_ eq 'lt' and return $lhs lt $rhs;
-	$_ eq 'le' and return $lhs le $rhs;
-	$_ eq 'eq' and return $lhs eq $rhs;
-	$_ eq 'ne' and return $lhs ne $rhs;
-	$_ eq 'and' and return $lhs && $rhs;
-	$_ eq 'or' and return $lhs || $rhs;
-	$_ eq 're' and return $lhs =~ /$rhs/ ? 1 : 0;
-    }
-}
-
-sub make_expr
-{
-    my $cur = [];
-    local($_);
-    while (@_ > 0 ) {
-	$_ = shift;
-	if ( $_ eq '(' ) {
-	    push @{$cur}, &make_expr;
-	} elsif ( $_ eq ')' ) {
-	    return $cur;
-	} else {
-	    push @{$cur}, $_;
-	}
-    }
-    $cur;
-}
-
-sub compact_dump
-{
-    my ($ref, $ctx, $string) = @_;
-    $ctx = '' unless defined( $ctx);
-    my $l = length( $ctx ); 
-    if ( ref( $ref ) eq 'HASH' ) {
-	my $i = 0;
-	for my $key (sort keys %$ref) {
-	    my $value = $ref->{$key};
-	    if ( ref( $value ) ) {
-		$string = &compact_dump( $value, $ctx ? "$ctx.$key" : $key, $string );
-	    } else {
-		$string .= ($i ? ' ' x $l . ".$key = " : "$ctx.$key = " ) .
-		    (defined( $value ) ? "($value)\n" : "*** Undefined ***\n");
-	    }
-	    $i++;
-	}
-    } elsif ( ref( $ref ) eq 'ARRAY' ) {
-	my ($i, $value);
-	for ($i = 0 ; $i < @$ref ; $i++ ) {
-	    $value = $ref->[$i];
-	    if ( ref( $value ) ) {
-		$string = &compact_dump( $value,
-				    $ctx ? ($i > 0 ? (' ' x $l . ".[$i]") : ("$ctx.[$i]")) : "[$i]",
-				    $string );
-	    } else {
-		if ( $i ) {
-		    $string .= ' ' x $l . ".[$i] = ($value)\n";
-		} else {
-		    $string .= "$ctx.[$i] = ($value)\n";
-		}
-	    }
-	}
-    }
-    $string;
-}
-
-sub parse_expr
-{
-    my $self = shift;
-    my $stm = &make_expr;
-    die "$self: extra arguments encountered: (@_)\n" if @_ > 0;
-    $stm;
-}
-
-sub eval_statement
-{
-    my ($self, $stm, $tx, @context) = @_;
-    local ($_);
-    for (my $i = 0 ; $i < scalar(@{$stm}) ; $i++ ) {
-	if ( ref ($stm->[$i]) eq 'ARRAY' ) {
-	    $stm->[$i] = $self->eval_statement ( $stm->[$i], $tx, @context );
-	}
-    }
-
-    die "$self: no expression to evaluate" unless @{$stm} > 0;
-
-    my $op = '';
-    my $lhs = shift @{$stm};
-    if ( $lhs and $lhs =~ /^--(not|exists)$/oi ) {
-	$op = lc($1);
-	die "$self: no expression after unary(`$op') operator" unless @{$stm} > 0;
-	$lhs = shift @{$stm};
-    }
-
-    if ( lc($lhs) eq '--name' ) {
-	die "$self: required arg missing after --name" unless @{$stm} > 0;
-	$lhs = shift @{$stm};
-	if ( $lhs eq '=' ) {
-	    die "$self: required arg missing after --name =" unless @{$stm} > 0;
-	    $lhs = shift @{$stm};
-	}
-	$lhs =~ s/^/\$/ unless $lhs =~ /^\$/o;
-    }
-
-    # Resolve $lhs here if needed
-    if ( $lhs && $lhs =~ /^\$/o ) {
-	my $data = $self->resolve_name ( $lhs, @context );
-	$lhs = $data;
-    }
-
-    if ( $op ) {
-	die "$self: extra args following unary(`$op') expression" if @{$stm} > 0;
+    if ( @_ == 1 ) {
+	return $_[0];
+    } elsif ( @_ == 2 ) {
+	# unary op
+	my ($op, $v) = @_;
 	for ($op) {
-	    $_ eq 'not' and return defined($lhs) && $lhs ? 0 : 1;
-	    $_ eq 'exists' and return defined($lhs) ? 1 : 0;
+	    $_ eq 'not' and return not $v;
+	    $_ eq 'exists' and return defined( $v );
+	    die "invalid unary operator in `if/else' statement: $_\n";
 	}
-    } elsif ( @{$stm} > 0 ) {
-	my $op = shift @{$stm};
-	die "$self: Invalid operator -- `$op'"
-	    unless $op =~ /^--(eq|ne|gt|ge|lt|le|re|or|and)$/oi;
-	$op = $1;
-
-	die "$self: required arg after `$op' missing" unless @{$stm} > 0;
-	my $rhs = shift @{$stm};
-	if ( lc($rhs) eq '--name' ) {
-	    die "$self: required arg missing after --name" unless @{$stm} > 0;
-	    $rhs = shift @{$stm};
-	    if ( $rhs eq '=' ) {
-		die "$self: required arg missing after --name =" unless @{$stm} > 0;
-		$rhs= shift @{$stm};
-	    }
-	    $rhs =~ s/^/\$/ unless $rhs =~ /^\$/oi;
+    } elsif ( @_ == 3 ) {
+	my ($lhs, $cond, $rhs) = @_;
+	for (lc($cond)) {
+	    $_ eq 'gt' and return $lhs gt $rhs;
+	    $_ eq 'ge' and return $lhs ge $rhs;
+	    $_ eq 'lt' and return $lhs lt $rhs;
+	    $_ eq 'le' and return $lhs le $rhs;
+	    $_ eq 'eq' and return $lhs eq $rhs;
+	    $_ eq 'ne' and return $lhs ne $rhs;
+	    $_ eq 'and' and return $lhs && $rhs;
+	    $_ eq 'or' and return $lhs || $rhs;
+	    $_ eq 're' and return $lhs =~ /$rhs/ ? 1 : 0;
+	    die "invalid binary operator in `if/else' statement: $_\n";
 	}
-
-	die "$self: extra args after RHS expr" if @{$stm} > 0;
-
-	# Resolve $rhs here if needed
-	$rhs = $self->resolve_name ( $rhs, @context ) if $rhs =~ /^\$/o;
-	return &evaluate ( $lhs, $rhs, $op);
     } else {
-	return $lhs ? $lhs : 0;
+	die "invalid number of args(@{[scalar(@_)]}) to `if/else' statement.\n(@_)";
     }
 }
 
@@ -194,33 +75,28 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    local (@ARGV) = exists $self->{'argv'} ? @{$self->{'argv'}} : ();
-    my %options = ('verbose' => 0);
-    &Getopt::Long::config("pass_through");
-    &GetOptions(\%options,
-		'verbose!');
-    my $verbose = delete $options{'verbose'};
+    my %options;
+    my @argv = $self->parse_options (\%options, @context);
+    my $verbose = $self->verbose;
 
     if ( $verbose ) {
-	$self->{'verbose'} = 1;
 	my ($key, $value);
 	my $str = "$self: Options are\n";
 	while (($key, $value) = each %options) {
 	    $str .= "\t$key .. ($value)\n";
 	}
-	$str .= "Arguments ..(@ARGV)";
+	$str .= "Arguments ..(@argv)";
 	$tx->log_message( MSG_DEBUG => $str );
     }
 
     # If no args defined, means we are executing the else branch
-    unless ( @ARGV > 0 ) {
+    unless ( @argv > 0 ) {
 	$self->SUPER::finalize( $tx, @context );
 	return;
     }
 
-    my $stm = $self->parse_expr ( @ARGV );
-    my $v = $self->eval_statement ( $stm, $tx, @context );
-    $tx->log_message( MSG_DEBUG => "Condition evaluated to ($v): " . ($v ? "(true)" : "(false)" ))
+    my $v = &evaluate( @argv );
+    $tx->log_message( MSG_DEBUG => "Statement (@argv) evaluated to ($v): " . ($v ? "(true)" : "(false)" ))
 	if $verbose;
     if ( $v ) {
 	$tx->log_message( MSG_DEBUG => "Condition succeeded .." ) if $verbose;
@@ -234,6 +110,9 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2000/04/13 15:21:01  sridhar
+# Using new parse_options method with support for expressions
+#
 # Revision 1.6  2000/03/23 20:37:12  sridhar
 # 1. Returns the value when evaluating checking a value
 # 2. Added --exists condition
