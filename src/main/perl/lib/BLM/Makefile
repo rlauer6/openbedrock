@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.10  2002/10/24 16:42:18  rlauer
+# - FileIO.pm
+#
 # Revision 1.9  2001/02/15 13:52:38  sridhar
 # Moved List.pm to OrderedObject.pm
 #
@@ -70,7 +73,7 @@ include ../make.pre
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
 		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm \
-		    Recycle.pm Stat.pm SMTP.pm SIMPLEFTP.pm OrderedObject.pm
+		    Recycle.pm Stat.pm SMTP.pm SIMPLEFTP.pm OrderedObject.pm FileIO.pm
 
 all: $(TARGETS)
 	cd Startup && $(MAKE) $@
