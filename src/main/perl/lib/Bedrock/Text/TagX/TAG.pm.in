@@ -6,7 +6,10 @@
 package TagX::TAG;
 
 use strict;
-use Getopt::Long;
+use TagX::Expr;
+use TagX::Term;
+use TagX::Term::Var;
+use TagX::Term::String;
 
 BEGIN
 {
@@ -16,29 +19,8 @@ BEGIN
     @ISA	= qw (Exporter);
 }
 
-#
-# Arg separators are single-quote, double quote, ..
-# Note the following ascii codes
-# " (double-quote)	=> \x22
-# ' (single-quote)	=> \x27
-# ( (open-paren)	=> \x28
-# ) (close-paren)	=> \x29
-# [ (open-bracket)	=> \x5b
-# ] (close-bracket)	=> \x5d
-# { (open-brace)	=> \x7b
-# } (close-brace)	=> \x7d
-# : (colon)		=> \x3a
-my $delim_expr		= "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
-my %ending		= ("\x22"	=> "\x22",
-			   "\x27"	=> "\x27",
-			   "q("		=> ")",
-			   "q["		=> "]",
-			   "q{"		=> "}",
-			   "q:"		=> ":",			   
-			   "qq("	=> ")",
-			   "qq["	=> "]",
-			   "qq{"	=> "}",
-			   "qq:"	=> ":");
+my $delim_expr		= $TagX::Expr::_delimiters;
+my %ending		= %TagX::Expr::_delimiter_end;
 
 sub new
 {
@@ -122,6 +104,31 @@ sub parent
     $self->{'parent'};
 }
 
+sub __save_option
+{
+    my ($argv, $optv, $generic, $key, $term) = @_;
+
+    if ( defined ($key) && exists $generic->{$key} ) {
+	$generic->{$key}++ unless defined( $term );
+	return;
+    }
+
+    if ( defined( $term ) && defined( $key ) ) {
+	push @{$argv}, $key, $term;
+	if ( exists ( $optv->{$key} ) ) {
+	    $optv->{$key} = [$optv->{$key}] unless ref($optv->{$key}) eq 'ARRAY';
+	    push @{$optv->{$key}}, $term;
+	} else {
+	    $optv->{$key} = $term;
+	}
+    } elsif ( defined( $key ) ) {
+	push @{$argv}, $key;
+	$optv->{$key}++;
+    } else {
+	push @{$argv}, $term;
+    }
+}
+
 #
 # Parse Tag options, and return an array of parsed options. Takes an array reference to populate
 # the options, and the string to parse. Returns the array reference
@@ -130,30 +137,33 @@ sub tagOptions_as_array
 {
     my $args = shift;
     local $_ = shift;
+    my $generic = shift;
     my $optref = {};
+    my $term;
     while ( length ) {
 	s/^\s*//;
 
-	if ( s/^([\x28\x29])\s*//oi ) {
-	    push @{$args}, $1;
+	if ( s/^\x28\s*//oi ) {
+	    push @{$args}, TagX::Expr->new;
 	    next;
 	}
 
 	# Check for option with value
 	if ( s/^--([\w-]+)\s*=\s*//oi ) {
-	    my $key = lc($1);
-	    push @{$args}, '--' . $key;
+	    my $key = lc ($1);
 
 	    # value delimited by special chars
 	    if ( s/^$delim_expr//oi ) {
 
 		# Found a delimiter after '='
 		# Check for value composed of non-delimiter, ended by the matching delimiter
-		if ( s/^([^\Q$ending{$1}\E]*)\Q$ending{$1}\E?// ) {
-		    push @{$args}, $optref->{$key} = $1;
-		} else {
-		    push @{$args}, $optref->{$key} = $_;
+		my $arg = ( s/^([^\Q$ending{$1}\E]*)\Q$ending{$1}\E?// ? $1 : $_ );
+		if ( $key eq 'name' ) {
+		    $arg =~ s/^/\$/ unless $arg =~ /^\$/;
+		    $key = undef;
 		}
+		$term = TagX::Term::String->new( $arg );
+		&__save_option ( $args, $optref, $generic, $key, $term );
 
 		# continue parsing for more options
 		next;
@@ -162,20 +172,23 @@ sub tagOptions_as_array
 	    # option with value continued. No starting delimiter after '='
 	    # Assume value delimited by spaces
 	    if ( s/^([^\s\x28\x29]+)//oi ) {
-		push @{$args}, $optref->{$key} = $1;
+		my $arg = $1;
+		$key = undef if $key eq 'name';
+		$term = ($arg =~ /^\$/o ? TagX::Term::Var->new( $arg ) : TagX::Term::String->new( $arg ));
 	    } else {
 		# No non-space stuff after '='
 		# push a NULL value into array
-		push @{$args}, $optref->{$key} = undef;
+		$term = TagX::Term::String->new('');
 	    }
+	    &__save_option ( $args, $optref, $generic, $key, $term );
+
+	    # continue parsing for more options
 	    next;
 	}			# end of parsing option with value
 
 	# Check for flag option -- option without '='
 	if ( s/^--([\w-]+)\s+//oi ) {
-	    my $key = lc($1);
-	    push @{$args}, '--' . $key;
-	    $optref->{$key} = undef;
+	    &__save_option ( $args, $optref, $generic, lc($1) );
 	    next;
 	}
 
@@ -184,20 +197,29 @@ sub tagOptions_as_array
 	if ( s/^$delim_expr//oi ) {
 
 	    # Yup, check for ending delimiter
-	    if ( s/^([^\Q$ending{$1}\E]*)\Q$ending{$1}\E?// ) {
-		push @{$args}, $1;
-	    } else {
-		push @{$args}, $_;
-	    }
+	    $term = ( s/^([^\Q$ending{$1}\E]*)\Q$ending{$1}\E?//
+		      ? TagX::Term::String->new( $1 ) : TagX::Term::String->new( $_ ) );
+	    &__save_option ( $args, $optref, $generic, undef, $term );
+
+	    # continue parsing for more options
 	    next;
 	}
 
 	# Non-option continued
 	# No starting delimiter, assume value delimited by spaces
 	if ( s/^([^\s\x28\x29]+)//oi ) {
-	    push @{$args}, $1;
+	    my $arg = $1;
+	    $term = ($arg =~ /^\$/o ? TagX::Term::Var->new( $arg ) : TagX::Term::String->new( $arg ));
+	    &__save_option ( $args, $optref, $generic, undef, $term );
+
+	    # continue parsing for more options
 	    next;
 	}
+
+	# Extra ')' get caught here
+	die "Unmatched ')' encountered ($_).";
+    } continue {
+	s/^\s*//;
     }
     $optref;
 }
@@ -207,16 +229,94 @@ sub options
     my $self = shift;
     if ( @_ == 1 ) {
 	my $optstring = shift;
-	$self->{'optstring'} = $optstring;
-	$self->{'argv'} = [];
-	$self->{'options'} = &tagOptions_as_array ( $self->{'argv'}, $optstring);
+	$self->{'__optstring'} = $optstring;
+	$self->{'__argv'} = [];
+	my %generic = ('verbose' => undef);
+	$self->{'__options'} = &tagOptions_as_array ( $self->{'__argv'}, $optstring, \%generic);
+	map { $self->{'__' . $_} = $generic{$_} if defined $generic{$_} } keys %generic;
     }
-    $self->{'options'};
+    $self->{'__options'};
+}
+
+sub verbose
+{
+    my $self = shift;
+    $self->{'__verbose'};
+}
+
+sub parse_options
+{
+    my $self = shift;
+    my $optref = shift;
+    my @keys = keys %$optref;
+    my (%keys, %defaults);
+    for my $key (@keys) {
+	next unless $key =~ /^([^=:]+)([:=].*)?$/;
+	$keys{$1} = $2;
+	$defaults{$1} = $optref->{$key} if defined( $optref->{$key} );
+    }
+    %{$optref} = ();
+
+    if ( $self->{'__verbose'} ) {
+	my ($key, $value);
+	warn "argv .. @{$self->{__argv}}\n";
+	while (($key, $value) = each %keys) {
+	    warn "keys{$key} => [$value] (default: $defaults{$key})\n";
+	}
+    }
+
+    my ($arg, @argv);
+    for ( my $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
+	$arg = $self->{'__argv'}->[$i];
+	if ( ref( $arg ) ) {
+	    push @argv, $arg->eval(@_);
+	    next;
+	}
+
+	if ( defined( $keys{$arg} ) ) {
+	    $i++;
+	    my $optval = $self->{'__argv'}->[$i];
+	    if ( exists ( $optref->{$arg} ) ) {
+		$optref->{$arg} = [$optref->{$arg}]
+		    unless ref($optref->{$arg}) eq 'ARRAY';
+		push @{$optref->{$arg}}, $optval->eval(@_);
+	    } else {
+		$optref->{$arg} = $optval->eval(@_);
+	    }
+	    next;
+	}
+
+	if ( exists( $keys{$arg} ) ) {
+	    $optref->{$arg}++;
+	    next;
+	}
+
+	push @argv, $arg;
+    }
+
+    for my $key (keys %defaults) {
+	next if exists $optref->{$key};
+	$optref->{$key} = $defaults{$key};
+    }
+
+    @argv;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2000/04/13 15:11:47  sridhar
+# 1. Using TagX::Term and TagX::Expr for handling expressions
+# 2. Generic options support (options supported by all tags, currently
+# only --verbose).
+# 3. Kick out `--name =', replace argument with variable beginning with
+# `$'.
+# 4. Unquoted variable names without `$' not supported.
+# 5. Added object method `verbose' since it is a generic option
+# 6. Added a new method `parse_options' invoked by all tags to resolve
+# variable on command line
+# 7. No longer have any use for `resolve_name' method.
+#
 # Revision 1.6  2000/03/22 13:40:47  sridhar
 # Method resolve_name() returns undef if variable does not exist.
 #
