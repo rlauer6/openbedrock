@@ -221,19 +221,25 @@ sub parse_options
 {
     my $self = shift;
     my $optref = shift;
-    my @keys = keys %$optref;
-    my (%keys, %defaults);
-    for my $key (@keys) {
-	next unless $key =~ /^([^=:]+)([:=].*)?$/;
-	$keys{$1} = $2;
-	$defaults{$1} = $optref->{$key} if defined( $optref->{$key} );
-    }
-    %{$optref} = ();
 
+    # The supported options list is contained in %keys_lc (key is the name of option (in lowercase)
+    # and value is the flag specified: `=s' if the option takes an argument)
+    # and the defaults specified therein are in %defaults
+    # %keys contains lower case options mapped to options with the right case
+    my (%keys, %keys_lc, %defaults);
+    for my $key (keys %$optref) {
+	next unless $key =~ /^([^=:]+)([:=].*)?$/;
+	my $lc = lc($1);
+	$keys_lc{$lc} = $2;
+	$keys{$lc} = $1;
+	$defaults{$lc} = $optref->{$key} if defined( $optref->{$key} );
+    }
+
+    # Do some logging
     if ( $self->{'__verbose'} ) {
 	my ($key, $value, $str);
 	$str = "Arguments [@{[scalar(@{$self->{__argv}})]}] are\n\t(@{$self->{__argv}})\n";
-	while (($key, $value) = each %keys) {
+	while (($key, $value) = each %keys_lc) {
 	    $str .= "  options{$key} => [";
 	    $str .= $value if defined($value);
 	    $str .= "] (default: ";
@@ -243,40 +249,70 @@ sub parse_options
 	&log_message( $self, "$str\n");
     }
 
-    my ($arg, @argv, $i);
+    # Step thru' the arguments list
+    my ($arg, $arg_lc, @argv, $i, %options);
     for ( $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
+	# Get the next argument
 	$arg = $self->{'__argv'}->[$i];
+
+	# Is the argument a `Term' or an `Expr'
 	if ( ref( $arg ) ) {
+	    # if so, evaluate it and push the value into the arguments array
 	    push @argv, $arg->eval(@_);
 	    next;
 	}
 
-	if ( defined( $keys{$arg} ) ) {
+	# Argument is not a `Term' or an `Expr'
+	# Is the argument an option which requires an argument?
+	$arg_lc = lc( $arg );
+	if ( defined( $keys_lc{$arg_lc} ) ) {
+	    # Yes, fetch the next argument
 	    $i++;
 	    my $optval = $self->{'__argv'}->[$i];
-	    if ( exists ( $optref->{$arg} ) ) {
-		$optref->{$arg} = [$optref->{$arg}]
-		    unless ref($optref->{$arg}) eq 'ARRAY';
-		push @{$optref->{$arg}}, $optval->eval(@_);
+
+	    # is this option repeated? if so, make an array ref and
+	    # push the value into the array along with the earlier value
+	    if ( exists ( $options{$arg_lc} ) ) {
+		# make an array ref
+		$options{$arg_lc} = [$options{$arg_lc}]
+		    unless ref($options{$arg_lc}) eq 'ARRAY';
+		# and push the value
+		push @{$options{$arg_lc}}, $optval->eval(@_);
 	    } else {
-		$optref->{$arg} = $optval->eval(@_);
+		# not repeated -- just evaluate the value
+		$options{$arg_lc} = $optval->eval(@_);
 	    }
 	    next;
 	}
 
-	if ( exists( $keys{$arg} ) ) {
-	    $optref->{$arg}++;
+	# Check whether the argument is an option which does not require a
+	# value
+	if ( exists( $keys_lc{$arg_lc} ) ) {
+	    # if so, increment the option value.
+	    # note that multiple occurences of such options results in
+	    # the value being incremented.
+	    $options{$arg_lc}++;
 	    next;
 	}
 
+	# if not an option, push into args array -- effectively just returns 
+	# unsupported options to caller.
 	push @argv, $arg;
     }
 
-    for my $key (keys %defaults) {
-	next if exists $optref->{$key};
-	$optref->{$key} = $defaults{$key};
+    # Remap the case of the options to the required case
+    %{$optref} = ();
+    for my $key (keys %options) {
+	$optref->{$keys{$key}} = $options{$key};
     }
 
+    # Reset any options to defaults if values for them not specified.
+    for my $key (keys %defaults) {
+	next if exists $options{$key};
+	$optref->{$keys{$key}} = $defaults{$key};
+    }
+
+    # Leave a trace on the way out
     if ( $self->verbose ) {
 	my $str = "Options evaluated to\n";
 	for my $key (sort keys %{$optref}) {
@@ -285,12 +321,18 @@ sub parse_options
 	$str .= "Arguments evaluated to\n\t(@argv)";
 	&log_message( $self, "$str\n" );
     }
+
+    # And return the arguments array left behind after processing options.
     @argv;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.12  2000/05/02 20:34:49  sridhar
+# 1. Options again became case-insensitive, but not by reducing tag options
+# to lowercase, but rather by a lookup scheme when parsing options
+#
 # Revision 1.11  2000/05/01 15:13:55  sridhar
 # Option keywords are now case-sensitive
 #
