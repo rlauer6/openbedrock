@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.8  2000/12/11 15:49:04  sridhar
+# Moved out some common defns/rules to include file.
+#
 # Revision 1.7  2000/12/01 15:10:27  sridhar
 # Added List.pm and cleaned up the Makefile a lot.
 #
@@ -71,11 +74,5 @@ all: $(TARGETS)
 
 install:: $(TARGETS:%=%-install)
 	cd Startup && $(MAKE) $@
-
-$(TARGETS)::
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) $@
-
-$(TARGETS:%=%-install)::
-	$(INSTALL) $(@:-install=)	$(CURRENT_TARGET)
 
 include ../make.post
