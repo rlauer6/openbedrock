@@ -25,8 +25,9 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('define-var=s' => undef,
-		   'define-array=s' => undef);
+    my %options = ('define-var=s'	=> undef,
+		   'define-array=s'	=> undef,
+		   'create-object=s'	=> undef);
 
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
@@ -40,8 +41,10 @@ sub finalize
 	&log_message( $self, $str );
     }
 
-    if ( exists $options{'define-var'} and exists $options{'define-array'} ) {
-	die "Use only one of `--define-var' or `--define-array' here.\n";
+    if ( exists $options{'define-var'} and
+	 exists $options{'define-array'} and
+	 exists $options{'create-object'} ) {
+	die "Use only one of `--define-var', `--define-array' `--create-object' here.\n";
     }
 
     die "Use `--define-var' once only.\n"
@@ -50,7 +53,16 @@ sub finalize
     die "Use `--define-array' once only.\n"
 	if exists $options{'define-array'} and ref($options{'define-array'});
 
+    die "Use `--create-object' once only.\n"
+	if exists $options{'create-object'} and ref($options{'create-object'});
+
     if ( exists $options{'define-var'} ) {
+	# Vanilla define-var does the following
+	#  1. If there is a single argument, the argument is bound to the
+	#     specified name
+	#  2. If there is more than one argument, an array is created out of
+	#     the args
+	#  3. If there are no args, a generic object is bound to the specified name
 	if ( @argv > 1 ) {
 	    &log_message( $self, "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
 		if $verbose;
@@ -63,9 +75,48 @@ sub finalize
 	    $tx->param( $options{'define-var'} => SIS::Hash->new );
 	}
     } elsif ( exists $options{'define-array'} ) {
+	# define-array explicitly specifies array creation with the arguments, if any
 	&log_message( $self, "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
 	    if $verbose;
 	$tx->param( $options{'define-array'} => SIS::Array->new(@argv) );
+    } elsif ( exists $options{'create-object'} ) {
+	# create-object creates an object and does the following
+	#  1. If the number of args is even, uses the arguments as
+	#     key-value pairs to initialize the object
+	#  2. If the number of args is odd and the first or last argument is
+	#     an array, this array is expanded one level and combined with the
+	#     rest of the arguments to use as key-value pairs
+	#  3. In both cases, the key must be a scalar -- cannot be an object, array ..
+	#  4. Anything else is an error
+	my $nArgs = @argv;
+	my $obj = SIS::Hash->new;
+
+	unless ( int($nArgs / 2) * 2 == $nArgs ) {
+	    &log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
+	    my $aref = $argv[0];
+	    if ( &UNIVERSAL::isa($aref, 'ARRAY') ) {
+		shift @argv;
+		&log_message( $self, "Prepending the following array to (@argv)\n(@{$aref})" ) if $verbose;
+		unshift @argv, @{$aref};
+	    } elsif ( defined($aref = $argv[-1]) and &UNIVERSAL::isa($aref, 'ARRAY') ) {
+		pop @argv;
+		&log_message( $self, "Appending the following array to (@argv)\n(@{$aref})" ) if $verbose;
+		push @argv, @{$aref};
+	    }
+	}
+
+	$nArgs = @argv;
+	die "Odd number of elements($nArgs) in object creation list.\n" unless int($nArgs / 2) * 2 == $nArgs;
+	&log_message( $self, "Key-value pairs for object creation are\n(@argv)" ) if $verbose;
+	my %args = @argv;
+	for my $key (keys %args) {
+	    die "Cannot use `$key' as a property name: must be a scalar.\n"
+		if ref($key);
+	    $obj->{$key} = $args{$key};
+	}
+
+	&log_message( $self, "Creating an object named $options{'create-object'}" ) if $verbose;
+	$tx->param( $options{'create-object'} => $obj);
     }
 }
 
@@ -74,6 +125,14 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.4  2000/11/29 21:00:37  sridhar
+# 1. Added option --create-object which takes the arguments and makes it
+# the properties of a newly created object.
+# 2. If the there are odd number of arguments, the first or last
+# argument is expanded if it is an array
+# 3. Throws exception if the object cannot be created due to invalid
+# arguments.
+#
 # Revision 1.3  2000/11/16 19:10:28  sridhar
 # Fixed error messages so exceptions don't have perl source code
 # locations in them.
