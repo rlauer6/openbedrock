@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.8  2000/08/25 20:44:21  sridhar
+# Added Scalar.pm
+#
 # Revision 1.7  2000/07/05 18:01:18  sridhar
 # Removed Header.pm
 #
@@ -29,7 +32,8 @@ include ../../make.pre
 
      CURRENT_PATH = Text/TagX
 
-          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm
+          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm \
+		    Scalar.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) TAG.pm
@@ -39,6 +43,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Parser.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Func.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Scalar.pm
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
@@ -51,6 +56,7 @@ install:
 	$(INSTALL) Parser.pm		$(CURRENT_TARGET)
 	$(INSTALL) Func.pm		$(CURRENT_TARGET)
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
+	$(INSTALL) Scalar.pm		$(CURRENT_TARGET)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
