@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.8  2000/12/11 15:11:59  sridhar
+# Vastly cleaned up.
+#
 # Revision 1.7  2000/11/20 18:20:04  sridhar
 # Added UserSession.pm
 #
@@ -30,26 +33,12 @@ include ../../make.pre
      CURRENT_PATH = BLM/Startup
 
           TARGETS = Modules.pm Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm \
-		    Hitcounter.pm Session.pm AutoDB.pm UserSession.pm
+		    Hitcounter.pm Session.pm AutoDB.pm UserSession.pm Forum.pm Output.pm
 
 all: $(TARGETS)
 	cd Session	&& $(MAKE) $@
 
-$(TARGETS)::
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) $@
-
-install:
-	$(INSTALL) Modules.pm	$(CURRENT_TARGET)
-	$(INSTALL) Bedrock.pm	$(CURRENT_TARGET)
-	$(INSTALL) Config.pm	$(CURRENT_TARGET)
-	$(INSTALL) Env.pm	$(CURRENT_TARGET)
-	$(INSTALL) Input.pm	$(CURRENT_TARGET)
-	$(INSTALL) Cookie.pm	$(CURRENT_TARGET)
-	$(INSTALL) Header.pm	$(CURRENT_TARGET)
-	$(INSTALL) Hitcounter.pm	$(CURRENT_TARGET)
-	$(INSTALL) Session.pm	$(CURRENT_TARGET)
-	$(INSTALL) AutoDB.pm	$(CURRENT_TARGET)
-	$(INSTALL) UserSession.pm	$(CURRENT_TARGET)
-	cd Session	&& $(MAKE) $@
+install:: $(TARGETS:%=%-install)
+	cd Session && $(MAKE) $@
 
 include ../../make.post
