@@ -10,8 +10,9 @@ BEGIN
 use BLM::PDF::Defaults;
 use BLM::PDF::Document::Document;
 use BLM::PDF::Render::Newline;
+use BLM::PDF::Render::Text::Metrics;
 use BLM::PDF::Text::Text;
-use BLM::PDF::Text::TextProperties;
+use BLM::PDF::Text::Properties;
 
 @ISA = qw(BLM::PDF::Document::Document PDF::Log);
 use strict;
@@ -34,7 +35,6 @@ sub new
    $$this{'text_properties'}	= undef; #new BLM::PDF::Text::TextProperties;
    $$this{'page_properties'}	= undef; #new BLM::PDF::Document::Page::Properties;
    $$this{'components'}		= [];
-   $$this{'flow_control'}	= [];
    $$this{'biggest_font'}       = 0; #$this->{'text_properties'}->getFontSize();
    $$this{'drop'}		= new BLM::PDF::Render::Newline;
    $$this{'width'}		= $BLM::PDF::Defaults::Defaults{'page_width'}*72;
@@ -47,9 +47,8 @@ sub new
    bless($this, $class);
    $this->addComponent($this->{'drop'});
 
-   #unshift @{$this->{'flow_control'}}, $$this{'text_properties'};
-   push @{$this->{'flow_control'}}, $this;
-   return $this;
+   push @{$this->{'components'}}, $this;
+   $this;
 } # sub new
 
 sub setOutlineText
@@ -63,7 +62,7 @@ sub setOutlineText
 sub getHeight 		  { ${_[0]}->{'height'}; }
 sub getWidth 		  { ${_[0]}->{'width'}; }
 sub getOutlineText	  { ${_[0]}->{'outline_header_text'}; }
-sub getFlowControlObjects { ${_[0]}->{'flow_control'}; } 
+sub getComponents	  { ${_[0]}->{'components'}; } 
 sub getRootDocument	  { ${_[0]}->{'root_document'}; } 
 
 sub setPeer
@@ -90,7 +89,6 @@ sub addComponent
    if( ref $ob )
    {
       push @{$this->{'components'}}, $ob;
-      push @{$this->{'flow_control'}}, $ob;
    }
 } # sub addComponent
 
@@ -114,8 +112,8 @@ sub addText
 {
    my $this = shift;
    my $text = shift;
-
    my $properties = $$this{'text_properties'};
+   $text = $this->_collapseText($text, $properties);
    $this->addComponent($properties);
    my $size = $properties->getFontSize();
 
@@ -151,6 +149,121 @@ sub addText
    }
 } # sub addText
 
+=begin comment
+
+$+ returns whatever the last bracket match matched. 
+$& returns the entire matched string. 
+($0 used to return the same thing, but not any more.) 
+$` returns everything before the matched string. 
+$' returns everything after the matched string. Examples: 
+
+=cut
+
+sub _collapseText
+{
+   my ($this, $text, $text_properties) = @_;
+   my $page_properties = $$this{'page_properties'};
+   my $left_margin     = 72*$page_properties->getLeftMargin();
+   my $right_margin    = $this->getWidth()-(72*$page_properties->getRightMargin());
+   my $metrics = BLM::PDF::Render::Text::Metrics->new($text_properties, 
+				           $text_properties->getFont());
+   my $fontsize = $text_properties->getFontSize();
+   my $newlines             = ($text =~ tr/\n//);
+   my @lines                = split "\n", $text;
+   my @collapsed            = ();
+   my $ignore_leading_space = $page_properties->getDiscardLeadingSpace();
+
+   push @lines, map { '' } (1..($newlines-@lines+1));
+
+   foreach my $line (@lines)
+   {
+      my @collected 	= ();
+      my $x 		= $left_margin;
+      my $width 	= $metrics->stringWidth($line, $fontsize);
+
+      #print STDERR "LINE: ".($x+$width)." RIGHT: $right_margin\n";
+      if( $x+$width < $right_margin )
+      {
+         push @collapsed, $line;
+      }
+      else
+      {
+	 my $panic = 0;
+	 $_ = $line;
+	 #print STDERR "LINE: \"$_\"\n";
+
+         while( length $_ && ++$panic < 20 )
+	 {
+	    my $is_spaces = 0;
+	    /^\w+/ or  ($is_spaces = $_ =~ /^\s+/) or /^\W+/;
+
+	    #print STDERR "TOKEN: \"$&\"\n";
+	    #print STDERR "IS SPACE: ", $is_spaces ? "YES" : "NO", "\n";
+	    my $word_width = $metrics->stringWidth($&, $fontsize);
+	    #print STDERR "Current Word Width: $word_width\n";
+	    #print STDERR "$x/$right_margin\n";
+
+	    if( $x+$word_width < $right_margin )
+	    {
+	       unless( $is_spaces || $
+	       push @collected, $& unless $ignore_leading_space && 
+			        $is_spaces && 0 == @collected;
+	       $x += $word_width;
+	    }
+	    else
+	    { 
+	       if( @collected > 0 )
+	       {
+	          push @collapsed, join '', @collected;
+		  $x = $left_margin;
+	          @collected = ();
+		  if( $x+$word_width < $right_margin )
+		  { push @collected, $&; }
+	       }
+	    }
+	    $_ = $';
+	 }
+	 push @collapsed, join '', @collected;
+      }
+   }
+
+   #print STDERR "COLLAPSED: [", join("\n", @collapsed), "]\n";
+   join "\n", @collapsed;
+} # sub _collapseText
+
+=begin comment
+	       else # An unbroken word extending past the margin 
+	       { # First fit what we can on current line
+                  print STDERR "LONG UNBROKEN [$word]\n";
+	          my ($i, $length) = (1, length $word);
+		  my $sub = substr $word, 0, $i;
+		  my $sub_width = $metrics->stringWidth($sub, $fontsize);
+
+	          while( $sub_width+$x < $right_margin && $i <= $length )
+	          {
+	            $sub = substr $sub, 0, ++$i;
+		    $sub_width = $metrics->stringWidth($sub, $fontsize);
+	          }
+
+		  chop $sub;
+	          push @collapsed, $sub;
+
+	 	  $sub = substr $word, $i;
+	         
+	          # Now break the rest of the word into parts that
+	 	  # span entire lines until it is exhausted
+	          while( length )
+		  {
+	             my ($i, $length) = (1, length $sub);
+		
+		     while( $i < $length && $left_margin+
+	                    $metrics->stringWidth(substr($sub, 0, $i), $fontsize) )
+	  	     { $i++ }
+		     push @collapsed, substr $sub, 0, $i;
+		     $sub = substr $sub, $i;
+	          }
+    	       }
+=cut
 sub getTextProperties
 {
    my $this = shift;
@@ -175,7 +288,7 @@ sub close
                             ["${_}Footer", $_, 'bottom']); } @aligns)
    {
       #print STDERR "Adding ".$type->[0]." ".$type->[1]."\n";
-      my $text_properties = new BLM::PDF::Text::TextProperties;
+      my $text_properties = new BLM::PDF::Text::Properties;
       my $font = $text_properties->getFont();
       my $prefix = 'get'.$type->[0];
       #print STDERR "PREFIX: $prefix\n";

@@ -20,10 +20,11 @@ my %cached_fonts = ();
 sub new
 {
    my $class = shift;
-   my ($registry, $peer, $page_node, $page_num) = @_;
+   my ($pages, $registry, $peer, $page_node, $page_num) = @_;
    die "Peer not given in constructor" unless ref $peer;
    my $this = BLM::PDF::Render::PDFObject->new($registry, $peer);
 
+   $$this{'pages'}		= $pages;
    $$this{'page_node'} 		= $page_node;
    $$this{'page_num'}		= $page_num;
    $$this{'page_contents'}	= [];
@@ -31,15 +32,84 @@ sub new
    $$this{'fonts'}		= new BLM::PDF::Render::Dictionary;
    $$this{'active_font'}	= undef;
    $$this{'text_object'}	= undef;
-   $$this{'first_text'}		= undef;
    my ($height, $width) 	= ($peer->getHeight(), $peer->getWidth());
    $$this{'cursor'}		= BLM::PDF::Render::Cursor->new(0, $height);
+   $$this{'components'}		= $peer->getComponents();
 
    bless $this, $class;
-   return $this;
 } # sub new
 
+sub _paginate
+{
+   # The new page will inherit the state from the paginating
+   # parent and allow it to handle the remaining components
+   my ($parent, $remaining) = @_;
+   my ($registry, $peer) = ($parent->getRegistry(), $parent->getPeer());
+   my $this = BLM::PDF::Render::PDFObject->new($registry, $peer);
+
+   foreach my $key ('pages', 'page_node', 'page_resources', 'fonts',
+		    'active_font' )
+   { $$this{$key} = $$parent{$key}; }
+
+   $$this{'page_num'}    = $$parent{'page_num'}+1;
+   $$this{'page_contents'} = [];
+   $$this{'text_object'} = undef;
+   $$this{'cursor'}      = BLM::PDF::Render::Cursor->new(0, $peer->getHeight());
+   $$this{'components'}	 = $remaining;
+
+   #print STDERR "PARENT: $parent PEER: $peer THIS: $this\n";
+   #print STDERR "KIDS IN PAGINATE: ",$this->{'pages'}->getKids(),"\n";
+   #while( my($key, $value) = each %$this )
+   #{ print STDERR "$key => $value\n"; }
+
+   bless $this, ref $parent;
+   $parent->{'pages'}->addKid($this);
+   print STDERR "OBJECT NUMBER: ", $this->getReference(), "\n";
+   print STDERR "ASCC OBJECT: ", $$this{'object'}, "\n";
+   $registry->addObject($this);
+
+   $this->validate();
+} # _paginate
+
 sub getPageNumber() { ${_[0]}->{'page_num'}; }
+
+sub validate
+{
+   my $this 	= shift;
+   my $registry = $this->getRegistry();
+   my $peer	= $this->getPeer();
+   my $page_properties = $peer->getPageProperties();
+   my $components = $$this{'components'};
+   my $cursor 	= BLM::PDF::Render::Cursor->new(0, $this->{'cursor'}->y());
+   my $text_properties = undef;
+   
+   $cursor->advance(0, -$page_properties->getTopMargin()*72);
+
+   for( my ($i, $j) = (0, scalar @$components); $i < $j; $i++ )
+   {
+      my $obj = $components->[$i];
+      $text_properties = $obj if 'BLM::PDF::Text::Properties' eq ref $obj;
+      last if defined $text_properties;
+   }
+
+   my $bottom_margin = $page_properties->getBottomMargin()*72;
+
+   for( my ($i, $j) = (0, scalar @$components); $i < $j; $i++ )
+   {
+      my $obj = $components->[$i];
+      next unless 'BLM::PDF::Render::Newline' eq ref $obj;
+      $cursor->advance(0, $obj->getDrop());
+
+      if( $cursor->y() < $bottom_margin )
+      {
+         print STDERR "PAGING HALT\n";
+         my $remaining = [splice @$components, $i];
+         unshift @$remaining, $text_properties if defined $text_properties;
+         $this->_paginate($remaining);
+	 last;
+      }
+   }
+} # sub validate
 
 sub render
 {
@@ -47,7 +117,7 @@ sub render
    my $registry = $this->getRegistry();
    my $peer	= $this->getPeer();
    my $page_properties = $peer->getPageProperties();
-   my $layout	= $peer->getFlowControlObjects();
+   my $layout	= $$this{'components'};
    my $resources = $$this{'page_resources'};
 
    $this->insertName('Type', 'Page');
@@ -69,12 +139,10 @@ sub render
       $this->_handleObject($nl);
    }
 
-   my ($i, $j) = (0, scalar @$layout);
-   for( ; $i < $j; $i++ )
+   while( my $component = shift @$layout )
    {
-      my $ob = $layout->[$i];
       #print STDERR "Object: $ob\n";
-      $this->_handleObject($ob, $peer);
+      $this->_handleObject($component, $peer);
    }
    $this->_endTextObject();
 
@@ -101,7 +169,7 @@ sub _handleObject
    (
       'BLM::PDF::Text::Text'	       => \&_handleText,
       'BLM::PDF::Render::Newline'      => \&_handleNewline,
-      'BLM::PDF::Text::TextProperties' => \&_handleTextProperties,
+      'BLM::PDF::Text::Properties'     => \&_handleTextProperties,
       'BLM::PDF::Document::Page'       => \&_nillHandler,
    );
    my $handler = $handlers{ref $ob};
@@ -132,10 +200,15 @@ sub _handleNewline
    my $this 		= shift;
    my ($ob, $peer) 	= @_;
    my $text_object	= $$this{'text_object'};
-   my $cursor		= $$this{'cursor'};
+   my $cursor	    	= $$this{'cursor'};
+   my $left_margin  	= 72 * $this->getPeer()->getPageProperties()->getLeftMargin();
+   my $xtranslate	= -$cursor->x()+$left_margin;
 
-   $text_object->addBytes("-".$cursor->x() .' '. $ob->getDrop() . " Td\n");
-   $this->{'cursor'}->advance(-$cursor->x(), $ob->getDrop());
+   $text_object->addBytes($xtranslate.' '. $ob->getDrop() . " Td\n");
+   $this->{'cursor'}->advance($xtranslate, $ob->getDrop());
+
+   $this->_paginate if $cursor->y() <= 
+	$this->getPeer()->getPageProperties()->getBottomMargin();
 } # sub _handleNewline
 
 sub _handleTextProperties
