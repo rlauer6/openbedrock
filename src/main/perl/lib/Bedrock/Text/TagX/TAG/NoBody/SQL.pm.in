@@ -24,6 +24,7 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
+    $tx->log_message( MSG_DEBUG => "Finalizing $self with\n@{$self->{'argv'}}" );
     local (@ARGV) = @{$self->{'argv'}};
     my %valid = ('dbname'	=> '_anonymous_');
     &GetOptions(\%valid,
@@ -31,27 +32,42 @@ sub finalize
 		'arg=s@',
 		'statement=s',
 		'bind=s@');
+    $tx->log_message ( MSG_DEBUG => "Statement is <$valid{'statement'}>" );
     return unless exists $valid{'statement'};
     my $name = $valid{'dbname'};
+    $tx->log_message ( MSG_DEBUG => "dbname is <$name>, handle is <$tx->{'DB'}->{$name}>" );
     return unless exists $tx->{'DB'}->{$name};
 
     my $dbh = $tx->{'DB'}->{$name};
     my $statement = $valid{'statement'};
     my @args = @{$valid{'arg'}} if exists $valid{'arg'};
-    my @bind = @{$valid{'bind'}} if exists $valid{'bind'};
-
     my @argvals = map { $self->resolve_name ( $_, @context ) } @args;
-    my @bindvals = map { $self->resolve_name ( $_, @context ) } @bind;
-
     $statement = sprintf ($statement, @argvals) if @args > 0;
     my $sth = $dbh->prepare ( $statement );
-    return unless $sth;
-    $sth->execute (@bindvals);
+
+    my $i = 1;
+    for my $varname (@{$valid{'bind'}}) {
+	my $type = $1 if $varname =~ s/\s*\(\s*(\d+)\s*\)\s*$//oi;
+	my $value = $self->resolve_name ( $varname, @context );
+	if ( defined( $type ) ) { $sth->bind_param ( $i, $value, {TYPE => $type}) }
+	else { $sth->bind_param ( $i, $value ); }
+	$tx->log_message( MSG_DEBUG => "Bound ($i, $varname, $type, $value)" );
+    } continue {
+	$i++;
+    }
+
+    my $rows = $sth->execute;
+    $tx->log_message( MSG_DEBUG => "Number of rows affected by statement is <$rows>" );
+    $rows;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.3  2000/02/23 13:42:03  sridhar
+# 1. More logging
+# 2. Support for binding value with type specification
+#
 # Revision 1.2  2000/02/08 15:37:44  sridhar
 # Added support for being able to use Exporter version numbers
 #
