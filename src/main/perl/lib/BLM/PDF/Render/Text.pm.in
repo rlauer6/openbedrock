@@ -1,0 +1,102 @@
+package BLM::PDF::Render::Text;
+
+use lib '/export/home/aviert/modules';
+use lib '/export/home/aviert/modules/lib/perl5/site_perl/5.005';
+use BLM::PDF::Log;
+use BLM::PDF::Render::Cursor;
+use BLM::PDF::Render::TextMetrics;
+use strict;
+
+sub new
+{
+   my $class = shift;
+
+   my $this = 
+     {
+	'page'		=> shift,
+        'properties'	=> shift,
+        'font'		=> shift,
+        'cursor'	=> shift,
+	'text'		=> '',
+     };
+
+   return bless $this, $class;
+} # sub new
+
+sub drawString
+{
+   my $this = shift;
+   my $text = shift;
+   $this->{'text'} .=  $text;
+} # sub drawString
+
+sub render
+{
+   my $this 		= shift;
+   my $pagepeer		= $$this{'page'}->getPeer();
+   my $rendered 	= '';
+   my $properties 	= $$this{'properties'};
+   my $align		= $properties->getAlign();
+   my $valign		= $properties->getVAlign();
+   my $font		= $$this{'font'};
+   my $fontpeer		= $font->getPeer();
+   my $fontsize		= $properties->getFontSize();
+   my $color		= $properties->getColor();
+   my $cursor		= $$this{'cursor'};
+   my ($r, $g, $b)	= (substr($color, 1, 2), substr($color, 3, 2),
+			   substr($color, 5, 3));
+
+   $rendered .= '/' . $fontpeer->getFontHandle() . " $fontsize Tf\n".
+	        $properties->getRenderMode() . " Tr\n".
+	        hex($r)/255 . ' ' . hex($g)/255 . ' ' . hex($b)/255 . " rg\n";
+
+   my @lines = split "\n", $this->{'text'};
+   if( scalar @lines > 1 ) { die ref($this) . " no multiple lines, please"; }
+   my $line = @lines;
+
+   my $textwidth;
+   my $textheight = $fontsize;
+
+   my $cx = $cursor->x();
+   my $cy = $cursor->y();
+
+   my %getXAlign = 
+      ( "left"   => sub {-$cx; },
+        "center" => sub {-$cx+(($pagepeer->getWidth()-$textwidth)/2); },
+        "right"  => sub {-$cx+($pagepeer->getWidth()-$textwidth); },
+      );
+
+   my %getYAlign = 
+      ( "top"    => sub {$pagepeer->getHeight()-$cy-$textheight; },
+        "center" => sub {-$cy+(($pagepeer->getHeight()-$textheight)/2); },
+        "bottom" => sub {-$cy; }
+      );
+
+   my $text = $this->{'text'};
+   my $metrics = BLM::PDF::Render::TextMetrics->new($properties, $font);
+   $textwidth = $metrics->stringWidth($text);
+   return '' unless $textwidth > 0;
+
+   my ($x, $y) = (0, 0);
+   $y = $getYAlign{$valign}->() if defined $valign;
+   $x = $getXAlign{$align}->() if defined $align;
+
+   # Escape special characters ala pdf
+   $text =~ s.\(.\\(.g;
+   $text =~ s.\).\\).g;
+   $text =~ s.\\.\\\\.g;
+
+   if( $x+$y != 0 )
+   { 
+      $rendered .= "$x $y Td\n" . "($text) Tj\n" .
+                   -$x . " " . " " . -$y . " Td\n"; 
+   }
+   else { $rendered .= "($text) Tj\n"; }
+   $rendered .= "$textwidth 0 Td\n";
+   $cursor->advance($textwidth, 0);
+
+   return  $rendered;
+} # sub render
+
+1;
+# Text.pm

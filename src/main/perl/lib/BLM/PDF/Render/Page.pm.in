@@ -1,0 +1,198 @@
+package BLM::PDF::Render::Page;
+
+@ISA = qw(BLM::PDF::Render::PDFObject);
+
+use lib '/export/home/aviert/modules';
+use BLM::PDF::Log;
+use BLM::PDF::Document::Document;
+use BLM::PDF::Document::Page;
+use BLM::PDF::Render::Array;
+use BLM::PDF::Render::Cursor;
+use BLM::PDF::Render::Dictionary;
+use BLM::PDF::Render::Newline;
+use BLM::PDF::Render::PDFObject;
+use BLM::PDF::Render::Stream;
+use BLM::PDF::Render::Text;
+use BLM::PDF::Render::TextObject;
+use strict;
+
+my %cached_fonts = ();
+
+sub new
+{
+   my $class = shift;
+   my ($registry, $peer, $page_node) = @_;
+   die "Peer not given in constructor" unless ref $peer;
+   my $this = BLM::PDF::Render::PDFObject->new($registry, $peer);
+   $$this{'page_node'} 		= $page_node;
+   $$this{'page_contents'}	= [];
+   $$this{'page_resources'}	= new BLM::PDF::Render::Dictionary;
+   $$this{'fonts'}		= new BLM::PDF::Render::Dictionary;
+   $$this{'active_font'}	= undef;
+   $$this{'text_object'}	= undef;
+   $$this{'first_text'}		= undef;
+   $$this{'biggest_font'}	= 0;
+   my ($height, $width) 	= ($peer->getHeight(), $peer->getWidth());
+   $$this{'cursor'}		= BLM::PDF::Render::Cursor->new(0, $height);
+
+   bless $this, $class;
+   return $this;
+} # sub new
+
+sub render
+{
+   my $this 	= shift;
+   my $registry = $this->getRegistry();
+   my $peer	= $this->getPeer();
+   my $layout	= $peer->getFlowControlObjects();
+   my $resources = $$this{'page_resources'};
+
+   $this->insertName('Type', 'Page');
+
+   $this->insertRectangle('MediaBox', 0, 0, $peer->getWidth(), 
+			  $peer->getHeight());
+
+   $this->insertIndirectObject('Parent', $$this{'page_node'});
+
+   $this->_startTextObject();
+
+   # Move the origin to the upper left corner of the page
+   # where we will begin drawing
+   $this->{'text_object'}->addBytes("0 ". $this->{'cursor'}->y() . " Td\n");
+
+   my ($i, $j) = (0, scalar @$layout);
+   for( ; $i < $j; $i++ )
+   {
+      my $ob = $layout->[$i];
+      #print STDERR "Object: $ob\n";
+      $this->_handleObject($ob, $peer);
+   }
+   $this->_endTextObject();
+
+   my $array = new BLM::PDF::Render::Array;
+
+   foreach my $item (@{$this->{'page_contents'}})
+   {
+      #print STDERR "ITEM: $item\n";
+      if( ref $item )
+      { $array->insertIndirectObject($item); }
+   }
+   $this->insertArray('Contents', $array);
+   $resources->insertDictionary('Font', $$this{'fonts'});
+   $this->insertDictionary('Resources', $resources);
+
+   return $this->SUPER::render();
+} # sub render
+
+sub _handleObject
+{
+   my $this		= shift;
+   my ($ob, $peer)	= @_;
+   my %handlers =
+   (
+      'BLM::PDF::Text::Text'	=> \&_handleText,
+      'BLM::PDF::Render::Newline'	=> \&_handleNewline,
+      'BLM::PDF::Text::TextProperties' => \&_handleTextProperties,
+      'BLM::PDF::Document::Page' => \&_nillHandler,
+   );
+   my $handler = $handlers{ref $ob};
+   die "NO HANDLER for type '", ref $ob, "'" unless ref $handler eq 'CODE';
+   $handler->($this, $ob, $peer);
+} # sub _handleObject
+
+sub _handleText
+{
+   my $this 		= shift;
+   my ($ob, $peer) 	= @_;
+   my $registry		= $this->getRegistry();
+   my $obj = BLM::PDF::Render::PDFObject->new($registry);
+   my $font		= $$this{'active_font'};
+   my $properties 	= $$this{'active_properties'};
+   my $text_object	= $$this{'text_object'};
+
+   $properties = $ob->getProperties();
+   #print STDERR "VALIGN: " . $properties->getVAlign() . " (".$ob->getText().")\n";
+   my $text = BLM::PDF::Render::Text->new($this, $properties, $font, 
+				     $$this{'cursor'});
+   $text->drawString($ob->getText());
+   $text_object->addBytes($text->render())
+} # sub _handleText
+
+sub _handleNewline
+{
+   my $this 		= shift;
+   my ($ob, $peer) 	= @_;
+   my $text_object	= $$this{'text_object'};
+   my $cursor		= $$this{'cursor'};
+
+   $text_object->addBytes("-".$cursor->x() .' '. $ob->getDrop() . " Td\n");
+   $this->{'cursor'}->advance(-$cursor->x(), $ob->getDrop());
+} # sub _handleNewline
+
+sub _handleTextProperties
+{
+   my $this 		= shift;
+   my ($ob, $peer) 	= @_;
+   my $properties 	= $ob;
+   my $fontpeer = $properties->getFont();
+   my $font = $this->_buildFont($properties);
+   my $registry = $this->getRegistry();
+   $registry->addObject($font);
+   $$this{'active_font'} = $font;
+   $$this{'active_properties'} = $properties;
+   my $fontsize = $properties->getFontSize();
+   $$this{'biggest_font'} = $fontsize if $fontsize > $$this{'biggest_font'};
+} # sub _handleTextProperties
+
+sub _buildFont
+{
+   my $this = shift;
+   my ($properties) = @_;
+   my $fontpeer = $properties->getFont();
+   my $fontname = $fontpeer->getFontName();
+   my $registry = $this->getRegistry();
+
+   my $font = $cached_fonts{$fontname};
+
+   if( defined $font )
+   {
+      my $handle = $fontpeer->getFontHandle();
+
+    #  $this->{'fonts'}->insertIndirectObject($handle, $font)
+    #     unless $this->{'fonts'}->exists($handle);
+   }
+   else
+   {
+      $font = BLM::PDF::Render::PDFObject->new($registry, $fontpeer);
+      $this->{'fonts'}->insertIndirectObject($fontpeer->getFontHandle(), $font);
+      $font->insertName('Type', 'Font');
+      $font->insertName('Subtype', 'Type1');
+      $font->insertName('BaseFont', $fontpeer->getFontName());
+      $cached_fonts{$fontname} = $font;
+   }
+   return $font;
+} # sub _buildFont
+
+sub _startTextObject
+{
+   my $this = shift;
+   $$this{'text_object'}	= new BLM::PDF::Render::TextObject;
+} # _startTextObject
+
+sub _endTextObject
+{
+   my $this = shift;
+   my $text_object 	= $$this{'text_object'};
+   my $registry		= $this->getRegistry();
+   my $obj = BLM::PDF::Render::PDFObject->new($registry);
+   $obj->setObject(new BLM::PDF::Render::Stream);
+   #my $text_ob = BLM::PDF::Render::Text->new($properties, $font);
+   $obj->setBytes("BT\n" . $text_object->render() . "ET\n");
+   $registry->addObject($obj);
+   push @{$this->{'page_contents'}}, $obj;
+} # sub _endTextObject
+
+sub _nillHandler {}
+
+1;
+# Page.pm
