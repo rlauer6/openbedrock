@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.5  2000/06/01 18:38:45  sridhar
+# Added Func.pm and Parser.pm
+#
 # Revision 1.4  2000/04/24 12:45:47  sridhar
 # Added TagX::Log for logging messages
 #
@@ -20,13 +23,15 @@ include ../../make.pre
 
      CURRENT_PATH = Text/TagX
 
-          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm
+          TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) TAG.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Output.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Expr.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Term.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Parser.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Func.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
@@ -37,6 +42,8 @@ install:
 	$(INSTALL) Doc.pm		$(CURRENT_TARGET)
 	$(INSTALL) Expr.pm		$(CURRENT_TARGET)
 	$(INSTALL) Term.pm		$(CURRENT_TARGET)
+	$(INSTALL) Parser.pm		$(CURRENT_TARGET)
+	$(INSTALL) Func.pm		$(CURRENT_TARGET)
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
