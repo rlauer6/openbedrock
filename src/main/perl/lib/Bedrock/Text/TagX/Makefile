@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.10  2000/11/16 19:27:35  sridhar
+# Added Error.pm
+#
 # Revision 1.9  2000/11/07 13:58:30  sridhar
 # Added Symtab.pm
 #
@@ -36,20 +39,14 @@ include ../../make.pre
      CURRENT_PATH = Text/TagX
 
           TARGETS = TAG.pm Doc.pm Output.pm Expr.pm Term.pm Log.pm Parser.pm Func.pm \
-		    Scalar.pm
+		    Scalar.pm Error.pm
 
-all:
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) TAG.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Output.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Expr.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Term.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Parser.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Func.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Scalar.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Symtab.pm
+all: $(TARGETS)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
+
+$(TARGETS)::
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) $@
 
 install:
 	$(INSTALL) TAG.pm		$(CURRENT_TARGET)
@@ -62,6 +59,7 @@ install:
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
 	$(INSTALL) Scalar.pm		$(CURRENT_TARGET)
 	$(INSTALL) Symtab.pm		$(CURRENT_TARGET)
+	$(INSTALL) Error.pm		$(CURRENT_TARGET)
 	cd TAG		&& $(MAKE) $@
 	cd Term		&& $(MAKE) $@
 
