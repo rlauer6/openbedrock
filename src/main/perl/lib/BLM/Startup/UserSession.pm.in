@@ -1,0 +1,402 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package BLM::Startup::UserSession;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Carp;
+use DBI;
+use SIS::Hash;
+use TagX::Log;
+@ISA = qw(SIS::Hash);
+
+#
+# `session' is stored under $self
+# `username', `password', `firstname', `lastname', `email' if stored under $self->{'data'}
+# Password is stored only if user has logged on
+# `new_session' is set to 1 if no previous session info found for user
+# Other than these are stored under $self->{'data'}->{'prefs'}
+#
+sub readData
+{
+    my ($self, $id) = @_;
+
+    $self->{'session'} = $id;
+    &log_message( undef, "session [$id]" );
+
+    my $verbose = $self->{'verbose'};
+    my $dbh = $self->{'dbh'};
+    my $stm = qq{
+	select session, username, firstname, lastname, email, prefs
+	from $self->{'config'}->{'table_name'}
+	where session = ?
+	};
+    my $sth = $dbh->prepare($stm);
+    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
+    $sth->bind_param ( 1, $id ) || die "Could not bind `$id': ", $sth->errstr, "\n";
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+	unless defined $rows;
+
+    my $aref = $sth->fetch;
+    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+
+    my $data = {};
+    if ( $aref ) {
+	&log_message( undef, "Found previous saved session -- using the saved values" )
+	    if $verbose;
+	&log_message( undef, "Previous saved session info is\n$aref->[-1]" ) if $verbose > 1;
+	@{$data}{qw(username firstname lastname email)} = (@{$aref}[1,2,3,4]);
+	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
+    } else {
+	&log_message( undef, "Session data not previously saved -- using defaults" )
+	    if $verbose;
+	$self->{'new_session'} = 1;
+    }
+    $data->{'prefs'} = {} unless $data->{'prefs'};
+    $self->{'data'} = $data;
+    $self->{'session'};
+}
+
+sub newSession
+{
+    my $self = shift;
+
+    my $verbose = $self->{'verbose'};
+
+    # We use Apache's UNIQUE_ID as the session id
+    $self->{'session'} = $ENV{'UNIQUE_ID'};
+    $self->{'new_session'} = 1;
+    my $data = {};
+    $data->{'prefs'} = {} unless $data->{'prefs'};
+    $self->{'data'} = $data;
+    $self->{'session'};
+}
+
+sub initSession
+{
+    my ($self, $config) = @_;
+
+    $self->{'config'} = $config;
+
+    # Get the required database params
+    my $dsn = $config->{'data_source'};
+    die ref($self), "->initSession(): param `data_source' must be specified in config\n"
+	unless $dsn;
+
+    my $table = $config->{'table_name'};
+    die ref($self), "->readData(): param `table_name' must be specified in config\n"
+	unless $table;
+
+    my $u = $config->{'username'};
+    my $p = $config->{'password'};
+
+    # And do the connect
+    my $dbh = DBI->connect ( $dsn, $u, $p );
+    die "Could not connect to database `$dsn': ", $DBI::errstr, "\n" unless $dbh;
+    $self->{'dbh'} = $dbh;
+}
+
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+
+    # What is the name of the session variable being used?
+    my $name = $config->{'param'};
+    die "$class->TIEHASH(): `param' not set in config\n" unless $name;
+
+    # Create session object
+    my $self = bless {}, $class;
+    $self->{'ctx'} = $ctx;
+    $self->{'name'} = $name;
+    my $verbose = $self->{'verbose'} = $config->{'verbose'};
+
+    # Initialize session
+    $self->initSession($config);
+
+    # Check for an existing session
+    my $id = $ctx->getCookieValue($name);
+
+    # Get the session data only if a session exists
+    if ( defined($id) ) {
+	# Load session data
+	&log_message( undef, "Read user's cookie: [$id]" ) if $verbose;
+	$self->readData($id);
+    } else {
+	$id = $self->newSession;
+	&log_message( undef, "User does not have cookie .. using [$id]" ) if $verbose;
+
+	# Set the cookie header
+	my $header = $name . '=' . $id . '; path=/;';
+	$ctx->cgi_header_out('Set-Cookie', $header);
+	&log_message( undef, "Set cookie header: [Set-Cookie => $header]" ) if $verbose > 1;
+    }
+    &log_message( undef, "session [$self->{'session'}]" );
+
+    # And return the session object
+    $self;
+}
+
+sub FETCH
+{
+    my ($self, $key) = @_;
+    if ( $key eq 'session' ) { return $self->{$key} }
+    elsif ( $key =~ /^(username|firstname|lastname|email)$/ ) { return $self->{'data'}->{$key} }
+    elsif ( exists $self->{'data'}->{'prefs'} ) { return $self->{'data'}->{'prefs'}->{$key} }
+    else { return $self->{'config'}->{'default_prefs'}->{$key} }
+}
+
+# Just store the value in the session and return the value
+sub STORE
+{
+    my ($self, $key, $value) = @_;
+    if ( $key =~ /^(session|username)$/ ) {
+	die "Cannot set `$key': attribute is read-only.\n";
+    } elsif ( $key =~ /^(firstname|lastname|email|password)$/ ) {
+	die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
+	    unless $self->{'data'}->{'username'};
+	&log_message( undef, "Storing [$key] = [$value]" )
+	    if $self->{'verbose'};
+	return $self->{'data'}->{$key} = $value;
+    } else {
+	&log_message( undef, "Stored [$key] = [$value] into prefs" )
+	    if $self->{'verbose'};
+	return $self->{'data'}->{'prefs'}->{$key} = $value;
+    }
+}
+
+# Invoked to loop over the properties of the session
+sub FIRSTKEY
+{
+    my $self = shift;
+
+    delete $self->{'keys'};
+
+    my $k = {'session' => $self->{'session'},
+	     'username' => $self->{'data'}->{'username'},
+	     'firstname' => $self->{'data'}->{'firstname'},
+	     'lastname' => $self->{'data'}->{'lastname'},
+	     'email' => $self->{'data'}->{'email'}};
+
+    my %keys;
+    @keys{keys %{$self->{'data'}->{'prefs'}}, keys %{$self->{'config'}->{'default_prefs'}}} = ();
+    for my $key (keys %keys) {
+	if ( exists $self->{'data'}->{'prefs'}->{$key} ) {
+	    $k->{$key} = $self->{'data'}->{'prefs'}->{$key};
+	} else {
+	    $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
+	}
+    }
+    $k->{'password'} = $self->{'data'}->{'password'} if
+	exists $self->{'data'}->{'password'};
+    $k->{'password'} =~ s/./\*/g;
+    $self->{'keys'} = $k;
+    each %{$self->{'keys'}};
+}
+
+sub NEXTKEY
+{
+    each %{shift->{'keys'}};
+}
+
+sub EXISTS
+{
+    my ($self, $key) = @_;
+    if ( $key eq 'session' ) { return 1 }
+    elsif ( $key =~ /^(username|password|firstname|lastname|email)$/ ) { return exists $self->{'data'}->{$key} }
+    elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { return 1 }
+    else { exists $self->{'config'}->{'default_prefs'}->{$key} }
+}
+
+sub DELETE
+{
+    my ($self, $key) = @_;
+    if ( $key =~ /^(session|username|firstname|lastname|email|password)$/ ) {
+	die "Cannot delete `$key': illegal operation.\n";
+    } else {
+	return delete $self->{'data'}->{'prefs'}->{$key};
+    }
+}
+
+sub CLEAR
+{
+    my $self = shift;
+    %{$self->{'data'}->{'prefs'}} = ();
+}
+
+# This method is invoked at session close. Pack the session data into
+# an XML string and hand it to the object's writeData() method to store
+# whereever.
+sub closeBLM
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+
+    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
+    &log_message( undef, "session [$session]" );
+    my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
+    &log_message( undef, "Saving into session\n$xml" ) if $verbose > 1;
+    if ( $self->{'new_session'} ) {
+	$dbh->do(qq{insert into $self->{'config'}->{'table_name'}
+		    (session, prefs) values(?, ?)},
+		 undef, $session, $xml)
+	    or die "Unable to insert session data for `$session': ", $dbh->errstr, "\n";
+    } else {
+	my $stm = qq{update $self->{'config'}->{'table_name'}
+		     set prefs = ?};
+	my @bind = ($xml);
+	my $data = $self->{'data'};
+	for my $name (qw(firstname lastname email)) {
+	    next unless exists $data->{$name};
+	    $stm .= ", $name = ?";
+	    push @bind, $data->{$name};
+	}
+
+	if ( exists $data->{'password'} ) {
+	    $stm .= ", password = password(?)";
+	    push @bind, $data->{'password'};
+	}
+
+	$stm .= " where session = ?";
+	push @bind, $session;
+	&log_message( undef, "SQL update statement is \n$stm" ) if $verbose;
+	$dbh->do($stm, undef, @bind)
+	    or die "Unable to update session data for `$session': ", $dbh->errstr, "\n";
+    }
+    $dbh->disconnect;
+}
+
+sub clear
+{
+    my $obj = shift;
+    %{$obj} = ();
+}
+
+sub register
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my ($username, $password, $firstname, $lastname, $email) = @_;
+
+    die "Cannot register `$username': user is logged in.\n"
+	if $self->{'username'};
+
+    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
+    &log_message( undef, "Registering user ($username, $password, $firstname, $lastname, $email) with session=$session" )
+	if $verbose;
+    my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
+    &log_message( undef, "User's prefs are\n$xml" ) if $verbose > 1;
+
+    $dbh->do(qq{update $self->{'config'}->{'table_name'}
+		set username = ?,
+		password = password(?),
+		firstname = ?,
+		lastname = ?,
+		email = ?,
+		prefs = ? where session = ?},
+	     undef, $username, $password, $firstname, $lastname, $email, $xml, $session)
+	or die "Unable to register user `$username': ", $dbh->errstr, "\n";
+}
+
+sub login
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my ($username, $password) = @_;
+
+    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
+    &log_message( undef, "Logging in user ($username, $password) with session=$session" )
+	if $verbose;
+
+    my $stm = qq{
+	select session, username, firstname, lastname, email, prefs
+	from $self->{'config'}->{'table_name'}
+	where username = ? and password = password(?)
+	};
+    my $sth = $dbh->prepare($stm);
+    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
+    $sth->bind_param ( 1, $username ) || die "Could not bind `$username': ", $sth->errstr, "\n";
+    $sth->bind_param ( 2, $password ) || die "Could not bind password: ", $sth->errstr, "\n";
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+	unless defined $rows;
+
+    my $aref = $sth->fetch;
+    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+    die "Unable to login `$username': invalid username/password.\n" unless defined($aref);
+    &log_message( undef, "Found previous saved session -- merging saved values" ) if $verbose;
+    my $data = {};
+    &log_message( undef, "Previous saved session info is\n$aref->[-1]" ) if $verbose > 1;
+    @{$data}{qw(username firstname lastname email)} = (@{$aref}[1,2,3,4]);
+
+    if ( length( $aref->[-1] ) ) {
+	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] );
+    } else {
+	$data->{'prefs'} = $self->{'config'}->{'default_prefs'};
+    }
+
+    my $str;
+    for my $key (keys %{$self->{'data'}->{'prefs'}}) {
+	$str .= "[$key] = $self->{'data'}->{'prefs'} [";
+	$data->{'prefs'}->{$key} = $self->{'data'}->{'prefs'}->{$key};
+	$str .= "$data->{'prefs'}->{$key}]\n";
+    }
+    &log_message( undef, "Previous and merged prefs are\n$str" );
+    $self->{'data'} = $data;
+
+    # The merged prefs
+    my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
+    &log_message( undef, "User's merged prefs are\n$xml" ) if $verbose > 1;
+
+    # Delete the old row which is now unused
+    $dbh->do(qq{delete from $self->{'config'}->{'table_name'}
+		where session = ?}, undef, $session)
+	or die "Unable to delete unused session row for `$session': ", $dbh->errstr, "\n";
+
+    # Save the merged prefs and the session id in the database.
+    $stm = qq{update $self->{'config'}->{'table_name'}
+	      set session = ?,
+	      prefs = ? where username = ?};
+    &log_message( undef, "SQL update statement is \n$stm" ) if $verbose;
+    $dbh->do($stm, undef, $session, $xml, $username)
+	or die "Unable to update merged session data for `$username': ", $dbh->errstr, "\n";
+    delete $self->{'new_session'};
+    1;
+}
+
+# Method to remove all traces of the session from everywhere
+#   -- cookie is deleted from browser
+#   -- Data is removed from store
+#   -- No more data can be stored
+sub kill
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->purgeData;
+    my $ctx = $self->{'ctx'};
+    my $name = $self->{'name'};
+    my $id = delete $self->{'id'};
+    my $expiry = 'Thu 09-Nov-2000 20:46:54 GMT';
+    my $header = $name . '=' . $id . '; expires=' . $expiry . ';';
+    $ctx->cgi_header_out('Set-Cookie', $header);
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/11/20 18:19:10  sridhar
+# UserSession -- sessions where user can register, login, etc.
+#
+#
