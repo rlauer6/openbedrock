@@ -7,7 +7,6 @@ BEGIN
    use vars    qw ($VERSION @ISA);
 }
 
-use BLM::PDF::Defaults;
 use BLM::PDF::Document::Document;
 use BLM::PDF::Render::Newline;
 use BLM::PDF::Render::Text::Metrics;
@@ -23,21 +22,19 @@ sub new
    my $this 			= {};
    $$this{'outline_header_text'}= '';
    $$this{'parent'} 		= undef;
-   $$this{'text_properties'}	= undef; #new BLM::PDF::Text::TextProperties;
-   $$this{'page_properties'}	= undef; #new BLM::PDF::Document::Page::Properties;
+   $$this{'text_properties'}	= undef;
+   $$this{'page_properties'}	= undef;
    $$this{'components'}		= [];
-   $$this{'biggest_font'}       = 0; #$this->{'text_properties'}->getFontSize();
+   $$this{'biggest_font'}       = 0; 
    $$this{'drop'}		= new BLM::PDF::Render::Newline;
-   $$this{'width'}		= $BLM::PDF::Defaults::Defaults{'page_width'}*72;
-   $$this{'height'}		= $BLM::PDF::Defaults::Defaults{'page_height'}*72;
-   $$this{'height'}		= $BLM::PDF::Defaults::Defaults{'page_height'}*72;
    $$this{'peer'}		= undef;
    $$this{'x'}			= 0;
 
+   # Further initialization from the parent
    BLM::PDF::Document::Document->new($this);
    $$this{'root_document'}	= $root_document;
    $root_document->_incPages();
-   bless($this, $class);
+   bless $this, $class;
    $this->addComponent($this->{'drop'});
 
    push @{$this->{'components'}}, $this;
@@ -52,37 +49,33 @@ sub setOutlineText
    $$this{'outline_header_text'} = $text if defined($text) && length($text);
 } # sub setOutlineText
 
-sub getHeight 		  { ${_[0]}->{'height'}; }
-sub getWidth 		  { ${_[0]}->{'width'}; }
+sub getHeight 		  { ${_[0]}->{'page_properties'}->getHeight(); }
+sub getWidth 		  { ${_[0]}->{'page_properties'}->getWidth(); }
 sub getOutlineText	  { ${_[0]}->{'outline_header_text'}; }
 sub getComponents	  { ${_[0]}->{'components'}; } 
 sub getRootDocument	  { ${_[0]}->{'root_document'}; } 
 
 sub setPeer
 {
-   my $this = shift;
-   $$this{'peer'} = shift;
+   my ($this, $peer) = @_;
+   die 'Peer set to nonreference: \"$this\"' unless ref $peer;
+   $$this{'peer'}    = $peer;
 } # sub setPeer
 
 sub getPeer 		{ ${_[0]}->{'peer'}; } 
 
 sub setParent
 {
-   my $this = shift;
-   my $obj = shift;
-
-   $$this{'parent'} = $obj if ref $obj;
+   my ($this, $parent) = @_;
+   die 'Parent set to nonreference: \"$this\"' unless ref $parent;
+   $$this{'parent'} = $parent if ref $parent;
 } # sub setParent
 
 sub addComponent
 {
-   my $this = shift;
-   my $ob = shift;
+   my ($this, $ob) = @_;
 
-   if( ref $ob )
-   {
-      push @{$this->{'components'}}, $ob;
-   }
+   push @{$this->{'components'}}, $ob if ref $ob;
 } # sub addComponent
 
 sub setTextProperties
@@ -146,15 +139,11 @@ sub addText
 } # sub addText
 
 
-=begin comment
-
-$+ returns whatever the last bracket match matched. 
-$& returns the entire matched string. 
-($0 used to return the same thing, but not any more.) 
-$` returns everything before the matched string. 
-$' returns everything after the matched string. Examples: 
-
-=cut
+# $+ returns whatever the last bracket match matched. 
+# $& returns the entire matched string. 
+# ($0 used to return the same thing, but not any more.) 
+# $` returns everything before the matched string. 
+# $' returns everything after the matched string. Examples: 
 
 sub _collapseText
 {
@@ -170,6 +159,7 @@ sub _collapseText
    my @lines                = split "\n", $text;
    my @collapsed            = ();
    my $ignore_leading_space = $page_properties->getDiscardLeadingSpace();
+   my $specials_are_words   = $text_properties->getTreatSpecialsAsWords();
 
    push @lines, map { '' } (1..($newlines-@lines+1));
 
@@ -189,29 +179,42 @@ sub _collapseText
       else
       {
 	 $_ = $line;
+         print STDERR "\"$line\" doesnt fit\n";
 
          while( length $_ )
 	 {
+	    my ($matched, $rest);
 	    my $is_spaces = 0;
-	    /^\w+/ or  ($is_spaces = $_ =~ /^\s+/) or /^\W+/;
 
-	    my $word_width = $metrics->stringWidth($&, $fontsize);
+            if( $specials_are_words )
+            { 
+               /^\S+/ or  ($is_spaces = $_ =~ /^\s+/); 
+	       ($matched, $rest) = ($&, $');
+            }
+            else 
+            { 
+               /^\w+/ or  ($is_spaces = $_ =~ /^\s+/) or /^\W+/; 
+	       ($matched, $rest) = ($&, $');
+            }
+
+	    my $word_width = $metrics->stringWidth($matched, $fontsize);
+            #print STDERR "WIDTH: $word_width\n";
 
 	    if( $x+$word_width <= $right_margin )
 	    {
-	       push @collected, $& unless $ignore_leading_space && 
+	       push @collected, $matched unless $ignore_leading_space && 
 			        $is_spaces && 0 == @collected;
 	       $x += $word_width;
 	    }
 	    else
 	    { 
-	       push @collapsed, join '', @collected;
-	       $x = $left_margin;
-	       @collected = ();
-
-	       if( $x+$word_width < $line_width )
+	       if( $left_margin+$word_width < $line_width )
 	       { 
-		  push @collected, $&; 
+	          push @collapsed, join '', @collected;
+	          $x = $left_margin;
+	          @collected = ();
+
+		  push @collected, $matched; 
 	          $x += $word_width;
 	       }
                else  
@@ -220,11 +223,12 @@ sub _collapseText
                        $this->_splitLongText($text, $metrics, $fontsize,
 			                     $line_width, $right_margin-$x);
 
+		  #print STDERR "SPLIT INTO:\n", join("\n", @collapsed);
 	          push @collapsed, @split;
 	          $x += $metrics->stringWidth($split[-1],$fontsize);
 	       }
 	    }
-	    $_ = $';
+	    $_ = $rest;
 	 }
 	 push @collapsed, join '', @collected;
       }
@@ -245,7 +249,7 @@ sub _splitLongText
       my ($string, $threshold) = @_;
       my ($fit, $remain);
       my $length = $metrics->stringWidth($string, $fontsize);
-      print STDERR "Length: \"$string\"($fontsize) $length Threshold: $threshold\n";
+      #print STDERR "Length: \"$string\"($fontsize) $length Threshold: $threshold\n";
 
       if( $metrics->stringWidth($string, $fontsize) <= $threshold )
       {
@@ -283,7 +287,7 @@ sub _splitLongText
       ($fit, $remain) = 
          $getFittedSubstring->($remain, $line_width);
 
-      print STDERR "FIT: $fit REMAIN: $remain\n";
+      #print STDERR "FIT: $fit REMAIN: $remain\n";
       push @broken, $fit;
    }
 
@@ -332,3 +336,289 @@ sub close
 } # sub close
 
 1;
+
+__END__
+
+=pod
+
+=head1 Synopsis
+
+   use BLM::PDF::Document::Page
+
+   Create a page object that includes text (and possibly other)
+   components that describe its the visual charateristics.
+   These objects should never be created by a call to the constructor
+   'new'. Page objects are created by either calling the subroutine
+   'newPage' in an instance of either BLM::PDF::Document::Document or 
+   this class.
+
+=over 4
+
+=item *
+Subroutine
+
+B<Name:>           setOutlineText
+
+B<Synopsis:>       Sets the outline text 
+
+   If the document to be generated will allow the outline
+   objects to be built for document navigation (via a call 
+   to setUseOutlines through a reference the parent document,
+   see the documentation for BLM::PDF::Document::Document)
+   then the outline item corresponding to the page is 
+   determined by the value set by this subroutine. This text
+   will appear with the outline item that user clicks on to
+   jump to the page.
+
+   
+
+B<Arguments:>      A string.
+
+B<Default:>        undef
+
+B<Example:>
+
+   $pageone->setOutlineText('License Agreement and Conditions of Use');
+
+   Here, we may have an outline structure with three major subheadings
+   with the second, 'Overview', having two subheadings. If a user
+   wanted to jump to the first page of 'Goals', they would click the
+   item with the mouse.
+   
+   [] - License Agreement and Conditions of Use
+   [] - Overview
+     | [] - What is X?
+     | [] - Goals
+   [] - Credits
+
+=item *
+Subroutine
+
+B<Name:>           getOutlineText
+
+B<Synopsis:>       Returns the outline text
+
+B<Arguments:>      None
+
+B<Returns:>        A string or undef(if setOutlineText 
+                   was never called)
+
+B<Default:>        undef
+
+B<Example:>
+
+   my $outline_text = $pageone->getOutlineText();
+
+=item *
+Subroutine
+
+B<Name:>           setHeight
+
+B<Synopsis:>       Sets the height of the page
+
+   Sets the height of the page, measured in user space units. 
+   (probably 1/72 dpi <dots per inch>)
+
+B<Arguments:>      A non-negative integer. 
+
+B<Default:>        undef
+
+B<Example:>
+
+   $pageone->setHeight(590);
+
+=item *
+Subroutine
+
+B<Name:>           setSize
+
+B<Synopsis:>       Sets the height and width of the page.
+
+B<Arguments:>      One of the following values under 'Name'
+
+  One of the following values in the 'Name' column may
+  be passed.
+
+    Name           Height	Width
+    ---------------------------------
+    letter	   8.5          11
+    legal          8.5          14
+    executive      7.5          10.5
+    a4             8.27         11.69
+    a5             5.83         8.27
+    ---------------------------------
+    * Units given in inches.
+   
+B<Example:>
+
+   $pageone->setSize('a4');
+
+=item *
+Subroutine
+
+B<Name:>           getHeight
+
+B<Synopsis:>       Returns the height of the page
+
+   This value is measured in the default user space units
+   (probably 1/72 dpi)
+
+B<Arguments:>      None
+
+B<Returns:>        A non-negative integer
+
+B<Default:>        590
+
+B<Example:>
+
+   $pageone->setHeight(590);
+
+=item *
+Subroutine
+
+B<Name:>           setWidth
+
+B<Synopsis:>       Sets the width of the page
+
+   Sets the width of the page, measured in user space units. 
+   (probably 1/72 dpi)
+
+B<Arguments:>      A non-negative integer. 
+
+B<Default:>        undef
+
+B<Example:>
+
+   $pageone->setWidth(792);
+
+=item *
+Subroutine
+
+B<Name:>           getWidth
+
+B<Synopsis:>       Returns the width of the page
+
+   This value is measured in the default user space units
+   (probably 1/72 dpi)
+
+B<Arguments:>      None
+
+B<Returns:>        A non-negative integer
+
+B<Default:>        792
+
+B<Example:>
+
+   $pageone->setWidth(792);
+
+=item *
+Subroutine
+
+B<Name:>           setPageProperties
+
+B<Synopsis:>       Set the properties for this page
+
+   A COPY will be made of the passed reference's instance 
+   data, therefore subsequent state transitions in the 
+   passed reference will have no effect the page unless 
+   this subroutine is called again with the reference as the
+   argument.
+
+   See the perldoc documentation for
+   BLM::PDF::Document::Page::Properties
+   for further information.
+
+B<Arguments:>      BLM::PDF::Document::Page::Properties reference
+
+B<Example:>
+
+   my $page_properties = new BLM::PDF::Document::Page::Properties;
+   # Set all margins
+   map { $page_properties->${_}(1); }
+     ( 'setTopMargin', 'setBottomMargin',
+       'setLeftMargin', 'setRightMargin', );
+   $pageone->setPageProperties($page_properties);
+
+=item *
+Subroutine
+
+B<Name:>           getPageProperties
+
+B<Synopsis:>       Returns a reference to a COPY of the current
+                   page properties.
+
+B<Arguments:>      None
+
+B<Example:>
+
+   my $page_properties = $pageone->getPageProperties();
+
+=item *
+Subroutine
+
+B<Name:>           setTextProperties
+
+B<Synopsis:>       Set the text properties to be inherited by
+                   descendant pages.
+
+   A COPY will be made of the passed reference's instance 
+   data, therefore subsequent state transitions in the 
+   reference will have no effect on the page unless
+   subroutine is called again with the reference as the 
+   argument.
+
+   See the perldoc documentation for BLM::PDF::Text::Properties
+   for further information.
+
+B<Arguments:>      BLM::PDF::Text::Properties reference
+
+B<Example:>
+
+   my $text_properties = new BLM::PDF::Text::Properties;
+   $text_properties->setColor('#3333FF');
+   $text_properties->setAlign('center');
+   $pageone->setTextProperties($text_properties);
+
+=item *
+Subroutine
+
+B<Name:>           getTextProperties
+
+B<Synopsis:>       Returns a reference to a COPY of the current
+                   text properties.
+
+B<Arguments:>      None
+
+B<Example:>
+
+   my $text_properties = $pageone->getTextProperties();
+
+=item *
+Subroutine
+
+B<Name:>           addText
+
+B<Synopsis:>       Adds text to the page.
+
+   The text to be added will inherit the page and text 
+   properties at the time this subroutine is invoked.
+   Over successive calls, text added to the page will flow
+   from left to right, top to bottom. Words that are too
+   long to fit horizontally will be moved to the next line
+   if and only if it is smaller than the width of an empty
+   line. A very large word (one that is longer than the width
+   of an empty line), will be wrapped beginning on the line 
+   it was inserted. 'Words' are perl's '\w'. Special characters
+   outside of '_' are treated atomically. However, this 
+   behaviour may be altered. See BLM::PDF::Text::Propreties.
+
+B<Arguments:>      A string
+
+B<Example:>
+
+   my $pageone->addText('Hello World');
+
+=back 
+
+=cut
+
