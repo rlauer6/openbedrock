@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.4  2000/10/19 20:53:25  sridhar
+# Added Handle.pm
+#
 # Revision 1.3  2000/10/16 13:58:00  sridhar
 # Added InputSource directory.
 #
@@ -38,7 +41,7 @@ include ../make.pre
      CURRENT_PATH = SIS
 
           TARGETS = Base.pm Config.pm InputSource.pm Log.pm Hash.pm Array.pm Dump.pm \
-		    BufferStream.pm
+		    BufferStream.pm Handle.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Base.pm
@@ -47,6 +50,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Log.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Hash.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Array.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Handle.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Dump.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) BufferStream.pm
 	cd Base		&& $(MAKE) $@
@@ -59,6 +63,7 @@ install:
 	$(INSTALL) Log.pm		$(CURRENT_TARGET)
 	$(INSTALL) Hash.pm		$(CURRENT_TARGET)
 	$(INSTALL) Array.pm		$(CURRENT_TARGET)
+	$(INSTALL) Handle.pm		$(CURRENT_TARGET)
 	$(INSTALL) Dump.pm		$(CURRENT_TARGET)
 	$(INSTALL) BufferStream.pm	$(CURRENT_TARGET)
 	cd Base		&& $(MAKE) $@
