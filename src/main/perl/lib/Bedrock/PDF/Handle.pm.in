@@ -1,0 +1,261 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package PDF::Handle;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+use SIS::Hash;
+use IO::Scalar;
+use PDF::Maker;
+use TagX::Log;
+
+@ISA = qw( SIS::Hash );
+
+my $normColor = sub {
+    return unless @_ > 0;
+    my $color = shift;
+    $color =~ s/^\#//;
+    my @c;
+    if ( length($color) > 3 ) {
+	@c = map {hex($_)/0xff} unpack( "a2a2a2", $color );
+    } else {
+	@c = map {hex($_)/0x0f} unpack( "aaa", $color );
+    }
+    \@c;
+};
+
+sub verbose
+{
+    my $self = shift;
+    if ( @_ > 0 ) {
+	$self->{'verbose'} = $_[0] > 0 ? $_[0] : 0;
+    } else {
+	$self->{'verbose'} = exists $self->{'verbose'} and $self->{'verbose'} ? 0 : 1;
+    }
+}
+
+sub new
+{
+    my $class = shift;
+    my $fmt = shift;		# a hash ref containing page settings, probably from config file
+    my $self = bless SIS::Hash->new, $class;
+
+    my $args = {};		# build args for PDFMaker
+    if ( defined( $fmt ) ) {
+	for my $key (keys %{$fmt}) {
+	    $args->{$key} = $fmt->{$key};
+	}
+    }
+    my $data;
+    tie *OUTPUT, 'IO::Scalar', \$data;
+    $args->{file} = \*OUTPUT;
+
+    my $fonts = [];
+    if ( exists $args->{'default_font'}
+	 or exists $args->{'default_font_size'}
+	 or exists $args->{'default_font_color'} ) {
+	my $font = {'default_font' => $args->{'default_font'},
+		    'default_font_size' => $args->{'default_font_size'},
+		    'default_font_color' => $normColor->($args->{'default_font_color'})};
+	push @{$fonts}, $font;
+    }
+
+    my $private = {'format'	=> $args,
+		   'data'	=> \$data,
+		   'fonts'	=> $fonts,
+		   'pdfmaker'	=> PDF::Maker->new($args)};
+    $self->{'__private'} = \$private;
+    $self;
+}
+
+sub private
+{
+    my $self = shift;
+    my $private_ref = $self->{'__private'};
+    $$private_ref;
+}
+
+sub setOptions
+{
+    my $self = shift;
+
+    if ($self->{'verbose'}) {
+	my %args = @_ > 1 ? @_ : %{$_[0]};
+	my $str = "$self: Setting the following options\n";
+	for my $key (sort keys %args) {
+	    $str .= "  $key => [$args{$key}]\n";
+	}
+	&log_message( undef, $str );
+    }
+
+    if ( @_ > 1 ) {
+	my %args = @_;
+	$self->private->{'pdfmaker'}->setOptions(\%args);
+    } else {
+	$self->private->{'pdfmaker'}->setOptions($_[0]);
+    }
+}
+
+sub print
+{
+    my $self = shift;
+    $self->private->{'pdfmaker'}->content("@_");
+}
+
+sub push_font
+{
+    return unless @_ > 1;
+    my ($self, $font, $size, $color) = @_;
+    my $fontref = {};
+    $fontref->{'default_font'} = $font if defined($font) and length($font) > 0;
+    $fontref->{'default_font_size'} = $size if defined($size) and length($size) > 0;
+    $fontref->{'default_font_color'} = $normColor->($_[3]) if defined($color) and length($color) > 0;
+    push @{$self->private->{'fonts'}}, $fontref;
+    $self->setOptions($fontref);
+}
+
+sub pop_font
+{
+    my $self = shift;
+    pop @{$self->private->{'fonts'}};
+    my $font = $self->private->{'fonts'}->[-1];
+    $self->setOptions($font) if defined($font);
+}
+
+sub left_margin
+{
+    return unless @_ == 2;
+    my $self = shift;
+    $self->setOptions('page_left_margin' => shift);
+}
+
+sub header_margin
+{
+    return unless @_ == 2;
+    my $self = shift;
+    $self->setOptions('header_margin' => shift);
+}
+
+sub header_font
+{
+    return unless @_ > 1;
+    my ($self, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'header_font', $font if defined($font) and length($font) > 0;
+    push @args, 'header_font_size', $size if defined($size) and length($size) > 0;
+    push @args, 'header_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'header_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub left_header
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'left_header', $header if defined($header) and length($header) > 0;
+    push @args, 'left_header_font', $font if defined($font) and length($font) > 0;
+    push @args, 'left_header_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'left_header_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'left_header_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub right_header
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'right_header', $header if defined($header) and length($header) > 0;
+    push @args, 'right_header_font', $font if defined($font) and length($font) > 0;
+    push @args, 'right_header_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'right_header_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'right_header_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub center_header
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'center_header', $header if defined($header) and length($header) > 0;
+    push @args, 'center_header_font', $font if defined($font) and length($font) > 0;
+    push @args, 'center_header_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'center_header_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'center_header_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub left_footer
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'left_footer', $header if defined($header) and length($header) > 0;
+    push @args, 'left_footer_font', $font if defined($font) and length($font) > 0;
+    push @args, 'left_footer_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'left_footer_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'left_footer_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub right_footer
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'right_footer', $header if defined($header) and length($header) > 0;
+    push @args, 'right_footer_font', $font if defined($font) and length($font) > 0;
+    push @args, 'right_footer_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'right_footer_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'right_footer_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub center_footer
+{
+    return unless @_ > 1;
+    my ($self, $header, $font, $size, $color, $valign) = @_;
+    my @args;
+    push @args, 'center_footer', $header if defined($header) and length($header) > 0;
+    push @args, 'center_footer_font', $font if defined($font) and length($font) > 0;
+    push @args, 'center_footer_font_size', $size if defined($size) and length($font) > 0;
+    push @args, 'center_footer_font_color', $normColor->($color) if defined($color) and length($color) > 0;
+    push @args, 'center_footer_valign', $valign if defined($valign) and length($valign) > 0;
+    $self->setOptions(@args);
+}
+
+sub close
+{
+    my $self = shift;
+
+    $self->private->{'pdfmaker'}->close;
+    my $dref = $self->private->{'data'};
+    &log_message( undef, "$self->close() invoked .. have "
+		  . length($$dref) . " bytes of data" ) if $self->{'verbose'};
+    &log_message( undef, "$self->close(): PDF follows\n"
+		  . $$dref ) if $self->{'verbose'} > 1;
+    $dref;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/09/15 14:26:41  sridhar
+# Module PDF::Handle implementing `$pdf' in Bedrock pages.
+#
+#
