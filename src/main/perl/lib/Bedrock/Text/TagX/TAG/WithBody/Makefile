@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.4  2000/10/18 18:15:33  sridhar
+# Added Hush.pm
+#
 # Revision 1.3  2000/03/09 14:20:06  sridhar
 # Added Try.pm and Catch.pm.
 #
@@ -25,6 +28,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) If.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Try.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Catch.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Hush.pm
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
@@ -33,6 +37,7 @@ install:
 	$(INSTALL) Try.pm		$(CURRENT_TARGET)
 	$(INSTALL) Catch.pm		$(CURRENT_TARGET)
 	$(INSTALL) Loop.pm		$(CURRENT_TARGET)
+	$(INSTALL) Hush.pm		$(CURRENT_TARGET)
 	cd If		&& $(MAKE) $@
 	cd Loop		&& $(MAKE) $@
 
