@@ -1,5 +1,7 @@
 #!/usr/local/bin/perl -w
-
+#
+# -- R & D version of a simple FTP BLM
+#
 
 package BLM::SIMPLEFTP;
 
@@ -13,11 +15,11 @@ BEGIN
 }
 
 use TagX::Log 1.01;
-use SIS::Hash 1.01;
+use SIS::Handle;
 use Net::FTP;    
 @ISA = qw(SIS::Hash);
 
-sub TIEHASH
+sub TIEHANDLE
 {
     my $class = shift;
     my $host = shift;
@@ -27,16 +29,40 @@ sub TIEHASH
 
     my $ftp = Net::FTP->new($host);
 
-    die $@ unless defined $ftp;
+    die "connect failed: $@" unless defined $ftp;
 
     $self->{'ftp'} = $ftp;
 
     $self;
 }
 
-sub login
+sub WRITE
 {
     my $self = shift;
+    my ($buf, $len, $offset) = @_;
+
+    die "WRITE: no connection" unless $self->{'conn'};
+    
+    my $conn = $self->{'conn'};
+    warn "($len) $buf\n";
+    $conn->write($buf, $len);
+}
+
+sub CLOSE
+{
+    my $self = shift;
+    my $ftp = $self->{'ftp'};
+    my $conn = $self->{'conn'};
+
+    $conn->close if $conn;
+}
+
+
+sub login
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+    
     my ($user, $pass, $acct) = @_;
 
     my $ftp = $self->{'ftp'};
@@ -46,7 +72,10 @@ sub login
 
 sub ascii
 {
-    my ($self, $args) = @_;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    my $args = @_;
 
     my $ftp = $self->{'ftp'};
 
@@ -58,7 +87,10 @@ sub ascii
 
 sub binary
 {
-    my ($self, $args) = @_;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    my $args = @_;
 
     my $ftp = $self->{'ftp'};
 
@@ -70,7 +102,10 @@ sub binary
 
 sub cwd
 {
-    my ($self, $args) = @_;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    my $args = @_;
 
     my $ftp = $self->{'ftp'};
 
@@ -82,7 +117,8 @@ sub cwd
 
 sub pwd
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
 
     my $ftp = $self->{'ftp'};
 
@@ -95,16 +131,37 @@ sub pwd
 
 sub ls
 {
-    my ($self, $dir) = @_;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    my $dir = @_;
 
     my $ftp = $self->{'ftp'};
+
+    $dir = ($dir or ".");
 
     return SIS::Array->new(@{$ftp->ls($dir)});
 }
 
+sub dir
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    my $dir = shift;
+    warn "dir = $dir\n";
+
+    my $ftp = $self->{'ftp'};
+
+    $dir = ($dir or ".");
+    
+    return SIS::Array->new(@{$ftp->dir($dir)});
+}
+
 sub quit
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
 
     my $ftp = $self->{'ftp'};
 
@@ -115,35 +172,41 @@ sub quit
 
 sub stor 
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
     my $file = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $conn = $ftp->stor($file);
 
-    die $@ unless defined $conn;
+    die "stor: $@" unless defined $conn;
 
     $self->{'conn'} = $conn;
+
+    $fd;
 }
 
 sub retr
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
     my $file = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $conn = $ftp->retr($file);
 
-    die $@ unless defined $conn;
+    die "retr: $@" unless defined $conn;
 
     $self->{'conn'} = $conn;
 }
 
 sub read 
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
     my ($size, $timeout) = @_;
     
     my $ftp = $self->{'ftp'};
@@ -151,14 +214,16 @@ sub read
 
     my $buffer;
 
-    die $@ unless defined $conn->read($buffer, $size, $timeout);
+    die "read: $@" unless defined $conn->read($buffer, $size, $timeout);
 
     $buffer;
 }
 
 sub write 
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
     my ($buffer, $timeout) = @_;
     
     my $conn = $self->{'conn'};
@@ -170,29 +235,65 @@ sub write
 
 sub close
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    die "no connection" unless exists $self->{'conn'};
+
     my $conn = $self->{'conn'};
 
     $conn->close;
+
     $self->{'conn'} = undef;
 }
 
 sub put
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
 
     my $ftp = $self->{'ftp'};
+
+    die "put: log in first" unless $ftp;
 
     $ftp->put(@_);
 }
 
 sub get
 {
-    my $self = shift;
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
 
     my $ftp = $self->{'ftp'};
 
-    die unless defined $ftp->get(@_);
+    die "get: login first" unless defined $ftp->get(@_);
+}
+
+sub getline
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    die "getline: no connection" unless exists $self->{'conn'};
+
+    my $conn = $self->{'conn'};
+
+    return $conn->getline;
+}
+
+sub getlines
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+
+    die "getlines: no connection" unless exists $self->{'conn'};
+
+    my $conn = $self->{'conn'};
+
+    my @lines = $conn->getlines;
+
+    return SIS::Array->new(@lines);
 }
 
 1;
