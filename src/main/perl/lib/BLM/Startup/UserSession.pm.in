@@ -18,72 +18,120 @@ use Carp;
 use DBI;
 use SIS::Hash;
 use TagX::Log;
+use Digest::MD5;
+use POSIX qw(strftime);
 @ISA = qw(SIS::Hash);
 
 #
-# `session' is stored under $self
-# `username', `password', `firstname', `lastname', `email' if stored under $self->{'data'}
-# Password is stored only if user has logged on
-# `new_session' is set to 1 if no previous session info found for user
-# Other than these are stored under $self->{'data'}->{'prefs'}
+# Table required is something like this:
+# create table junk_session (
+#  id integer auto_increment primary key,
+#  session varchar(50) unique,
+#  login_cookie varchar(50) unique,
+#  username varchar(30) unique,
+#  password varchar(30),
+#  firstname varchar(30),
+#  lastname varchar(50),
+#  email varchar(100),
+#  prefs text,
+#  updated timestamp,
+#  added datetime,
+#  expires datetime
+# );
 #
-sub readData
+
+#
+# Configuration required is something like this
+#  <object name="/user_session">
+#   <array name="MODULES">
+#    <object>
+#     <scalar name="binding">usession</scalar>
+#     <scalar name="module">BLM::Startup::UserSession</scalar>
+#     <object name="config">
+#      <scalar name="verbose">2</scalar>
+#      <scalar name="param">usession</scalar>
+#      <scalar name="login_cookie_name">usession_login</scalar>
+#      <scalar name="login_cookie_expiry_days">365</scalar>
+#      <scalar name="data_source">dbi:mysql:bedrock</scalar>
+#      <scalar name="username">bedrock</scalar>
+#      <scalar name="password">fred</scalar>
+#      <scalar name="table_name">junk_session</scalar>
+#      <scalar name="purge_user_after">30</scalar>
+#      <object name="cookie">
+# 	<scalar name="path">/user_session</scalar>
+# 	<scalar name="expiry_secs">60</scalar>
+# 	<scalar name="domain"></scalar>
+#      </object>
+#     </object>
+#    </object>
+#   </array>
+#  </object>
+#
+ 
+sub digest
 {
-    my ($self, $id) = @_;
-
-    $self->{'session'} = $id;
-    &log_message( undef, "session [$id]" );
-
-    my $verbose = $self->{'verbose'};
-    my $dbh = $self->{'dbh'};
-    my $stm = qq{
-	select session, username, firstname, lastname, email, prefs
-	from $self->{'config'}->{'table_name'}
-	where session = ?
-	};
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-    $sth->bind_param ( 1, $id ) || die "Could not bind `$id': ", $sth->errstr, "\n";
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-
-    my $aref = $sth->fetch;
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-
-    my $data = {};
-    if ( $aref ) {
-	&log_message( undef, "Found previous saved session -- using the saved values" )
-	    if $verbose;
-	&log_message( undef, "Previous saved session info is\n$aref->[-1]" ) if $verbose > 1;
-	@{$data}{qw(username firstname lastname email)} = (@{$aref}[1,2,3,4]);
-	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
-    } else {
-	&log_message( undef, "Session data not previously saved -- using defaults" )
-	    if $verbose;
-	$self->{'new_session'} = 1;
-    }
-    $data->{'prefs'} = {} unless $data->{'prefs'};
-    $self->{'data'} = $data;
-    $self->{'session'};
+    my $md5 = Digest::MD5->new;
+    $md5->add( sprintf("%012d:%20s:%08d:%.10f", time, $ENV{REMOTE_ADDR}, $$, rand) );
+    $md5->hexdigest;
 }
 
-sub newSession
+# 
+# Convenience routine for setting a cookie.
+# Invoked as follows:
+# $self->cookie($cookie_name, param, value, ..)
+# where the valid params are
+#   value	=> value for the cookie
+#   expires	=> time for cookie expiration in seconds
+#   domain	=> value for domain
+#   path	=> value for path
+#
+sub cookie
 {
     my $self = shift;
+    my $name = shift;
 
-    my $verbose = $self->{'verbose'};
-
-    # We use Apache's UNIQUE_ID as the session id
-    $self->{'session'} = $ENV{'UNIQUE_ID'};
-    $self->{'new_session'} = 1;
-    my $data = {};
-    $data->{'prefs'} = {} unless $data->{'prefs'};
-    $self->{'data'} = $data;
-    $self->{'session'};
+    $self->{'cookies'} = {} unless $self->{'cookies'};
+    $self->{'cookies'}->{$name} = {} unless $self->{'cookies'}->{$name};
+    my $cref = $self->{'cookies'}->{$name};
+    if ( ref($_[0]) ) {
+	for my $param (keys %{$_[0]}) {
+	    $cref->{$param} = $_[0]->{$param};
+	}
+    } else {
+	my %args = @_;
+	for my $param (keys %args) {
+	    $cref->{$param} = $args{$param};
+	}
+    }
 }
 
-sub initSession
+sub send_cookie
+{
+    my $self = shift;
+    return unless $self->{'cookies'};
+
+    my $config = $self->{'config'};
+    my ($cref, $header);
+    for my $name (keys %{$self->{'cookies'}}) {
+	$cref = $self->{'cookies'}->{$name};
+	$header = $name . '=' . $cref->{'value'} . '; ';
+
+	$header .= 'path=' . ($cref->{'path'} || $config->{'cookie'}->{'path'} || '/') . '; ';
+
+	my $domain = $config->{'cookie'}->{'domain'};
+	$header .= 'domain=' . $domain . '; ' if length( $domain );
+
+	if ( exists $cref->{'expires'} ) {
+	    my $expiry = POSIX::strftime("%a, %d-%b-%Y %T GMT", gmtime(time + $cref->{'expires'}));
+	    $header .= 'expires=' . $expiry . '; ';
+	}
+
+	$self->{'ctx'}->cgi_header_out('Set-Cookie', $header);
+	&log_message( undef, "Set cookie header: [Set-Cookie => $header]" ) if $self->{'verbose'} > 1;
+    }
+}
+
+sub startSession
 {
     my ($self, $config) = @_;
 
@@ -91,7 +139,7 @@ sub initSession
 
     # Get the required database params
     my $dsn = $config->{'data_source'};
-    die ref($self), "->initSession(): param `data_source' must be specified in config\n"
+    die ref($self), "->startSession(): param `data_source' must be specified in config\n"
 	unless $dsn;
 
     my $table = $config->{'table_name'};
@@ -107,6 +155,192 @@ sub initSession
     $self->{'dbh'} = $dbh;
 }
 
+sub newLoginCookie
+{
+    my $self = shift;
+
+    my $config = $self->{'config'};
+    my $ctx = $self->{'ctx'};
+    my $id = &digest;
+
+    # Set the cookie header
+    $self->cookie($config->{'login_cookie_name'},
+		  'value'	=> $id,
+		  'expires'	=> ( $config->{'login_cookie_expiry_days'} || 30 ) * 86400 );
+    $self->send_cookie;
+    $id;
+}
+
+sub newSessionID
+{
+    my $self = shift;
+
+    my $config = $self->{'config'};
+    my $ctx = $self->{'ctx'};
+    my $id = $self->{'session'} = &digest;
+
+    # Set the cookie header
+    my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
+    $self->cookie($self->{'name'},
+		  'value'	=> $id,
+		  'expires'	=> $secs);
+    $self->send_cookie;
+    $id;
+}
+
+sub do_select
+{
+    my $self = shift;
+    my $stm = shift;
+    my $dbh = $self->{'dbh'};
+
+    my $sth = $dbh->prepare($stm);
+    die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n" unless $sth;
+
+    for (my $i = 1 ; $i <= @_ ; $i++ ) {
+	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
+    }
+
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
+
+    my ($aref, $n);
+    $n = 0;
+    while ( $_ = $sth->fetch ) {
+	$aref = $_;
+	$n++;
+    }
+    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+    die "Query found more than 1 row (found $n rows).\n" if $n > 1;
+    $aref;
+}
+
+sub do_sql
+{
+    my $self = shift;
+    my $stm = shift;
+    my $dbh = $self->{'dbh'};
+
+    my $sth = $dbh->prepare($stm);
+    die "Unable to prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
+
+    for (my $i = 1 ; $i <= @_ ; $i++ ) {
+	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
+    }
+
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
+    $rows;
+}
+
+sub newSession
+{
+    my $self = shift;
+
+    $self->newSessionID;
+    $self->{'new_session'} = 1;
+    $self->{'data'} = {'prefs' => {}};
+    $self->{'session'};
+}
+
+sub init_session
+{
+    my $self = shift;
+    my $aref = shift;
+
+    my ($verbose) = @{$self}{qw(verbose)};
+    if ( $aref ) {
+	&log_message( undef, "Initializing session\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
+	&log_message( undef, "Session prefs are\n$aref->[-1]" ) if $verbose > 1;
+	my $data = {};
+	@{$data}{qw(username firstname lastname email)} = (@{$aref}[0,1,2,3]);
+	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
+	$data->{'prefs'} = {} unless $data->{'prefs'};
+
+	$self->{'data'} = $data;
+    } else {
+	&log_message( undef, "Initializing new session" ) if $verbose;
+	$self->newSession;
+    }
+}
+
+#
+# `session' is stored under $self
+# `username', `password', `firstname', `lastname', `email' if stored under $self->{'data'}
+# `new_session' is set to 1 if no previous session info found for user
+# Other than these are stored under $self->{'data'}->{'prefs'}
+#
+sub readData
+{
+    my ($self, $id) = @_;
+
+    my ($config, $verbose) = @{$self}{qw(config verbose)};
+
+    &log_message( undef, "Reading data for session [$id]" ) if $verbose;
+    my $t = $config->{'table_name'};
+    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
+				   from $t where session = ? and expires > now()),
+				$id);
+    unless ( $aref ) {
+	&log_message( undef, "Unable to read data for session [$id]" ) if $verbose;
+	return;
+    }
+
+    my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
+    $self->cookie($self->{'name'},
+		  'value'	=> $id,
+		  'expires'	=> $secs);
+    $self->send_cookie;
+
+    $self->{'session'} = $id;
+    $self->init_session($aref);
+    $self->{'session'};
+}
+
+sub newLoginSession
+{
+    my $self = shift;
+    my $login_id = shift;
+
+    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+    my $t = $config->{'table_name'};
+    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
+				   from $t where login_cookie = ?),
+				$login_id);
+
+    unless ( $aref ) {
+	&log_message( undef, "Login cookie [$login_id] not found" ) if $verbose;
+	return;
+    }
+
+    my $data = {};
+    &log_message( undef, "Found login cookie [$login_id]\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
+    &log_message( undef, "Saved session info for login cookie [$login_id] is\n$aref->[-1]" ) if $verbose > 1;
+    @{$data}{qw(username firstname lastname email)} = (@{$aref}[0,1,2,3]);
+    $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
+
+    # Create new session id
+    my $id = $self->newSessionID;
+
+    # Prepare SQL statement to save the session id in the database.
+    my $stm = qq{update $t set session = ?};
+    my @bind = ($id);
+
+    if ( $self->{'expires'} ) {
+	$stm .= ", expires = date_add(now(), interval ? second)";
+	push @bind, $self->{'expires'};
+    }
+
+    $stm .= " where login_cookie = ?";
+    push @bind, $login_id;
+    my $rows = $self->do_sql($stm, @bind);
+    &log_message( undef, "Updating session = [$id] for login session [$login_id]: rows = [$rows]\n$stm" ) if $verbose;
+
+    $data->{'prefs'} = {} unless $data->{'prefs'};
+    $self->{'data'} = $data;
+    $self->{'session'};
+}
+
 sub TIEHASH
 {
     my ($class, $ctx, $config) = @_;
@@ -119,29 +353,35 @@ sub TIEHASH
     my $self = bless {}, $class;
     $self->{'ctx'} = $ctx;
     $self->{'name'} = $name;
+    $self->{'config'} = $config;
     my $verbose = $self->{'verbose'} = $config->{'verbose'};
 
     # Initialize session
-    $self->initSession($config);
+    $self->startSession($config);
 
     # Check for an existing session
     my $id = $ctx->getCookieValue($name);
+    &log_message( undef, "Read user's cookie: [$id]" ) if $id and $verbose;
 
     # Get the session data only if a session exists
-    if ( defined($id) ) {
-	# Load session data
-	&log_message( undef, "Read user's cookie: [$id]" ) if $verbose;
-	$self->readData($id);
-    } else {
-	$id = $self->newSession;
-	&log_message( undef, "User does not have cookie .. using [$id]" ) if $verbose;
-
-	# Set the cookie header
-	my $header = $name . '=' . $id . '; path=/;';
-	$ctx->cgi_header_out('Set-Cookie', $header);
-	&log_message( undef, "Set cookie header: [Set-Cookie => $header]" ) if $verbose > 1;
+    if ( defined( $id ) ) {
+	my $session = $self->readData($id);
+	&log_message( undef, "User has session cookie [$session]" ) if $session and $verbose;
+	return $self if $session;
     }
-    &log_message( undef, "session [$self->{'session'}]" );
+
+    # No session cookie -- check to see if login cookie present
+    my $login_cookie_name = $config->{'login_cookie_name'};
+    my $login_id = $ctx->getCookieValue($login_cookie_name) if $login_cookie_name;
+    if ( $login_id ) {
+	my $session = $self->newLoginSession($login_id);
+	&log_message( undef, "User has login cookie [$login_id] -- session cookie is [$session]" ) if $session and $verbose;
+	return $self if $session;
+    }
+
+    # everything failed -- need to create a new session
+    my $session = $self->newSession;
+    &log_message( undef, "User does not have session or login cookie -- using [$session]" ) if $verbose;
 
     # And return the session object
     $self;
@@ -162,11 +402,13 @@ sub STORE
     my ($self, $key, $value) = @_;
     if ( $key =~ /^(session|username)$/ ) {
 	die "Cannot set `$key': attribute is read-only.\n";
-    } elsif ( $key =~ /^(firstname|lastname|email|password)$/ ) {
+    } elsif ( $key eq 'password' ) {
+	die "Cannot set `password': Use `change_password()' instead.\n";
+    } elsif ( $key =~ /^(firstname|lastname|email)$/ ) {
 	die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
 	    unless $self->{'data'}->{'username'};
-	&log_message( undef, "Storing [$key] = [$value]" )
-	    if $self->{'verbose'};
+	die "Cannot store empty string in `$key'.\n" if $key =~ /^(firstname|lastname)$/ and length($value) == 0;
+	&log_message( undef, "Storing [$key] = [$value]" ) if $self->{'verbose'};
 	return $self->{'data'}->{$key} = $value;
     } else {
 	&log_message( undef, "Stored [$key] = [$value] into prefs" )
@@ -197,9 +439,6 @@ sub FIRSTKEY
 	    $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
 	}
     }
-    $k->{'password'} = $self->{'data'}->{'password'} if
-	exists $self->{'data'}->{'password'};
-    $k->{'password'} =~ s/./\*/g;
     $self->{'keys'} = $k;
     each %{$self->{'keys'}};
 }
@@ -241,26 +480,31 @@ sub db_handle
     $self->{'dbh'};
 }
 
-# This method is invoked at session close. Pack the session data into
-# an XML string and hand it to the object's writeData() method to store
-# whereever.
 sub closeBLM
 {
     my $obj = shift;
     my $self = tied(%{$obj});
 
-    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
-    &log_message( undef, "session [$session]" );
+    my ($verbose, $session) = @{$self}{qw(verbose session)};
     my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
-    &log_message( undef, "Saving into session\n$xml" ) if $verbose > 1;
+    &log_message( undef, "Saving session [$session] data\n$xml" ) if $verbose > 1;
+
+    my $t = $self->{'config'}->{'table_name'};
     if ( $self->{'new_session'} ) {
-	$dbh->do(qq{insert into $self->{'config'}->{'table_name'}
-		    (session, prefs) values(?, ?)},
-		 undef, $session, $xml)
-	    or die "Unable to insert session data for `$session': ", $dbh->errstr, "\n";
+	# Insert anon session
+	my $rows = $self->do_sql("insert into $t (added, session, prefs) values(now(), ?, ?)",
+				 $session, $xml);
+	&log_message( undef, "Inserting session [$session]: rows = [$rows]" ) if $verbose;
+
+	if ( $self->{'expires'} ) {
+	    my $rows = $self->do_sql(qq(update $t set updated = null, expires = date_add(now(), interval ? second)
+					where session = ?),
+				     $self->{'expires'}, $session);
+	    &log_message( undef, "Updated expiry date for session [$session]: rows = [$rows]" ) if $verbose;
+	}
     } else {
-	my $stm = qq{update $self->{'config'}->{'table_name'}
-		     set prefs = ?};
+	# Build statement for updating session
+	my $stm = "update $t set updated = null, prefs = ?";
 	my @bind = ($xml);
 	my $data = $self->{'data'};
 	for my $name (qw(firstname lastname email)) {
@@ -269,18 +513,22 @@ sub closeBLM
 	    push @bind, $data->{$name};
 	}
 
-	if ( exists $data->{'password'} ) {
-	    $stm .= ", password = password(?)";
-	    push @bind, $data->{'password'};
+	$stm .= ", expires = date_add(now(), interval ? second)";
+	if ( exists $self->{'expires'} ) {
+	    push @bind, $self->{'expires'};
+	} else {
+	    push @bind, $self->{'config'}->{'cookie'}->{'expiry_secs'} || 86400;
 	}
 
 	$stm .= " where session = ?";
 	push @bind, $session;
-	&log_message( undef, "SQL update statement is \n$stm" ) if $verbose;
-	$dbh->do($stm, undef, @bind)
-	    or die "Unable to update session data for `$session': ", $dbh->errstr, "\n";
+	my $rows = $self->do_sql($stm, @bind);
+	&log_message( undef, "Updated session [$session] with\n$stm\nBind values are (@bind)" ) if $verbose;
     }
-    $dbh->disconnect;
+
+    # Table cleanup
+    $self->do_sql("delete from $t where expires < now() and username is null");
+    $self->{'dbh'}->disconnect;
 }
 
 sub clear
@@ -294,25 +542,14 @@ sub register
     my $obj = shift;
     my $self = tied(%{$obj});
     my ($username, $password, $firstname, $lastname, $email) = @_;
-
-    die "Cannot register `$username': user is logged in.\n"
-	if $self->{'username'};
-
-    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
-    &log_message( undef, "Registering user ($username, $password, $firstname, $lastname, $email) with session=$session" )
+    
+    my $verbose = $self->{'verbose'};
+    my $rows = $self->do_sql(qq(insert into $self->{'config'}->{'table_name'}
+				(username, password, firstname, lastname, email, added)
+				values( ?, password(?), ?, ?, ?, now())),
+			     $username, $password, $firstname, $lastname, $email);
+    &log_message( undef, "Registering user ($username, $password, $firstname, $lastname, $email): rows = [$rows]" )
 	if $verbose;
-    my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
-    &log_message( undef, "User's prefs are\n$xml" ) if $verbose > 1;
-
-    $dbh->do(qq{update $self->{'config'}->{'table_name'}
-		set username = ?,
-		password = password(?),
-		firstname = ?,
-		lastname = ?,
-		email = ?,
-		prefs = ? where session = ?},
-	     undef, $username, $password, $firstname, $lastname, $email, $xml, $session)
-	or die "Unable to register user `$username': ", $dbh->errstr, "\n";
 }
 
 sub login
@@ -321,81 +558,120 @@ sub login
     my $self = tied(%{$obj});
     my ($username, $password) = @_;
 
-    my ($dbh, $verbose, $session) = @{$self}{qw(dbh verbose session)};
-    &log_message( undef, "Logging in user ($username, $password) with session=$session" )
-	if $verbose;
+    my ($verbose) = @{$self}{qw(verbose)};
+    &log_message( undef, "Attempting to log in user ($username, $password)" ) if $verbose;
 
-    my $stm = qq{
-	select session, username, firstname, lastname, email, prefs
-	from $self->{'config'}->{'table_name'}
-	where username = ? and password = password(?)
-	};
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-    $sth->bind_param ( 1, $username ) || die "Could not bind `$username': ", $sth->errstr, "\n";
-    $sth->bind_param ( 2, $password ) || die "Could not bind password: ", $sth->errstr, "\n";
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-
-    my $aref = $sth->fetch;
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
+				   from $self->{'config'}->{'table_name'}
+				   where username = ? and password = password(?)),
+				$username, $password);
     die "Unable to login `$username': invalid username/password.\n" unless defined($aref);
-    &log_message( undef, "Found previous saved session -- merging saved values" ) if $verbose;
-    my $data = {};
-    &log_message( undef, "Previous saved session info is\n$aref->[-1]" ) if $verbose > 1;
-    @{$data}{qw(username firstname lastname email)} = (@{$aref}[1,2,3,4]);
 
-    if ( length( $aref->[-1] ) ) {
-	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] );
-    } else {
-	$data->{'prefs'} = $self->{'config'}->{'default_prefs'};
-    }
+    my $oldprefs = $self->{'data'}->{'prefs'};
+    $self->init_session($aref);
 
-    my $str;
-    for my $key (keys %{$self->{'data'}->{'prefs'}}) {
-	$str .= "[$key] = $self->{'data'}->{'prefs'} [";
-	$data->{'prefs'}->{$key} = $self->{'data'}->{'prefs'}->{$key};
-	$str .= "$data->{'prefs'}->{$key}]\n";
+    for my $key (keys %{$oldprefs}) {
+	$self->{'data'}->{'prefs'}->{$key} = $oldprefs->{$key};
     }
-    &log_message( undef, "Previous and merged prefs are\n$str" );
-    $self->{'data'} = $data;
 
     # The merged prefs
     my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
-    &log_message( undef, "User's merged prefs are\n$xml" ) if $verbose > 1;
 
-    # Delete the old row which is now unused
-    $dbh->do(qq{delete from $self->{'config'}->{'table_name'}
-		where session = ?}, undef, $session)
-	or die "Unable to delete unused session row for `$session': ", $dbh->errstr, "\n";
+    # Create a new session id for the user
+    my $session = $self->newSessionID;
+
+    # Delete the `new_session' flag
+    delete $self->{'new_session'};
 
     # Save the merged prefs and the session id in the database.
-    $stm = qq{update $self->{'config'}->{'table_name'}
-	      set session = ?,
-	      prefs = ? where username = ?};
-    &log_message( undef, "SQL update statement is \n$stm" ) if $verbose;
-    $dbh->do($stm, undef, $session, $xml, $username)
-	or die "Unable to update merged session data for `$username': ", $dbh->errstr, "\n";
-    delete $self->{'new_session'};
-    1;
+    my $stm = "update $self->{'config'}->{'table_name'} set session = ?, prefs = ? ";
+    my @bind = ($session, $xml);
+
+    if ( $self->{'expires'} ) {
+	$stm .= ", expires = date_add(now(), interval ? second)";
+	push @bind, $self->{'expires'};
+    }
+
+    $stm .= " where username = ?";
+    push @bind, $username;
+    $self->do_sql($stm, @bind);
 }
 
-# Method to remove all traces of the session from everywhere
-#   -- cookie is deleted from browser
-#   -- Data is removed from store
-#   -- No more data can be stored
-sub kill
+sub logout
 {
     my $obj = shift;
     my $self = tied(%{$obj});
-    $self->purgeData;
-    my $ctx = $self->{'ctx'};
-    my $name = $self->{'name'};
-    my $id = delete $self->{'id'};
-    my $expiry = 'Thu 09-Nov-2000 20:46:54 GMT';
-    my $header = $name . '=' . $id . '; expires=' . $expiry . ';';
-    $ctx->cgi_header_out('Set-Cookie', $header);
+
+    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+    my $t = $config->{'table_name'};
+
+    # Check if user has logged in; delete the session id in the database
+    # if the user has logged in
+    my $username = $self->{'data'}->{'username'};
+    $self->do_sql("update $t set session = null, expires = now() where username = ?",
+		  $username) if $username;
+
+    # Reset data
+    $self->{'data'} = {};
+
+    # Delete the cookie
+    $self->cookie($self->{'name'},
+		  'value'	=> 'killed',
+		  'expires'	=> -864000);
+}
+
+sub change_passwd
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my ($opasswd, $npasswd) = @_;
+
+    my $username = $self->{'data'}->{'username'};
+    die "Cannot change password: user not logged in.\n" unless length($username);
+
+    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+    my $t = $config->{'table_name'};
+
+    &log_message( undef, "Attempting to change password to `$npasswd' from `$opasswd' for `$username'" )
+	if $verbose;
+    my $rows = $self->do_sql(qq(update $t set password = password(?), updated = null
+				where username = ? and password = password(?)),
+			     $npasswd, $username, $opasswd);
+    die "Cannot change password for `$username': could not authenticate user.\n" unless $rows == 1;
+    &log_message( undef, "Changed password returned [$rows]") if $verbose;
+}
+
+sub remember_user
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+
+    return 0 unless length($self->{'data'}->{'username'});
+    my $username = $self->{'data'}->{'username'};
+
+    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+    my $t = $config->{'table_name'};
+
+    my $login_cookie_name = $config->{'login_cookie_name'};
+    my $login_id = $ctx->getCookieValue($login_cookie_name);
+    return length($login_id) ? 1 : 0 unless @_ > 0;
+
+    my ($stm, @bind);
+    if ( $_[0] =~ /on/i ) {
+	$login_id = $self->newLoginCookie;
+	$stm = "update $t set login_cookie = ? where username = ?";
+	push @bind, $login_id, $username;
+    } else {
+	# Delete the login cookie
+	$self->cookie($login_cookie_name,
+		      'value'	=> 'killed',
+		      'expires'	=> -864000);
+	$stm = "update $t set login_cookie = null where username = ?";
+	push @bind, $username;
+    }
+
+    my $rows = $self->do_sql($stm, @bind);
+    die "Could not update `remember_user' setting for user `$username'\n" unless $rows == 1;
 }
 
 1;
@@ -403,6 +679,13 @@ sub kill
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.3  2001/01/09 20:09:56  sridhar
+# Major changes
+# 1. Using Digest::MD5 for the session identifier.
+# 2. Supports login cookies
+# 3. Setting expiry date, can be specified in the config file
+# 4. Added `change_passwd()' and `remember_user()' methods.
+#
 # Revision 1.2  2000/11/21 19:28:24  sridhar
 # Export the database handle with the method `db_handle()'.
 #
