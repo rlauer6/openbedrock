@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl -w
-#
-# -- R & D version of a simple FTP BLM
-#
+# Simple FTP BLM
+# ident "@(#) $Header$"
+
 
 package BLM::SIMPLEFTP;
 
@@ -19,122 +19,109 @@ use SIS::Handle;
 use Net::FTP;    
 @ISA = qw(SIS::Hash);
 
-sub TIEHANDLE
+sub TIEHASH
 {
     my $class = shift;
     my $host = shift;
+    my ($user, $password, $acct) = @_;
 
     my $self = bless {}, $class;
     $self->{'host'} = $host;
 
     my $ftp = Net::FTP->new($host);
 
-    die "connect failed: $@" unless defined $ftp;
+    die "FTP(connect): connect failed $@" unless defined $ftp;
 
     $self->{'ftp'} = $ftp;
+  
+    if ($user) {
+	die "FTP(connect): login failed ($user, $password)" unless defined $ftp->login($user, $password, $acct);
+    }
 
     $self;
-}
-
-sub WRITE
-{
-    my $self = shift;
-    my ($buf, $len, $offset) = @_;
-
-    die "WRITE: no connection" unless $self->{'conn'};
-    
-    my $conn = $self->{'conn'};
-    warn "($len) $buf\n";
-    $conn->write($buf, $len);
 }
 
 sub CLOSE
 {
     my $self = shift;
+
     my $ftp = $self->{'ftp'};
-    my $conn = $self->{'conn'};
 
-    $conn->close if $conn;
+    $ftp->quit if $ftp; 
 }
-
 
 sub login
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
     
     my ($user, $pass, $acct) = @_;
 
     my $ftp = $self->{'ftp'};
 
-    die $@ unless defined $ftp->login($user, $pass, $acct);
+    die "FTP(login): login failed ($user, $pass)" unless defined $ftp->login($user, $pass, $acct);
 }
 
 sub ascii
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    my $args = @_;
+    my $args = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $last = $ftp->ascii($args);
-    die $@ unless defined $last;
+    die "FTP(ascii): could not set type (ascii)" unless $last;
 
     $last;
 }
 
 sub binary
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    my $args = @_;
+    my $args = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $last = $ftp->binary($args);
-    die $@ if !$last;
+
+    die "FTP(binary): could not set type (binary)" unless $last;
 
     $last;
 }
 
 sub cwd
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    my $args = @_;
+    my $args = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $last = $ftp->cwd($args);
-    die $@ if !$last;
+
+    die "FTP(cwd): could not set dir ($args)" unless $last;
 
     $last;
 }
 
 sub pwd
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $pwd = $ftp->pwd();
 
-    die $@ unless defined $pwd;
+    die "FTP(pwd): could not get current working directory" unless $pwd;
 
     $pwd;
 }
 
 sub ls
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
-
-    my $dir = @_;
+    my $self = shift;
+    my $dir = shift;
 
     my $ftp = $self->{'ftp'};
 
@@ -143,25 +130,50 @@ sub ls
     return SIS::Array->new(@{$ftp->ls($dir)});
 }
 
+sub size
+{
+    my $self = shift;
+    my $file = shift;
+
+    die "FTP(size): not connected" unless exists $self->{'ftp'};
+
+    ${$self->{'ftp'}}->size($file);
+}
+
 sub dir
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
     my $dir = shift;
-    warn "dir = $dir\n";
-
     my $ftp = $self->{'ftp'};
 
     $dir = ($dir or ".");
-    
-    return SIS::Array->new(@{$ftp->dir($dir)});
+    my @full_dir = $ftp->dir($dir);
+
+    shift @full_dir if $full_dir[0] =~ '^total';
+    my @dir;
+
+    foreach (@full_dir) {
+	my @dummy = split " ", $_;
+	my $ref = {};
+	$ref->{'permissions'} = $dummy[0];
+	$ref->{'links'} = $dummy[1];
+	$ref->{'owner'} = $dummy[2];
+	$ref->{'group'} = $dummy[3];
+	$ref->{'size'} = $dummy[4];
+	$ref->{'month'} = $dummy[5];
+	$ref->{'day'} = $dummy[6];
+	$ref->{'year'} = $dummy[7];
+	$ref->{'file'} = $dummy[8];
+	push @dir, $ref;
+    }
+
+    return SIS::Array->new(@dir);
 }
 
 sub quit
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
     my $ftp = $self->{'ftp'};
 
@@ -172,8 +184,7 @@ sub quit
 
 sub stor 
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
     my $file = shift;
 
@@ -181,64 +192,103 @@ sub stor
 
     my $conn = $ftp->stor($file);
 
-    die "stor: $@" unless defined $conn;
+    die "FTP(stor): error opening file ($file) for writing" unless defined $conn;
 
     $self->{'conn'} = $conn;
 
-    $fd;
+    $conn;
+}
+
+sub stou 
+{
+    my $self = shift;
+
+    my $file = shift;
+
+    my $ftp = $self->{'ftp'};
+    
+    my $conn = $ftp->stou($file);
+
+    die "FTP(stou): error opening file ($file) for writing" unless defined $conn;
+
+    $self->{'conn'} = $conn;
+
+    $conn;
+}
+
+sub unique_name
+{
+    my $self;
+
+    die "FTP(unique_name) not connected" unless exists $self->{'ftp'};
+
+    ${$self->{'ftp'}}->unique_name;
 }
 
 sub retr
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
     my $file = shift;
 
     my $ftp = $self->{'ftp'};
 
     my $conn = $ftp->retr($file);
 
-    die "retr: $@" unless defined $conn;
+    die "FTP(retr): error opening file ($file) for reading" unless defined $conn;
 
     $self->{'conn'} = $conn;
 }
 
 sub read 
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
     my ($size, $timeout) = @_;
     
     my $ftp = $self->{'ftp'};
     my $conn = $self->{'conn'};
 
-    my $buffer;
+    die "FTP(read): no data connection" unless exists $self->{'conn'};
 
-    die "read: $@" unless defined $conn->read($buffer, $size, $timeout);
+    my $buffer;
+    my $_buffer;
+
+    $size = int($size);
+    my $len;
+
+    while (1) {
+	last unless $len = $conn->read($_buffer, 1024, $timeout);
+	$buffer .= $_buffer;
+	$size -= $len;
+	last unless ($size > 0);
+    }
+
+    die "FTP(read): error reading from host" if $size;
 
     $buffer;
 }
 
 sub write 
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
     my ($buffer, $timeout) = @_;
     
     my $conn = $self->{'conn'};
 
-    die $@ unless defined $conn->write($buffer, length($buffer), $timeout);
+    die "FTP(write): no data connection" unless exists $self->{'conn'};
+
+    my $len = $conn->write($buffer, length($buffer), $timeout);
+
+    die "FTP(write): error writing to host" unless $len == length($buffer);
 
     $buffer;
 }
 
 sub close
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    die "no connection" unless exists $self->{'conn'};
+    die "FTP(close): no data connection" unless exists $self->{'conn'};
 
     my $conn = $self->{'conn'};
 
@@ -249,33 +299,35 @@ sub close
 
 sub put
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
+    my $file = shift;
 
     my $ftp = $self->{'ftp'};
 
-    die "put: log in first" unless $ftp;
+    die "FTP(put): no connection" unless $ftp;
+    die "FTP(put): file does not exist" unless -f $file;
 
-    $ftp->put(@_);
+    $ftp->put($file);
 }
 
 sub get
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
-
+    my $self = shift;
+    my $remote_file = shift;
+    my $local_file = shift;
 
     my $ftp = $self->{'ftp'};
 
-    die "get: login first" unless defined $ftp->get(@_);
+    die "FTP(put): no connection" unless $ftp;
+
+    $ftp->get($remote_file, $local_file);
 }
 
 sub getline
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    die "getline: no connection" unless exists $self->{'conn'};
+    die "FTP(getline): no data connection" unless exists $self->{'conn'};
 
     my $conn = $self->{'conn'};
 
@@ -284,17 +336,173 @@ sub getline
 
 sub getlines
 {
-    my $fd = shift;
-    my $self = tied(*{$fd});
+    my $self = shift;
 
-    die "getlines: no connection" unless exists $self->{'conn'};
+    die "FTP(getlines): no data connection" unless exists $self->{'conn'};
 
     my $conn = $self->{'conn'};
 
-    my @lines = $conn->getlines;
-
-    return SIS::Array->new(@lines);
+    return SIS::Array->new(@{$conn->getlines});
 }
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.3  2000/11/02 20:30:02  rlauer
+# - Back to SIS::Hash
+# - Documentation!
+# - added user, password, acct to constructor
+# - beefed up the exception handling (i.e. actuall threw some!)
+# - fixed read to iterate until it gets the right amount
+# - added methods (stou, unique_name, appe, size)
+#
+#
+
+=head1 SYNOPSIS
+
+BLM::SIMPLEFTP -- Bedrock module for access FTP services (use with the understanding that
+this is ALPHA.  A BLM named FTP will replace this module).
+
+=head1 USAGE
+
+=head2 Constructor
+
+Invoke the constructor as follows.
+
+  <null --define-var = "ftp" $Bedrock.new("BLM::SIMPLEFTP", $host, [$user, $password])>
+
+=head2 Methods
+
+The following methods are availble:
+
+=head3 $ftp.login( username, password )
+
+Login to the ftp server.
+
+=head3 $ftp.quit()
+
+Disconnect from an ftp server.
+
+=head3 $ftp.cwd( [dir] )
+
+Change the current working directory.
+
+=head3 $ftp.pwd()
+
+Return the current working directory
+
+=head3 $ftp.ls( [dir] )
+
+List the files in a directory.
+
+=head3 $ftp.dir( [dir] )
+
+Retrieve file information for the files in a directory. If dir is not given
+the current working directory is returned.
+
+File attributes are returned as properties of the object returned by this
+method.
+
+ 
+ <table>
+   <tr>
+     <th>File</th>
+     <th>Permissions</th>
+     <th>Size</th>
+     <th>Owner</th>
+     <th>Group</th>
+     <th>Timestamp</th>
+   </tr>
+
+ <foreach $ftp.dir('.')>
+   <tr>
+     <td><a href="/TagX/ftp.html?file=<var $file --URLEncode>"><var $file></a></td>
+     <td><var $permissions></td>
+     <td><var $size></td>
+     <td><var $owner></td>
+     <td><var $group></td>
+     <td><var ($month+' '+$day+' '+$year)></td>
+   </tr>
+ </foreach>
+ </table>
+
+=head3 $ftp.put( local_file, remote_file )
+
+Send a file to a host.
+
+=head3 $ftp.get( remote_file, local_file )
+
+Receive a file from a host.
+
+=head3 $ftp.ascii()
+
+Change the current mode of transfer to 'ASCII'
+
+=head3 $ftp.binary()
+
+Change the current mode of transfer to 'BINARY'
+
+=head3 $ftp.retr( remote_file )
+
+Open a file for reading.
+
+=head3 $ftp.getlines()
+
+Read all of the lines in a file.
+
+=head3 $ftp.getline()
+
+Read the next line in a file.
+
+=head3 $ftp.close()
+
+Close an open file.
+
+=head3 $ftp.stor( file )
+
+Open file on the host for writing.  This method returns a handle so should
+be used as the argument to the C<SINK> tag.  The body of the C<SINK> tag becomes
+the data to write to the file.
+
+  <sink $ftp.stor('myfile.txt')>
+    Hello World!
+  </sink>
+
+=head3 $ftp.stou()
+
+Sames as $ftp.stor except a unique file name is created on the host.  The name
+that is used is available using $ftp.unique_name.
+
+=head3 $ftp.unique_name()
+
+Returns the name of the unique file created using the $ftp.stou method.
+
+=head3 $ftp.appe( file )
+
+Same as $ftp.stor except the data is appended to file.  If the file does
+not exist on the host it is created.
+ 
+=head1 ChangeLog
+
+  $Log$
+  Revision 1.3  2000/11/02 20:30:02  rlauer
+  - Back to SIS::Hash
+  - Documentation!
+  - added user, password, acct to constructor
+  - beefed up the exception handling (i.e. actuall threw some!)
+  - fixed read to iterate until it gets the right amount
+  - added methods (stou, unique_name, appe, size)
+
+
+=head1 Author
+
+Rob Lauer rlauer@cji.com
+
+=head1 Credits
+
+Graham Barr gbarr@pobox.com - Net::FTP
+
+J. Sridhar sridharj@earhtlink.com - Bedrock Chief Technologist
+
+=cut
 
 1;
-
