@@ -1,0 +1,158 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::Parser;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+use TagX::Term::Var 1.02;
+use TagX::Term::String 1.02;
+use TagX::Expr 1.08;
+use TagX::Func 1.01;
+
+my $Verbose;
+
+#
+# Arg separators are single-quote, double quote, ..
+# Note the following ascii codes
+# " (double-quote)	=> \x22
+# ' (single-quote)	=> \x27
+# ( (open-paren)	=> \x28
+# ) (close-paren)	=> \x29
+# [ (open-bracket)	=> \x5b
+# ] (close-bracket)	=> \x5d
+# { (open-brace)	=> \x7b
+# } (close-brace)	=> \x7d
+# : (colon)		=> \x3a
+my $_delimiters		= "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
+my %_delimiter_end	= ("\x22"	=> "\x22",
+			   "\x27"	=> "\x27",
+			   "q("		=> ")",
+			   "q["		=> "]",
+			   "q{"		=> "}",
+			   "q:"		=> ":",			   
+			   "qq("	=> ")",
+			   "qq["	=> "]",
+			   "qq{"	=> "}",
+			   "qq:"	=> ":");
+
+sub parse_stm
+{
+    s/^\s*//;
+    if ( s/^\$// ) {
+	# Could be a var or a func
+
+	# first component must be a valid name
+	die "Invalid first component of variable/function name: $_" 
+	    unless s/^([a-z_]\w*)//i;
+
+	# append to name
+	my $name = "\x24" . $1;
+
+	while ( length ) {
+	    # end of name if not followed by a period
+	    last unless s/^\.//;
+
+	    # check for valid name or array ref
+	    if ( s/^([a-z_]\w*|\x5b\d+\x5d)//i ) {
+		$name .= ".$1";
+		next;
+	    }
+
+	    # croak due to error
+	    die "Invalid token in variable/function name: $_";
+	}
+
+	# if followed by "(", it is a func invocation
+	if ( length && s/^\x28// ) {
+	    my @args;
+	    while ( length ) {
+		push @args, &parse_stm;
+		next if s/^\s*,//;
+		last if s/^\s*\x29//;
+		die "Invalid token following function argument: $_";
+	    }
+	    die "Invalid object method invocation: $name" unless $name =~ s/\.([^.]+)$//;
+	    my $func = $1;
+	    die "Invalid function invocation($func): must be invoked as the method of an object"
+		unless length($name) > 1;
+	    return TagX::Func->new( TagX::Term::Var->new( $name ), $func, @args );
+	} else {
+	    return TagX::Term::Var->new( $name );
+	}
+    } elsif ( s/^$_delimiters//oi ) {
+	# is a string
+	if ( s/^([^\Q$_delimiter_end{$1}\E]*)\Q$_delimiter_end{$1}\E// ) {
+	    return TagX::Term::String->new( $1 );
+	} else {
+	    return TagX::Term::String->new( $_ );
+	}
+    } elsif ( s/^(\d+\.\d+|\d+\.|\.\d+|\d+)(?=\W)// ) {
+	# is a number
+	return TagX::Term::String->new( $1 );
+    } elsif ( s/^\x28// ) {
+	# is an expr
+	my @expr;
+	while ( length ) {
+	    s/^\s+// and next;
+
+	    if ( /^\x28/ ) {
+		push @expr, &parse_stm;
+		next;
+	    }
+
+	    if ( /^\$/ ) {
+		push @expr, &parse_stm;
+		next;
+	    }
+
+	    if ( /^(--(not|exists|eq|ne|gt|ge|lt|le|re|or|and)|\+)(?=\W)/i ) {
+		s///;
+		push @expr, lc($1);
+		next;
+	    }
+
+	    if ( /^$_delimiters/oi ) {
+		push @expr, &parse_stm;
+		next;
+	    }
+
+	    if ( /^[\d.]+/ ) {
+		push @expr, &parse_stm;
+		next;
+	    }
+
+	    if ( /^\x29/ ) {
+		s///;
+		return TagX::Expr->new( @expr );
+	    }
+
+	    die "Invalid token encountered: $_";
+	}
+	die "Expression not properly terminated -- probably missing a `)'";
+    } elsif ( s/^(\S+)// ) {
+	return TagX::Term::String->new( $1 );
+    } else {
+	die "Invalid token found: $_";
+    }
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/06/01 18:42:20  sridhar
+# Brand new package for parsing expression, statements, etc.
+#
+#
