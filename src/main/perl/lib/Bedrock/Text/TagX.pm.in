@@ -36,6 +36,7 @@ $VERSION	= '1.0502';
 use Text::URLEncode;
 
 use TagX::Symtab;
+use TagX::Error;
 use TagX::Expr 1.11;
 use TagX::Func 1.05;
 use TagX::Log 1.02;
@@ -67,7 +68,11 @@ use TagX::Term 1.12;
 use TagX::Term::String 1.03;
 use TagX::Term::Var 1.02;
 
-sub output
+$Text::TagX::Opentag_expr	= '^(var|sink|include|sql|sqlconnect|trace|foreach|sqlselect|while|if|else?if|try|catch|raise|else|null|exec)(?=\W)';
+$Text::TagX::Closetag_expr	= '^(/sink|/sqlselect|/foreach|/while|/if|/try)>';
+$Text::TagX::Options_expr	= '^\s*(([^>\\\\]|\\\\.)*)>';
+
+sub parse
 {
     my $self = shift;
     my $newscan = 1;
@@ -75,18 +80,15 @@ sub output
     my $obj = TagX::TAG::WithBody::Cache->new( $self );
     my $input = $self->{'input'};
     my $optstring = '';
-    $self->{'__line'} = 0;
-
-    my $tag_start = '^(var|sink|include|sql|sqlconnect|trace|foreach|sqlselect|while|if|else?if|try|catch|raise|else|null|exec)(?=\W)';
-    my $tag_end   = '^(/sink|/sqlselect|/foreach|/while|/if|/try)>';
-    my $opt_esc   = '^\s*(([^>\\\\]|\\\\.)*)>';
 
     my $text = '';
-    local($_);
+    my $line = 0;
+    my $file = $self->{'error'}->file;
 
+    local($_);
   INPUT:
     while (<$input>) {
-	$self->{'__line'}++;
+	$self->{'error'}->line(++$line);
       MAIN: {
 
 	  #
@@ -97,7 +99,7 @@ sub output
 
 	      # Collecting options for a matched tag -- Look for tag end which is
 	      # an un-escaped '>'
-	      if ( s/$opt_esc//o ) {
+	      if ( s/$Text::TagX::Options_expr//o ) {
 
 		  # Found an un-escaped '>', which terminates the current tag and its options
 		  # $optstring contains the options collected so far
@@ -134,7 +136,7 @@ sub output
 
 	  # We did find a '<' -- could be we have a possible supported tag next
 	  # Check if we have a supported tag
-	  if ( s/$tag_start//oi ) {
+	  if ( s/$Text::TagX::Opentag_expr//oi ) {
 
 	      # Yes we do
 	      # The text before the '<' needs to be processed.
@@ -232,11 +234,11 @@ sub output
 		  die "Tag <$_> NYI";
 	      }
 
-	      $obj->start_location( "$self->{'__input'}($self->{'__line'})" );
+	      $obj->start_location( $file, $line );
 
 	      # After creating object of suitable type depending on the tag, check
 	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-	      if ( s/$opt_esc//oi ) {
+	      if ( s/$Text::TagX::Options_expr//oi ) {
 
 		  # The tag definition ended on same line -- all options specified on
 		  # one line
@@ -262,7 +264,7 @@ sub output
 		  $optstring = $_;
 	      }
 
-	  } elsif ( s/$tag_end//oi ) {
+	  } elsif ( s/$Text::TagX::Closetag_expr//oi ) {
 
 	      # A tag has ended. The text before the '<' needs to be processed.
 	      if ( length($text) ) {
@@ -286,8 +288,11 @@ sub output
 	  }
       }
     }
-    die "text not terminated properly at $self->{'__input'}:$self->{'__line'}\n\t(probably a tag has not been ended properly)"
-	if $obj->parent;
+
+    if ( $obj->parent ) {
+	my ($file, $line) = $obj->start_location;
+	die "Tag on line $line, file $file not closed properly.\n";
+    }
 
     if ( length($text) ) {
 	$obj->text ( $text );
@@ -295,7 +300,39 @@ sub output
     }
 
     $obj->finalize;
+}
+
+sub output
+{
+    my $self = shift;
+    eval { $self->parse };
     $self->{'__input_opened'}->close if $self->{'__input_opened'};
+    if ( $@ ) {
+	chomp $@;
+	$self->error->mesg($@);
+	die "$@\n";
+    } else {
+	$self->error->endLevel;
+    }
+}
+
+sub show_error
+{
+    my $self = shift;
+    my $errfile = shift;
+    local(*FILE);
+    open( FILE, $errfile ) or die "Unable to open $errfile: $!\n";
+    $self->{'input'} = *FILE;
+    my $error = $self->{'error'};
+    $self->{'error'} = TagX::Error->new($errfile);
+    $self->param('ERROR' => $error);
+    $self->output;
+    close FILE;
+}
+
+sub error
+{
+    $_[0]->{'error'};
 }
 
 sub define_name
@@ -380,20 +417,17 @@ sub new
 
     my ($class, $self);
     if ( $class = ref( $proto ) ) {
-	$self = bless {}, $class;
-	$self->{'__input'} = $input;
-	if ( $output ) {
-	    $self->out_handle( TagX::Output->new( $output ) );
-	} else {
-	    $self->out_handle( $proto->out_handle );
-	}
+	$self = bless {'error' => {}}, $class;
+	if ( $output ) { $self->out_handle( TagX::Output->new( $output ) ) }
+	else { $self->out_handle( $proto->out_handle ) }
 	$self->{'VARS'} = $proto->{'VARS'};
+	$self->{'error'} = $proto->{'error'}->newLevel($input);
 	$self->{'DB'} = $proto->{'DB'} if exists $proto->{'DB'};
     } else {
 	$self = bless {}, $proto;
-	$self->{'__input'} = $input;
 	$self->out_handle( TagX::Output->new( $output ) );
 	$self->{'VARS'} = TagX::Symtab->new;
+	$self->{'error'} = TagX::Error->new($input);
 	$self->{'DB'} = {};
     }
 
@@ -401,7 +435,7 @@ sub new
 	my $file_or_fd = $input;
 	$input = ref( $file_or_fd ) ? IO::Handle->new_from_fd( $file_or_fd ) : IO::File->new ( $file_or_fd );
 	$self->{'__input_opened'} = $input;
-	confess "Unable to open [$file_or_fd] for input: $!" unless $input;
+	die "Unable to open [$file_or_fd] for input: $!\n" unless $input;
     }
 
     $self->{'input'} = $input;
@@ -466,6 +500,17 @@ sub close
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.40  2000/11/16 20:02:10  sridhar
+# 1. Using globals for storing the opentag, closing tag and options
+# parsing regex so other modules can use it.
+# 2. Method `output()' now invoked `parse()' which does the bulk of the
+# work which was being done by `output()'. Now `output()' does more of
+# exception handling.
+# 3. Stream lined error reporting with a class TagX::Error which stores
+# the call call stack and locations.
+# 4. Have a `show_error()' method which can be passed a file to use as
+# the error reporting page.
+#
 # Revision 1.39  2000/11/13 18:48:55  sridhar
 # 1. Using TagX::TAG::WithBody::Cache as the outer container since this
 # can cache the output, thus allowing header settings anywhere within
