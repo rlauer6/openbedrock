@@ -2,6 +2,10 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.2  2000/09/18 15:18:25  sridhar
+# Oops! Need to include make.{pre,post} in parent dir (..) and not grand
+# parent (../..) since this hierarchy is installed under Bedrock/
+#
 # Revision 1.1  2000/09/18 14:20:27  sridhar
 # Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
 #
@@ -26,7 +30,7 @@
 #
 # 
 
-include ../../make.pre
+include ../make.pre
 
      CURRENT_PATH = SIS
 
@@ -55,4 +59,4 @@ install:
 	$(INSTALL) BufferStream.pm	$(CURRENT_TARGET)
 	cd Base		&& $(MAKE) $@
 
-include ../../make.post
+include ../make.post
