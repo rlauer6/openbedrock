@@ -28,6 +28,10 @@ exit 0;
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.1  2000/12/18 15:07:49  sridhar
+# Moved bedrock.cgi to bedrock.pl since new make rule added to properly
+# build .cgi from .pl
+#
 # Revision 1.1  2000/12/12 18:54:46  sridhar
 # The CGI version of Bedrock; uses the mod_perl handler by setting up an
 # apache-request-like object.
