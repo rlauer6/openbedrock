@@ -24,46 +24,76 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    $tx->log_message( MSG_DEBUG => "Finalizing $self with\n@{$self->{'argv'}}" );
     local (@ARGV) = @{$self->{'argv'}};
     my %valid = ('dbname'	=> '_anonymous_');
     &GetOptions(\%valid,
+		'verbose',
 		'dbname=s',
 		'arg=s@',
 		'statement=s',
 		'bind=s@');
-    $tx->log_message ( MSG_DEBUG => "Statement is <$valid{'statement'}>" );
-    return unless exists $valid{'statement'};
-    my $name = $valid{'dbname'};
-    $tx->log_message ( MSG_DEBUG => "dbname is <$name>, handle is <$tx->{'DB'}->{$name}>" );
-    return unless exists $tx->{'DB'}->{$name};
 
-    my $dbh = $tx->{'DB'}->{$name};
+    my $verbose = delete $valid{'verbose'};
+
+    if ( $verbose ) {
+	my ($key, $value);
+	my $str = "$self: Options are\n";
+	while (($key, $value) = each %valid) {
+	    $str .= "\t$key .. ($value)\n";
+	}
+	$tx->log_message( MSG_DEBUG => $str );
+    }
+
+    unless ( exists $valid{'statement'} ) {
+	$tx->log_message ( MSG_DEBUG => "$self: No statement specified") if $verbose;
+	return;
+    }
+
+    my $name = $valid{'dbname'};
+    my $dbh;
+    if ( exists $tx->{'DB'}->{$name} ) {
+	$dbh = $tx->{'DB'}->{$name};
+    } else {
+	$tx->log_message ( MSG_DEBUG => "$self: No database connection named ($name)" ) if $verbose;
+	return;
+    }
+
+    $tx->log_message ( MSG_DEBUG => "$self: Using database handle named ($name) .. ($dbh)")
+	if $verbose;
+
     my $statement = $valid{'statement'};
     my @args = @{$valid{'arg'}} if exists $valid{'arg'};
     my @argvals = map { $self->resolve_name ( $_, @context ) } @args;
     $statement = sprintf ($statement, @argvals) if @args > 0;
-    my $sth = $dbh->prepare ( $statement );
+    $tx->log_message( MSG_DEBUG => "$self: Statement after arg-substitution\n$statement" )
+	if $verbose;
 
+    my $sth = $dbh->prepare ( $statement );
     my $i = 1;
     for my $varname (@{$valid{'bind'}}) {
 	my $type = $1 if $varname =~ s/\s*\(\s*(\d+)\s*\)\s*$//oi;
 	my $value = $self->resolve_name ( $varname, @context );
 	if ( defined( $type ) ) { $sth->bind_param ( $i, $value, {TYPE => $type}) }
 	else { $sth->bind_param ( $i, $value ); }
-	$tx->log_message( MSG_DEBUG => "Bound ($i, $varname, $type, $value)" );
+	$tx->log_message( MSG_DEBUG => "Bound ($i, $varname, $type, $value)" )
+	    if $verbose;
     } continue {
 	$i++;
     }
 
     my $rows = $sth->execute;
-    $tx->log_message( MSG_DEBUG => "Number of rows affected by statement is <$rows>" );
+    $tx->log_message( MSG_DEBUG => "Number of rows affected by statement is <$rows>" )
+	if $verbose;
     $rows;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.4  2000/03/06 18:32:00  sridhar
+# Replaced all ad-hoc message logging with message logging only on demand
+# -- via --verbose flag specified as a tag option
+#
 # Revision 1.3  2000/02/23 13:42:03  sridhar
 # 1. More logging
 # 2. Support for binding value with type specification
