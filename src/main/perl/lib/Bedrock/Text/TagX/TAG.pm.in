@@ -120,7 +120,7 @@ sub options
 	my %generic = ('verbose' => undef);
 	$self->{'__options'} = &tagOptions_as_array ( $self->{'__argv'}, $optstring, \%generic);
 	map { $self->{'__' . $_} = $generic{$_} if defined $generic{$_} } keys %generic;
-	if ( $self->verbose ) {
+	if ( $self->{'__verbose'} ) {
 	    my $str = "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
 	    $str .= "  Options are\n";
 	    for my $key (sort keys %{$self->{'__options'}}) {
@@ -142,12 +142,68 @@ sub verbose
     $self->{'__verbose'};
 }
 
-sub parse_options
+sub eval_args
 {
     my $self = shift;
     my $optref = shift;
 
-    &log_message( $self, "Context arguments are\n\t(@_)" ) if $self->verbose;
+    &log_message( $self, "Context arguments are\n\t(@_)" ) if $self->{'__verbose'};
+
+    # command line has been parsed. Just need to eval arguments and
+    # options with appropriate context
+    my ($key, $value);
+    %{$optref} = ();
+    while (($key, $value) = each %{$self->{'__options_to_eval'}}) {
+	my $ref = ref( $value );
+	if ( $ref eq 'ARRAY' ) {
+	    # more than one value for this option
+	    # need to eval all
+	    my @optvals;
+	    for my $arg (@{$value}) {
+		if ( ref( $arg ) ) {
+		    $arg->verbose(1) if $self->{'__verbose'};
+		    push @optvals, $arg->eval(@_);
+		    $arg->verbose(0) if $self->{'__verbose'};
+		} else {
+		    push @optvals, $arg;
+		}
+	    }
+	    $optref->{$key} = \@optvals;
+	} elsif ( $ref ) {
+	    $value->verbose(1) if $self->{'__verbose'};
+	    $optref->{$key} = $value->eval(@_);
+	    $value->verbose(0) if $self->{'__verbose'};
+	} else {
+	    $optref->{$key} = $value;
+	}
+    }
+
+    # Reset any options to defaults if values for them not specified.
+    for my $key (keys %{$self->{'__option_defaults'}}) {
+	next if exists $optref->{$key};
+	$optref->{$key} = $self->{'__option_defaults'}->{$key};
+    }
+
+    # Evaluate arguments now
+    my @args;
+    for my $arg (@{$self->{'__args_to_eval'}}) {
+	if ( ref($arg) ) {
+	    $arg->verbose(1) if $self->{'__verbose'};
+	    push @args, $arg->eval(@_);
+	    $arg->verbose(0) if $self->{'__verbose'};
+	} else {
+	    push @args, $arg;
+	}
+    }
+
+    @args;
+}
+
+sub parse_options
+{
+    my $self = shift;
+    return $self->eval_args(@_) if exists $self->{'__args_to_eval'};
+    my $optref = shift;
 
     # The supported options list is contained in %keys_lc (key is the name of option (in lowercase)
     # and value is the flag specified: `=s' if the option takes an argument)
@@ -184,10 +240,7 @@ sub parse_options
 
 	# Is the argument a `Term' or an `Expr'
 	if ( ref( $arg ) ) {
-	    # if so, evaluate it and push the value into the arguments array
-	    $arg->verbose(1) if $self->verbose;
-	    push @argv, $arg->eval(@_);
-	    $arg->verbose(0) if $self->verbose;
+	    push @argv, $arg;
 	    next;
 	}
 
@@ -205,15 +258,9 @@ sub parse_options
 		# make an array ref
 		$options{$arg_lc} = [$options{$arg_lc}]
 		    unless ref($options{$arg_lc}) eq 'ARRAY';
-		# and push the value
-		$optval->verbose(1) if $self->verbose;
-		push @{$options{$arg_lc}}, $optval->eval(@_);
-		$optval->verbose(0) if $self->verbose;
+		push @{$options{$arg_lc}}, $optval;
 	    } else {
-		# not repeated -- just evaluate the value
-		$optval->verbose(1) if $self->verbose;
-		$options{$arg_lc} = $optval->eval(@_);
-		$optval->verbose(0) if $self->verbose;
+		$options{$arg_lc} = $optval;
 	    }
 	    next;
 	}
@@ -233,35 +280,49 @@ sub parse_options
 	push @argv, $arg;
     }
 
-    # Remap the case of the options to the required case
-    %{$optref} = ();
+    # Remap the case of the options to the required case and save the parsed options
     for my $key (keys %options) {
-	$optref->{$keys{$key}} = $options{$key};
+	$self->{'__options_to_eval'}->{$keys{$key}} = $options{$key};
     }
 
-    # Reset any options to defaults if values for them not specified.
+    # Save the defaults too
     for my $key (keys %defaults) {
-	next if exists $options{$key};
-	$optref->{$keys{$key}} = $defaults{$key};
+	$self->{'__option_defaults'}->{$keys{$key}} = $defaults{$key};
     }
 
-    # Leave a trace on the way out
-    if ( $self->verbose ) {
-	my $str = "Options evaluated to\n";
-	for my $key (sort keys %{$optref}) {
-	    $str .= "  $key => [" . $optref->{$key} . "]\n";
+    # and save the arguments too
+    $self->{'__args_to_eval'} = \@argv;
+
+    # Leave a trace before doing the eval
+    if ( $self->{'__verbose'} ) {
+	my $str = "Specified options are\n";
+	for my $key (sort keys %{$self->{'__options_to_eval'}}) {
+	    $str .= "  $key => [" . $self->{'__options_to_eval'}->{$key} . "]\n";
 	}
-	$str .= "Arguments evaluated to\n\t(@argv)";
-	&log_message( $self, "$str\n" );
+
+	$str .= "Defaults are\n";
+	for my $key (sort keys %{$self->{'__option_defaults'}}) {
+	    $str .= "  $key => [" . $self->{'__option_defaults'}->{$key} . "]\n";
+	}
+
+	$str .= "Arguments are\n  (@argv)";
+	&log_message( $self, $str);
     }
 
-    # And return the arguments array left behind after processing options.
-    @argv;
+    return $self->eval_args($optref, @_);
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.17  2000/06/16 14:54:33  sridhar
+# In quest for speed,
+# 1. replaced all invocations of object method verbose with actual
+# reference to variable
+# 2. Split up parse_options() into two stages -- a parsing stage and an
+# evaluating stage. Parsing is done first time only for an object,
+# results of parse are stored to be evaluated in eval stage
+#
 # Revision 1.16  2000/06/01 18:43:51  sridhar
 # Brand new version with
 # 1. Use of a package for parsing statements
