@@ -2,6 +2,10 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.3  2000/11/16 20:03:05  sridhar
+# Does not descend directories for making. Just makes the main file
+# which includes everything.
+#
 # Revision 1.2  2000/02/08 15:24:55  sridhar
 # Added TagX
 #
@@ -19,7 +23,6 @@ include ../make.pre
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) URLEncode.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) TagX.pm
-	cd TagX		&& $(MAKE) $@
 
 install:
 	$(INSTALL) URLEncode.pm		$(CURRENT_TARGET)
