@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.7  2000/12/01 15:10:27  sridhar
+# Added List.pm and cleaned up the Makefile a lot.
+#
 # Revision 1.6  2000/10/26 20:43:12  rlauer
 # - added SIMPLEFTP
 #
@@ -61,48 +64,18 @@ include ../make.pre
 
           TARGETS = Timenow.pm File.pm Keys.pm Awk.pm Mail.pm Include.pm Fortune.pm \
 		    Date.pm Array.pm Number.pm Series.pm Perldoc.pm Benchmark.pm String.pm \
-		    Recycle.pm Stat.pm SMTP.pm SIMPLEFTP.pm
+		    Recycle.pm Stat.pm SMTP.pm SIMPLEFTP.pm List.pm
 
-all:
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Timenow.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) File.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Keys.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Awk.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Mail.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Include.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Fortune.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Date.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Array.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Number.pm 
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Series.pm 
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Perldoc.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Benchmark.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) String.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Recycle.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Stat.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) SMTP.pm
-	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) SIMPLEFTP.pm
+all: $(TARGETS)
 	cd Startup && $(MAKE) $@
 
-install:
-	$(INSTALL) Timenow.pm	$(CURRENT_TARGET)
-	$(INSTALL) File.pm	$(CURRENT_TARGET)
-	$(INSTALL) Keys.pm	$(CURRENT_TARGET)
-	$(INSTALL) Awk.pm	$(CURRENT_TARGET)
-	$(INSTALL) Mail.pm	$(CURRENT_TARGET)
-	$(INSTALL) Include.pm	$(CURRENT_TARGET)
-	$(INSTALL) Fortune.pm	$(CURRENT_TARGET)
-	$(INSTALL) Date.pm	$(CURRENT_TARGET)
-	$(INSTALL) Array.pm	$(CURRENT_TARGET)
-	$(INSTALL) Number.pm	$(CURRENT_TARGET)
-	$(INSTALL) Series.pm	$(CURRENT_TARGET)
-	$(INSTALL) Perldoc.pm	$(CURRENT_TARGET)
-	$(INSTALL) Benchmark.pm	$(CURRENT_TARGET)
-	$(INSTALL) String.pm	$(CURRENT_TARGET)
-	$(INSTALL) Recycle.pm	$(CURRENT_TARGET)
-	$(INSTALL) Stat.pm	$(CURRENT_TARGET)
-	$(INSTALL) SMTP.pm	$(CURRENT_TARGET)
-	$(INSTALL) SIMPLEFTP.pm	$(CURRENT_TARGET)
+install:: $(TARGETS:%=%-install)
 	cd Startup && $(MAKE) $@
+
+$(TARGETS)::
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) $@
+
+$(TARGETS:%=%-install)::
+	$(INSTALL) $(@:-install=)	$(CURRENT_TARGET)
 
 include ../make.post
