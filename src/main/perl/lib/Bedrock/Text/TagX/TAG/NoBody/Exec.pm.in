@@ -26,8 +26,10 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('file=s'	=> undef,
-		   'object=s'	=> undef);
+    my %options = ('file=s'		=> undef,
+		   'object=s'		=> undef,
+		   'pebble=s'		=> undef,
+		   'expand-args=s'	=> undef);
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
 
@@ -45,11 +47,21 @@ sub finalize
     if ( exists $options{'file'} ) {
 	$input = $options{'file'};
 	die "No file to exec.\n" unless length($input);
+	$input =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
 	die "Cannot exec `$input': is a directory.\n" if -d $input;
 	&log_message( $self, "Preparing to exec file [$input]" ) if $verbose;
     } elsif ( exists $options{'object'} ) {
 	$input = $options{'object'};
 	&log_message( $self, "Preparing to exec object [$input]" ) if $verbose;
+    } elsif ( exists $options{'pebble'} ) {
+	$input = $options{'pebble'};
+	die "Specify name of the pebble to exec.\n" unless length($input);
+	my $dir;
+	die "PEBBLE_DIR not specified in config: cannot exec pebble `$input'\n"
+	    unless $dir = $tx->getoption('PEBBLE_DIR');
+	my $file = $dir . '/' . $input;
+	die "Cannot exec pebble `$input': not found.\n" unless -f $file;
+	$input = $file;
     } elsif ( @argv ) {
 	my $buf = "@argv";
 	if ( $verbose > 1 ) {
@@ -69,19 +81,23 @@ sub finalize
     $tx->{'VARS'}->new_frame;
 
     my @expanded;
-    my $str = "Expanding arguments for <exec>\n" if $verbose;
-    my $i = 0;
-    for my $item ( @argv ) {
-	if ( ref($item) && &UNIVERSAL::isa($item, 'ARRAY') ) {
-	    $str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
-	    push @expanded, @{$item};
-	} else {
-	    $str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
-	    push @expanded, $item;
+    if ( $options{'expand-args'} ) {
+	my $str = "Expanding arguments for <exec>\n" if $verbose;
+	my $i = 0;
+	for my $item ( @argv ) {
+	    if ( ref($item) && &UNIVERSAL::isa($item, 'ARRAY') ) {
+		$str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
+		push @expanded, @{$item};
+	    } else {
+		$str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
+		push @expanded, $item;
+	    }
+	    $i++;
 	}
-	$i++;
+	&log_message( $self, $str ) if $verbose;
+    } else {
+	@expanded = @argv;
     }
-    &log_message( $self, $str ) if $verbose;
 
     $tx->param('ARGV' => SIS::Array->new( @expanded ));
 
@@ -95,6 +111,12 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2000/11/29 20:58:34  sridhar
+# 1. Support for pebbles -- file to be included is taken from a
+# directory which is configured as PEBBLE_DIR
+# 2. No expanding of arguments by default. --expand-args must be
+# specified to expand any array arguments.
+#
 # Revision 1.6  2000/11/22 15:29:29  sridhar
 # 1. Parameters can now be passed to <exec>.
 # 2. Exec is more like a subroutine call in that a stack frame is
