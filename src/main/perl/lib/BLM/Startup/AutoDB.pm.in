@@ -1,0 +1,178 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package BLM::Startup::AutoDB;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    $BLM::Startup::AutoDB::VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use DBI;
+use SIS::Hash;
+@BLM::Startup::AutoDB::ISA = qw(SIS::Hash);
+
+# Private method invoked to re-execute query 
+sub __query
+{
+    my $self = shift;
+    my @bind = @_;
+
+    my $sth = $self->{'st_handle'};
+    $sth->execute(@bind) || die ref($self), "->query(): query failed\n", $sth->errstr, "\n";
+
+    # Get the variables selected if not done so yet
+    unless ( exists $self->{'columns'} ) {
+	my $columns = $sth->{'NAME_lc'};
+	$self->{'columns'} = [@{$columns}];
+    }
+
+    my $aref = $sth->fetch;
+    if ( defined($aref) ) {
+	$self->{'data'} = [@$aref];
+	my $count = 1;
+	while ( $aref = $sth->fetch ) {
+	    $self->{'array'} = [$self->{'data'}] unless $self->{'array'};
+	    push @{$self->{'array'}}, [@$aref];
+	    $count++;
+	}
+	$self->{'count'} = $count;
+	if ( $count > 1 ) {
+	    $self->{'data'} = undef;
+	} else {
+	    delete $self->{'array'};
+	}
+    } else {
+	$self->{'data'} = undef;
+	$self->{'count'} = 0;
+	delete $self->{'array'};
+    }
+}
+
+sub rows
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->{'array'};
+}
+
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+
+    # What is the query statement to get the data?
+    my $query = $config->{'query'};
+    die "$class->TIEHASH(): parameter `query' must be specified in config.\n"
+	unless $query;
+
+    # What is the DSN?
+    my $dsn = $config->{'data-source'};
+    die "$class->TIEHASH(): parameter `data-source' must be specified in config.\n"
+	unless $dsn;
+
+    # Create the object
+    my $self = bless {}, $class;
+    $self->{'data-source'} = $dsn;
+    $self->{'query'} = $query;
+
+    # Are there any associated bind vars?
+    $self->{'bind'} = $config->{'bind'};
+
+    # Do we need to bind any vars?
+    my @bind_val;
+    if ( $self->{'bind'} ) {
+	# Where are we initially going to get the bind vars from?
+	$self->{'source'} = $config->{'source'} || 'input';
+
+	# Source of bind vars can be `input' or `cookie'
+	@bind_val = ( $self->{'source'} eq 'input'
+		      ? $ctx->getInputValue(@{$self->{'bind'}})
+		      : $ctx->getCookieValue(@{$self->{'bind'}}));
+    }
+
+    # Open connection to DB
+    $self->{'db_handle'} = DBI->connect ( $dsn, $config->{'username'}, $config->{'password'},
+					  $config->{'db-opts'} );
+    die "$class->TIEHASH(): Unable to connect to $dsn\n$DBI::errstr\n"
+	unless $self->{'db_handle'};
+
+    # Prepare and store the statement handle
+    $self->{'st_handle'} = $self->{'db_handle'}->prepare( $query );
+
+    # And perform the query
+    $self->__query(@bind_val);
+    $self;
+}
+
+sub FETCH
+{
+    my ($self, $key) = @_;
+    return undef unless defined($self->{'data'});
+
+    my @names = @{$self->{'columns'}};
+    for (my $i = 0 ; $i < @names ; $i++ ) {
+	if ( lc($key) eq $names[$i] ) {
+	    return $self->{'data'}->[$i];
+	}
+    }
+
+    undef;
+}
+
+sub STORE
+{
+    my ($self, $key, $value) = @_;
+    $value;
+}
+
+sub FIRSTKEY
+{
+}
+
+sub NEXTKEY
+{
+}
+
+sub EXISTS
+{
+}
+
+sub DELETE
+{
+}
+
+sub CLEAR
+{
+}
+
+sub VERSION
+{
+    $BLM::Startup::AutoDB::VERSION;
+}
+
+# This method is invoked at session close. Pack the session data into
+# an XML string and hand it to the object's writeData() method to store
+# whereever.
+sub closeBLM
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    $self->{'db_handle'}->disconnect;
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/11/07 14:10:08  sridhar
+# Module AutoDB makes a row from an SQL query appear like an object to
+# the Bedrock script. Have implemented just FETCH() now. Need to do
+# STORE() and the others later.
+#
+#
