@@ -1,0 +1,291 @@
+#!/export/home/perl5/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package Bedrock::Context;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    @Bedrock::Context::ISA	= qw (Exporter);
+}
+ 
+use Carp;
+use IO::File;
+use Text::URLEncode;
+use SIS::Config;
+use SIS::Log;
+
+#
+# Method to get input parameter(s)/value(s)
+# Invoked either with 
+#    1. a list of parameter names. Returns the value of the
+#       parameters requested
+#    2. No args. Returns the names of all parameters in the
+#       input
+sub getInputValue
+{
+    my $self = shift;
+
+    unless ( exists $self->{'INPUT'} ) {
+	# Collect the input
+	my $r = $self->{'APACHE_HANDLER'};
+	my @args = ($r->args, $r->content);
+	my ($name, $value);
+	my $input = {};
+	while (($name, $value) = splice @args, 0, 2) {
+	    if ( exists $input->{$name} ) {
+		$input->{$name} = [$input->{$name}] unless &UNIVERSAL::isa( $input->{$name}, 'ARRAY' );
+		push @{$input->{$name}}, $value;
+	    } else {
+		$input->{$name} = $value;
+	    }
+	}
+	$self->{'INPUT'} = $input;
+    }
+
+    if ( @_ > 0 ) {
+	# Have some parameters -- need the values
+	return @{$self->{'INPUT'}}{@_};
+    } else {
+	# No parameters -- need the names of all parameters
+	return keys %{$self->{'INPUT'}};
+    }
+}
+
+#
+# Constructor for Apache modules
+# Returns the created object
+# Mandatory Arguments are as follows:
+#    APACHE_HANDLER	=> Apache handler object
+#    OUTPUT_HANDLER	=>
+#	Output handler supporting a `print()' method. Defaults to APACHE_HANDLER
+#	if not specified.
+# One of the following must be present
+#    CONFIG	        => Hash containing config info
+#    CONFIG_FILE	=> Name of the config file
+#
+sub new
+{
+    my $class = shift;
+    my %args = @_;
+
+    die "$class->new(): CONFIG or CONFIG_FILE parameter must be specified."
+	unless $args{'CONFIG'} or $args{'CONFIG_FILE'};
+
+    die "$class->new(): APACHE_HANDLER parameter must be specified."
+	unless $args{'APACHE_HANDLER'};
+
+    my $self = bless {}, $class;
+    if ( $args{'CONFIG'} ) {
+	$self->{'CONFIG'} = $args{'CONFIG'};
+    } else {
+	$self->{'CONFIG'} = SIS::Config->new ( $args{'CONFIG_FILE'} );
+    }
+
+    $self->{'APACHE_HANDLER'} = $args{'APACHE_HANDLER'};
+
+    if ( $args{'OUTPUT_HANDLER'} ) {
+	$self->{'OUTPUT_HANDLER'} = $args{'OUTPUT_HANDLER'};
+    } else {
+	$self->{'OUTPUT_HANDLER'} = $args{'APACHE_HANDLER'};
+    }
+
+    &SIS::Log::StartLogger ( LOGDIR     => $self->{'CONFIG'}->{'LOGDIR'},
+                             LOGLEVEL   => $self->{'CONFIG'}->{'LOGLEVEL'},
+			     LOGFILE	=> 'bedrock.log');
+
+    $self;
+}
+
+#
+# Close method is used when CGI wants to close browser connection and go off
+# to do something else and not keep the user waiting
+#
+sub close
+{
+    shift ->{'OUTPUT_HANDLER'}->close;
+}
+
+sub print
+{
+    shift->{'OUTPUT_HANDLER'}->print(@_);
+}
+
+sub cgi_header_in
+{
+    shift->{'APACHE_HANDLER'}->headers_in;
+}
+
+sub cgi_header_out
+{
+    shift->{'APACHE_HANDLER'}->cgi_header_out( @_ );
+}
+
+sub send_http_header
+{
+    shift->{'APACHE_HANDLER'}->send_http_header;
+}
+
+sub getOutputValue
+{
+    my $self = shift;
+    return unless exists $self->{'output_vars'};
+    if ( @_ == 1 ) {
+	return $self->{'output_vars'}->{$_[0]};
+    } elsif ( @_ ) {
+	&confess( "Scalar context is not valid here: should be array context only" )
+	    unless wantarray;
+	return @{$self->{'output_vars'}}{@_};
+    } else {
+	&confess( "Scalar context is not valid here: should be array context only" )
+	    unless wantarray;
+	return keys %{$self->{'output_vars'}};
+    }
+}
+
+sub setOutputValue
+{
+    my $self = shift;
+    $self->{'output_vars'} = {} unless exists $self->{'output_vars'};
+    my %args = @_;
+    my ($key, $value);
+    while (($key, $value) = each %args) {
+	$self->{'output_vars'}->{$key} = $value;
+    }
+}
+
+#
+# Method returns a config parameter value. Used to hide the Config object from the public.
+#
+sub getConfigValue
+{
+    my $self = shift;
+    if ( @_ > 0 ) {
+	wantarray ? @{$self->{'CONFIG'}}{@_} : $self->{'CONFIG'}->{$_[0]};
+    } else {
+	keys %{$self->{'CONFIG'}};
+    }
+}
+
+#
+# Method for management of cookies
+#
+sub getCookieValue
+{
+    my $self = shift;
+    return unless exists $ENV{'HTTP_COOKIE'};
+    unless ( exists $self->{'__cookies__'} ) {
+	$self->{'__cookies__'} = {};
+	for my $cookie (split(';', $ENV{'HTTP_COOKIE'} )) {
+	    $cookie =~ s/^\s*(.*?)\s*$/$1/;
+	    my ($key, $value) = split ('=', $cookie);
+	    $self->{'__cookies__'}->{$key} = &Text::URLEncode::Decode($value);
+	}
+    }
+
+    if ( @_ == 1 ) {
+	$self->{'__cookies__'}->{$_[0]};
+    } elsif ( @_ > 1 ) {
+	my @values;
+	for (@_) {
+	    push @values, $self->{'__cookies__'}->{$_};
+	}
+	@values;
+    } else {
+	sort keys %{$self->{'__cookies__'}};
+    }
+}
+
+sub config
+{
+    my $self = shift;
+    $self->{'CONFIG'};
+}
+
+sub input
+{
+    my $self = shift;
+    $self->{'INPUT'};
+}
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/12/18 17:59:39  sridhar
+# 1. Moved Bedrock/SIS/Base.pm to Bedrock/Context.pm
+# 2. Added options OUTPUT_HANDLER to constructor to use for in `print()'
+#
+# Revision 1.4  2000/12/12 20:18:50  sridhar
+# 1. New version integrates SIS::Base and SIS::Base::Apache
+# 2. No longer need to use SIS::InputSource since APACHE_HANDLER must be
+# specified as an argument to constructor.
+# 3. Creates log file named bedrock.log for both CGI and mod_perl
+# versions
+# 4. Threw out template junk
+#
+# Revision 1.3  2000/12/08 20:04:17  sridhar
+# Added methods `getOutputValue()' and `setOutputValue()'
+#
+# Revision 1.2  2000/11/07 13:54:45  sridhar
+# 1. Can pass a config object instead of a config file to the
+# constructor
+# 2. Kicked out use of IO::Handle object for output. Directly using
+# `*STDOUT' for this purpose.
+#
+# Revision 1.1  2000/09/18 14:20:26  sridhar
+# Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
+#
+# Revision 1.10  2000/08/23 17:29:44  sridhar
+# Added (empty) method cgi_header_in() which (purportedly) returns a
+# hash or hash ref of header fields.
+#
+# Revision 1.9  2000/07/18 19:26:50  sridhar
+# Closing STDOUT too in object method close().
+#
+# Revision 1.8  2000/07/17 13:57:57  sridhar
+# 1. Some cleanup -- removed code not used by any modules.
+# 2. Added a close() method for use when CGI wants to close browser
+# connection and go off to do something else.
+# 3. more comments
+#
+# Revision 1.7  2000/07/06 18:32:02  sridhar
+# 1. new() creates an output handle from STDOUT
+# 2. Added methods print(), cgi_header_out() and send_http_header() to
+# mirror mod_perl environment
+#
+# Revision 1.6  2000/06/26 13:53:39  sridhar
+# Decoding cookies
+#
+# Revision 1.5  2000/06/09 17:49:46  sridhar
+# 1. Removed _locate_cfg() since same service provided by SIS::Config
+# 2. Removed default CONFIG_PATH. Must be set outside now.
+# 3. Added some comments
+#
+# Revision 1.4  2000/06/07 18:34:15  sridhar
+# Using config object directly as a hash
+#
+# Revision 1.3  2000/05/24 13:49:27  sridhar
+# 1. Support concept of CONFIG_PATH, a set of colon-separated
+# directories where the config file is searched, if the config file is a
+# filename without path info. CONFIG_PATH can be set in the environment,
+# failing which a default value is used
+# 2. The default config file for the class is `sis.cfg' (was `base.cfg'
+# earlier)
+# 3. XHTML_PATH is treated as a colon-separated list of directories in
+# which to look for the template file
+# 4. Added a method `getTemplate' for getting the full pathname of a
+# template file.
+#
+# Revision 1.2  2000/05/08 12:57:46  sridhar
+# Added method for getting cookies.
+#
+# Revision 1.1  2000/02/04 16:18:17  sridhar
+# Added SIS::Base -- the base class of all CGI classes.
+#
+#
+
+1;
