@@ -1,0 +1,151 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package BLM::Startup::Session;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Carp;
+use SIS::Hash;
+@ISA = qw(SIS::Hash);
+
+# Method which should look up session id from somewhere and return a hash
+# ref to the session data.
+# Invoked with: $config, $id
+# Return: Hash ref
+sub readData
+{
+    my $self = shift;
+    die "Session class ", ref($self), " must implement method `readData()'\n";
+}
+
+#
+# Generic constructor for Sessions. Does the following:
+# 1. Use the value of `param' from configuration to look for a session
+#    identifier in the cookie or input
+# 2. Create the session object
+# 3. Invoke the readData() method to read the session data from the store.
+#    Subclasses need to override this method to implement specific session
+#    data storage policies like using a file, SDBM, or a database. Subclasses
+#    are expected to return a string containing the session data. Typically
+#    this string was given to the subclass by us to store.
+# Returns: The session object
+# Properties: The session object has the following properties as a minimum.
+# Subclasses could define additional properties.
+#    id		=> The session identifier
+#    data	=> The session data hash
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+
+    # What is the name of the session variable being used?
+    my $name = $config->{'param'};
+    die "$class->TIEHASH(): `param' not set in config\n" unless $name;
+
+    # Create session object
+    my $self = bless {}, $class;
+
+    # Check for an existing session
+    my $id = $ctx->getCookieValue($name);
+
+    # Get the session data only if a session exists
+    if ( defined($id) ) {
+	# Get session data as a string
+	my $ses_string = $self->readData($config, $id);
+
+	# Make a hash from the string which should be in our XML format
+	$self->{'data'} = Bedrock::XML->newFromString( $ses_string )
+	    if length($ses_string);
+    } else {
+	# For now let's use Apache's UNIQUE_ID as the session id
+	$id = $ENV{'UNIQUE_ID'};
+
+	# Set the cookie header
+	$ctx->cgi_header_out('Set-Cookie', $name . '=' . $id);
+    }
+
+    # Initialize data if we don't have any
+    $self->{'data'} = {} unless $self->{'data'};
+
+    # Store the session id too in case someone asks for it
+    $self->{'id'} = $id;
+
+    # And return the session object
+    $self;
+}
+
+# Invoked to fetch the value of a session var
+sub FETCH
+{
+    my ($self, $key) = @_;
+    $self->{'data'}->{$key};
+}
+
+# Just store the value in the session and return the value
+sub STORE
+{
+    my ($self, $key, $value) = @_;
+    $self->{'data'}->{$key} = $value;
+    $value;
+}
+
+# Invoked to loop over the properties of the session
+sub FIRSTKEY
+{
+    my $self = shift;
+    my $a = scalar keys %{$self->{'data'}};
+    each %{$self->{'data'}};
+}
+
+sub NEXTKEY
+{
+    each %{shift->{'data'}};
+}
+
+sub EXISTS
+{
+    exists $_[0]->{'data'}->{$_[1]};
+}
+
+sub DELETE
+{
+    delete $_[0]->{'data'}->{$_[1]};
+}
+
+sub CLEAR
+{
+    %{$_[0]->{'data'}} = ();
+}
+
+# This method is invoked at session close. Pack the session data into
+# an XML string and hand it to the object's writeData() method to store
+# whereever.
+sub closeBLM
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
+    my $xml = Bedrock::XML::writeXMLString($self->{'data'});
+    $self->writeData($xml);
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/11/07 14:04:37  sridhar
+# The Bedrock session module implements a general framework for more
+# specialized session modules. Specifically implements all that is
+# needed for session support except `readData()' and `writeData()'
+# methods which subclasses are expected to implement.
+#
+#
