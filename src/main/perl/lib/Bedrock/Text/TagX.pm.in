@@ -31,13 +31,6 @@ use TagX::TAG::WithBody::Try;
 use TagX::TAG::WithBody::Catch;
 use TagX::TAG::NoBody::Raise;
 
-my %ErrorLevels = (MSG_DEBUG          => 1 << 1,
-		   MSG_INFO           => 1 << 2,
-		   MSG_STATUS         => 1 << 3,
-		   MSG_WARNING        => 1 << 4,
-		   MSG_ERROR          => 1 << 5,
-		   MSG_FATAL          => 1 << 6);
-
 sub output
 {
     my $self = shift;
@@ -273,16 +266,6 @@ sub param
     }
 }
 
-sub log_message
-{
-    my $self = shift;
-    return unless exists $self->{'error_handler'};
-    my $level = shift;
-    return unless $self->{'ErrorLevels'}->{uc $level} >= $self->{'error_level'};
-    unshift @_, "[$self->{'__input'}($self->{'__line'})]" if exists $self->{'__line'};
-    goto &{$self->{'error_handler'}};
-}
-
 sub out_handle
 {
     my $self = shift;
@@ -306,9 +289,6 @@ sub new
     my ($class, $self);
     if ( $class = ref( $proto ) ) {
 	$self = bless {}, $class;
-	$self->{'ErrorLevels'} = $proto->{'ErrorLevels'};
-	$self->{'error_handler'} = $error_handler || $proto->{'error_handler'};
-	$self->{'error_level'} = $proto->{'error_level'};
 	$self->{'__input'} = $input;
 	if ( $output ) {
 	    $self->out_handle( TagX::Output->new( $output ) );
@@ -319,9 +299,6 @@ sub new
 	$self->{'DB'} = $proto->{'DB'} if exists $proto->{'DB'};
     } else {
 	$self = bless {}, $proto;
-	$self->{'ErrorLevels'} = \%ErrorLevels;
-	$self->{'error_handler'} = $error_handler if ref ($error_handler) eq 'CODE';
-	$self->{'error_level'} = $self->{'ErrorLevels'}->{'MSG_DEBUG'};
 	$self->{'__input'} = $input;
 	$self->out_handle( TagX::Output->new( $output ) );
 	$self->{'VARS'} = {};
@@ -335,20 +312,85 @@ sub new
 
     $self->{'input'} = $input;
 
-    $SIG{__WARN__} = sub { $self->log_message( MSG_WARNING => @_ ) };
-    $SIG{__DIE__} = sub { $self->log_message( MSG_ERROR => @_ ) };
-
     for (keys %args) {
 	$self->{'VARS'}->{$_} = $args{$_};
     }
 
-    $self->log_message ( MSG_DEBUG => "Created $self" );
     $self;
+}
+
+#
+# Hook for passing options to TagX.
+# Takes an array which maps into a hash as arguments.
+# valid options are
+#   LOG_PREFIX          Directory and filename prefix for log file. An
+#                       extension of `.log' is attached to this prefix
+#   LOG_MAXSIZE         Maximum size of log file in bytes. If file is larger than
+#                       this, it is truncated.
+# Returns: Nothing. 
+sub options
+{
+    my $self = shift;
+    warn "args[@{[scalar(@_)]}] .. (@_)";
+    my %args = @_;
+
+    $self->{'__options'} = {} unless exists $self->{'__options'};
+    $self->{'__options'}->{'LOG_FILE'} = $args{'LOG_PREFIX'} . '.log' if exists $args{'LOG_PREFIX'};
+    $self->{'__options'}->{'LOG_MAXSIZE'} = $args{'LOG_MAXSIZE'} || 100000;
+    $self->__start_logger;
+}
+
+sub __start_logger
+{
+    my $self = shift;
+    return unless exists $self->{'__options'}->{'LOG_FILE'};
+
+    my $logfile = $self->{'__options'}->{'LOG_FILE'};
+    my $maxsize = $self->{'__options'}->{'LOG_MAXSIZE'};
+    if ( (stat($logfile))[7] > $maxsize ) {
+	open ( FILE, ">$logfile");
+	close FILE;
+    }
+
+    # Redirect STDERR too to append to logfile
+    open( STDERR, ">> $logfile" );
+    my $fd = new_from_fd IO::Handle ( 'STDERR', 'a');
+    $fd->autoflush ( 1 );
+    $fd->close;
+    print STDERR "================================================================================";
+
+    # And log a sample message
+    $self->log_message( 0, "$self: started logger" );
+    $SIG{__WARN__} = $SIG{__DIE__} = sub { unshift @_, $self, 0; goto &log_message };
+}
+
+sub log_message
+{
+    my $self = shift;
+    my $level = shift;
+    return unless exists $self->{'__options'}->{'LOG_FILE'};
+    my $logfile = $self->{'__options'}->{'LOG_FILE'};
+    open( LOG, ">> $logfile") or return;
+
+    # Make time
+    my @t = localtime;
+    my $time = sprintf "%02d/%02d/%4d %02d:%02d:%02d", $t[4]+1, $t[3], 1900+$t[5], $t[2], $t[1], $t[0];
+
+    # Make caller
+    my ($pack, $filename, $line) = caller;
+
+    # And print message
+    print LOG "\n$time \[$$\]\t\t$pack\:\:$filename($line)\n@_\n";
+    close LOG;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.10  2000/04/19 20:01:28  sridhar
+# New internal logging mechanism and a method for specifying options to
+# tagx.
+#
 # Revision 1.9  2000/04/13 15:04:46  sridhar
 # 1. Input can be a filename, handle or IO::
 # 2. Handlers for warn and die.
