@@ -1,0 +1,206 @@
+#!/usr/local/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package BLM::SMTP;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION	= do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Net::SMTP;
+use SIS::Handle;
+
+@ISA = qw( SIS::Handle );
+
+sub TIEHANDLE
+{
+    my $class = shift;
+    die "Usage: $class->new( SMTP_Server, Sender_Addr [, To_Addr1 .. ] )\n" unless @_ > 1;
+    my $server = shift;
+    my $sender = shift;
+    my $self = bless {}, $class;
+    $self->{'server'} = Net::SMTP->new( $server );
+    die "$class->new(): unable to connect to $server.\n" unless $self->{'server'};
+    $self->{'server'}->mail( $sender );
+    $self->{'to'} = [@_] if @_ > 0;
+    $self;
+}
+
+sub WRITE
+{
+    my $self = shift;
+    my ($buf, $len, $offset) = @_;
+
+    my $server = $self->{'server'};
+
+    # If writing for first time, need to do some things
+    unless ( exists $self->{'start_send'} ) {
+	# croak if some required stuff not specified
+	die ref($self), "->WRITE(): `to' address not specified.\n" unless $self->{'to'};
+
+	# mark to indicate we are sending and no more headers accepted
+        $self->{'start_send'} = 1;
+
+	# Set the to address -- this is the only header really required.
+        $server->to( @{$self->{'to'}} );
+
+	# Start sending the data.
+        $server->data;
+
+	# Need to write subject and cc headers now
+	$server->datasend("Subject: $self->{'subject'}\n") if exists $self->{'subject'};
+	if ( exists $self->{'cc'} ) {
+	    local $" = ", ";
+	    $server->datasend("CC: @{$self->{'cc'}}\n");
+	}
+
+	# Write the rest of the headers now
+	if ( exists $self->{'header'} ) {
+	    my ($key, $value);
+	    while (($key, $value) = each %{$self->{'header'}}) {
+		$server->datasend("$key: $value\n");
+	    }
+	}
+
+	# End of all headers
+	$server->datasend("\n");
+    }
+    $server->datasend($buf);
+}
+
+sub CLOSE
+{
+    my $self = shift;
+    $self->{'server'}->dataend;
+}
+
+sub to
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+    die ref($fd), "->to(): cannot specify `to' address once message send has been started.\n"
+	if exists $self->{'start_send'};
+    $self->{'to'} = [] unless exists $self->{'to'};
+    push @{$self->{'to'}}, @_;
+}
+
+sub cc
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+    die ref($fd), "->cc(): cannot specify `CC' address once message send has been started.\n"
+	if exists $self->{'start_send'};
+    $self->{'cc'} = [] unless exists $self->{'cc'};
+    push @{$self->{'cc'}}, @_;
+}
+
+sub subject
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+    die ref($fd), "->subject(): cannot specify `Subject' once message send has been started.\n"
+	if exists $self->{'start_send'};
+    $self->{'subject'} = "@_";
+}
+
+sub header
+{
+    my $fd = shift;
+    my $self = tied(*{$fd});
+    die ref($fd), "->header(): cannot specify any header(s) once message send has been started.\n"
+	if exists $self->{'start_send'};
+    my %args = @_;
+    my ($key, $value);
+    $self->{'header'} = {} unless exists $self->{'header'};
+    while (($key, $value) = each %args) {
+	next if $key =~ /^(cc|to|from|subject)$/i;
+	$self->{'header'}->{ucfirst($key)} = $value;
+    }
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/10/19 20:51:20  sridhar
+# Module SMTP implements a handle to talk with an SMTP server.
+#
+#
+
+=head1 SYNOPSIS
+
+BLM::SMTP -- Bedrock module for talking to an SMTP (sendmail) server, I<(v $Revision$)>.
+
+=head1 USAGE
+
+=head2 Constructor
+
+Invoke the constructor as follows.
+
+  <null --define-var = "mail" $Bedrock.newHandle("BLM::SMTP", $mail_server, $from_address)>
+
+You can also specify one or more C<Mailto> addresses as follows
+
+  <null --define-var = "mail" $Bedrock.newHandle("BLM::SMTP",
+						 $mail_server,
+						 $from_address,
+						 $to_addr1,
+						 $to_addr2, ..)>
+
+
+B<Note>: This module implements a handle. Hence you must use C<$Bedrock.newHandle()> to construct
+an object of this type.
+
+=head2 Methods
+
+The following methods should be used I<before> the mail object is sent any data.
+
+=head3 $mail.to( Addr1, Addr2, .. )
+
+Specify one or more addresses to send the message to.
+
+=head3 $mail.cc( Addr1, Addr2, .. )
+
+Specify one more addresses to be included as C<CC:>
+
+=head3 $mail.subject( Subject )
+
+Set the subject header of the message
+
+=head3 $mail.header( HeaderName, HeaderValue, .. )
+
+Specify pairs of header name and value which are set in the outgoing message. These
+headers are not parsed. 
+
+For example, use the following to specify that message body contains HTML
+
+  <null $mail.header( "Content-type", "text/html")>
+
+=head2 Message body
+
+Use the mail object as the argument to the C<SINK> tag. The body of the C<SINK> tag becomes
+the body of the message.
+
+  <sink $mail>
+    ...
+    message body here
+    ...
+  </sink>
+
+=head1 ChangeLog
+
+  $Log$
+  Revision 1.1  2000/10/19 20:51:20  sridhar
+  Module SMTP implements a handle to talk with an SMTP server.
+
+
+=cut
+
