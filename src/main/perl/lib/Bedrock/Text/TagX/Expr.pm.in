@@ -1,0 +1,143 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+package TagX::Expr;
+
+use strict;
+use TagX::Term;
+use TagX::Term::Var;
+use TagX::Term::String;
+use vars qw($_delimiters %_delimiter_end);
+
+#
+# Arg separators are single-quote, double quote, ..
+# Note the following ascii codes
+# " (double-quote)	=> \x22
+# ' (single-quote)	=> \x27
+# ( (open-paren)	=> \x28
+# ) (close-paren)	=> \x29
+# [ (open-bracket)	=> \x5b
+# ] (close-bracket)	=> \x5d
+# { (open-brace)	=> \x7b
+# } (close-brace)	=> \x7d
+# : (colon)		=> \x3a
+$_delimiters		= "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
+%_delimiter_end		= ("\x22"	=> "\x22",
+			   "\x27"	=> "\x27",
+			   "q("		=> ")",
+			   "q["		=> "]",
+			   "q{"		=> "}",
+			   "q:"		=> ":",			   
+			   "qq("	=> ")",
+			   "qq["	=> "]",
+			   "qq{"	=> "}",
+			   "qq:"	=> ":");
+
+sub new
+{
+    my $class = shift;
+    my $self = bless [], $class;
+    while ( length ) {
+	s/^\s*//;
+
+	# beginning of new expr with '('
+	if ( s/^\x28\s*//oi ) {
+	    push @{$self}, Expr->new;
+	    next;
+	}
+
+	# end current expr with ')'
+	if ( s/^\x29\s*//oi ) {
+	    return $self;
+	}
+
+	# Check for operator
+	if ( s/^--(not|exists|eq|ne|gt|ge|lt|le|re|or|and)(?=\W)//oi ) {
+	    push @{$self}, '--' . lc($1);
+	    next;
+	}
+
+	# arg value delimited by special chars
+	if ( s/^$_delimiters//oi ) {
+
+	    # Yup, check for ending delimiter
+	    if ( s/^([^\Q$_delimiter_end{$1}\E]*)\Q$_delimiter_end{$1}\E?// ) {
+		push @{$self}, TagX::Term::String->new( $1 );
+	    } else {
+		push @{$self}, TagX::Term::String->new( $_ );
+	    }
+	    next;
+	}
+
+	# arg delimited by spaces
+	if ( s/^([^\s\x28\x29]+)//oi ) {
+	    my $arg = $1;
+	    push @{$self}, ($arg =~ /^\$/o ? TagX::Term::Var->new( $arg ) : TagX::Term::String->new( $arg ));
+	    next;
+	}
+    }
+    $self;
+}
+
+sub eval
+{
+    my $self = shift;
+    my ($l, $op, $r);
+    $l = shift @{$self};
+    if ( defined( $l ) && ref( $l ) ) {
+	if ( @{$self} > 0 ) {
+	    # binary operators
+	    $op = shift @{$self};
+	    die "invalid operator `$op'.\n"
+		unless $op =~ /^--(eq|ne|gt|ge|lt|le|re|or|and)$/oi;
+	    $op = lc($1);
+
+	    die "required arg after `$op' missing.\n" unless @{$self} > 0;
+	    die "extra args after RHS expr.\n" if @{$self} > 1;
+	    $r = shift @{$self};
+	    $l = $l->eval( @_ ); $r = $r->eval( @_ );
+	    for ($op) {
+		$_ eq 'gt' and return $l gt $r;
+		$_ eq 'ge' and return $l ge $r;
+		$_ eq 'lt' and return $l lt $r;
+		$_ eq 'le' and return $l le $r;
+		$_ eq 'eq' and return $l eq $r;
+		$_ eq 'ne' and return $l ne $r;
+		$_ eq 'and' and return $l && $r;
+		$_ eq 'or' and return $l || $r;
+		$_ eq 're' and return $l =~ /$r/ ? 1 : 0;
+	    }
+	} else {
+	    return $l->eval(@_);
+	}
+    } elsif ( $l && $l =~ /^--(not|exists)$/oi ) {
+	# unary operators
+	$op = lc( $l );
+	die "no expression after unary(`$op') operator.\n" unless @{$self} > 0;
+	die "extra args specified for unary(`$op') operator.\n" if @{$self} > 1;
+	$l = shift @{$self};
+	if ( $op eq '--exists' ) {
+	    die "invalid argument for `--exists' operator.\n" unless isa($l, 'Term');
+	    my $value = $l->eval (@_);
+	    return defined($value) ? 1 : 0;
+	} else {
+	    die "invalid argument for unary(`$op') operator.\n" unless $l->can('eval');
+	    my $value = $l->eval (@_);
+	    return defined($value) && $value ? 0 : 1;
+	}
+    } else {
+	die "unsupported unary operator: $l\n";
+    }
+}
+
+1;
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2000/04/13 15:12:25  sridhar
+# Adding TagX::Expr -- class for processing expressions
+#
+#
