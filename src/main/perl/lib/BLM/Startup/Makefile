@@ -2,6 +2,9 @@
 # ident "@(#)        $Name$"
 # 
 # $Log$
+# Revision 1.5  2000/10/12 15:23:29  sridhar
+# Added Hitcounter.pm
+#
 # Revision 1.4  2000/07/19 19:39:07  sridhar
 # Added Modules.pm
 #
@@ -20,7 +23,8 @@ include ../../make.pre
 
      CURRENT_PATH = BLM/Startup
 
-          TARGETS = Modules.pm Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm
+          TARGETS = Modules.pm Bedrock.pm Config.pm Env.pm Input.pm Cookie.pm Header.pm \
+		    Hitcounter.pm
 
 all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Modules.pm
@@ -30,6 +34,7 @@ all:
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Input.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Cookie.pm
 	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Header.pm
+	$(PERL) $(PERLINCLUDES) $(PERLFLAGS) Hitcounter.pm
 
 install:
 	$(INSTALL) Modules.pm	$(CURRENT_TARGET)
@@ -39,5 +44,6 @@ install:
 	$(INSTALL) Input.pm	$(CURRENT_TARGET)
 	$(INSTALL) Cookie.pm	$(CURRENT_TARGET)
 	$(INSTALL) Header.pm	$(CURRENT_TARGET)
+	$(INSTALL) Hitcounter.pm	$(CURRENT_TARGET)
 
 include ../../make.post
