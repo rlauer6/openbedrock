@@ -16,6 +16,7 @@ BEGIN
     @ISA	= qw (Exporter);
 }
 
+use TagX::Output;
 use TagX::TAG::WithBody;
 use TagX::TAG::NoBody::Var;
 use TagX::TAG::NoBody::Include;
@@ -26,6 +27,9 @@ use TagX::TAG::WithBody::Loop::Foreach;
 use TagX::TAG::WithBody::Loop::SQLSelect;
 use TagX::TAG::WithBody::If;
 use TagX::TAG::WithBody::If::Else;
+use TagX::TAG::WithBody::Try;
+use TagX::TAG::WithBody::Catch;
+use TagX::TAG::NoBody::Raise;
 
 my %ErrorLevels = (MSG_DEBUG          => 1 << 1,
 		   MSG_INFO           => 1 << 2,
@@ -95,7 +99,7 @@ sub output
 	  $obj->text ( $1 );
 
 	  # Check if we have a supported tag
-	  if ( s/^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|elseif)\s+//oi ) {
+	  if ( s/^(var|include|sql|sqlconnect|trace|foreach|sqlselect|if|elseif|try|catch|raise)(?=\W)//oi ) {
 
 	      # Yes we do
 	      for ($1) {
@@ -144,12 +148,27 @@ sub output
 		      last;
 		  };
 
+		  /^raise$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::NoBody::Raise->new );
+		      last;
+		  };
+
+		  /^try$/oi		and do {
+		      $obj = $obj->new_child( TagX::TAG::WithBody::Try->new );
+		      last;
+		  };
+
+		  /^catch$/oi		and do {
+		      $obj = $obj->catch( TagX::TAG::WithBody::Catch->new );
+		      last;
+		  };
+
 		  die "Tag <$_> NYI";
 	      }
 
 	      # After creating object of suitable type depending on the tag, check
 	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-	      if ( s/^(.*?[^\\])>//oi ) {
+	      if ( s/^\s*(.*?[^\\]?)>//oi ) {
 
 		  # The tag definition ended on same line -- all options specified on
 		  # one line
@@ -183,7 +202,7 @@ sub output
 
 	      # Rescan string for more tags
 	      redo MAIN;
-	  } elsif ( s:^(/sqlselect|/foreach|/doc|/if)>::oi) {
+	  } elsif ( s:^(/sqlselect|/foreach|/doc|/if|/try)>::oi) {
 
 	      # Check whether we have hit a tag-body-ending tag
 	      # and if so, end the current object
@@ -265,6 +284,13 @@ sub log_message
     goto &{$self->{'error_handler'}};
 }
 
+sub out_handle
+{
+    my $self = shift;
+    $self->{'out_handle'} = shift if @_ == 1;
+    $self->{'out_handle'};
+}
+
 #
 # Constructor -- Invoked as follows
 #    $Class_or_Object->new( $Input_Handle [, $Output_Handle [, $Error_Handler ] ] )
@@ -288,19 +314,20 @@ sub new
 	$self->{'error_handler'} = $error_handler || $proto->{'error_handler'};
 	$self->{'error_level'} = $proto->{'error_level'};
 	$self->{'input'} = $input;
-	$self->{'output'} = $output || $proto->{'output'};
+	if ( $output ) {
+	    $self->out_handle( TagX::Output->new( $output ) );
+	} else {
+	    $self->out_handle( $proto->out_handle );
+	}
 	$self->{'VARS'} = $proto->{'VARS'};
 	$self->{'DB'} = $proto->{'DB'} if exists $proto->{'DB'};
     } else {
-	confess qq(Output filehandle is not valid -- must support a method print().\n)
-	    unless ref($output) and $output->can( 'print' );
-
 	$self = bless {}, $proto;
 	$self->{'ErrorLevels'} = \%ErrorLevels;
 	$self->{'error_handler'} = $error_handler if ref ($error_handler) eq 'CODE';
 	$self->{'error_level'} = $self->{'ErrorLevels'}->{'MSG_DEBUG'};
 	$self->{'input'} = $input;
-	$self->{'output'} = $output;
+	$self->out_handle( TagX::Output->new( $output ) );
 	$self->{'VARS'} = {};
     }
 
@@ -315,6 +342,12 @@ sub new
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.6  2000/03/09 14:10:38  sridhar
+# 1. Added <try>, <catch>, and <raise>.
+# 2. Output is now not always written to output handle. Output can now
+# be buffered. Added a new class Output for this. Buffering can be
+# turned off and on at will.
+#
 # Revision 1.5  2000/03/06 18:29:31  sridhar
 # Added support for <trace>, a very useful tool in debugging.
 #
