@@ -17,6 +17,8 @@ BEGIN
 use TagX::Log 1.01;
 use SIS::Handle;
 use Net::FTP;    
+use Time::Local;
+
 @ISA = qw(SIS::Hash);
 
 sub TIEHASH
@@ -47,6 +49,10 @@ sub CLOSE
 
     my $ftp = $self->{'ftp'};
 
+    my $conn = $self->{'conn'};
+
+    $conn->close if defined $self->{'conn'};
+
     $ftp->quit if $ftp; 
 }
 
@@ -65,11 +71,10 @@ sub ascii
 {
     my $self = shift;
 
-    my $args = shift;
-
     my $ftp = $self->{'ftp'};
 
-    my $last = $ftp->ascii($args);
+    my $last = $ftp->ascii();
+
     die "FTP(ascii): could not set type (ascii)" unless $last;
 
     $last;
@@ -79,11 +84,9 @@ sub binary
 {
     my $self = shift;
 
-    my $args = shift;
-
     my $ftp = $self->{'ftp'};
 
-    my $last = $ftp->binary($args);
+    my $last = $ftp->binary();
 
     die "FTP(binary): could not set type (binary)" unless $last;
 
@@ -123,11 +126,15 @@ sub ls
     my $self = shift;
     my $dir = shift;
 
+    die "FTP(ls): not connected." unless defined $self->{'ftp'};
+
     my $ftp = $self->{'ftp'};
 
     $dir = ($dir or ".");
 
-    return SIS::Array->new(@{$ftp->ls($dir)});
+    my @ls = $ftp->ls($dir);
+
+    return SIS::Array->new(@ls);
 }
 
 sub size
@@ -135,20 +142,39 @@ sub size
     my $self = shift;
     my $file = shift;
 
-    die "FTP(size): not connected" unless exists $self->{'ftp'};
+    die "FTP(size): not connected" unless defined $self->{'ftp'};
+    my $ftp = $self->{'ftp'};
 
-    ${$self->{'ftp'}}->size($file);
+    $ftp->size($file);
 }
 
 sub dir
 {
     my $self = shift;
-
     my $dir = shift;
+    
+# sort field - same as field returned
+    my ($sort, $asc_desc) = @_;
+    
     my $ftp = $self->{'ftp'};
 
+    my %Months = (Jan => 0,
+		  Feb => 1,
+		  Mar => 2,
+		  Apr => 3,
+		  May => 4,
+		  Jun => 5,
+		  Jul => 6,
+		  Aug => 7,
+		  Sep => 8,
+		  Oct => 9,
+		  Nov => 10,
+		  Dec => 11 );
+		   
     $dir = ($dir or ".");
     my @full_dir = $ftp->dir($dir);
+    
+    return undef unless @full_dir;
 
     shift @full_dir if $full_dir[0] =~ '^total';
     my @dir;
@@ -165,10 +191,104 @@ sub dir
 	$ref->{'day'} = $dummy[6];
 	$ref->{'year'} = $dummy[7];
 	$ref->{'file'} = $dummy[8];
+	$ref->{'FILE'} = uc($dummy[8]);
+	$ref->{'hour'} = 0;
+	$ref->{'minute'} = 0;
+	
+        if ($dummy[7] =~ ':') {
+	    my @temp_time = localtime(time);
+	    my $year = 1900 + $temp_time[5];
+	    my ($hours, $min) = split ':', $dummy[7];
+	    $ref->{'hour'} = $hours;
+	    $ref->{'minute'} = $min;
+	    $ref->{'year'} = $year;
+	    $ref->{'time'} = timelocal(0, $min, $hours, $dummy[6], $Months{$dummy[5]}, $year-1900);
+	}
+	else {
+	    $ref->{'time'} = timelocal(0, 0, 0, $dummy[6], $Months{$dummy[5]}, $dummy[7]-1900);
+	}	
+	    
 	push @dir, $ref;
+    }
+    
+    $sort = ($sort or "file");
+    $asc_desc = ($asc_desc or "asc");
+
+    if ($sort =~ "(file|FILE|month|owner|permissions|group)") {
+	if ($asc_desc eq "asc") {
+	    @dir = sort { $BLM::SIMPLEFTP::a->{$sort} cmp $BLM::SIMPLEFTP::b->{$sort} } @dir;
+	}
+	else {
+	    @dir = sort { $BLM::SIMPLEFTP::b->{$sort} cmp $BLM::SIMPLEFTP::a->{$sort} } @dir;
+	}
+    }
+    else {
+	if ($asc_desc eq "asc") {
+	    @dir = sort { $BLM::SIMPLEFTP::a->{$sort} <=> $BLM::SIMPLEFTP::b->{$sort} } @dir;
+	}
+	else {
+	    @dir = sort { $BLM::SIMPLEFTP::b->{$sort} <=> $BLM::SIMPLEFTP::a->{$sort} } @dir;
+	}
+
     }
 
     return SIS::Array->new(@dir);
+}
+
+sub delete
+{
+    my $self = shift;
+
+    die "FTP(delete): not connected." unless defined $self->{'ftp'};
+
+    my $ftp = $self->{'ftp'};
+
+    my $file = shift;
+
+    $ftp->delete($file);
+}
+
+sub file_wait 
+{
+    my $self = shift;
+
+    die "FTP(file_wait): not connected." unless defined $self->{'ftp'};
+
+    my $ftp = $self->{'ftp'};
+
+    my ($file, $wait, $poll_time, $errstr) = @_;
+
+    die "FTP(file_wait): no file specified." unless $file;
+
+    $wait = ($wait or 60);
+    $poll_time = ($poll_time or 5);
+
+    my @list;
+
+    while ($wait > 0) {
+	@list = $ftp->dir($file);
+	last if @list;
+	sleep($poll_time);
+	$wait -= $poll_time;
+    }
+
+    my $ok = @list;
+
+    die $errstr if ($errstr && !$ok);
+
+    return $ok;
+}
+
+sub rename
+{
+    my $self = shift;
+    my ($old_name, $new_name) = @_;
+
+    die "FTP(rename): not connected." unless defined $self->{'ftp'};
+
+    my $ftp = $self->{'ftp'};
+
+    $ftp->rename($old_name, $new_name);
 }
 
 sub quit
@@ -177,8 +297,9 @@ sub quit
 
     my $ftp = $self->{'ftp'};
 
-    $ftp->quit;
+    close($self) if defined $self->{'conn'};
 
+    $ftp->quit;
     $self->{'ftp'} = undef;
 }
 
@@ -220,9 +341,11 @@ sub unique_name
 {
     my $self;
 
-    die "FTP(unique_name) not connected" unless exists $self->{'ftp'};
+    die "FTP(unique_name) not connected" unless defined $self->{'ftp'};
 
-    ${$self->{'ftp'}}->unique_name;
+    my $ftp = $self->{'ftp'};
+
+    $ftp->unique_name;
 }
 
 sub retr
@@ -247,7 +370,7 @@ sub read
     my $ftp = $self->{'ftp'};
     my $conn = $self->{'conn'};
 
-    die "FTP(read): no data connection" unless exists $self->{'conn'};
+    die "FTP(read): no data connection" unless defined $self->{'conn'};
 
     my $buffer;
     my $_buffer;
@@ -275,7 +398,7 @@ sub write
     
     my $conn = $self->{'conn'};
 
-    die "FTP(write): no data connection" unless exists $self->{'conn'};
+    die "FTP(write): no data connection" unless defined $self->{'conn'};
 
     my $len = $conn->write($buffer, length($buffer), $timeout);
 
@@ -288,7 +411,7 @@ sub close
 {
     my $self = shift;
 
-    die "FTP(close): no data connection" unless exists $self->{'conn'};
+    die "FTP(close): no data connection" unless defined $self->{'conn'};
 
     my $conn = $self->{'conn'};
 
@@ -327,7 +450,7 @@ sub getline
 {
     my $self = shift;
 
-    die "FTP(getline): no data connection" unless exists $self->{'conn'};
+    die "FTP(getline): no data connection" unless defined $self->{'conn'};
 
     my $conn = $self->{'conn'};
 
@@ -337,16 +460,32 @@ sub getline
 sub getlines
 {
     my $self = shift;
+    my $nlines = shift;
 
-    die "FTP(getlines): no data connection" unless exists $self->{'conn'};
+    die "FTP(getlines): no data connection" unless defined $self->{'conn'};
 
     my $conn = $self->{'conn'};
+    
+    return SIS::Array->new(@{$conn->getlines}) unless $nlines;
 
-    return SIS::Array->new(@{$conn->getlines});
+    die "FTP(getlines): number of lines ($nlines) must be greater than 0." unless $nlines > 0;
+    my @lines;
+
+    while ($nlines--) {
+	push @lines, $conn->getline();
+    }
+
+    return SIS::Array->new(@lines);
 }
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.6  2000/11/29 21:18:05  rlauer
+# - added docs
+# - fixed dir
+# - fixed ascii/binary
+# - various bad constructions
+#
 # Revision 1.5  2000/11/06 16:15:37  rlauer
 # - incorrect exception handling for login, caught by J.
 #
@@ -404,7 +543,7 @@ Return the current working directory
 
 List the files (only the file names are returned) in a directory.
 
-=head3 $ftp.dir( [dir] )
+=head3 $ftp.dir( [dir], [sort field], [asc|desc] )
 
 Retrieve file information for the files in a directory. If dir is not given
 the current working directory is returned.
@@ -435,6 +574,22 @@ method.
  </foreach>
  </table>
 
+Sort field may be any of:
+
+ file
+ FILE (upper case of file name)
+ time (number of seconds since 1970)
+ month
+ year
+ day
+ size
+ owner
+ permissions
+ group
+ links
+
+Default is sort by file name.  Sort direction is 'asc' for ascending (default), 'desc' for descending
+
 =head3 $ftp.put( local_file, remote_file )
 
 Send a file to a host.
@@ -453,11 +608,31 @@ Change the current mode of transfer to 'BINARY'
 
 =head3 $ftp.retr( remote_file )
 
-Open a file for reading.
+Open a file for reading. You must use the $ftp.read or $ftp.getlines() method
+to retrieve data.  You should remember to $ftp.close() the the file when
+finished.
 
-=head3 $ftp.getlines()
+Example:
 
-Read all of the lines in a file.
+  <null $ftp.retr('myfile.txt')>
+  <null --define-var = 'lines' $ftp.getlines()>
+  <null $ftp.close()>
+
+=head3 $ftp.read( nbyte )
+
+Read at most nbytes of data from a file.  You must first open the file
+using the $ftp.retr() method.
+
+Example:
+
+ <null $ftp.retr('myfile.txt')>
+ <null --define-var = "contents" $ftp.read($ftp.size('myfile.txt'))>
+ <null $ftp.close()>
+
+=head3 $ftp.getlines( nlines )
+
+Read at most nlines of a file into an array object.  You must first open the 
+file using $ftp.retr.
 
 =head3 $ftp.getline()
 
@@ -495,9 +670,29 @@ not exist on the host it is created.
 
 Returns the size of host file in bytes.
 
+=head3 $ftp.rename(old_name, new_name)
+
+Rename a file on the host from old_name to new_name.
+
+=head3 $ftp.file_wait(file, timeout, poll_time)
+
+Wait for timeout seconds  until a file exists.  poll_time 
+indicates the number of seconds to sleep between checks
+for the file's existence.
+
+=head3 $ftp.delete( file ) 
+
+Delete the file named file on the host.
+
 =head1 ChangeLog
 
   $Log$
+  Revision 1.6  2000/11/29 21:18:05  rlauer
+  - added docs
+  - fixed dir
+  - fixed ascii/binary
+  - various bad constructions
+
   Revision 1.5  2000/11/06 16:15:37  rlauer
   - incorrect exception handling for login, caught by J.
 
