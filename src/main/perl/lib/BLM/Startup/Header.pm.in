@@ -23,20 +23,19 @@ sub TIEHASH
 {
     my $class = shift;
     my $ctx = shift;
+    my $config = shift;
 
     my $self = bless SIS::Hash->new, $class;
-    my $private = {};
-    $self->{'__private'} = \$private;
 
     # Get the headers and store them
     my %headers = $ctx->cgi_header_in;
-    for my $key (keys %headers) {
-	$self->{lc($key)} = $headers{$key};
-    }
+    $self->{'input'} = \%headers;
+    $self->{'config'} = $config;
+    $self->{'verbose'} = $config->{'verbose'};
 
     # Special processing of some headers
-    if ( exists $self->{'authorization'} ) {
-	my ($realm, $ident) = split(' ', $self->{'authorization'} );
+    if ( exists $headers{'Authorization'} ) {
+	my ($realm, $ident) = split(' ', $headers{'Authorization'} );
 	$self->{'realm'} = $realm;
 	@{$self}{qw(auth_user auth_passwd)} = split(':', decode_base64($ident));
     }
@@ -54,16 +53,92 @@ sub FETCH
     undef;
 }
 
-sub print_header
+sub FIRSTKEY
 {
     my $self = shift;
+    my $a = scalar keys %{$self->{'input'}};
+    each %{$self->{'input'}};
+}
+
+sub NEXTKEY
+{
+    each %{$_[0]->{'input'}};
+}
+
+sub STORE
+{
+    my $self = shift;
+
+    $self->{'output'} = {} unless exists $self->{'output'};
+    my $output = $self->{'output'};
+
+    while ( @_ ) {
+	my $header = ucfirst(shift);
+	my $value = shift;
+	if ( exists $output->{$header} ) {
+	    $output->{$header} = [ $output->{$header} ] unless ref( $output->{$header} );
+	    push @{$output->{$header}}, $value;
+	} else {
+	    $output->{$header} = $value;
+	}
+    }
+}
+
+sub DELETE
+{
+    my $self = shift;
+    return undef unless exists $self->{'output'};
+    delete $self->{'output'}->{ucfirst(shift)};
+}
+
+sub EXISTS
+{
+    exists $_[0]->{'input'}->{$_[1]};
+}
+
+sub CLEAR
+{
+    my $self = shift;
+    return unless exists $self->{'output'};
+    %{$self->{'output'}} = ();
+}
+
+sub no_cache
+{
+    my $obj = shift;
+    # Set in two separate calls since args are assigned to a hash thus
+    # clobbering one of the cache-control directives.
+    $obj->set("Pragma", "no-cache",
+	      "Cache-control", "no-cache");
+    $obj->set("Cache-control", "no-store");
+}
+
+sub see_other
+{
+    my $obj = shift;
+    my $url = shift;
+    $obj->set("Status", "302 See Other",
+	      "Location", $url);
+}
+
+sub location
+{
+    my $obj = shift;
+    my $url = shift;
+    $obj->set("Location", $url);
+}
+
+sub print_header
+{
+    my $obj = shift;
+    my $self = tied(%{$obj});
     my $fd = shift;
 
-    my $private_ref = $self->{'__private'};
-    my $private = $$private_ref;
-    $private->{'Content-type'} = 'text/html' unless exists $private->{'Content-type'};
+    my $output = delete $self->{'output'} || {};
+    my $mime_type = $self->{'config'}->{'default_mime_type'} || 'text/html';
+    $output->{'Content-type'} = $mime_type unless exists $output->{'Content-type'};
     my ($key, $value, $str);
-    while (($key, $value) = each %{$private}) {
+    while (($key, $value) = each %{$output}) {
 	if ( &UNIVERSAL::isa( $value, 'ARRAY' ) ) {
 	    for my $item (@{$value}) {
 		$str .= "$key: $item\r\n";
@@ -75,28 +150,8 @@ sub print_header
 	}
     }
     $str .= "\r\n";
+    &log_message( undef, "Headers are\n$str" ) if $self->{'verbose'};
     $fd->send_http_header;
-    delete $self->{'__private'};
-}
-
-sub set
-{
-    my $self = shift;
-    die "Error: Cannot set header(s) in content generation phase.\n"
-	unless exists $self->{'__private'};
-
-    my $private_ref = $self->{'__private'};
-    my $private = $$private_ref;
-    while ( @_ ) {
-	my $header = ucfirst(shift);
-	my $value = shift;
-	if ( exists $private->{$header} ) {
-	    $private->{$header} = [$private->{$header}] unless ref( $private->{$header} );
-	    push @{$private->{$header}}, $value;
-	} else {
-	    $private->{$header} = $value;
-	}
-    }
 }
 
 1;
@@ -104,6 +159,16 @@ sub set
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2000/12/15 15:47:28  sridhar
+# 1. Overrides FIRSTKEY() and NEXTKEY() so that we don't see no junk
+# when doing a trace
+# 2. Property `input' stores input header, `config' stores module
+# configuration, and `output' stores output headers
+# 3. Default mime can come from config file
+# 4. Methods for common header operations: `no_cache()', `see_other()',
+# and `location()'
+# 5. Removed `set()': moved the stuff to `STORE()'
+#
 # Revision 1.6  2000/09/18 14:43:38  sridhar
 # Fix needed to successfully compile under Perl/ after moving Perl/Text to
 # Perl/Bedrock/Text and some modules from Perl/SIS to Perl/Bedrock/SIS
