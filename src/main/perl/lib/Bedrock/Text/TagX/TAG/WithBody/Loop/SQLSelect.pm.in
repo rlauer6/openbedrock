@@ -23,11 +23,17 @@ use TagX::TAG::WithBody::Loop 1.03;
 
 @ISA = qw (TagX::TAG::WithBody::Loop);
 
+sub ANONYMOUS
+{
+    '*anonymous*';
+}
+
 sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('dbname=s'		=> '_anonymous_',
+    my %options = ('dbname=s'		=> undef,
+		   'db=s',		=> undef,
 		   'statement=s'	=> undef,
 		   'bind=s'		=> undef,
 		   'arg=s'		=> undef,
@@ -47,28 +53,38 @@ sub finalize
 	&log_message( $self, $str );
     }
 
-    unless ( exists $options{'statement'} ) {
-	if ( @argv > 0 ) {
-	    $options{'statement'} = "@argv";
-	} else {
-	    &log_message( $self, "No Statement specified" );
-	    return;
-	}
-    }
-
     my $name = $options{'dbname'};
+    &log_message( undef, "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
+	if $name;
+
     my $dbh;
-    if ( exists $tx->{'DB'}->{$name} ) {
+    if ( $options{'db'} ) {
+	$dbh = $options{'db'};
+    } elsif ( $name ) {
 	$dbh = $tx->{'DB'}->{$name};
+	die "Unknown database connection named `$name'.\n" unless $dbh;
     } else {
-	&log_message ( $self, "No database connection named ($name)" );
-	return;
+	$dbh = $tx->{'DB'}->{&ANONYMOUS};
     }
 
-    &log_message ( $self, "Using database handle named ($name) .. ($dbh)")
+    die "No database connection to execute SQL statement.\n"
+	unless defined($dbh) and ref($dbh);
+
+    &log_message ( $self, "Using database handle ($dbh)")
 	if $verbose;
 
-    my $statement = $options{'statement'};
+    die "Specify SQL statement using --statement or as argument, not both.\n"
+	if exists $options{'statement'} and @argv > 0;
+
+    my $statement;
+    if ( exists $options{'statement'} ) {
+	$statement = delete $options{'statement'};
+    } else {
+	$statement = "@argv";
+    }
+
+    die "<sqlselect>: no statement specified.\n" unless length($statement);
+
     if ( exists $options{'arg'} ) {
 	my @args = ref( $options{'arg'} ) eq 'ARRAY' ? @{$options{'arg'}} : ($options{'arg'});
 	&log_message( $self, "Substituting following args into statement:\n@args" )
@@ -79,8 +95,13 @@ sub finalize
     }
 
     my $sth = $dbh->prepare ( $statement );
+    die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n" unless $sth;
+
+    my $nParams = $sth->{NUM_OF_PARAMS};
+
     my @bind;
     if ( exists $options{'bind'} ) {
+	die "Extra bind variables specified.\n" unless $nParams;
 	my $bind = $options{'bind'};
 	if ( ref( $bind ) and &UNIVERSAL::isa($bind, 'ARRAY') ) {
 	    for my $item (@{$bind}) {
@@ -93,30 +114,43 @@ sub finalize
 	} else {
 	    @bind = ($bind);
 	}
+
+	if ( $nParams < @bind ) {
+	    die @bind - $nParams, " extra bind variable(s) specified.\n";
+	} elsif ( $nParams > @bind ) {
+	    die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
+	}
+    } elsif ( $nParams ) {
+	die "SQL statement needs $nParams bind variable(s).\n";
     }
 
     my $i = 1;
+    my $str = "Bind variables:\n" if $verbose;
     for my $bindval (@bind) {
 	my $type = $1 if $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
-	if ( defined( $type ) ) { $sth->bind_param ( $i, $bindval, {TYPE => $type}) }
-	else { $sth->bind_param ( $i, $bindval ); }
+
+	if ( defined( $type ) ) {
+	    $sth->bind_param ( $i, $bindval, {TYPE => $type}) ||
+		die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
+	} else {
+	    $sth->bind_param ( $i, $bindval ) ||
+		die "Failure binding param $i: `", $sth->errstr, "'\n";
+	}
+
 	if ( $verbose ) {
-	    my $str = "Bound ($i, ";
-	    $str .= $type if defined( $type );
-	    $str .= ", ";
-	    $str .= $bindval if defined( $bindval );
+	    $str .= "Bound ($i";
+	    $str .= ", $type" if defined( $type );
+	    $str .= ", $bindval" if defined( $bindval );
 	    $str .= ")";
-	    &log_message( $self, $str );
 	}
     } continue {
 	$i++;
     }
+    &log_message( $self, $str ) if $verbose;
 
     my $rows = $sth->execute;
-    unless (defined( $rows )) {
-	&log_message( $self, "Error while executing statement\n$statement" );
-	die "Error executing statement\n$statement";
-    }
+    die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
+	unless defined( $rows );
 
     my $meta_info;
     if ( $options{'meta-info'} ) {
@@ -184,30 +218,30 @@ sub finalize
 		# need at least $num rows
 		if ( $i < $num ) {
 		    if ( $options{'raise'} ) {
-			die "$self: $options{'raise'}\n";
+			die "$options{'raise'}\n";
 		    } else {
-			die "$self: Insufficient number of rows found($i) (at least $num needed)\n";
+			die "Insufficient number of rows found($i) (at least $num needed)\n";
 		    }
 		}
 	    } elsif ( $sgn eq '-' ) {
 		# need max of $num rows
 		if ( $i > $num ) {
 		    if ( $options{'raise'} ) {
-			die "$self: $options{'raise'}\n";
+			die "$options{'raise'}\n";
 		    } else {
-			die "$self: Too many rows found($i) (max of $num exceeded)\n";
+			die "Too many rows found($i) (max of $num exceeded)\n";
 		    }
 		}
 	    } elsif ( $i != $num ) {
 		# need exactly $num rows
 		if ( $options{'raise'} ) {
-		    die "$self: $options{'raise'}\n";
+		    die "$options{'raise'}\n";
 		} else {
-		    die "$self: Invalid number of rows found($i) (need exactly $num rows)\n";
+		    die "Invalid number of rows found($i) (need exactly $num rows)\n";
 		}
 	    }
 	} else {
-	    &log_message( $self, "Specify an optionally signed integer value for --need-rows" );
+	    die "Invalid integer `$options{'need-rows'}' specified as argument to --need-rows.\n";
 	}
     }
 
@@ -217,6 +251,12 @@ sub finalize
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.15  2000/11/21 19:25:14  sridhar
+# 1. Support for passing a database handle using the option --db.
+# 2. Error messages cleaned.
+# 3. More error checks.
+# 4. --dbname option deprecated.
+#
 # Revision 1.14  2000/11/16 19:05:48  sridhar
 # Using function stored under `finalize-children' which is set by the
 # parent object.
