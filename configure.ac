@@ -128,7 +128,7 @@ dnl None!
 dnl +---------------------+
 dnl |  Autotools Output.  |
 dnl +---------------------+
-dnl ads_PERL_LIBDIR
+ads_PERL_LIBDIR
 
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
@@ -181,6 +181,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]top_srcdir[@],$(top_srcdir),g'"'"' \
   \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
+  -e '"'"'s,[@]PERL_LIBDIR[@],$(PERL_LIBDIR),g'"'"' \
   -e '"'"'s,[@]POD2MAN[@],$(POD2MAN),g'"'"' \
   \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
