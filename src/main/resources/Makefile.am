@@ -1,5 +1,8 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
 
+SUBDIRS = htdocs \
+          .
+
 noinst_DATA = bedrock-perl5-inc-begin-block.snippet
 
 ## Ensure that our input file makes it into the distribution tarball
