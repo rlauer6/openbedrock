@@ -85,9 +85,27 @@ my $SHOW_HELP = 0;
 my $SHOW_VERSION = 0;
 my $DO_OVERWRITE_ALL = 0;
 
+
+
 # These vars are package scoped so we can dereference them dynamically
 our $DOMAIN_NAME;
 our $WEBSITE_DIR;
+
+# These vars are also package scoped for dynamic dereferencing. These are
+# the fine-grained overwrite flags, mostly useful for allowing the user to
+# specify exceptions to the global --overwrite option. Without fine grained
+# exceptions, the user would have to specify /all/ files he wished to
+# overwrite explicitly whenever he wished to prevent overwriting of just one
+# or two.
+our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
+
+# We keep a collection of all of our fine-grained overwrite opts so we can
+# flip them all on if the user specifies the -O (--overwrite) global
+# overwrite option. This simplifies code because only one option need be
+# checked.
+my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_INDEX_DOT_ROC  => 'index.roc',
+                           DO_OVERWRITE_INDEX_DOT_ROCK => 'index.rock');
 
 # $var => { desc => str, sopt_name => str }
 # Read 'sopt_name' as "short option name"
@@ -109,6 +127,13 @@ See ${PROG}(1) for all the gory details.
 
 Options with an asterisk (*) are required unless -h or -V is specified.
 
+Note that the --nooverwrite-foo options represent the default behavior, but
+are useful for specifying exceptions to the global --overwrite option.
+
+Likewise, the --overwrite-foo options are useful for overwriting only a few
+specific files, and not overwriting anything else (the default behavior is
+to not overwrite existing files).
+
   -h, --help         Display this message and exit
 * -d, --domain-name=NAME
                      Use NAME as the domain name
@@ -116,6 +141,16 @@ Options with an asterisk (*) are required unless -h or -V is specified.
 * -s, --site-dir=DIR Create the website in DIR
   -v, --verbose      Print program progress messages on stderr
   -V, --version      Print on stdout version info and exit
+
+  --overwrite-index-dot-roc
+                     Force overwriting of \$sitedir/htdocs/index.roc
+  --nooverwrite-index-dot-roc
+                     Do not overwrite \$sitedir/htdocs/index.roc
+
+  --overwrite-index-dot-rock
+                     Force overwriting of \$sitedir/htdocs/index.rock
+  --nooverwrite-index-dot-rock
+                     Do not overwrite \$sitedir/htdocs/index.rock
 EOH
 }
 
@@ -278,6 +313,17 @@ sub maybe_create_site_directory_tree_or_die {
     __maybe_create_site_directory_or_die( $site_dir );
     __maybe_create_site_subdirs_or_die( $site_dir );
 }
+
+# Looks for an 'index.roc' file and an 'index.rock' file (or symlink), and
+# creates one or both if not found ('index.rock' will always be created as a
+# symlink to 'index.roc').
+#
+# By default, existing files are not overwritten.
+sub maybe_create_index_dot_roc_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+}
 
 # ----------------------------------------------------------------
 # main of program begins here
@@ -287,6 +333,8 @@ unless ( GetOptions(
                     "h|help"          => \$SHOW_HELP,
                     "d|domain-name=s" => \$DOMAIN_NAME,
                     "O|overwrite"     => \$DO_OVERWRITE_ALL,
+                    "overwrite-index-dot-roc!"  => \$DO_OVERWRITE_INDEX_DOT_ROC,
+                    "overwrite-index-dot-rock!" => \$DO_OVERWRITE_INDEX_DOT_ROCK,
                     "s|site-dir=s"    => \$WEBSITE_DIR,
                     "V|version"       => \$SHOW_VERSION,
                     "v|verbose"       => \$BE_VERBOSE,
@@ -325,21 +373,41 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
     }
 }
 
+foreach my $fgopt (sort keys %ALL_OVERWRITE_OPTS) {
+    no strict 'refs';
+    # we only muck with opts not explicitly set by the user
+    next unless -1 == $$fgopt;
+    $$fgopt = ($DO_OVERWRITE_ALL ? 1 : 0);
+}
+
 # Maybe print a summary of the configured options
 if ($BE_VERBOSE) {
     my $longest_desc = 0;
     map { $longest_desc = $_ if $_ > $longest_desc }
         map { length $REQUIRED_STR_OPTS{$_}->{desc} } keys %REQUIRED_STR_OPTS;
-
     {
         no strict 'refs';
         printf STDERR qq{${PROG} (info): using %-*s: "%s"\n}, $longest_desc, $_->[0], $_->[1]
             foreach map { [ $REQUIRED_STR_OPTS{$_}->{desc }, $$_ ] }
                 sort keys %REQUIRED_STR_OPTS;
     }
+
+    # Summarize overwrite flags
+    $longest_desc = 0;  # reset
+    map { $longest_desc = $_ if $_ > $longest_desc }
+        map { length } values %ALL_OVERWRITE_OPTS;
+    printf STDERR qq{${PROG} (info): overwrite %-*s: %s\n}, $longest_desc, 'all',
+        ($DO_OVERWRITE_ALL ? 'yes' : 'no');
+    {
+        no strict 'refs';
+        printf STDERR qq{${PROG} (info): overwrite %-*s?: %s\n}, $longest_desc, $_->[0], $_->[1]
+            foreach map { [ $ALL_OVERWRITE_OPTS{$_}, ( $$_ ? 'yes' : 'no' ) ] }
+                sort keys %ALL_OVERWRITE_OPTS;
+    }
 }
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
+maybe_create_index_dot_roc_or_die( $WEBSITE_DIR );
 
 exit 0;
 
@@ -492,10 +560,32 @@ Print help usage message
 
 =item -O, --overwrite
 
-Causes any existing files to be overwritten. The default behavior is to not
+Causes any existing files to be overwritten (except for those explicitly
+protected via C<--nooverwrite-*> options). The default behavior is to not
 overwrite any existing files.
 
-B<FIXME>: maybe implement finer-grained overwrite options
+If you only want to overwrite a couple of files, you will be better off
+using one of the finer-grained C<--overwrite-*> options.
+
+
+=item --overwrite-index-dot-roc
+
+Force overwriting of C<$sitedir/htdocs/index.roc>
+
+=item --nooverwrite-index-dot-roc
+
+Do not overwrite C<$sitedir/htdocs/index.roc>. This is the default behavior,
+unless the global C<--overwrite> option has been specified.
+
+
+=item --overwrite-index-dot-rock
+
+Force overwriting of C<$sitedir/htdocs/index.rock>
+
+=item --nooverwrite-index-dot-rock
+
+Do not overwrite C<$sitedir/htdocs/index.rock>. This is the default
+behavior, unless the global C<--overwrite> option has been specified.
 
 
 =item -s, --site-dir=DIR
