@@ -57,6 +57,7 @@ use Carp qw( confess );
 
 use Getopt::Long qw( GetOptions );
 
+use File::Basename qw( basename );
 use File::Path qw( mkpath );
 use File::Spec::Functions qw( catdir catfile );
 use Hash::Util qw( lock_hash );
@@ -86,10 +87,10 @@ my $SHOW_VERSION = 0;
 my $DO_OVERWRITE_ALL = 0;
 
 
-
 # These vars are package scoped so we can dereference them dynamically
 our $DOMAIN_NAME;
 our $WEBSITE_DIR;
+our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
 
 # These vars are also package scoped for dynamic dereferencing. These are
 # the fine-grained overwrite flags, mostly useful for allowing the user to
@@ -97,24 +98,33 @@ our $WEBSITE_DIR;
 # exceptions, the user would have to specify /all/ files he wished to
 # overwrite explicitly whenever he wished to prevent overwriting of just one
 # or two.
-our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
-our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_APACHE_SITE_CONF = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
 
 # We keep a collection of all of our fine-grained overwrite opts so we can
 # flip them all on if the user specifies the -O (--overwrite) global
 # overwrite option. This simplifies code because only one option need be
 # checked.
 my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_INDEX_DOT_ROC  => 'index.roc',
-                           DO_OVERWRITE_INDEX_DOT_ROCK => 'index.rock');
+                           DO_OVERWRITE_INDEX_DOT_ROCK => 'index.rock',
+                           DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
+                         );
 
 # $var => { desc => str, sopt_name => str }
 # Read 'sopt_name' as "short option name"
-my %REQUIRED_STR_OPTS = ( DOMAIN_NAME => { sopt_name => 'd',
-                                           desc => 'domain name'
-                                         },
-                          WEBSITE_DIR => { sopt_name => 's',
-                                           desc => 'site directory'
-                                         },
+my %REQUIRED_STR_OPTS = (
+                         DOMAIN_NAME => { sopt_name => 'd',
+                                          desc => 'domain name'
+                                        },
+
+                         WEBSITE_DIR => { sopt_name => 's',
+                                          desc => 'site directory'
+                                        },
+
+                         APACHE_SITE_CONF_FNAME => { sopt_name => 'f',
+                                                     desc => 'apache site config file'
+                                                   },
                         );
 lock_hash %REQUIRED_STR_OPTS;
 
@@ -137,6 +147,8 @@ to not overwrite existing files).
   -h, --help         Display this message and exit
 * -d, --domain-name=NAME
                      Use NAME as the domain name
+* -f, --site-conf=FILE
+                     Create Apache site config in FILE
   -O, --overwrite    Overwrite any existing files
 * -s, --site-dir=DIR Create the website in DIR
   -v, --verbose      Print program progress messages on stderr
@@ -151,6 +163,12 @@ to not overwrite existing files).
                      Force overwriting of \$sitedir/htdocs/index.rock
   --nooverwrite-index-dot-rock
                      Do not overwrite \$sitedir/htdocs/index.rock
+
+  --overwrite-site-conf
+                     Force overwriting of the specified Apache site config file
+  --nooverwrite-site-conf
+                     Do not overwrite the specified Apache site config file
+
 EOH
 }
 
@@ -440,20 +458,28 @@ sub maybe_create_index_dot_rock_or_die {
     }
     return;
 }
+
+sub maybe_create_apache_site_config_file {
+
+    my ($apache_site_conf_path) = @_;
+# AL.DEBUG working here
+}
 
 # ----------------------------------------------------------------
 # main of program begins here
 # ----------------------------------------------------------------
 
 unless ( GetOptions(
-                    "h|help"          => \$SHOW_HELP,
-                    "d|domain-name=s" => \$DOMAIN_NAME,
-                    "O|overwrite"     => \$DO_OVERWRITE_ALL,
-                    "overwrite-index-dot-roc!"  => \$DO_OVERWRITE_INDEX_DOT_ROC,
-                    "overwrite-index-dot-rock!" => \$DO_OVERWRITE_INDEX_DOT_ROCK,
-                    "s|site-dir=s"    => \$WEBSITE_DIR,
-                    "V|version"       => \$SHOW_VERSION,
-                    "v|verbose"       => \$BE_VERBOSE,
+                    'h|help'          => \$SHOW_HELP,
+                    'd|domain-name=s' => \$DOMAIN_NAME,
+                    'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
+                    'O|overwrite'     => \$DO_OVERWRITE_ALL,
+                    'overwrite-index-dot-roc!'  => \$DO_OVERWRITE_INDEX_DOT_ROC,
+                    'overwrite-index-dot-rock!' => \$DO_OVERWRITE_INDEX_DOT_ROCK,
+                    'overwrite-site-conf!'      => \$DO_OVERWRITE_APACHE_SITE_CONF,
+                    's|site-dir=s'    => \$WEBSITE_DIR,
+                    'V|version'       => \$SHOW_VERSION,
+                    'v|verbose'       => \$BE_VERBOSE,
                    ))
 {
     print_usage( \*STDERR );
@@ -489,6 +515,12 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
     }
 }
 
+# Now that we know the user has specified an Apache site config file name,
+# add it's basename as the value for the corresponding key in
+# ALL_OVERWRITE_OPTS so it can be displayed nicely in the verbose summary
+# code below.
+$ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_SITE_CONF} = basename( $APACHE_SITE_CONF_FNAME );
+
 # Ensure all fine grained "overwrite" options have a true (1) or false (0)
 # value. Any "overwrite" options not explicitly specified one way or the
 # other by the user are set to correspond with the value of
@@ -520,7 +552,7 @@ if ($BE_VERBOSE) {
         ($DO_OVERWRITE_ALL ? 'yes' : 'no');
     {
         no strict 'refs';
-        printf STDERR qq{${PROG} (info): overwrite %-*s?: %s\n}, $longest_desc, $_->[0], $_->[1]
+        printf STDERR qq{${PROG} (info): overwrite %-*s: %s\n}, $longest_desc, $_->[0], $_->[1]
             foreach map { [ $ALL_OVERWRITE_OPTS{$_}, ( $$_ ? 'yes' : 'no' ) ] }
                 sort keys %ALL_OVERWRITE_OPTS;
     }
@@ -528,6 +560,8 @@ if ($BE_VERBOSE) {
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
+
+maybe_create_apache_site_config_file( $APACHE_SITE_CONF_FNAME );
 
 exit 0;
 
@@ -596,14 +630,16 @@ configured:
 
 =item *
 
+The program assumes that you want your site configured as an Apache virtual
+host. As of 2008-02-29, this is the only kind of Apache config file that
+this program knows how to create.
+
+=item *
+
 The provided domain name will be used in the creation of files and in Apache
 configuration directives. Specifically:
 
 =over 4
-
-=item *
-
-The Apache 2.0.x configuration file will be named C<$DOMAIN_NAME.conf>
 
 =item *
 
@@ -652,6 +688,24 @@ to:
 
     $sitedir/cgi-bin
 
+
+=item *
+
+A file named C<index.rock> will be created in:
+
+    $sitedir/htdocs/index.rock
+
+A symlink named C<index.roc> will be created that points to the above
+mentioned C<index.rock> file:
+
+    $sitedir/htdocs/index.roc
+
+
+=item *
+
+An Apache 2.0.x style configuration file snippet will be created in the file
+specified by the required C<--site-conf> command line option.
+
 =back
 
 B<FIXME>: finish documenting steps that are always performed
@@ -672,16 +726,29 @@ B<FIXME>: document option steps
 
 (Required) Specify the domain name to use (e.g., C<example.com>)
 
+
+=item -f, --site-conf=FILE
+
+(Required) Create the Apache site (virtual host) config snippet in FILE. Any
+parent directories in the path specified by FILE will be created as
+necessary.
+
+Note that the created file is not a complete Apache 2.0.x config file (we
+figure you already have one of those which you don't want anyone mucking
+with), but it is suitable for being included via the Apache C<Include>
+directive from your main Apache config file.
+
+
 =item -h, --help
 
-Print help usage message
+(Optional) Print help usage message
 
 
 =item -O, --overwrite
 
-Causes any existing files to be overwritten (except for those explicitly
-protected via C<--nooverwrite-*> options). The default behavior is to not
-overwrite any existing files.
+(Optional) Causes any existing files to be overwritten (except for those
+explicitly protected via C<--nooverwrite-*> options). The default behavior
+is to not overwrite any existing files.
 
 If you only want to overwrite a couple of files, you will be better off
 using one of the finer-grained C<--overwrite-*> options.
@@ -689,28 +756,43 @@ using one of the finer-grained C<--overwrite-*> options.
 
 =item --overwrite-index-dot-roc
 
-Force overwriting of C<$sitedir/htdocs/index.roc>
+(Optional) Force overwriting of C<$sitedir/htdocs/index.roc>
 
 =item --nooverwrite-index-dot-roc
 
-Do not overwrite C<$sitedir/htdocs/index.roc>. This is the default behavior,
-unless the global C<--overwrite> option has been specified.
+(Optional) Do not overwrite C<$sitedir/htdocs/index.roc>. This is the
+default behavior, unless the global C<--overwrite> option has been
+specified.
 
 
 =item --overwrite-index-dot-rock
 
-Force overwriting of C<$sitedir/htdocs/index.rock>
+(Optional) Force overwriting of C<$sitedir/htdocs/index.rock>
 
 =item --nooverwrite-index-dot-rock
 
-Do not overwrite C<$sitedir/htdocs/index.rock>. This is the default
-behavior, unless the global C<--overwrite> option has been specified.
+(Optional) Do not overwrite C<$sitedir/htdocs/index.rock>. This is the
+default behavior, unless the global C<--overwrite> option has been
+specified.
+
+
+=item --overwrite-site-conf
+
+(Optional) Force overwriting of file specified by the required
+C<--site-conf=FILE> command line option.
+
+=item --nooverwrite-site-conf
+
+(Optional) Do not overwrite the file specified by the required
+C<--site-conf=FILE> command line option. This is the default behavior,
+unless the global C<--overwrite> option has been specified.
 
 
 =item -s, --site-dir=DIR
 
-Create the web site in DIR. If DIR does not exist, it will be created (along
-with any parent directories). For example, if you want your site created beneath:
+(Required) Create the web site in DIR. If DIR does not exist, it will be
+created (along with any parent directories). For example, if you want your
+site created beneath:
 
     /var/www/vhosts/example.com
 
@@ -721,13 +803,13 @@ then specify the option like this:
 
 =item -V
 
-Print the version of the program to stdout and then exit.
+(Optional) Print the version of the program to stdout and then exit.
 
 
 =item -v
 
-Turn on verbose mode. Causes program to emit messages on C<stderr>
-indicating what it is doing.
+(Optional) Turn on verbose mode. Causes program to emit messages on
+C<stderr> indicating what it is doing.
 
 =back
 
