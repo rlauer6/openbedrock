@@ -83,8 +83,8 @@ if test -z "$RMDIR"; then
 fi
 
 
-dnl require /at least/ perl version 5.005
-ads_PROG_PERL([5.005])
+dnl require /at least/ perl version 5.8.0
+ads_PROG_PERL([5.008000])
 
 # pod2man comes with perl, which the above verifies that we have. Not yet sure
 # if we can rely on that (distribution packaging may provide it in an optional
