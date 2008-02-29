@@ -58,6 +58,7 @@ use Carp qw( confess );
 use Getopt::Long qw( GetOptions );
 
 use File::Path qw( mkpath );
+use File::Spec::Functions qw( catdir );
 use Hash::Util qw( lock_hash );
 
 our $VERSION = '@VERSION@';  # filtered in at build time
@@ -149,7 +150,7 @@ sub __func {
 #
 # @return Does not return a meaningful value; exits with an error status on
 #         error.
-sub maybe_create_site_directory_or_die {
+sub __maybe_create_site_directory_or_die {
     my ($site_dir) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
@@ -160,15 +161,122 @@ sub maybe_create_site_directory_or_die {
         print STDERR "found\n" if $BE_VERBOSE;
         return;
     }
+    else {
+        print STDERR "not found; creating\n" if $BE_VERBOSE;
+        eval { mkpath( $site_dir ) };
+        if ($@) {
+            warn(qq{${PROG} (error): was unable to create site dir "${site_dir}": $@\n});
+            exit 1;
+        }
+        print STDERR qq{${PROG} (info): successfully created site dir "$site_dir"\n}
+            if $BE_VERBOSE;
+    }
+    return;
+}
+
+# Checks for the existence of all of our subdirs beneath the user-specified
+# site directory. If any do not exist, attempts to create them.
+#
+# @param $site_dir - (required) The directory in which the user wants his
+#                    web site created.
+#
+# @return Does not return a meaningful value; exits with an error status on
+#         error.
+sub __maybe_create_site_subdirs_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+
+    # FIXME: maybe change 'config' to 'bedrock-config', or maybe even make
+    #        it conf/bedrock-config
+
+    # FIXME: move startup BLM directory out of the web document tree!
+
+    # Most of these are obvious. The others are:
+    #     config    - home to Bedrock configuration file, 'tagx.xml'
+    #     logs/html - home to Bedrock page logs
+    #
+    # Also note that we create a symlink from:
+    #     htdocs/admin/cgi-bin
+    # to:
+    #     cgi-bin
+    my @subdirs = (qw(
+                       conf
+                       config
+                       cgi-bin
+
+                       cgi-bin/Perl
+                       cgi-bin/Perl/BLM
+                       cgi-bin/Perl/BLM/Startup
+
+                       htdocs
+                       htdocs/admin
+                       htdocs/img
+                       logs
+                       logs/html
+                       session
+                    ));
+
+    foreach my $dir (map { catdir($site_dir, $_) } @subdirs) {
+        print STDERR qq{${PROG} (info): checking for the existence of dir "$dir"...}
+            if $BE_VERBOSE;
+        if (-d $dir) {
+            print STDERR "found\n" if $BE_VERBOSE;
+            next;
+        }
+        else {
+            print STDERR "not found; creating\n" if $BE_VERBOSE;
+            eval { mkpath( $dir ) };
+            if ($@) {
+                warn(qq{${PROG} (error): was unable to create dir "${dir}": $@\n});
+                exit 1;
+            }
+            print STDERR qq{${PROG} (info): successfully created dir "$dir"\n}
+                if $BE_VERBOSE;
+        }
+    }
+
+    my $new = catdir( $site_dir, 'htdocs/admin/cgi-bin' );
+    print STDERR qq{${PROG} (info): checking for the existence of dir symlink "$new"...}
+        if $BE_VERBOSE;
+    if (-d $new) {
+# FIXME: check target of the link
+        print STDERR "found\n" if $BE_VERBOSE;
+        return;
+    }
 
     print STDERR "not found; creating\n" if $BE_VERBOSE;
-    eval { mkpath( $site_dir ) };
+    eval {
+        my $old = catdir( $site_dir, 'cgi-bin' );
+        die qq{was unable to create symlinks from "$new" to "$old"\n}
+            unless symlink($old, $new); # may throw fatal error
+    };
     if ($@) {
-        warn(qq{${PROG} (error): was unable to create site dir "${site_dir}": $@\n});
+        warn(qq{${PROG} (error): was unable to create symlink: $@\n});
         exit 1;
     }
-    print STDERR qq{${PROG} (info): successfully created site dir "$site_dir"\n} if $BE_VERBOSE;
+    print STDERR qq{${PROG} (info): successfully created dir symlink "$new"\n}
+        if $BE_VERBOSE;
+
     return;
+}
+
+# Checks for the existence of the user-specified site directory. If it does
+# not exist, attempts to create it. Likewise for any subdirectories beneatch
+# $site_dir that we use.
+#
+# @param $site_dir - (required) The directory in which the user wants his
+#                    web site created.
+#
+# @return Does not return a meaningful value; exits with an error status on
+#         error.
+sub maybe_create_site_directory_tree_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+
+    __maybe_create_site_directory_or_die( $site_dir );
+    __maybe_create_site_subdirs_or_die( $site_dir );
 }
 
 # ----------------------------------------------------------------
@@ -231,7 +339,7 @@ if ($BE_VERBOSE) {
     }
 }
 
-maybe_create_site_directory_or_die( $WEBSITE_DIR );
+maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
 
 exit 0;
 
@@ -328,6 +436,35 @@ The following tasks are always performed:
 The directory specified via the required C<--site-dir=DIR> option is created
 (if it does not already exist).
 
+=item *
+
+The following directory structure is created beneath the specified site
+directory. Only those directories which do not already exist are created:
+
+    $sitedir/conf
+    $sitedir/config
+    $sitedir/cgi-bin
+    $sitedir/cgi-bin/Perl
+    $sitedir/cgi-bin/Perl/BLM
+    $sitedir/cgi-bin/Perl/BLM/Startup
+    $sitedir/htdocs
+    $sitedir/htdocs/admin
+    $sitedir/htdocs/img
+    $sitedir/logs
+    $sitedir/logs/html
+    $sitedir/session
+
+=item *
+
+A symbolic link (symlink) is created from:
+
+    $sitedir/htdocs/admin/cgi-bin
+
+to:
+
+    $sitedir/cgi-bin
+
+
 =back
 
 B<FIXME>: finish documenting steps that are always performed
@@ -398,8 +535,17 @@ Exits with zero on success, non-zero on error.
 
 =head1 BUGS
 
-None known. If you find any, please report them to the Signature
-Inforamation Solutions, LLC Developers' mailing list:
+=over 4
+
+=item *
+
+We currently check for the existence of the C<$sitedir/htdocs/admin/cgi-bin>
+symlink, but we do not check that the target of that link is sane.
+
+=back
+
+If you find any others, please report them to the Signature Inforamation
+Solutions, LLC Developers' mailing list:
 
   cjldev@signatureinfo.com
 
