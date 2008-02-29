@@ -2,11 +2,13 @@
 
 ## $Id$
 
-# SUBDIRS = src \
+# SUBDIRS = bin \
+#           src \
 #           bedrock-works \
 #           .
 
-SUBDIRS = src \
+SUBDIRS = bin \
+          src \
           .
 
 # The ACLOCAL_AMFLAGS are used by 'autoreconf' and by the Makefile
