@@ -130,6 +130,19 @@ dnl |  Autotools Output.  |
 dnl +---------------------+
 ads_PERL_LIBDIR
 
+pkglibdir=${libdir}/${PACKAGE}
+AC_SUBST([pkglibdir])
+
+
+# FIXME: These are not general, so won't be correct in all
+#        circumstances. They'll work correctly once we have full Perl
+#        support.
+AC_SUBST([perl5_pkgdatadir], ["\${datadir}/${PACKAGE}/perl5"])
+AC_SUBST([perl5_pkglibdir],  ["\${libdir}/${PACKAGE}/perl5"])
+AC_SUBST([perl5_pkgvdatadir], ["\${datadir}/${PACKAGE}-${VERSION}/perl5"])
+AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
+
+
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
 ##
@@ -180,9 +193,16 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]top_builddir[@],$(top_builddir),g'"'"' \
   -e '"'"'s,[@]top_srcdir[@],$(top_srcdir),g'"'"' \
   \
+  -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
+  \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
   -e '"'"'s,[@]PERL_LIBDIR[@],$(PERL_LIBDIR),g'"'"' \
   -e '"'"'s,[@]POD2MAN[@],$(POD2MAN),g'"'"' \
+  -e '"'"'s,[@]ax_perl5_extra_includes[@],$(ax_perl5_extra_includes),g'"'"' \
+  -e '"'"'s,[@]perl5_pkgdatadir[@],$(perl5_pkgdatadir),g'"'"' \
+  -e '"'"'s,[@]perl5_pkgvdatadir[@],$(perl5_pkgvdatadir),g'"'"' \
+  -e '"'"'s,[@]perl5_pkglibdir[@],$(perl5_pkglibdir),g'"'"' \
+  -e '"'"'s,[@]perl5_pkgvlibdir[@],$(perl5_pkgvlibdir),g'"'"' \
   \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
   -e '"'"'s,[@]CAT[@],$(CAT),g'"'"' \
@@ -196,6 +216,14 @@ do_subst_command='do_subst = sed \
 '
 ]
 AC_SUBST([do_subst_command])
+
+
+# Tell our Makefiles where to find our Perl 5 @INC munger snippet. Making
+# this a configure-time substitution var allows us to move the file
+# someplace else in the source tree or rename it w/o modifying any of our
+# Makefile.am files.
+bedrock_perl5_inc_begin_block_snippet_filepath="\$(top_builddir)/src/main/resources/bedrock-perl5-inc-begin-block.snippet"
+AC_SUBST([bedrock_perl5_inc_begin_block_snippet_filepath])
 
 
 dnl AC_CONFIG_FILES requires a list of file paths, but we do not want
@@ -228,6 +256,13 @@ dnl      strings. Region is already set up because we set the mark above.
 dnl Declare our output Makefiles
 AC_CONFIG_FILES(
         [Makefile]
+        [bin/Makefile]
+        [src/Makefile]
+        [src/main/Makefile]
+        [src/main/perl/Makefile]
+        [src/main/perl/cgi-bin/Makefile]
+        [src/main/perl/lib/Makefile]
+        [src/main/resources/Makefile]
 )
 
 dnl Actually output the declared files
@@ -284,6 +319,8 @@ printf "                 User binaries: %s\n" "`__poor_mans_expand_file_name bin
 printf "               System binaries: %s\n" "`__poor_mans_expand_file_name sbindir`"
 printf "           Configuration files: %s\n" "`__poor_mans_expand_file_name sysconfdir`"
 printf "                  Manual pages: %s\n" "`__poor_mans_expand_file_name mandir`"
+printf "\n"
+printf "                     pkglibdir: %s\n" "`__poor_mans_expand_file_name pkglibdir`"
 printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
