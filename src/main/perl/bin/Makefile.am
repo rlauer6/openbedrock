@@ -13,14 +13,14 @@ GSCRIPTS = bedrock-create-site-$(VERSION)
 # "static" man pages
 SMANPAGES =
 # "generated" man pages
-GMANPAGES = bedrock-create-site.1sis
+GMANPAGES = bedrock-create-site.1
 
 
 bin_SCRIPTS = $(SSCRIPTS) $(GSCRIPTS)
 
 dist_noinst_DATA = $(INPUT_TEMPLATES)
 
-man1_MANS = bedrock-create-site.1sis
+man1_MANS = bedrock-create-site.1
 
 CLEANFILES = $(GSCRIPTS) $(GMANPAGES)
 
@@ -56,11 +56,11 @@ bedrock-create-site-$(VERSION): Makefile
 	chmod a+rx "$@"
 
 
-bedrock-create-site.1sis: bedrock-create-site.in
+bedrock-create-site.1: bedrock-create-site.in
 	"$(POD2MAN)" $< \
-	    --center='SIS' \
+	    --center='Bedrock' \
 	    --release=$(PACKAGE)-$(VERSION) \
-	    --section=1sis > $@
+	    --section=1 > $@
 
 
 install-exec-hook:
