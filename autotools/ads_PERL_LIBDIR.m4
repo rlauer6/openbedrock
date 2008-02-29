@@ -1,4 +1,4 @@
-dnl -*-m4-*-
+dnl -*-Autoconf-*-
 
 ##
 ## $Id$
@@ -29,7 +29,7 @@ dnl perl library modules should be installed. It also provides the automake
 dnl conditional 'USING_PERL_INSTALLSITELIB'. See below for details.
 dnl
 dnl The default behavior of this macro is to set up PERL_LIBDIR to install
-dnl perl modules in $pkglibdir; this is to make it consistent with other
+dnl perl modules in $pkglibdir/perl5; this is to make it consistent with other
 dnl automake macros in that the '--prefix=DIR' configure option is respected.
 dnl The downside to this default behavior is that Perl scripts that need to
 dnl access the installed modules may need to take special measures (add
@@ -99,7 +99,7 @@ AC_DEFUN([ads_PERL_LIBDIR], [
 
      changequote(<<, >>)dnl
 <<  --with-perl-libdir[=ARG]
-                          where to install perl modules [ARG=no, uses \$pgklibdir]>>dnl
+                          where to install perl modules [ARG=no, uses \$pgklibdir/perl5]>>dnl
      changequote([, ])dnl
     ,
     [ # AC_ARG_WITH: option if given
@@ -115,8 +115,8 @@ AC_DEFUN([ads_PERL_LIBDIR], [
         # as of 1.4-p5) only defines '$pkglibdir' in the generated Makefile.in
         # files, but not in 'configure.in'. We need it defined in configure
         # in order for the assignment to PERL_LIBDIR to work.
-        PERL_LIBDIR=${libdir}/${PACKAGE}
-        AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE})
+        PERL_LIBDIR=${libdir}/${PACKAGE}/perl5
+        AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE}/perl5)
     elif test -z "$withval" || \
          test "$withval" = "yes"; then
         # --with-perl-libdir AKA --with-perl-libdir=yes uses 'perl -V:installsitelib'
@@ -158,8 +158,8 @@ $tmp_valid_opts
     # as of 1.4-p5) only defines '$pkglibdir' in the generated Makefile.in
     # files, but not in 'configure.in'. We need it defined in configure
     # in order for the assignment to PERL_LIBDIR to work.
-    PERL_LIBDIR=${libdir}/${PACKAGE}
-    AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE})
+    PERL_LIBDIR=${libdir}/${PACKAGE}/perl5
+    AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE}/perl5)
     ])dnl end of AC_ARG_WITH(perl-libdir) macro
 
     AC_SUBST(PERL_LIBDIR)
