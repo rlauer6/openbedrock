@@ -2,4 +2,4 @@
 
 htdocsdir = $(datadir)/htdocs
 
-htdocs_DATA = error.roc
+dist_htdocs_DATA = error.roc
