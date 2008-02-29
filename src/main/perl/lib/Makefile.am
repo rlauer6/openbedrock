@@ -1,139 +1,139 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
 
-perl5_libdir = @PERL_LIBDIR@
+perl5libdir = @PERL_LIBDIR@
 
-dist_perl5_DATA = \
-Bedrock/Text/TagX/Term.pm
-Bedrock/Text/TagX/Error.pm
-Bedrock/Text/TagX/TAG/NoBody/Trace.pm
-Bedrock/Text/TagX/TAG/NoBody/SQL.pm
-Bedrock/Text/TagX/TAG/NoBody/SQLConnect.pm
-Bedrock/Text/TagX/TAG/NoBody/Exec.pm
-Bedrock/Text/TagX/TAG/NoBody/Var.pm
-Bedrock/Text/TagX/TAG/NoBody/NULL.pm
-Bedrock/Text/TagX/TAG/NoBody/Include.pm
-Bedrock/Text/TagX/TAG/NoBody/Raise.pm
-Bedrock/Text/TagX/TAG/WithBody.pm
-Bedrock/Text/TagX/TAG/WithBody/Catch.pm
-Bedrock/Text/TagX/TAG/WithBody/If/Else.pm
-Bedrock/Text/TagX/TAG/WithBody/Loop/While.pm
-Bedrock/Text/TagX/TAG/WithBody/Loop/Foreach.pm
-Bedrock/Text/TagX/TAG/WithBody/Loop/SQLSelect.pm
-Bedrock/Text/TagX/TAG/WithBody/Cache.pm
-Bedrock/Text/TagX/TAG/WithBody/If.pm
-Bedrock/Text/TagX/TAG/WithBody/Loop.pm
-Bedrock/Text/TagX/TAG/WithBody/Sink.pm
-Bedrock/Text/TagX/TAG/WithBody/Try.pm
-Bedrock/Text/TagX/TAG/NoBody.pm
-Bedrock/Text/TagX/Term/Var.pm
-Bedrock/Text/TagX/Term/String.pm
-Bedrock/Text/TagX/Log.pm
-Bedrock/Text/TagX/Parser.pm
-Bedrock/Text/TagX/Symtab.pm
-Bedrock/Text/TagX/Expr.pm
-Bedrock/Text/TagX/Func.pm
-Bedrock/Text/TagX/Output.pm
-Bedrock/Text/TagX/TAG.pm
-Bedrock/Text/TagX/Scalar.pm
-Bedrock/Text/TagX.pm
-Bedrock/Text/URLEncode.pm
-Bedrock/XML.pm
-Bedrock/SIS/Handle.pm
-Bedrock/SIS/Config.pm
-Bedrock/SIS/Log.pm
-Bedrock/SIS/InputSource.pm
-Bedrock/SIS/Array.pm
-Bedrock/SIS/BufferStream.pm
-Bedrock/SIS/Hash.pm
-Bedrock/SIS/Dump.pm
-Bedrock/SIS/InputSource/Term.pm
-Bedrock/Context/Shell.pm
-Bedrock/Apache/Request_shell.pm
-Bedrock/Apache/PDFrock.pm
-Bedrock/Apache/bedrock.pl
-Bedrock/Apache/pdfrock.pl
-Bedrock/Apache/bedrock_sh.pl
-Bedrock/Apache/Request_cgi.pm
-Bedrock/Apache/Bedrock.pm
-Bedrock/PDF/Handle.pm
-Bedrock/PDF/Maker.pm
-Bedrock/XML/Container.pm
-Bedrock/XML/Container/Object.pm
-Bedrock/XML/Container/Array.pm
-Bedrock/XML/Container/Scalar.pm
-Bedrock/VERSION.pm
-Bedrock/Context.pm
-BLM/File.pm
-BLM/Keys.pm
-BLM/Fortune.pm
-BLM/Startup/AutoDB.pm
-BLM/Startup/Forum.pm
-BLM/Startup/Session/SDBM.pm
-BLM/Startup/Session/GDBM.pm
-BLM/Startup/Session.pm
-BLM/Startup/Config.pm
-BLM/Startup/UserSession.pm
-BLM/Startup/Cookie.pm
-BLM/Startup/Input.pm
-BLM/Startup/Hitcounter.pm
-BLM/Startup/Output.pm
-BLM/Startup/Header.pm
-BLM/Startup/Env.pm
-BLM/Startup/Bedrock.pm
-BLM/Benchmark.pm
-BLM/Number.pm
-BLM/SIMPLEFTP.pm
-BLM/FileIO.pm
-BLM/Perldoc.pm
-BLM/SMTP.pm
-BLM/Awk.pm
-BLM/Date.pm
-BLM/Array.pm
-BLM/String.pm
-BLM/PDF/Text/Font.pm
-BLM/PDF/Text/Text.pm
-BLM/PDF/Text/Effects/Gradient.pm
-BLM/PDF/Text/Properties.pm
-BLM/PDF/Log.pm
-BLM/PDF/afm/com_____.afm
-BLM/PDF/afm/cobo____.afm
-BLM/PDF/afm/cob_____.afm
-BLM/PDF/afm/hvb_____.afm
-BLM/PDF/afm/hvbo____.afm
-BLM/PDF/afm/zd______.afm
-BLM/PDF/afm/tib_____.afm
-BLM/PDF/afm/sy______.afm
-BLM/PDF/afm/tir_____.afm
-BLM/PDF/afm/coo_____.afm
-BLM/PDF/afm/tibi____.afm
-BLM/PDF/afm/hvo_____.afm
-BLM/PDF/afm/hv______.afm
-BLM/PDF/afm/tii_____.afm
-BLM/PDF/Constants.pm
-BLM/PDF/Document/Page/Properties.pm
-BLM/PDF/Document/Page.pm
-BLM/PDF/Document/Document.pm
-BLM/PDF/Render/Cursor.pm
-BLM/PDF/Render/Catalog.pm
-BLM/PDF/Render/Pages.pm
-BLM/PDF/Render/Text/Object.pm
-BLM/PDF/Render/Text/Metrics.pm
-BLM/PDF/Render/PDFObject.pm
-BLM/PDF/Render/Text.pm
-BLM/PDF/Render/Outline.pm
-BLM/PDF/Render/Stream.pm
-BLM/PDF/Render/Array.pm
-BLM/PDF/Render/Page.pm
-BLM/PDF/Render/Newline.pm
-BLM/PDF/Render/Object/Registry.pm
-BLM/PDF/Render/Dictionary.pm
-BLM/PDF/Render/Document.pm
-BLM/PDF/PDF.pm
-BLM/Series.pm
-BLM/OrderedObject.pm
-BLM/Include.pm
-BLM/Stat.pm
-BLM/Mail.pm
-BLM/Timenow.pm
-BLM/Recycle.pm
+dist_perl5lib_DATA = \
+Bedrock/Text/TagX/Term.pm \
+Bedrock/Text/TagX/Error.pm \
+Bedrock/Text/TagX/TAG/NoBody/Trace.pm \
+Bedrock/Text/TagX/TAG/NoBody/SQL.pm \
+Bedrock/Text/TagX/TAG/NoBody/SQLConnect.pm \
+Bedrock/Text/TagX/TAG/NoBody/Exec.pm \
+Bedrock/Text/TagX/TAG/NoBody/Var.pm \
+Bedrock/Text/TagX/TAG/NoBody/NULL.pm \
+Bedrock/Text/TagX/TAG/NoBody/Include.pm \
+Bedrock/Text/TagX/TAG/NoBody/Raise.pm \
+Bedrock/Text/TagX/TAG/WithBody.pm \
+Bedrock/Text/TagX/TAG/WithBody/Catch.pm \
+Bedrock/Text/TagX/TAG/WithBody/If/Else.pm \
+Bedrock/Text/TagX/TAG/WithBody/Loop/While.pm \
+Bedrock/Text/TagX/TAG/WithBody/Loop/Foreach.pm \
+Bedrock/Text/TagX/TAG/WithBody/Loop/SQLSelect.pm \
+Bedrock/Text/TagX/TAG/WithBody/Cache.pm \
+Bedrock/Text/TagX/TAG/WithBody/If.pm \
+Bedrock/Text/TagX/TAG/WithBody/Loop.pm \
+Bedrock/Text/TagX/TAG/WithBody/Sink.pm \
+Bedrock/Text/TagX/TAG/WithBody/Try.pm \
+Bedrock/Text/TagX/TAG/NoBody.pm \
+Bedrock/Text/TagX/Term/Var.pm \
+Bedrock/Text/TagX/Term/String.pm \
+Bedrock/Text/TagX/Log.pm \
+Bedrock/Text/TagX/Parser.pm \
+Bedrock/Text/TagX/Symtab.pm \
+Bedrock/Text/TagX/Expr.pm \
+Bedrock/Text/TagX/Func.pm \
+Bedrock/Text/TagX/Output.pm \
+Bedrock/Text/TagX/TAG.pm \
+Bedrock/Text/TagX/Scalar.pm \
+Bedrock/Text/TagX.pm \
+Bedrock/Text/URLEncode.pm \
+Bedrock/XML.pm \
+Bedrock/SIS/Handle.pm \
+Bedrock/SIS/Config.pm \
+Bedrock/SIS/Log.pm \
+Bedrock/SIS/InputSource.pm \
+Bedrock/SIS/Array.pm \
+Bedrock/SIS/BufferStream.pm \
+Bedrock/SIS/Hash.pm \
+Bedrock/SIS/Dump.pm \
+Bedrock/SIS/InputSource/Term.pm \
+Bedrock/Context/Shell.pm \
+Bedrock/Apache/Request_shell.pm \
+Bedrock/Apache/PDFrock.pm \
+Bedrock/Apache/bedrock.pl \
+Bedrock/Apache/pdfrock.pl \
+Bedrock/Apache/bedrock_sh.pl \
+Bedrock/Apache/Request_cgi.pm \
+Bedrock/Apache/Bedrock.pm \
+Bedrock/PDF/Handle.pm \
+Bedrock/PDF/Maker.pm \
+Bedrock/XML/Container.pm \
+Bedrock/XML/Container/Object.pm \
+Bedrock/XML/Container/Array.pm \
+Bedrock/XML/Container/Scalar.pm \
+Bedrock/VERSION.pm \
+Bedrock/Context.pm \
+BLM/File.pm \
+BLM/Keys.pm \
+BLM/Fortune.pm \
+BLM/Startup/AutoDB.pm \
+BLM/Startup/Forum.pm \
+BLM/Startup/Session/SDBM.pm \
+BLM/Startup/Session/GDBM.pm \
+BLM/Startup/Session.pm \
+BLM/Startup/Config.pm \
+BLM/Startup/UserSession.pm \
+BLM/Startup/Cookie.pm \
+BLM/Startup/Input.pm \
+BLM/Startup/Hitcounter.pm \
+BLM/Startup/Output.pm \
+BLM/Startup/Header.pm \
+BLM/Startup/Env.pm \
+BLM/Startup/Bedrock.pm \
+BLM/Benchmark.pm \
+BLM/Number.pm \
+BLM/SIMPLEFTP.pm \
+BLM/FileIO.pm \
+BLM/Perldoc.pm \
+BLM/SMTP.pm \
+BLM/Awk.pm \
+BLM/Date.pm \
+BLM/Array.pm \
+BLM/String.pm \
+BLM/PDF/Text/Font.pm \
+BLM/PDF/Text/Text.pm \
+BLM/PDF/Text/Effects/Gradient.pm \
+BLM/PDF/Text/Properties.pm \
+BLM/PDF/Log.pm \
+BLM/PDF/afm/com_____.afm \
+BLM/PDF/afm/cobo____.afm \
+BLM/PDF/afm/cob_____.afm \
+BLM/PDF/afm/hvb_____.afm \
+BLM/PDF/afm/hvbo____.afm \
+BLM/PDF/afm/zd______.afm \
+BLM/PDF/afm/tib_____.afm \
+BLM/PDF/afm/sy______.afm \
+BLM/PDF/afm/tir_____.afm \
+BLM/PDF/afm/coo_____.afm \
+BLM/PDF/afm/tibi____.afm \
+BLM/PDF/afm/hvo_____.afm \
+BLM/PDF/afm/hv______.afm \
+BLM/PDF/afm/tii_____.afm \
+BLM/PDF/Constants.pm \
+BLM/PDF/Document/Page/Properties.pm \
+BLM/PDF/Document/Page.pm \
+BLM/PDF/Document/Document.pm \
+BLM/PDF/Render/Cursor.pm \
+BLM/PDF/Render/Catalog.pm \
+BLM/PDF/Render/Pages.pm \
+BLM/PDF/Render/Text/Object.pm \
+BLM/PDF/Render/Text/Metrics.pm \
+BLM/PDF/Render/PDFObject.pm \
+BLM/PDF/Render/Text.pm \
+BLM/PDF/Render/Outline.pm \
+BLM/PDF/Render/Stream.pm \
+BLM/PDF/Render/Array.pm \
+BLM/PDF/Render/Page.pm \
+BLM/PDF/Render/Newline.pm \
+BLM/PDF/Render/Object/Registry.pm \
+BLM/PDF/Render/Dictionary.pm \
+BLM/PDF/Render/Document.pm \
+BLM/PDF/PDF.pm \
+BLM/Series.pm \
+BLM/OrderedObject.pm \
+BLM/Include.pm \
+BLM/Stat.pm \
+BLM/Mail.pm \
+BLM/Timenow.pm \
+BLM/Recycle.pm \
 Bedrock.pm
