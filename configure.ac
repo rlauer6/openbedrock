@@ -259,6 +259,8 @@ AC_CONFIG_FILES(
         [bin/Makefile]
         [src/Makefile]
         [src/main/Makefile]
+        [src/main/bedrock/Makefile]
+        [src/main/bedrock/pebbles/Makefile]
         [src/main/perl/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
