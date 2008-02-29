@@ -263,6 +263,7 @@ AC_CONFIG_FILES(
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
         [src/main/resources/Makefile]
+        [src/main/resources/htdocs/Makefile]
 )
 
 dnl Actually output the declared files
