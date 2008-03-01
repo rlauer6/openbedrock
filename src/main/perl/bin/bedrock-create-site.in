@@ -86,6 +86,18 @@ my $SHOW_HELP = 0;
 my $SHOW_VERSION = 0;
 my $DO_OVERWRITE_ALL = 0;
 
+my $APACHE_AUTH_DB_TYPE;
+my $APACHE_AUTH_DB_TYPE_DFLT = 'mysql';
+# my @ALL_VALID_APACHE_AUTH_DB_TYPES = (qw( mysql postresql oracle ));
+my @ALL_VALID_APACHE_AUTH_DB_TYPES = (qw( mysql ));  # only MySQL is currently supported :-/
+
+# The user may request that the Apache auth db configuration directives be
+# written to file separate from the (required) file path specified in
+# $APACHE_SITE_CONF_FNAME. If specified, this var will hold that file name
+# (path); if the user does not explicitly request an external auth db
+# configuration file, then the Apache auth db configuration directives will
+# be written inline in $APACHE_SITE_CONF_FNAME.
+my $APACHE_AUTH_DB_INCLUDE_FNAME;
 
 # These vars are package scoped so we can dereference them dynamically
 our $DOMAIN_NAME;
@@ -101,6 +113,7 @@ our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
 our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
 our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
 our $DO_OVERWRITE_APACHE_SITE_CONF = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;
 
 # We keep a collection of all of our fine-grained overwrite opts so we can
 # flip them all on if the user specifies the -O (--overwrite) global
@@ -109,6 +122,7 @@ our $DO_OVERWRITE_APACHE_SITE_CONF = -1;  # dflt; 0 if explicitly disabled; 1 if
 my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_INDEX_DOT_ROC  => 'index.roc',
                            DO_OVERWRITE_INDEX_DOT_ROCK => 'index.rock',
                            DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
+                           DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE => undef,  # not yet known; may never be specified
                          );
 
 # $var => { desc => str, sopt_name => str }
@@ -149,10 +163,28 @@ to not overwrite existing files).
                      Use NAME as the domain name
 * -f, --site-conf=FILE
                      Create Apache site config in FILE
+
+  -i, --apache-auth-db-include=FILE
+                     Write Apache auth db directives to FILE for inclusion
+                     from the site-conf file (default is to write auth db
+                     directives inline in the site-conf file)
+
   -O, --overwrite    Overwrite any existing files
 * -s, --site-dir=DIR Create the website in DIR
+
+  -t, --apache-auth-db-type=TYPE
+                     Database used for website authentication is TYPE
+                     Valid values for TYPE include:
+                        [mysql]
   -v, --verbose      Print program progress messages on stderr
   -V, --version      Print on stdout version info and exit
+
+  --overwrite-apache-auth-db-include
+                     Force overwriting of the specified Apache auth db
+                     directives include file
+  --nooverwrite-apache-auth-db-include
+                     Do not overwrite the specified Apache auth db
+                     directives include file
 
   --overwrite-index-dot-roc
                      Force overwriting of \$sitedir/htdocs/index.roc
@@ -462,10 +494,12 @@ sub maybe_create_index_dot_rock_or_die {
 }
 
 # Creates an apache virtual host config file snippet in the file named by
-# $apache_site_conf_path. Any parent directories will also be created
+# $apache_site_conf_path (and $apache_auth_db_include_fname, if
+# provided). Any parent directories will also be created.
 #
 # This function obeys the following fine-grained overwrite flag:
 #     $DO_OVERWRITE_APACHE_SITE_CONF
+#     $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE
 #
 # @param $apache_site_conf_path - (required) Path where we should write a
 #                                 virtual host config file snippet for the
@@ -475,14 +509,40 @@ sub maybe_create_index_dot_rock_or_die {
 #                    user. The value specified will be used to populate
 #                    Apache config file directives in the generated file.
 #
+# @param $apache_auth_db_type - (required) The type of database used by
+#                               Apache for Bedrock site
+#                               authentication. Currently, the only valid
+#                               value is 'mysql', but we plan on supporting
+#                               other databases in the future.
+#
+# @param $apache_auth_db_include_fname - (optional) The name of a file into
+#                                        which Apache authentication
+#                                        directives should be written; this
+#                                        file will be included via an Apache
+#                                        'Include' directive from the main
+#                                        config file that we write to
+#                                        $apache_site_conf_path. If undef,
+#                                        such directives will be written
+#                                        inline in the file specified by
+#                                        $apache_site_conf_path.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 sub maybe_create_apache_site_config_file_or_die {
-    my ($apache_site_conf_path, $site_dir) = @_;
+    my ($apache_site_conf_path, $site_dir,
+        $apache_auth_db_type,
+        $apache_auth_db_include_fname) = @_;
     confess( __func, q{(): required '$apache_site_conf_path' param not provided} )
         unless defined $apache_site_conf_path;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$apache_auth_db_type' param not provided} )
+        unless defined $apache_auth_db_type;
+
+    # This will need to be fixed up to support other database types
+    confess( __func, qq{(): Illegal value ("$apache_auth_db_type") for},
+             q{'$apache_auth_db_type' param; must be 'mysql'} )
+        unless ('mysql' eq $apache_auth_db_type);
 
     my $confdir = dirname( $apache_site_conf_path );
 
@@ -502,12 +562,34 @@ sub maybe_create_apache_site_config_file_or_die {
             if $BE_VERBOSE;
     }
 
+    if (defined $apache_auth_db_include_fname
+        && length $apache_auth_db_include_fname)
+    {
+        my $confdir = dirname( $apache_site_conf_path );
+
+        print STDERR qq{${PROG} (info): checking for the existince of directory "$confdir"...}
+            if $BE_VERBOSE;
+        if (-d $confdir) {
+            print STDERR qq{found.\n};
+        }
+        else {
+            print STDERR qq{not found; creating.\n};
+            eval { mkpath( $confdir ) };
+            if ($@) {
+                warn(qq{${PROG} (error): was unable to create dir "${confdir}": $@\n});
+                exit 1;
+            }
+            print STDERR qq{${PROG} (info): successfully created dir "$confdir"\n}
+                if $BE_VERBOSE;
+        }
+    }
+
     unless( open(APACHE_SITE_CONF, ">$apache_site_conf_path")) {
         warn(qq{${PROG} (error): was unable to open file for writing "${apache_site_conf_path}": $!\n});
         exit 1;
     }
     my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
-# FIXME: correctly set PERL5LIB, if needed
+# FIXME: correctly set PERL5LIB, if needed; for now I've temporarily disabled it
     print APACHE_SITE_CONF <<"EOF";
 <VirtualHost *>
 # - Autogenerated via $PROG on: $now
@@ -515,7 +597,7 @@ sub maybe_create_apache_site_config_file_or_die {
 SetEnv     CONFIG_PATH ${site_dir}/config
 PerlSetEnv CONFIG_PATH ${site_dir}/config
 
-SetEnv PERL5LIB $BEDROCK_PERL_DIR
+#SetEnv PERL5LIB \$BEDROCK_PERL_DIR
 
 PerlRequire ${site_dir}/conf/startup.pl
 
@@ -606,11 +688,14 @@ unless ( GetOptions(
                     'h|help'          => \$SHOW_HELP,
                     'd|domain-name=s' => \$DOMAIN_NAME,
                     'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
+                    'i|apache-auth-db-include=s' => \$APACHE_AUTH_DB_INCLUDE_FNAME,
                     'O|overwrite'     => \$DO_OVERWRITE_ALL,
-                    'overwrite-index-dot-roc!'  => \$DO_OVERWRITE_INDEX_DOT_ROC,
-                    'overwrite-index-dot-rock!' => \$DO_OVERWRITE_INDEX_DOT_ROCK,
-                    'overwrite-site-conf!'      => \$DO_OVERWRITE_APACHE_SITE_CONF,
+                    'overwrite-index-dot-roc!'   => \$DO_OVERWRITE_INDEX_DOT_ROC,
+                    'overwrite-index-dot-rock!'  => \$DO_OVERWRITE_INDEX_DOT_ROCK,
+                    'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
+                    'overwrite-apache-auth-db-include!' => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
                     's|site-dir=s'    => \$WEBSITE_DIR,
+                    't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
                     'V|version'       => \$SHOW_VERSION,
                     'v|verbose'       => \$BE_VERBOSE,
                    ))
@@ -638,7 +723,6 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
     unless (defined $$varname) {
         use strict 'refs';
         warn "${PROG} (error): required $desc option not specified (see -${sopt})\n";
-        print_usage( \*STDERR );
         exit 1;
     }
     unless (length $$varname) {
@@ -654,6 +738,11 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
 # code below.
 $ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_SITE_CONF} = basename( $APACHE_SITE_CONF_FNAME );
 
+# Leave desc as undef if the user did not specify a separate apache auth db
+# include file.
+$ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE} = basename( $APACHE_AUTH_DB_INCLUDE_FNAME )
+    if defined $APACHE_AUTH_DB_INCLUDE_FNAME;
+
 # Ensure all fine grained "overwrite" options have a true (1) or false (0)
 # value. Any "overwrite" options not explicitly specified one way or the
 # other by the user are set to correspond with the value of
@@ -665,6 +754,26 @@ foreach my $fgopt (sort keys %ALL_OVERWRITE_OPTS) {
     $$fgopt = ($DO_OVERWRITE_ALL ? 1 : 0);
 }
 
+
+# Validate choice of Apache site authentication database type, if specified
+if (defined $APACHE_AUTH_DB_TYPE) {
+    my $is_legit = 0;
+    ++$is_legit if grep { defined and length }
+        map { $_ eq $APACHE_AUTH_DB_TYPE } @ALL_VALID_APACHE_AUTH_DB_TYPES;
+    unless ($is_legit) {
+        warn ("${PROG} (error): specified apache auth db type",
+              " (${APACHE_AUTH_DB_TYPE}) is not valid.\n",
+              "    Valid values include:\n",
+              ' ' x 8,
+              join("\n" . ' ' x 8, @ALL_VALID_APACHE_AUTH_DB_TYPES),
+              "\n");
+        exit 1;
+    }
+}
+$APACHE_AUTH_DB_TYPE = $APACHE_AUTH_DB_TYPE_DFLT
+    unless defined $APACHE_AUTH_DB_TYPE;
+
+
 # Maybe print a summary of the configured options
 if ($BE_VERBOSE) {
     my $longest_desc = 0;
@@ -673,28 +782,34 @@ if ($BE_VERBOSE) {
     {
         no strict 'refs';
         printf STDERR qq{${PROG} (info): using %-*s: "%s"\n}, $longest_desc, $_->[0], $_->[1]
-            foreach map { [ $REQUIRED_STR_OPTS{$_}->{desc }, $$_ ] }
+            foreach map { [ $REQUIRED_STR_OPTS{$_}->{desc}, $$_ ] }
                 sort keys %REQUIRED_STR_OPTS;
     }
 
     # Summarize overwrite flags
     $longest_desc = 0;  # reset
     map { $longest_desc = $_ if $_ > $longest_desc }
-        map { length } values %ALL_OVERWRITE_OPTS;
+        map { length } grep { defined } values %ALL_OVERWRITE_OPTS;
     printf STDERR qq{${PROG} (info): overwrite %-*s: %s\n}, $longest_desc, 'all',
         ($DO_OVERWRITE_ALL ? 'yes' : 'no');
     {
         no strict 'refs';
         printf STDERR qq{${PROG} (info): overwrite %-*s: %s\n}, $longest_desc, $_->[0], $_->[1]
-            foreach map { [ $ALL_OVERWRITE_OPTS{$_}, ( $$_ ? 'yes' : 'no' ) ] }
-                sort keys %ALL_OVERWRITE_OPTS;
+            foreach
+                grep { defined $_->[0] }
+                    map { [ $ALL_OVERWRITE_OPTS{$_}, ( $$_ ? 'yes' : 'no' ) ] }
+                        sort keys %ALL_OVERWRITE_OPTS;
     }
 }
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
 
-maybe_create_apache_site_config_file_or_die( $APACHE_SITE_CONF_FNAME );
+maybe_create_apache_site_config_file_or_die( $APACHE_SITE_CONF_FNAME,
+                                             $WEBSITE_DIR,
+                                             $APACHE_AUTH_DB_TYPE,
+                                             $APACHE_AUTH_DB_INCLUDE_FNAME  # may be undef
+                                           );
 
 exit 0;
 
@@ -877,6 +992,28 @@ directive from your main Apache config file.
 (Optional) Print help usage message
 
 
+=item -i, --apache-auth-db-include=FILE
+
+(Optional) Write Apache directives related to site authentication to FILE,
+which will be included in the file specified by the required
+C<--site-conf=FILE> option via an Apache C<Include> directive.
+
+The default behavior (when no C<--apache-auth-db-include=FILE> option is
+provided) is to write such directives inline with the other Apache
+directives that we write to the file specified by the C<--site-conf=FILE>
+option.
+
+This option is useful for simply keeping the site authentication directives
+in a separate file (which may make them easier to work with, for instance,
+if you change your database password frequently).
+
+It is also useful for working with multiple databases (perhaps to migrate
+from one to another), as you can create a different include file for each
+database (or database type (see the C<--apache-auth-db-type> option)) and
+control the one that is actually used via a single Apache C<Include>
+directive from your main Apache config file.
+
+
 =item -O, --overwrite
 
 (Optional) Causes any existing files to be overwritten (except for those
@@ -885,6 +1022,22 @@ is to not overwrite any existing files.
 
 If you only want to overwrite a couple of files, you will be better off
 using one of the finer-grained C<--overwrite-*> options.
+
+
+=item --overwrite-apache-auth-db-include
+
+(Optional) Force overwriting of file specified by the optional
+C<--apache-auth-db-include=FILE> command line option. If no
+C<--apache-auth-db-include=FILE> command line option has been specified,
+then this option has no effect.
+
+=item --nooverwrite-apache-auth-db-include
+
+(Optional) Do not overwrite the file specified by the optional
+C<--apache-auth-db-include=FILE> command line option. This is the default
+behavior, unless the global C<--overwrite> option has been specified. If no
+C<--apache-auth-db-include=FILE> command line option has been specified,
+then this option has no effect.
 
 
 =item --overwrite-index-dot-roc
@@ -934,6 +1087,32 @@ then specify the option like this:
     --site-dir=/var/www/vhosts/example.com
 
 
+=item -t, --apache-auth-db-type=TYPE
+
+(Optional) Allows user to specify the type of database used for site
+authentication.
+
+This option controls the Apache directives that will be written to the file
+specified by the C<--site-conf=FILE> option (or rather the file specified by
+the optional C<--apache-auth-db-include=FILE> option, if specified). It also
+affects how the program communicates with the database (if the user
+explicitly requests it).
+
+B<FIXME>: Create pointers to options that control whether or not the program
+will attempt to communicate with a database.
+
+Valid values for TYPE include:
+
+=over 4
+
+=item mysql
+
+=back
+
+See the L</"BUGS"> section below for notes regarding support for databases
+other than MySQL.
+
+
 =item -V
 
 (Optional) Print the version of the program to stdout and then exit.
@@ -958,6 +1137,40 @@ Exits with zero on success, non-zero on error. The program stops processing
 at the first error that is encountered.
 
 
+=head1 CAVEATS
+
+=over 4
+
+=item *
+
+There are some combinations of command line options that may result in a
+broken Bedrock configuration, but you would have to direct the program to do
+something very specific to make this happen.
+
+For example, let's imagine a user who already has an Apache configuration
+file for his site that he does not wish to have overwritten by
+C<bedrock-create-site>, but he does wish to have the program create a new
+Apache config file snippet that configures Apache to use MySQL for site
+authentication (ultimately for inclusion from his main Apache config). Such
+a user might invoke C<bedrock-create-site> thus:
+
+    $ bedrock-create-site ... \
+        --site-conf=www.foobar.com.conf \
+        --apache-auth-db-type=mysql \
+        --apache-auth-db-include=www.foobar.com-auth-mysql.conf \
+        --nooverwrite-site-conf
+
+If the 'www.foobar.com.conf' file does not already have an Apache C<Include>
+directive that pulls in the 'www.foobar.com-auth-mysql.conf' file, then the
+configuration is not complete until the user manually fixes it.
+
+We consider all such invocations to be in the domain of expert usage, and no
+attempt is made to second-guess the user. The C<bedrock-create-site> program
+assumes that you know what you are doing.
+
+=back
+
+
 =head1 BUGS
 
 =over 4
@@ -966,6 +1179,30 @@ at the first error that is encountered.
 
 We currently check for the existence of the C<$sitedir/htdocs/admin/cgi-bin>
 symlink, but we do not check that the target of that link is sane.
+
+=item *
+
+The program currently prints messages about existing files that it will not
+overwrite only when invoked with the C<--verbose> option. Users may prefer
+that such things always be printed.
+
+=item *
+
+The program currently only supports MySQL as the database used for web site
+authentication. This is a limitation of this program, not of Bedrock or
+Apache. We've built in a framework for supporting other databases (see the
+C<--apache-auth-db-type=TYPE> command line option), but it is not currently
+useful to users because only the MySQL default is accepted.
+
+We should add support for at least these other popular databases:
+
+=over 4
+
+=item PostgreSQL
+
+=item Oracle
+
+=back
 
 =item *
 
