@@ -61,6 +61,7 @@ use File::Basename qw( basename dirname );
 use File::Path qw( mkpath );
 use File::Spec::Functions qw( catdir catfile );
 use Hash::Util qw( lock_hash );
+use Term::ReadKey qw( ReadMode );
 
 our $VERSION = '@VERSION@';  # filtered in at build time
 
@@ -91,14 +92,14 @@ my $DO_OVERWRITE_ALL = 0;
 # maybe_create_apache_site_config_file_or_die(); they're duplicated here for
 # ease of programming.
 #
-my $AUTH_HOST     = 'localhost';
-my $AUTH_USER     = undef;
-my $AUTH_PASSWORD = undef;
-my $AUTH_DB       = 'bedrock_site';
-my $AUTH_TABLE    = 'session';
-my $AUTH_USERNAME_FIELD = 'username';
-my $AUTH_PASSWORD_FIELD = 'password';
-my $AUTH_PROMPT   = 'Please Enter Your Site Password';  # Value for Apache 'AuthName' directive
+my  $AUTH_HOST     = 'localhost';
+our $AUTH_USER     = undef;  # package scoped to allow dynamic deref
+my  $AUTH_PASSWORD = undef;
+my  $AUTH_DB       = 'bedrock_site';
+my  $AUTH_TABLE    = 'session';
+my  $AUTH_USERNAME_FIELD = 'username';
+my  $AUTH_PASSWORD_FIELD = 'password';
+my  $AUTH_PROMPT   = 'Please Enter Your Site Credentials';  # Value for Apache 'AuthName' directive
 
 
 my $APACHE_AUTH_DB_TYPE;
@@ -154,6 +155,10 @@ my %REQUIRED_STR_OPTS = (
                          APACHE_SITE_CONF_FNAME => { sopt_name => 'f',
                                                      desc => 'apache site config file'
                                                    },
+
+                         AUTH_USER => { sopt_name => 'u',
+                                        desc => 'auth db username'
+                                      },
                         );
 lock_hash %REQUIRED_STR_OPTS;
 
@@ -165,6 +170,10 @@ Creates the initial scaffolding for a Bedrock project.
 See ${PROG}(1) for all the gory details.
 
 Options with an asterisk (*) are required unless -h or -V is specified.
+
+Options with an exclamation mark (!) are for required data, but if the
+option is not specified on the command line, the program will prompt you for
+the data (this is safer for data such as passwords).
 
 Note that the --nooverwrite-foo options represent the default behavior, but
 are useful for specifying exceptions to the global --overwrite option.
@@ -187,12 +196,46 @@ to not overwrite existing files).
   -O, --overwrite    Overwrite any existing files
 * -s, --site-dir=DIR Create the website in DIR
 
+  -v, --verbose      Print program progress messages on stderr
+  -V, --version      Print on stdout version info and exit
+
   -t, --apache-auth-db-type=TYPE
                      Database used for website authentication is TYPE
                      Valid values for TYPE include:
                         [mysql]
-  -v, --verbose      Print program progress messages on stderr
-  -V, --version      Print on stdout version info and exit
+
+* -u,--apache-auth-db-user=USERNAME
+                     Specify the name of the database user Apache should use
+                     for site authentication
+! -p,--apache-auth-db-pass=PASSWORD
+                     Specify the password for the database user Apache
+                     should use for site authentication
+
+  --apache-auth-db-host=HOSTNAME
+                     Specify the host name which is the home of the
+                     authentication database [localhost]
+
+  --apache-auth-db-database=DATABASE
+                     Specify the name of the database that Apache should use
+                     when performing site authentication [bedrock_site]
+
+  --apache-auth-db-table=TABLENAME
+                     Specify the name of the database table that Apache
+                     should use when performing site authentication
+                     [session]
+
+  --apache-auth-db-username-field=COLUMNNAME
+                     Specify the name of the database table column that
+                     contains user names [username]
+
+  --apache-auth-db-password-field=COLUMNNAME
+                     Specify the name of the database table column that
+                     contains user password [password]
+
+  --apache-auth-db-prompt=STRING
+                     Specify the message that Apache should display when
+                     requesting authentication credentials
+                     [Please Enter Your Site Credentials]
 
   --overwrite-apache-auth-db-include
                      Force overwriting of the specified Apache auth db
@@ -611,7 +654,7 @@ sub maybe_create_index_dot_rock_or_die {
 #
 # @param AUTH_PROMPT - (optional) String to display when prompting for site
 #                      authentication credentials. If not provided, defaults
-#                      to 'Please Entere Your Site Password'.
+#                      to 'Please Enter Your Site Credentials'.
 #
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
@@ -631,7 +674,7 @@ sub maybe_create_apache_site_config_file_or_die {
                   AUTH_USERNAME_FIELD => 'username',
                   AUTH_PASSWORD_FIELD => 'password',
 
-                  AUTH_PROMPT         => 'Please Enter Your Site Password',
+                  AUTH_PROMPT         => 'Please Enter Your Site Credentials',
 
                   # Passed "named" arguments override above defaults
                   @_);
@@ -666,8 +709,8 @@ sub maybe_create_apache_site_config_file_or_die {
     }
 
     # XXX: This will need to be fixed up to support other database types
-    confess( __func, qq{(): Illegal value ("$apache_auth_db_type") for},
-             q{'$apache_auth_db_type' param; must be 'mysql'} )
+    confess( __func, qq{(): Illegal value ("$args{APACHE_AUTH_DB_TYPE}") for},
+             q{ 'APACHE_AUTH_DB_TYPE' param; must be 'mysql'} )
         unless ('mysql' eq $args{APACHE_AUTH_DB_TYPE});
 
     # For convenience, pull frequently referenced params out of %args
@@ -692,13 +735,16 @@ sub maybe_create_apache_site_config_file_or_die {
 
     my $was_error = 0;
 
-    my $apache_auth_db_handle = \*APACHE_SITE_CONF;
+    my $apache_auth_db_handle;
     if ($have_apache_auth_db_include_fname) {
         unless( open($apache_auth_db_handle, ">$apache_auth_db_include_fname")) {
             warn(qq{${PROG} (error): was unable to open file for writing "${apache_auth_db_include_fname}": $!\n});
             $was_error = 1;
-            goto DONE_APACHE_SITE_CONF:
+            goto DONE_APACHE_SITE_CONF;
         }
+    }
+    else {
+        $apache_auth_db_handle = \*APACHE_SITE_CONF;
     }
 
     my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
@@ -809,7 +855,7 @@ EOF
 #
 # So, typically, I would do this:
 #
-# ln -s $WEBSITE_PATH/cgi-bin $WEBSITE_PATH/htdocs/admin/cgi-bin
+# ln -s ${site_dir}/cgi-bin ${site_dir}/htdocs/admin/cgi-bin
 #
 # ...so that when the CGI script runs it contains the environment variable REMOTE_USER.
 # That\'s because that part of the site (the /admin/cgi-bin/bedrock.cgi) WAS under Auth control.
@@ -912,13 +958,26 @@ unless ( GetOptions(
                     'd|domain-name=s' => \$DOMAIN_NAME,
                     'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
                     'i|apache-auth-db-include=s' => \$APACHE_AUTH_DB_INCLUDE_FNAME,
+
+                    't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
+
+                    'apache-auth-db-host=s'   => \$AUTH_HOST,
+                    'u|apache-auth-db-user=s' => \$AUTH_USER,
+                    'p|apache-auth-db-pass=s' => \$AUTH_PASSWORD,
+
+                    'apache-auth-db-database=s' => \$AUTH_DB,
+                    'apache-auth-db-table=s'    => \$AUTH_TABLE,
+                    'apache-auth-db-username-field=s' => \$AUTH_USERNAME_FIELD,
+                    'apache-auth-db-password-field=s' => \$AUTH_PASSWORD_FIELD,
+                    'apache-auth-db-prompt=s'         => \$AUTH_PROMPT,
+
                     'O|overwrite'     => \$DO_OVERWRITE_ALL,
                     'overwrite-index-dot-roc!'   => \$DO_OVERWRITE_INDEX_DOT_ROC,
                     'overwrite-index-dot-rock!'  => \$DO_OVERWRITE_INDEX_DOT_ROCK,
                     'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
                     'overwrite-apache-auth-db-include!' => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
                     's|site-dir=s'    => \$WEBSITE_DIR,
-                    't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
+
                     'V|version'       => \$SHOW_VERSION,
                     'v|verbose'       => \$BE_VERBOSE,
                    ))
@@ -997,6 +1056,15 @@ if (defined $APACHE_AUTH_DB_TYPE) {
 $APACHE_AUTH_DB_TYPE = $APACHE_AUTH_DB_TYPE_DFLT
     unless defined $APACHE_AUTH_DB_TYPE;
 
+unless (defined $AUTH_PASSWORD) {
+    print qq{DB Password for "${AUTH_USER}": };
+    ReadMode 'noecho';
+    $AUTH_PASSWORD=<STDIN>;
+    ReadMode 'restore';
+    chomp $AUTH_PASSWORD;
+    print "\n";
+}
+
 
 # Maybe print a summary of the configured options
 if ($BE_VERBOSE) {
@@ -1009,6 +1077,18 @@ if ($BE_VERBOSE) {
             foreach map { [ $REQUIRED_STR_OPTS{$_}->{desc}, $$_ ] }
                 sort keys %REQUIRED_STR_OPTS;
     }
+
+    if (defined $APACHE_AUTH_DB_INCLUDE_FNAME) {
+        printf STDERR qq{${PROG} (info): apache auth db include: %s\n}, $APACHE_AUTH_DB_INCLUDE_FNAME;
+    }
+
+    # Summarize optional auth db opts
+    printf STDERR qq{${PROG} (info): apache auth db host:     %s\n}, $AUTH_HOST;
+    printf STDERR qq{${PROG} (info): apache auth db database: %s\n}, $AUTH_DB;
+    printf STDERR qq{${PROG} (info): apache auth db table:    %s\n}, $AUTH_TABLE;
+    printf STDERR qq{${PROG} (info): apache auth db username field: %s\n}, $AUTH_USERNAME_FIELD;
+    printf STDERR qq{${PROG} (info): apache auth db password field: %s\n}, $AUTH_PASSWORD_FIELD;
+    printf STDERR qq{${PROG} (info): apache site auth prompt: "%s"\n}, $AUTH_PROMPT;
 
     # Summarize overwrite flags
     $longest_desc = 0;  # reset
@@ -1093,9 +1173,10 @@ C<bedrock-create-site> is part of the C<bedrock> project.
 
 The C<bedrock-create-site> program is a command line program that may be
 used to create the initial scaffolding for a Bedrock project. It's purpose
-is to automate the handful of necessary (but simple) steps. It also provides
-support for some optional (but common) setup steps (such as creating MySQL
-databases).
+is to automate the handful of necessary (but simple) steps needed to start
+working on a project build on Bedrock. It also provides support for some
+optional (but common) setup steps (such as creating a MySQL database to use
+as the backend for site authentication).
 
 There are two primary users of C<bedrock-create-site>: software developers
 who need to setup a Bedrock-enabled site and packagers (of DEBs, RPMs,
@@ -1203,6 +1284,8 @@ B<FIXME>: document option steps
 
 =head1 OPTIONS
 
+=head2 General Options
+
 =over 4
 
 =item -d, --domain-name=NAME
@@ -1227,6 +1310,36 @@ directive from your main Apache config file.
 (Optional) Print help usage message
 
 
+=item -s, --site-dir=DIR
+
+(Required) Create the web site in DIR. If DIR does not exist, it will be
+created (along with any parent directories). For example, if you want your
+site created beneath:
+
+    /var/www/vhosts/example.com
+
+then specify the option like this:
+
+    --site-dir=/var/www/vhosts/example.com
+
+
+=item -V
+
+(Optional) Print the version of the program to stdout and then exit.
+
+
+=item -v
+
+(Optional) Turn on verbose mode. Causes program to emit messages on
+C<stderr> indicating what it is doing.
+
+=back
+
+
+=head2 Apache Site Authentication Options
+
+=over 4
+
 =item -i, --apache-auth-db-include=FILE
 
 (Optional) Write Apache directives related to site authentication to FILE,
@@ -1248,6 +1361,88 @@ database (or database type (see the C<--apache-auth-db-type> option)) and
 control the one that is actually used via a single Apache C<Include>
 directive from your main Apache config file.
 
+
+=item -t, --apache-auth-db-type=TYPE
+
+(Optional) Allows user to specify the type of database used for site
+authentication.
+
+This option controls the Apache directives that will be written to the file
+specified by the C<--site-conf=FILE> option (or rather the file specified by
+the optional C<--apache-auth-db-include=FILE> option, if specified). It also
+affects how the program communicates with the database (if the user
+explicitly requests it).
+
+B<FIXME>: Create pointers to options that control whether or not the program
+will attempt to communicate with a database.
+
+Valid values for TYPE include: "mysql".
+
+See the L</"BUGS"> section below for notes regarding support for databases
+other than MySQL.
+
+
+=item -u, --apache-auth-db-user=USERNAME
+
+(Required) Specify the name of the database user Apache should use for site
+authentication.
+
+
+=item -p,--apache-auth-db-pass=PASSWORD
+
+(Will prompt for, if not provided) Specify the password for the database
+user Apache should use for site authentication.
+
+Note that providing the password on the command line will make it visible to
+all users on the host for the duration of the program run (via the L<ps(1)>
+command or similar). If you do not provide the password on the command line,
+then C<bedrock-create-site> will prompt you for it (this is more secure).
+
+
+=item --apache-auth-db-host=HOSTNAME
+
+(Optional) Specify the host name which is the home of the authentication
+database. If not specified, defaults to C<localhost>.
+
+
+=item --apache-auth-db-database=DATABASE
+
+(Optional) Specify the name of the database that Apache should use when
+performing site authentication. If not specified, defaults to
+C<bedrock_site>.
+
+
+=item --apache-auth-db-table=TABLENAME
+
+(Optional) Specify the name of the database table that Apache should use
+when performing site authentication. If not specified, defaults to
+C<session>.
+
+
+=item --apache-auth-db-username-field=COLUMNNAME
+
+(Optional) Specify the name of the database table column that contains user
+names. If not specified, defaults to C<username>.
+
+
+=item --apache-auth-db-password-field=COLUMNNAME
+
+(Optional) Specify the name of the database table column that contains user
+password. If not specified, defaults to C<password>.
+
+
+=item --apache-auth-db-prompt=STRING
+
+(Optional) Specify the message that Apache should display when requesting
+authentication credentials from users of your site. If not specified,
+defaults to "Please Enter Your Site Credentials".
+
+=back
+
+
+=head2 Overwrite Options
+
+=over 4
 
 =item -O, --overwrite
 
@@ -1307,56 +1502,6 @@ C<--site-conf=FILE> command line option.
 (Optional) Do not overwrite the file specified by the required
 C<--site-conf=FILE> command line option. This is the default behavior,
 unless the global C<--overwrite> option has been specified.
-
-
-=item -s, --site-dir=DIR
-
-(Required) Create the web site in DIR. If DIR does not exist, it will be
-created (along with any parent directories). For example, if you want your
-site created beneath:
-
-    /var/www/vhosts/example.com
-
-then specify the option like this:
-
-    --site-dir=/var/www/vhosts/example.com
-
-
-=item -t, --apache-auth-db-type=TYPE
-
-(Optional) Allows user to specify the type of database used for site
-authentication.
-
-This option controls the Apache directives that will be written to the file
-specified by the C<--site-conf=FILE> option (or rather the file specified by
-the optional C<--apache-auth-db-include=FILE> option, if specified). It also
-affects how the program communicates with the database (if the user
-explicitly requests it).
-
-B<FIXME>: Create pointers to options that control whether or not the program
-will attempt to communicate with a database.
-
-Valid values for TYPE include:
-
-=over 4
-
-=item mysql
-
-=back
-
-See the L</"BUGS"> section below for notes regarding support for databases
-other than MySQL.
-
-
-=item -V
-
-(Optional) Print the version of the program to stdout and then exit.
-
-
-=item -v
-
-(Optional) Turn on verbose mode. Causes program to emit messages on
-C<stderr> indicating what it is doing.
 
 =back
 
@@ -1450,10 +1595,17 @@ pieces of functionality into separate programs that can be invoked to
 achieve specific tasks, and have C<bedrock-create-site> invoke those
 programs.
 
+
+=item *
+
+The generated Apache config files are ugly and barely readable. They need a
+visit from the indentation police.
+
 =back
 
-If you find any others, please report them to the Signature Inforamation
-Solutions, LLC Developers' mailing list:
+If you find any other bugs (or have suggestions for improvements), please
+report them to the Signature Inforamation Solutions, LLC Developers' mailing
+list:
 
   cjldev@signatureinfo.com
 
