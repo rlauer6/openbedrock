@@ -81,10 +81,25 @@ Getopt::Long::Configure(qw( bundling
                             no_require_order
                             permute));
 
-my $BE_VERBOSE = 0;
-my $SHOW_HELP = 0;
+my $BE_VERBOSE   = 0;
+my $SHOW_HELP    = 0;
 my $SHOW_VERSION = 0;
 my $DO_OVERWRITE_ALL = 0;
+
+# Authentication options that end up as values in the generated Apache
+# config. Note that any defaults here are identical to those specified in
+# maybe_create_apache_site_config_file_or_die(); they're duplicated here for
+# ease of programming.
+#
+my $AUTH_HOST     = 'localhost';
+my $AUTH_USER     = undef;
+my $AUTH_PASSWORD = undef;
+my $AUTH_DB       = 'bedrock_site';
+my $AUTH_TABLE    = 'session';
+my $AUTH_USERNAME_FIELD = 'username';
+my $AUTH_PASSWORD_FIELD = 'password';
+my $AUTH_PROMPT   = 'Please Enter Your Site Password';  # Value for Apache 'AuthName' directive
+
 
 my $APACHE_AUTH_DB_TYPE;
 my $APACHE_AUTH_DB_TYPE_DFLT = 'mysql';
@@ -110,10 +125,10 @@ our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
 # exceptions, the user would have to specify /all/ files he wished to
 # overwrite explicitly whenever he wished to prevent overwriting of just one
 # or two.
-our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
-our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;    # dflt; 0 if explicitly disabled; 1 if enabled
-our $DO_OVERWRITE_APACHE_SITE_CONF = -1;  # dflt; 0 if explicitly disabled; 1 if enabled
-our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;
+our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;          # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;          # likewise
+our $DO_OVERWRITE_APACHE_SITE_CONF = -1;        # likewise
+our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;  # likewise
 
 # We keep a collection of all of our fine-grained overwrite opts so we can
 # flip them all on if the user specifies the -O (--overwrite) global
@@ -225,6 +240,43 @@ sub __func {
     # ($package, $filename, $line, $subroutine, $hasargs,
     #  $wantarray, $evaltext, $is_require, $hints, $bitmask) = caller($i);
     return (caller(1))[3];
+}
+
+# Creates all directories (and any needed parent directories) for the names
+# passed as args. Duplicates are allowed, and will be silently ignored.
+#
+# @param @directories - (optional) The names of directories that should be
+#                       created.
+#
+# @return Does not return a meaningful value. Exits program with an error
+#         status on error.
+#
+sub __create_directories_or_die {
+    my (@directories) = @_;
+
+    # prevents attempts to create duplicates which may have been passed;
+    # also prevents spurious "checking..."  messages
+    my $seen = {};
+
+    foreach my $dir ( @directories ) {
+        next if exists $seen->{$dir};  # dup
+        print STDERR qq{${PROG} (info): checking for the existince of directory "$dir"...}
+            if $BE_VERBOSE;
+        if (-d $dir) {
+            print STDERR qq{found.\n};
+        } else {
+            print STDERR qq{not found; creating.\n};
+            eval { mkpath( $dir ) };
+            if ($@) {
+                warn(qq{${PROG} (error): was unable to create dir "${dir}": $@\n});
+                exit 1;
+            }
+            print STDERR qq{${PROG} (info): successfully created dir "$dir"\n}
+                if $BE_VERBOSE;
+        }
+        $seen->{$dir} = 1;
+    }
+    return;
 }
 
 # Checks for the existence of the user-specified site directory. If it does
@@ -494,103 +546,166 @@ sub maybe_create_index_dot_rock_or_die {
 }
 
 # Creates an apache virtual host config file snippet in the file named by
-# $apache_site_conf_path (and $apache_auth_db_include_fname, if
-# provided). Any parent directories will also be created.
+# APACHE_SITE_CONF_PATH (and APACHE_AUTH_DB_INCLUDE_FNAME, if provided). Any
+# parent directories will also be created.
 #
 # This function obeys the following fine-grained overwrite flag:
 #     $DO_OVERWRITE_APACHE_SITE_CONF
 #     $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE
 #
-# @param $apache_site_conf_path - (required) Path where we should write a
-#                                 virtual host config file snippet for the
-#                                 Bedrock site being configured.
+# This function takes an alarming number of "named" parameters (only 4 of
+# which are required). Most of them are simply used as values for various
+# Apache authentication directives in the generated config file(s).
 #
-# @param $site_dir - (required) The web site diretory as specified by the
-#                    user. The value specified will be used to populate
-#                    Apache config file directives in the generated file.
+# @param APACHE_SITE_CONF_PATH - (required) Path where we should write a
+#                                virtual host config file snippet for the
+#                                Bedrock site being configured.
 #
-# @param $apache_auth_db_type - (required) The type of database used by
-#                               Apache for Bedrock site
-#                               authentication. Currently, the only valid
-#                               value is 'mysql', but we plan on supporting
-#                               other databases in the future.
+# @param SITE_DIR - (required) The web site diretory as specified by the
+#                   user. The value specified will be used to populate
+#                   Apache config file directives in the generated file.
 #
-# @param $apache_auth_db_include_fname - (optional) The name of a file into
-#                                        which Apache authentication
-#                                        directives should be written; this
-#                                        file will be included via an Apache
-#                                        'Include' directive from the main
-#                                        config file that we write to
-#                                        $apache_site_conf_path. If undef,
-#                                        such directives will be written
-#                                        inline in the file specified by
-#                                        $apache_site_conf_path.
+# @param APACHE_AUTH_DB_TYPE - (optional) The type of database used by
+#                              Apache for Bedrock site
+#                              authentication. Currently, the only valid
+#                              value is 'mysql', but we plan on supporting
+#                              other databases in the future. Defaults to
+#                              'mysql' if not specified.
+#
+# @param APACHE_AUTH_DB_INCLUDE_FNAME - (optional) The name of a file into
+#                                       which Apache authentication
+#                                       directives should be written; this
+#                                       file will be included via an Apache
+#                                       'Include' directive from the main
+#                                       config file that we write to
+#                                       APACHE_SITE_CONF_PATH. If undef,
+#                                       such directives will be written
+#                                       inline in the file specified by
+#                                       APACHE_SITE_CONF_PATH.
+#
+# @param AUTH_HOST - (optional) The host on which the site authentication
+#                    database. Defaults to 'localhost' if not specified.
+#
+# @param AUTH_USER - (required) The name of the database user to use for
+#                    site authentication.
+#
+# @param AUTH_PASSWORD - (required) The password for AUTH_USER.
+#
+# @param AUTH_DB - (optional) The name of the database to use for
+#                  authentication. If not specified, defaults to
+#                  'bedrock_site'.
+#
+# @param AUTH_TABLE - (optional) The name of the table in AUTH_DB that
+#                     contains the authentication data. If not specified,
+#                     defaults to 'session'.
+#
+# @param AUTH_USERNAME_FIELD - (optional) The name of the column in
+#                              AUTH_TABLE that contains usernames to
+#                              reference during authentication. If not
+#                              specified, defaults to 'username'.
+#
+# @param AUTH_PASSWORD_FIELD - (optional) The name of the column in
+#                              AUTH_TABLE that contains passwords to
+#                              reference during authentication. If not
+#                              specified, defaults to 'password'.
+#
+# @param AUTH_PROMPT - (optional) String to display when prompting for site
+#                      authentication credentials. If not provided, defaults
+#                      to 'Please Entere Your Site Password'.
 #
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
+#
 sub maybe_create_apache_site_config_file_or_die {
-    my ($apache_site_conf_path, $site_dir,
-        $apache_auth_db_type,
-        $apache_auth_db_include_fname) = @_;
-    confess( __func, q{(): required '$apache_site_conf_path' param not provided} )
-        unless defined $apache_site_conf_path;
-    confess( __func, q{(): required '$site_dir' param not provided} )
-        unless defined $site_dir;
-    confess( __func, q{(): required '$apache_auth_db_type' param not provided} )
-        unless defined $apache_auth_db_type;
+    my (%args) = (APACHE_SITE_CONF_PATH => undef,
+                  SITE_DIR              => undef,
+                  APACHE_AUTH_DB_TYPE   => 'mysql',
+                  APACHE_AUTH_DB_INCLUDE_FNAME => undef,
 
-    # This will need to be fixed up to support other database types
+                  AUTH_HOST     => 'localhost',
+                  AUTH_USER     => undef,
+                  AUTH_PASSWORD => undef,
+
+                  AUTH_DB             => 'bedrock_site',
+                  AUTH_TABLE          => 'session',
+                  AUTH_USERNAME_FIELD => 'username',
+                  AUTH_PASSWORD_FIELD => 'password',
+
+                  AUTH_PROMPT         => 'Please Enter Your Site Password',
+
+                  # Passed "named" arguments override above defaults
+                  @_);
+
+    confess( __func, q{(): required 'APACHE_SITE_CONF_PATH' param not provided} )
+        unless (exists $args{APACHE_SITE_CONF_PATH}
+                && defined $args{APACHE_SITE_CONF_PATH});
+    confess( __func, q{(): required 'SITE_DIR' param not provided} )
+        unless (exists $args{SITE_DIR}
+                && defined $args{SITE_DIR});
+    confess( __func, q{(): required 'AUTH_USER' param not provided} )
+        unless (exists $args{AUTH_USER}
+                && defined $args{AUTH_USER});
+    confess( __func, q{(): required 'AUTH_PASSWORD' param not provided} )
+        unless (exists $args{AUTH_PASSWORD}
+                && defined $args{AUTH_PASSWORD});
+
+    # Make sure caller hasn't set to undef any of our optional opts. We're
+    # depending on these having values (except for
+    # APACHE_AUTH_DB_INCLUDE_FNAME).
+    foreach my $optional_arg_key (qw( APACHE_AUTH_DB_TYPE
+                                      AUTH_HOST
+                                      AUTH_DB
+                                      AUTH_TABLE
+                                      AUTH_USERNAME_FIELD
+                                      AUTH_PASSWORD_FIELD
+                                      AUTH_PROMPT ))
+    {
+        confess( __func, qq{(): optional '${optional_arg_key}' param may not be undef or empty} )
+            unless (defined $args{$optional_arg_key}
+                    && length $args{$optional_arg_key});
+    }
+
+    # XXX: This will need to be fixed up to support other database types
     confess( __func, qq{(): Illegal value ("$apache_auth_db_type") for},
              q{'$apache_auth_db_type' param; must be 'mysql'} )
-        unless ('mysql' eq $apache_auth_db_type);
+        unless ('mysql' eq $args{APACHE_AUTH_DB_TYPE});
 
-    my $confdir = dirname( $apache_site_conf_path );
+    # For convenience, pull frequently referenced params out of %args
+    my ($apache_site_conf_path, $site_dir,
+        $apache_auth_db_type,   $apache_auth_db_include_fname) =
+            delete @args{qw( APACHE_SITE_CONF_PATH  SITE_DIR
+                             APACHE_AUTH_DB_TYPE    APACHE_AUTH_DB_INCLUDE_FNAME )};
 
-    print STDERR qq{${PROG} (info): checking for the existince of directory "$confdir"...}
-        if $BE_VERBOSE;
-    if (-d $confdir) {
-        print STDERR qq{found.\n};
-    }
-    else {
-        print STDERR qq{not found; creating.\n};
-        eval { mkpath( $confdir ) };
-        if ($@) {
-            warn(qq{${PROG} (error): was unable to create dir "${confdir}": $@\n});
-            exit 1;
-        }
-        print STDERR qq{${PROG} (info): successfully created dir "$confdir"\n}
-            if $BE_VERBOSE;
-    }
+    my $have_apache_auth_db_include_fname = ((defined $apache_auth_db_include_fname
+                                              && length $apache_auth_db_include_fname) ? 1 : 0);
 
-    if (defined $apache_auth_db_include_fname
-        && length $apache_auth_db_include_fname)
-    {
-        my $confdir = dirname( $apache_site_conf_path );
+    my @confdirs = ( dirname( $apache_site_conf_path ) );
+    push (@confdirs, dirname( $apache_auth_db_include_fname ))
+        if $have_apache_auth_db_include_fname;
 
-        print STDERR qq{${PROG} (info): checking for the existince of directory "$confdir"...}
-            if $BE_VERBOSE;
-        if (-d $confdir) {
-            print STDERR qq{found.\n};
-        }
-        else {
-            print STDERR qq{not found; creating.\n};
-            eval { mkpath( $confdir ) };
-            if ($@) {
-                warn(qq{${PROG} (error): was unable to create dir "${confdir}": $@\n});
-                exit 1;
-            }
-            print STDERR qq{${PROG} (info): successfully created dir "$confdir"\n}
-                if $BE_VERBOSE;
-        }
-    }
+    __create_directories_or_die( @confdirs );
 
     unless( open(APACHE_SITE_CONF, ">$apache_site_conf_path")) {
         warn(qq{${PROG} (error): was unable to open file for writing "${apache_site_conf_path}": $!\n});
         exit 1;
     }
+
+    my $was_error = 0;
+
+    my $apache_auth_db_handle = \*APACHE_SITE_CONF;
+    if ($have_apache_auth_db_include_fname) {
+        unless( open($apache_auth_db_handle, ">$apache_auth_db_include_fname")) {
+            warn(qq{${PROG} (error): was unable to open file for writing "${apache_auth_db_include_fname}": $!\n});
+            $was_error = 1;
+            goto DONE_APACHE_SITE_CONF:
+        }
+    }
+
     my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
+
+    if ($DO_OVERWRITE_APACHE_SITE_CONF) {
 # FIXME: correctly set PERL5LIB, if needed; for now I've temporarily disabled it
-    print APACHE_SITE_CONF <<"EOF";
+        print APACHE_SITE_CONF <<"EOF";
 <VirtualHost *>
 # - Autogenerated via $PROG on: $now
 
@@ -672,12 +787,120 @@ ScriptAlias /admin/cgi-bin ${site_dir}/htdocs/admin/cgi-bin
 # This is where you might want to protect an area of your website
 EOF
 
-# AL.DEBUG working here
+        # If the user provided an external file for the auth directives,
+        # then we'll provide an 'Include' directive to pull it in.
+        if ($have_apache_auth_db_include_fname) {
+            print APACHE_SITE_CONF <<"EOF";
+  Include $apache_auth_db_include_fname
+EOF
+        }
+
+        print APACHE_SITE_CONF <<"EOF";
+# ------------------------------------------------------------------------------------------------
+# This is where it gets a bit tricky...
+#
+# Since we want an environment variable REMOTE_USER to reflect the currently
+# authenticated user of the site, we need to put the actual bedrock processor
+# under a protected part of the site.
+#
+# Apache 2 does however set the environment variable REDIRECT_REMOTE_USER when an
+# action handler not under Auth control is used to process a page on a part of the site that is
+# under Auth control. One might have expected to see REMOTE_USER in the environment.
+#
+# So, typically, I would do this:
+#
+# ln -s $WEBSITE_PATH/cgi-bin $WEBSITE_PATH/htdocs/admin/cgi-bin
+#
+# ...so that when the CGI script runs it contains the environment variable REMOTE_USER.
+# That\'s because that part of the site (the /admin/cgi-bin/bedrock.cgi) WAS under Auth control.
+# If we just has the /cgi-bin/bedrock.cgi script process .rock files in the /admin directory
+# older versions of Apache would not have reflected REMOTE_USER since /cgi-bin/bedrock.cgi itself
+# is not under Auth control.  New versions of Apache reflect REDIRECT_REMOTE_USER under that
+# situation.  Rather than have a page look for both enviornment variables, I prefer the somewhat
+# convoluted approach I have just described.
+# ------------------------------------------------------------------------------------------------
+
+  <FilesMatch "\\.rock\$">
+    Action bedrock_cgi /admin/cgi-bin/bedrock.cgi
+    AddHandler   bedrock_cgi             .rock
+    SetHandler   bedrock_cgi
+    AcceptPathInfo On
+  </FilesMatch>
+
+  <FilesMatch "\\.roc\$">
+    AddType	text/html	.roc
+    SetHandler	perl-script
+    PerlHandler	Apache::Bedrock
+  </FilesMatch>
+
+</Directory>
+</VirtualHost>
+EOF
+    }
+
+    if ( ((!$have_apache_auth_db_include_fname)
+          && $DO_OVERWRITE_APACHE_SITE_CONF)
+
+         || ($have_apache_auth_db_include_fname
+             && $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE))
+    {
+        # Only print the "Autogenerated" message if printing to an external
+        # file (we've already printed such a message above if writing to the
+        # main site config file).
+        if ($have_apache_auth_db_include_fname) {
+            print $apache_auth_db_handle <<"EOF";
+# - Autogenerated via $PROG on: $now
+EOF
+        }
+
+        print $apache_auth_db_handle <<"EOF";
+# - found the line below necessary so Apache 2 does not 
+#   assume it has control of authentication and let's mod_auth_mysql do
+#   its thing...
+
+AuthBasicAuthoritative Off
+
+AuthName "$args{AUTH_PROMPT}"
+
+AuthUserFile /dev/null
+AuthGroupFile /dev/null
+
+AuthMySQL on
+AuthMySQL_Authoritative on
+
+AuthMySQL_DB   $args{AUTH_DB}
+AuthMySQL_Host $args{AUTH_HOST}
+AuthMySQL_User $args{AUTH_USER}
+AuthMySQL_Password $args{AUTH_PASSWORD}
+
+AuthMySQL_Encryption_Types Crypt
+
+AuthMySQL_Password_Table $args{AUTH_TABLE}
+AuthMySQL_Username_Field $args{AUTH_USERNAME_FIELD}
+AuthMySQL_Password_Field $args{AUTH_PASSWORD_FIELD}
+
+AuthType Basic
+require valid-user
+EOF
+    }
+
+  DONE_APACHE_AUTH_DB:
+    # Don't close if apache auth db is an indirect handle to APACHE_SITE_CONF
+    if ($have_apache_auth_db_include_fname) {
+        unless( close($apache_auth_db_handle)) {
+            warn (qq{${PROG} (warning): was error while closing file "$apache_auth_db_include_fname": $!}
+                  . qq{; continuing anyway\n});
+        }
+    }
+
+  DONE_APACHE_SITE_CONF:
     unless( close(APACHE_SITE_CONF)) {
         warn (qq{${PROG} (warning): was error while closing file "$apache_site_conf_path": $!}
               . qq{; continuing anyway\n});
     }
-    return;
+
+    exit 1 if $was_error;
+    return;  # success
 }
 
 # ----------------------------------------------------------------
@@ -739,7 +962,8 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
 $ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_SITE_CONF} = basename( $APACHE_SITE_CONF_FNAME );
 
 # Leave desc as undef if the user did not specify a separate apache auth db
-# include file.
+# include file; undef ensures that the option is omitted from the
+# "overwrite" options summary printed below when in verbose mode.
 $ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE} = basename( $APACHE_AUTH_DB_INCLUDE_FNAME )
     if defined $APACHE_AUTH_DB_INCLUDE_FNAME;
 
@@ -805,11 +1029,22 @@ if ($BE_VERBOSE) {
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
 
-maybe_create_apache_site_config_file_or_die( $APACHE_SITE_CONF_FNAME,
-                                             $WEBSITE_DIR,
-                                             $APACHE_AUTH_DB_TYPE,
-                                             $APACHE_AUTH_DB_INCLUDE_FNAME  # may be undef
-                                           );
+maybe_create_apache_site_config_file_or_die(
+    APACHE_SITE_CONF_PATH => $APACHE_SITE_CONF_FNAME,
+    SITE_DIR => $WEBSITE_DIR,
+    APACHE_AUTH_DB_TYPE          => $APACHE_AUTH_DB_TYPE,
+    APACHE_AUTH_DB_INCLUDE_FNAME => $APACHE_AUTH_DB_INCLUDE_FNAME,  # may be undef
+
+    AUTH_HOST     => $AUTH_HOST,
+    AUTH_USER     => $AUTH_USER,
+    AUTH_PASSWORD => $AUTH_PASSWORD,
+
+    AUTH_DB       => $AUTH_DB,
+    AUTH_TABLE    => $AUTH_TABLE,
+    AUTH_USERNAME_FIELD => $AUTH_USERNAME_FIELD,
+    AUTH_PASSWORD_FIELD => $AUTH_PASSWORD_FIELD,
+
+    AUTH_PROMPT   => $AUTH_PROMPT );
 
 exit 0;
 
