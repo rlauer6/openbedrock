@@ -59,6 +59,7 @@ bedrock-create-site-$(VERSION): Makefile
 bedrock-create-site.1: bedrock-create-site.in
 	"$(POD2MAN)" $< \
 	    --center='Bedrock' \
+	    --name=$$(echo $< | sed -e 's/\.in$$//' | tr '[:lower:]' '[:upper:]') \
 	    --release=$(PACKAGE)-$(VERSION) \
 	    --section=1 > $@
 
