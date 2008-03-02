@@ -62,5 +62,6 @@ bedrock.cgi: Makefile
 bedrock.cgi.1: bedrock.cgi.in
 	"$(POD2MAN)" $< \
 	    --center='Bedrock' \
+	    --name=$$(echo $< | sed -e 's/\.in$$//' | tr '[:lower:]' '[:upper:]') \
 	    --release=$(PACKAGE)-$(VERSION) \
 	    --section=1 > $@
