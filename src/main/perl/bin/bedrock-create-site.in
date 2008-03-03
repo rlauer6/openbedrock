@@ -58,6 +58,7 @@ use Carp qw( confess );
 use Getopt::Long qw( GetOptions );
 
 use File::Basename qw( basename dirname );
+use File::Copy qw( copy );
 use File::Path qw( mkpath );
 use File::Spec::Functions qw( catdir catfile );
 use Hash::Util qw( lock_hash );
@@ -69,8 +70,13 @@ my $PROG = 'bedrock-create-site';
 my $BUILD_DATE = '@BUILD_DATE@';  # filtered in at build time
 my $PROJECT_NAME = '@PACKAGE@';   # filtered in at build time
 
-my $BEDROCK_CGIBIN_DIR = '@cgibindir@';  # filtered in at build time
-my $BEDROCK_HTDOCS_DIR = '@htdocsdir@';  # filtered in at build time
+# We reference some files from the Bedrock distribution that was used to
+# install this instance of the 'bedrock-create-site' program. Using filtered
+# values allows the program to work correctly (and deterministically) even if
+# multiple versions of Bedrock are installed.
+#
+my $BEDROCK_DIST_CGIBIN_DIR = '@cgibindir@';  # filtered in at build time
+my $BEDROCK_DIST_HTDOCS_DIR = '@htdocsdir@';  # filtered in at build time
 
 # Options
 Getopt::Long::Configure(qw( bundling
@@ -129,16 +135,21 @@ our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
 # exceptions, the user would have to specify /all/ files he wished to
 # overwrite explicitly whenever he wished to prevent overwriting of just one
 # or two.
-our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;          # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_ERROR_DOT_ROC  = -1;          # dflt; 0 if explicitly disabled; 1 if enabled
+our $DO_OVERWRITE_ERROR_DOT_ROCK = -1;          # likewise
+our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;          # likewise
 our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;          # likewise
 our $DO_OVERWRITE_APACHE_SITE_CONF = -1;        # likewise
 our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;  # likewise
+
 
 # We keep a collection of all of our fine-grained overwrite opts so we can
 # flip them all on if the user specifies the -O (--overwrite) global
 # overwrite option. This simplifies code because only one option need be
 # checked.
-my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_INDEX_DOT_ROC  => 'index.roc',
+my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_ERROR_DOT_ROC  => 'error.roc',
+                           DO_OVERWRITE_ERROR_DOT_ROCK => 'error.rock',
+                           DO_OVERWRITE_INDEX_DOT_ROC  => 'index.roc',
                            DO_OVERWRITE_INDEX_DOT_ROCK => 'index.rock',
                            DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
                            DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE => undef,  # not yet known; may never be specified
@@ -185,22 +196,24 @@ Likewise, the --overwrite-foo options are useful for overwriting only a few
 specific files, and not overwriting anything else (the default behavior is
 to not overwrite existing files).
 
+General Options:
+
   -h, --help         Display this message and exit
 * -d, --domain-name=NAME
                      Use NAME as the domain name
 * -f, --site-conf=FILE
                      Create Apache site config in FILE
+* -s, --site-dir=DIR Create the website in DIR
+  -v, --verbose      Print program progress messages on stderr
+  -V, --version      Print on stdout version info and exit
+
+
+Apache Site Authentication Options:
 
   -i, --apache-auth-db-include=FILE
                      Write Apache auth db directives to FILE for inclusion
                      from the site-conf file (default is to write auth db
                      directives inline in the site-conf file)
-
-  -O, --overwrite    Overwrite any existing files
-* -s, --site-dir=DIR Create the website in DIR
-
-  -v, --verbose      Print program progress messages on stderr
-  -V, --version      Print on stdout version info and exit
 
   -t, --apache-auth-db-type=TYPE
                      Database used for website authentication is TYPE
@@ -240,12 +253,27 @@ to not overwrite existing files).
                      requesting authentication credentials
                      [Please Enter Your Site Credentials]
 
+
+Overwrite Options:
+
+  -O, --overwrite    Overwrite any existing files
+
   --overwrite-apache-auth-db-include
                      Force overwriting of the specified Apache auth db
                      directives include file
   --nooverwrite-apache-auth-db-include
                      Do not overwrite the specified Apache auth db
                      directives include file
+
+  --overwrite-error-dot-roc
+                     Force overwriting of \$sitedir/htdocs/error.roc
+  --nooverwrite-error-dot-roc
+                     Do not overwrite \$sitedir/htdocs/error.roc
+
+  --overwrite-error-dot-rock
+                     Force overwriting of \$sitedir/htdocs/error.rock
+  --nooverwrite-error-dot-rock
+                     Do not overwrite \$sitedir/htdocs/error.rock
 
   --overwrite-index-dot-roc
                      Force overwriting of \$sitedir/htdocs/index.roc
@@ -586,6 +614,102 @@ sub maybe_create_index_dot_rock_or_die {
             exit 1;
         }
         print STDERR qq{${PROG} (info): successfully created symlink "$indexroc"\n}
+            if $BE_VERBOSE;
+    }
+    return;
+}
+
+# Looks for an 'error.roc' file and an 'error.rock' file (or symlink), and
+# copies the one from the bedrock distribution if not found ('error.rock', if
+# created, will always be a regular file, and 'error.roc', if created, will
+# always be a symlink to 'error.rock').
+#
+# This function obeys these fine-grained overwrite flags:
+#     $DO_OVERWRITE_ERROR_DOT_ROC
+#     $DO_OVERWRITE_ERROR_DOT_ROCK
+#
+# @param $site_dir - (required) The web site diretory as specified by the
+#                    user. The error.rock and error.roc files will live in
+#                    $site_dir/htdocs/
+#
+# @return Does not return a meaningful value. Exits with an error status on
+#         error.
+#
+sub maybe_copy_dist_error_dot_rock_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+
+    my $errorrock = catdir( $site_dir, 'htdocs', 'index.rock');
+    my $errorroc  = catdir( $site_dir, 'htdocs', 'index.roc' );
+
+    my $copy_errorrock = 0;
+    print STDERR qq{${PROG} (info): checking for the existince of file "$errorrock"...}
+        if $BE_VERBOSE;
+    if (-f $errorrock) {
+        if ($DO_OVERWRITE_ERROR_DOT_ROCK) {
+            print STDERR qq{found; will overwrite.\n};
+            $copy_errorrock = 1;
+        }
+        else {
+            print STDERR qq{found; will not overwrite.\n};
+        }
+    }
+    else {
+        print STDERR qq{not found; will copy from Bedrock distribution.\n};
+        $copy_errorrock = 1;
+    }
+
+    if ($copy_errorrock) {
+        my $dist_errorrock = "${BEDROCK_DIST_HTDOCS_DIR}/error.rock";
+        unless (-f $dist_errorrock) {
+            warn(qq{${PROG} (error): Bedrock distribution file does not exist: "${dist_errorrock}": $!\n});
+            exit 1;
+        }
+
+        unless ( copy( $dist_errorrock, $errorrock )) {
+            warn(qq{${PROG} (error): Was unable to copy Bedrock distribution file ("${dist_errorrock}") to "$errorrock": $!\n});
+            exit 1;
+        }
+        print STDERR qq{${PROG} (info): successfully copied file "$errorrock" from Bedrock distribution\n}
+            if $BE_VERBOSE;
+    }
+
+    my $create_errorroc = 0;
+    print STDERR qq{${PROG} (info): checking for the existince of file "$errorroc"...}
+        if $BE_VERBOSE;
+    if (-f $errorroc) {
+        if ($DO_OVERWRITE_ERROR_DOT_ROC) {
+            print STDERR qq{found; will overwrite.\n};
+            $create_errorroc = 1;
+        }
+        else {
+            print STDERR qq{found; will not overwrite.\n};
+        }
+    }
+    else {
+        print STDERR qq{not found; will create.\n};
+        $create_errorroc = 1;
+    }
+
+    if ($create_errorroc) {
+        if (-f $errorroc) {
+            # We need to unlink the symlink file if it already exists;
+            # otherwise our symlink() command will fail.
+            unless( unlink( $errorroc )) {
+                warn(qq{${PROG} (error): was unable to unlink file "${errorroc}": $!\n});
+                exit 1;
+            }
+        }
+        eval {
+            die qq{was unable to create symlink from "$errorroc" to "$errorrock"\n}
+                unless symlink($errorrock, $errorroc); # may throw fatal error
+        };
+        if ($@) {
+            warn(qq{${PROG} (error): was unable to create symlink: $@\n});
+            exit 1;
+        }
+        print STDERR qq{${PROG} (info): successfully created symlink "$errorroc"\n}
             if $BE_VERBOSE;
     }
     return;
@@ -975,6 +1099,8 @@ unless ( GetOptions(
                     'apache-auth-db-prompt=s'         => \$AUTH_PROMPT,
 
                     'O|overwrite'     => \$DO_OVERWRITE_ALL,
+                    'overwrite-error-dot-roc!'   => \$DO_OVERWRITE_ERROR_DOT_ROC,
+                    'overwrite-error-dot-rock!'  => \$DO_OVERWRITE_ERROR_DOT_ROCK,
                     'overwrite-index-dot-roc!'   => \$DO_OVERWRITE_INDEX_DOT_ROC,
                     'overwrite-index-dot-rock!'  => \$DO_OVERWRITE_INDEX_DOT_ROCK,
                     'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
@@ -1113,6 +1239,7 @@ if ($BE_VERBOSE) {
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
+maybe_copy_dist_error_dot_rock_or_die( $WEBSITE_DIR );
 
 maybe_create_apache_site_config_file_or_die(
     APACHE_SITE_CONF_PATH => $APACHE_SITE_CONF_FNAME,
@@ -1260,14 +1387,16 @@ to:
 
 =item *
 
-A file named C<index.rock> will be created in:
+Some "*.rock" files will be created:
 
     $sitedir/htdocs/index.rock
+    $sitedir/htdocs/error.rock
 
-A symlink named C<index.roc> will be created that points to the above
-mentioned C<index.rock> file:
+Symlinks will be made to corresponding "*.roc" files that point to the above
+named "*.rock" files:
 
     $sitedir/htdocs/index.roc
+    $sitedir/htdocs/error.roc
 
 
 =item *
@@ -1473,6 +1602,28 @@ C<--apache-auth-db-include=FILE> command line option. This is the default
 behavior, unless the global C<--overwrite> option has been specified. If no
 C<--apache-auth-db-include=FILE> command line option has been specified,
 then this option has no effect.
+
+
+=item --overwrite-error-dot-roc
+
+(Optional) Force overwriting of C<$sitedir/htdocs/error.roc>
+
+=item --nooverwrite-error-dot-roc
+
+(Optional) Do not overwrite C<$sitedir/htdocs/error.roc>. This is the
+default behavior, unless the global C<--overwrite> option has been
+specified.
+
+
+=item --overwrite-error-dot-rock
+
+(Optional) Force overwriting of C<$sitedir/htdocs/error.rock>
+
+=item --nooverwrite-error-dot-rock
+
+(Optional) Do not overwrite C<$sitedir/htdocs/error.rock>. This is the
+default behavior, unless the global C<--overwrite> option has been
+specified.
 
 
 =item --overwrite-index-dot-roc
