@@ -16,9 +16,6 @@ SMANPAGES =
 GMANPAGES = bedrock.cgi.1
 
 
-cgibindir = $(pkglibdir)/cgi-bin
-
-
 cgibin_SCRIPTS = $(SSCRIPTS) $(GSCRIPTS)
 
 dist_noinst_DATA = $(INPUT_TEMPLATES)
