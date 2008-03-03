@@ -136,6 +136,9 @@ AC_SUBST([pkglibdir])
 cgibindir=${pkglibdir}/cgi-bin
 AC_SUBST([cgibindir], ["\${pkglibdir}/cgi-bin"])
 
+htdocsdir=${datadir}/htdocs
+AC_SUBST([htdocsdir], ["\${datadir}/htdocs"])
+
 
 # FIXME: These are not general, so won't be correct in all
 #        circumstances. They'll work correctly once we have full Perl
@@ -197,6 +200,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]top_srcdir[@],$(top_srcdir),g'"'"' \
   \
   -e '"'"'s,[@]cgibindir[@],$(cgibindir),g'"'"' \
+  -e '"'"'s,[@]htdocsdir[@],$(htdocsdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
   \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
@@ -330,6 +334,7 @@ printf "                  Manual pages: %s\n" "`__poor_mans_expand_file_name man
 printf "\n"
 printf "                     pkglibdir: %s\n" "`__poor_mans_expand_file_name pkglibdir`"
 printf "                     cgibindir: %s\n" "`__poor_mans_expand_file_name cgibindir`"
+printf "                     htdocsdir: %s\n" "`__poor_mans_expand_file_name htdocsdir`"
 printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
