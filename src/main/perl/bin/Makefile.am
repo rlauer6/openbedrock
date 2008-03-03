@@ -68,6 +68,6 @@ install-exec-hook:
 	cd $(DESTDIR)$(bindir) && \
 	    for s in $(bin_SCRIPTS); do \
 	        _t_base="$$(echo "$$s" | sed -e 's/[-]$(VERSION)$$//')" ;\
-	        $(LN_S) "$$s" "$${_t_base}" ;\
+	        rm -f "$${_t_base}" && $(LN_S) "$$s" "$${_t_base}" ;\
 	        test $$? -eq 0 || exit 1    ;\
 	    done
