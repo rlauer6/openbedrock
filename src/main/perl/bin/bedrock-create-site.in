@@ -54,6 +54,7 @@ use warnings;
 # ___REPLACE_ME__BEGIN_BLOCK__CONFIGURED_PERL_INC___
 
 use Carp qw( confess );
+use Cwd  qw( getcwd realpath );
 
 use Getopt::Long qw( GetOptions );
 
@@ -61,7 +62,7 @@ use Fcntl qw( :mode );
 use File::Basename qw( basename dirname );
 use File::Copy qw( copy );
 use File::Path qw( mkpath );
-use File::Spec::Functions qw( catdir catfile );
+use File::Spec::Functions qw( catdir catfile abs2rel );
 use Hash::Util qw( lock_hash );
 use Term::ReadKey qw( ReadMode );
 
@@ -360,6 +361,85 @@ sub __func {
     return (caller(1))[3];
 }
 
+# Abstracts the pattern:
+#
+#     cd somedir;
+#     do whatever;
+#     cd -;
+#
+# Executes $what with the current working directory set to $otherdir. Will
+# always change the current working directory back to the whatever it was when
+# this function was invoked prior to returning.
+#
+# If an exception is thrown while executing $what, that will be re-thrown
+# after changing the directory back to where it was. If /that/ directory
+# change fails, then will die with an error message.
+#
+#
+# Example usage:
+#     my $rtn1 = with_changed_directory('/tmp', q{mkdir 'newdirA'});
+#     my @rtn2 = with_changed_directory('/tmp', q{mkdir 'newdirB'});
+#     my $rtn3 = with_changed_directory('/tmp', sub { mkdir 'newdirC' });
+#     my @rtn4 = with_changed_directory('/tmp', sub { mkdir 'newdirD' });
+#
+#     my $rtn5 = eval {
+#         with_changed_directory('/tmp', sub { die "intentional exception\n" });
+#     };
+#     $@ and print "caught exception: $@\n";
+#
+#
+# @param $otherdir - (required) The directory to change into prior to invoking
+#                    $what. Dies with a fatal error if we are unable to change
+#                    to $otherdir for any reason.
+#
+# @param $what - (optional) The code to invoke. If not a code reference, will
+#                be eval'ed.
+#
+# @return Returns whatever the result of invoking $what returned.
+#
+sub with_changed_directory {
+    my ($otherdir, $what) = @_;
+
+    confess( __func, q{(): required '$otherdir' param not provided} )
+        unless defined $otherdir;
+    confess( __func, q{(): required '$otherdir' param may not be then empty string} )
+        unless length $otherdir;
+
+    return unless defined $what;
+
+    my $origdir = getcwd;
+
+    confess( __func, qq{(): was unable to change to directory "${otherdir}": $!})
+        unless chdir $otherdir;
+
+    my $rtn;
+    my @rtn;
+    my $exception = undef;
+    if ('CODE' eq ref( $what )) {
+        if (wantarray) {
+            @rtn = eval { &$what };
+        }
+        else {
+            $rtn = eval { &$what };
+        }
+    }
+    else {
+        if (wantarray) {
+            @rtn = eval "$what";
+        }
+        else {
+            $rtn = eval "$what";
+        }
+    }
+    $exception = $@ if $@;
+
+    confess( __func, qq{(): was unable to change back to original directory "${origdir}": $!})
+        unless chdir $origdir;
+
+    die $exception if $exception;
+    return (wantarray ? @rtn : $rtn);
+}
+
 # Creates all directories (and any needed parent directories) for the names
 # passed as args. Duplicates are allowed, and will be silently ignored.
 #
@@ -502,9 +582,15 @@ sub __maybe_create_site_subdirs_or_die {
 
     print STDERR "not found; creating\n" if $BE_VERBOSE;
     eval {
+        # CAREFUL: We want to have a file structure like this:
+        #
+        #     ${site_dir}/cgi-bin
+        #     ${site_dir}/htdocs/admin/cgi-bin  ->  ../../cgi-bin
         my $old = catdir( $site_dir, 'cgi-bin' );
         die qq{was unable to create symlinks from "$new" to "$old"\n}
-            unless symlink($old, $new); # may throw fatal error
+            unless (with_changed_directory( dirname( $new ),
+                                            sub { symlink( abs2rel( realpath( $old )),
+                                                           basename($new)) })); # may throw fatal error
     };
     if ($@) {
         warn(qq{${PROG} (error): was unable to create symlink: $@\n});
@@ -730,7 +816,8 @@ sub __maybe_create_named_index_dot_rock_file_or_die {
         }
         eval {
             die qq{was unable to create symlinks from "$indexroc" to "$indexrock"\n}
-                unless symlink($indexrock, $indexroc); # may throw fatal error
+                unless (with_changed_directory( dirname( $indexrock ),
+                                                sub { symlink( basename($indexrock), basename($indexroc)) })); # may throw fatal error
         };
         if ($@) {
             warn(qq{${PROG} (error): was unable to create symlink: $@\n});
@@ -897,7 +984,8 @@ sub maybe_copy_dist_error_dot_rock_or_die {
         }
         eval {
             die qq{was unable to create symlink from "$errorroc" to "$errorrock"\n}
-                unless symlink($errorrock, $errorroc); # may throw fatal error
+                unless (with_changed_directory( dirname( $errorrock),
+                                                sub { symlink( basename($errorrock), basename($errorroc)) })); # may throw fatal error
         };
         if ($@) {
             warn(qq{${PROG} (error): was unable to create symlink: $@\n});
