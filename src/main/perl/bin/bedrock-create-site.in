@@ -75,6 +75,7 @@ my $PROJECT_NAME = '@PACKAGE@';   # filtered in at build time
 # values allows the program to work correctly (and deterministically) even if
 # multiple versions of Bedrock are installed.
 #
+my $BEDROCK_DIST_DATA_DIR   = '@datadir@';    # filtered in at build time
 my $BEDROCK_DIST_CGIBIN_DIR = '@cgibindir@';  # filtered in at build time
 my $BEDROCK_DIST_HTDOCS_DIR = '@htdocsdir@';  # filtered in at build time
 
@@ -128,6 +129,7 @@ my $APACHE_AUTH_DB_INCLUDE_FNAME;
 our $DOMAIN_NAME;
 our $WEBSITE_DIR;
 our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
+our $APACHE_MOD_PERL_STARTUP_CONF_FNAME;  # where to write startup.pl style file
 
 # These vars are also package scoped for dynamic dereferencing. These are
 # the fine-grained overwrite flags, mostly useful for allowing the user to
@@ -142,6 +144,7 @@ our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;          # likewise
 our $DO_OVERWRITE_BEDROCK_DOT_CGI = -1;         # likewise
 our $DO_OVERWRITE_APACHE_SITE_CONF = -1;        # likewise
 our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;  # likewise
+our $DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF = -1;  # likewise
 
 
 # We keep a collection of all of our fine-grained overwrite opts so we can
@@ -154,6 +157,7 @@ my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_ERROR_DOT_ROC   => 'error.roc',
                            DO_OVERWRITE_INDEX_DOT_ROCK  => 'index.rock',
                            DO_OVERWRITE_BEDROCK_DOT_CGI => 'bedrock.cgi',
                            DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
+                           DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF => undef,  # not yet known
                            DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE => undef,  # not yet known; may never be specified
                          );
 
@@ -171,6 +175,10 @@ my %REQUIRED_STR_OPTS = (
                          APACHE_SITE_CONF_FNAME => { sopt_name => 'f',
                                                      desc => 'apache site config file'
                                                    },
+
+                         APACHE_MOD_PERL_STARTUP_CONF_FNAME => { sopt_name => 'm',
+                                                                 desc => 'bedrock mod_perl startup script'
+                                                               },
 
                          AUTH_USER => { sopt_name => 'u',
                                         desc => 'auth db username'
@@ -205,6 +213,10 @@ General Options:
                      Use NAME as the domain name
 * -f, --site-conf=FILE
                      Create Apache site config in FILE
+
+* -m, --apache-mod-perl-startup=FILE
+                     Create Bedrock mod_perl startup script in FILE
+
 * -s, --site-dir=DIR Create the website in DIR
   -v, --verbose      Print program progress messages on stderr
   -V, --version      Print on stdout version info and exit
@@ -266,6 +278,13 @@ Overwrite Options:
   --nooverwrite-apache-auth-db-include
                      Do not overwrite the specified Apache auth db
                      directives include file
+
+  --overwrite-apache-mod-perl-startup
+                     Force overwriting of the specified Bedrock mod_perl
+                     startup file
+  --nooverwrite-apache-mod-perl-startup
+                     Do not overwrite the specified Bedrock mod_perl startup
+                     file
 
   --overwrite-bedrock-dot-cgi
                      Force overwriting of \$sitedir/cgi-bin/bedrock.cgi
@@ -786,7 +805,7 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
 #     $DO_OVERWRITE_APACHE_SITE_CONF
 #     $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE
 #
-# This function takes an alarming number of "named" parameters (only 4 of
+# This function takes an alarming number of "named" parameters (only 5 of
 # which are required). Most of them are simply used as values for various
 # Apache authentication directives in the generated config file(s).
 #
@@ -797,6 +816,10 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
 # @param SITE_DIR - (required) The web site diretory as specified by the
 #                   user. The value specified will be used to populate
 #                   Apache config file directives in the generated file.
+#
+# @param APACHE_MOD_PERL_STARTUP_CONF_PATH - (required) Path where the Bedrock
+#                                            mod_perl startup script will be
+#                                            written.
 #
 # @param APACHE_AUTH_DB_TYPE - (optional) The type of database used by
 #                              Apache for Bedrock site
@@ -852,6 +875,7 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
 sub maybe_create_apache_site_config_file_or_die {
     my (%args) = (APACHE_SITE_CONF_PATH => undef,
                   SITE_DIR              => undef,
+                  APACHE_MOD_PERL_STARTUP_CONF_PATH => undef,
                   APACHE_AUTH_DB_TYPE   => 'mysql',
                   APACHE_AUTH_DB_INCLUDE_FNAME => undef,
 
@@ -875,6 +899,9 @@ sub maybe_create_apache_site_config_file_or_die {
     confess( __func, q{(): required 'SITE_DIR' param not provided} )
         unless (exists $args{SITE_DIR}
                 && defined $args{SITE_DIR});
+    confess( __func, q{(): required 'APACHE_MOD_PERL_STARTUP_CONF_PATH' param not provided} )
+        unless (exists $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}
+                && defined $args{APACHE_MOD_PERL_STARTUP_CONF_PATH});
     confess( __func, q{(): required 'AUTH_USER' param not provided} )
         unless (exists $args{AUTH_USER}
                 && defined $args{AUTH_USER});
@@ -950,7 +977,9 @@ PerlSetEnv CONFIG_PATH ${site_dir}/config
 
 #SetEnv PERL5LIB \$BEDROCK_PERL_DIR
 
-PerlRequire ${site_dir}/conf/startup.pl
+# FIXME: we probably want to be using PerlPostConfigRequire instead of PerlRequire
+#PerlRequire ${site_dir}/conf/startup.pl
+PerlRequire $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}
 
 ServerName www.$DOMAIN_NAME
 ServerAlias $DOMAIN_NAME
@@ -1138,6 +1167,142 @@ EOF
     exit 1 if $was_error;
     return;  # success
 }
+
+# Creates a file suitable for reference via the Apache mod_perl PerlRequire
+# (or related). The file is created in the file named by
+# APACHE_MOD_PERL_STARTUP_CONF_PATH; any parent directories will be created as
+# needed.
+#
+# This function obeys the following fine-grained overwrite flag:
+#     $DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF
+#
+# Note that the created file will contain the contents of the file
+# 'bedrock-perl5-inc-begin-block.snippet' installed as part of the Bedrock
+# distribution. This allows the Perl interpreter to find all of the installed
+# Bedrock perl modules regardless of where they were installed.
+#
+# @param APACHE_MOD_PERL_STARTUP_CONF_PATH - (required) Path where we should
+#                                            write a Perl program file
+#                                            suitable for inclusion via
+#                                            mod_perl's 'PerlRequire'
+#                                            directive (or equivalent).
+#
+# @param SITE_DIR - (required) The web site diretory as specified by the
+#                   user. The value specified will be used to push the
+#                   SITE_DIR/cgi-bin/Perl directory onto Perl's @INC in the
+#                   generated file. FIXME: This is dubious.
+#
+# @return Does not return a meaningful value. Exits with an error status on
+#         error.
+#
+sub maybe_create_apache_mod_perl_startup_dot_pl_file_or_die {
+    my (%args) = (APACHE_MOD_PERL_STARTUP_CONF_PATH => undef,
+                  SITE_DIR => undef,
+                  # Passed "named" arguments override above defaults
+                  @_);
+
+    confess( __func, q{(): required 'APACHE_MOD_PERL_STARTUP_CONF_PATH' param not provided} )
+        unless (exists $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}
+                && defined $args{APACHE_MOD_PERL_STARTUP_CONF_PATH});
+    confess( __func, q{(): required 'SITE_DIR' param not provided} )
+        unless (exists $args{SITE_DIR}
+                && defined $args{SITE_DIR});
+
+
+    print STDERR qq{${PROG} (info): checking for the existince of file "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}"...}
+        if $BE_VERBOSE;
+    if (-f $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}) {
+        if ($DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF) {
+            print STDERR qq{found; will overwrite.\n};
+        }
+        else {
+            print STDERR qq{found; will not overwrite.\n};
+            return;
+        }
+    }
+    else {
+        print STDERR qq{not found; will create.\n};
+    }
+
+    # Create any parent directories, if needed
+    __create_directories_or_die( dirname( $args{APACHE_MOD_PERL_STARTUP_CONF_PATH} ) );
+
+    unless( open(APACHE_MOD_PERL_STARTUP_CONF, ">$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}")) {
+        warn(qq{${PROG} (error): was unable to open file for writing "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}": $!\n});
+        exit 1;
+    }
+    my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
+
+    my $was_error = 0;
+
+# FIXME: I think pushing cgi-bin/Perl onto @INC is a bug. Investigate if this
+#        is really necesary and remove if not
+    print APACHE_MOD_PERL_STARTUP_CONF <<"EOF";
+# - Autogenerated via $PROG on: $now
+
+# - Apache2 mod_perl script to be run during Apache startup by specifying:
+#
+#   PerlRequire $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}
+#
+BEGIN {
+  push \@INC, "$args{SITE_DIR}/cgi-bin/Perl";
+}
+EOF
+
+    # Splice in the contents of the 'bedrock-perl5-inc-begin-block.snippet'
+    # file installed as part of the same Bedrock distribution that installed
+    # this instance of the 'bedrock-create-site' program. This will allow the
+    # perl interpreter to find the Bedrock modules regardless of where they
+    # were installed.
+    my $br_perl5_inc_file = catfile( $BEDROCK_DIST_DATA_DIR, 'bedrock-perl5-inc-begin-block.snippet' );
+    unless (-f $br_perl5_inc_file) {
+        warn(qq{${PROG} (error): Bedrock distribution file does not exist: "${br_perl5_inc_file}": $!\n});
+        $was_error = 1;
+        goto DONE_APACHE_MOD_PERL_STARTUP_CONF;
+    }
+
+    unless( open( BR_PERL5_INC, "<${br_perl5_inc_file}" )) {
+        warn(qq{${PROG} (error): was unable to open file for writing "${br_perl5_inc_file}": $!\n});
+        $was_error = 1;
+        goto DONE_APACHE_MOD_PERL_STARTUP_CONF;
+    }
+
+    {
+        # FIXME: use a specialized tool to grab the needed contents rather
+        #        than doing a manual slurp here. This pulls in the '##'
+        #        comment lines, too, which we don't really want.
+        local $/ = undef;  # localized slurp mode
+        print APACHE_MOD_PERL_STARTUP_CONF <BR_PERL5_INC>;
+    }
+    unless( close( BR_PERL5_INC )) {
+        warn (qq{${PROG} (warning): was error while closing file "$br_perl5_inc_file": $!}
+              . qq{; continuing anyway\n});
+    }
+
+    print APACHE_MOD_PERL_STARTUP_CONF <<"EOF";
+
+use Apache2::compat;
+
+use Bedrock;
+use Text::TagX;
+use POSIX;
+
+# - If you plan on using DBI and most LAMB sites do...uncomment this to get this loaded at startup
+# use DBI;
+
+1;
+EOF
+
+  DONE_APACHE_MOD_PERL_STARTUP_CONF:
+
+    unless( close( APACHE_MOD_PERL_STARTUP_CONF )) {
+        warn (qq{${PROG} (warning): was error while closing file "$args{APACHE_MOD_PERL_STARTUP_CONF}": $!}
+              . qq{; continuing anyway\n});
+    }
+
+    exit 1 if $was_error;
+    return;  # success
+}
 
 # ----------------------------------------------------------------
 # main of program begins here
@@ -1147,7 +1312,8 @@ unless ( GetOptions(
                     'h|help'          => \$SHOW_HELP,
                     'd|domain-name=s' => \$DOMAIN_NAME,
                     'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
-                    'i|apache-auth-db-include=s' => \$APACHE_AUTH_DB_INCLUDE_FNAME,
+                    'm|apache-mod-perl-startup=s' => \$APACHE_MOD_PERL_STARTUP_CONF_FNAME,
+                    'i|apache-auth-db-include=s'  => \$APACHE_AUTH_DB_INCLUDE_FNAME,
 
                     't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
 
@@ -1167,7 +1333,8 @@ unless ( GetOptions(
                     'overwrite-index-dot-roc!'   => \$DO_OVERWRITE_INDEX_DOT_ROC,
                     'overwrite-index-dot-rock!'  => \$DO_OVERWRITE_INDEX_DOT_ROCK,
                     'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
-                    'overwrite-apache-auth-db-include!' => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
+                    'overwrite-apache-auth-db-include!'  => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
+                    'overwrite-apache-mod-perl-startup!' => \$DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF,
                     's|site-dir=s'    => \$WEBSITE_DIR,
 
                     'V|version'       => \$SHOW_VERSION,
@@ -1206,11 +1373,12 @@ foreach my $varname (sort keys %REQUIRED_STR_OPTS) {
     }
 }
 
-# Now that we know the user has specified an Apache site config file name,
-# add it's basename as the value for the corresponding key in
-# ALL_OVERWRITE_OPTS so it can be displayed nicely in the verbose summary
-# code below.
+# Now that we know the user has specified an Apache site config and mod_perl
+# startup file names, add their basenames as the value for the corresponding
+# keys in ALL_OVERWRITE_OPTS so they can be displayed nicely in the verbose
+# summary code below.
 $ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_SITE_CONF} = basename( $APACHE_SITE_CONF_FNAME );
+$ALL_OVERWRITE_OPTS{DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF} = basename( $APACHE_MOD_PERL_STARTUP_CONF_FNAME );
 
 # Leave desc as undef if the user did not specify a separate apache auth db
 # include file; undef ensures that the option is omitted from the
@@ -1308,6 +1476,7 @@ maybe_copy_dist_error_dot_rock_or_die( $WEBSITE_DIR );
 maybe_create_apache_site_config_file_or_die(
     APACHE_SITE_CONF_PATH => $APACHE_SITE_CONF_FNAME,
     SITE_DIR => $WEBSITE_DIR,
+    APACHE_MOD_PERL_STARTUP_CONF_PATH => $APACHE_MOD_PERL_STARTUP_CONF_FNAME,
     APACHE_AUTH_DB_TYPE          => $APACHE_AUTH_DB_TYPE,
     APACHE_AUTH_DB_INCLUDE_FNAME => $APACHE_AUTH_DB_INCLUDE_FNAME,  # may be undef
 
@@ -1321,6 +1490,11 @@ maybe_create_apache_site_config_file_or_die(
     AUTH_PASSWORD_FIELD => $AUTH_PASSWORD_FIELD,
 
     AUTH_PROMPT   => $AUTH_PROMPT );
+
+maybe_create_apache_mod_perl_startup_dot_pl_file_or_die( 
+    APACHE_MOD_PERL_STARTUP_CONF_PATH => $APACHE_MOD_PERL_STARTUP_CONF_FNAME,
+    SITE_DIR => $WEBSITE_DIR
+);
 
 exit 0;
 
@@ -1468,6 +1642,14 @@ named "*.rock" files:
 An Apache 2.0.x style configuration file snippet will be created in the file
 specified by the required C<--site-conf> command line option.
 
+
+=item *
+
+A Perl program file will be written to file specified by the required
+C<--apache-mod-perl-startup=FILE> command line option. This file will be
+referenced in created Apache site conf file via an Apache C<PerlRequire>
+directive.
+
 =back
 
 B<FIXME>: finish documenting steps that are always performed
@@ -1501,6 +1683,11 @@ Note that the created file is not a complete Apache 2.0.x config file (we
 figure you already have one of those which you don't want anyone mucking
 with), but it is suitable for being included via the Apache C<Include>
 directive from your main Apache config file.
+
+
+=item -m, --apache-mod-perl-startup=FILE
+
+(Required) Create Bedrock mod_perl startup script in FILE.
 
 
 =item -h, --help
@@ -1666,6 +1853,18 @@ C<--apache-auth-db-include=FILE> command line option. This is the default
 behavior, unless the global C<--overwrite> option has been specified. If no
 C<--apache-auth-db-include=FILE> command line option has been specified,
 then this option has no effect.
+
+
+=item --overwrite-apache-mod-perl-startup
+
+(Optional) Force overwriting of file specified by the required
+C<--apache-mod-perl-startup=FILE> command line option.
+
+=item --nooverwrite-apache-mod-perl-startup
+
+(Optional) Do not overwrite the file specified by the required
+C<--apache-mod-perl-startup=FILE> command line option. This is the default
+behavior, unless the global C<--overwrite> option has been specified.
 
 
 =item --overwrite-bedrock-dot-cgi
