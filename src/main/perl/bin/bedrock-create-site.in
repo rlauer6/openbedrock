@@ -142,6 +142,8 @@ our $DO_OVERWRITE_ERROR_DOT_ROC  = -1;          # dflt; 0 if explicitly disabled
 our $DO_OVERWRITE_ERROR_DOT_ROCK = -1;          # likewise
 our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;          # likewise
 our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;          # likewise
+our $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC  = -1;    # likewise
+our $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK = -1;    # likewise
 our $DO_OVERWRITE_BEDROCK_DOT_CGI = -1;         # likewise
 our $DO_OVERWRITE_APACHE_SITE_CONF = -1;        # likewise
 our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;  # likewise
@@ -154,8 +156,13 @@ our $DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF = -1;  # likewise
 # checked.
 my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_ERROR_DOT_ROC   => 'error.roc',
                            DO_OVERWRITE_ERROR_DOT_ROCK  => 'error.rock',
+
                            DO_OVERWRITE_INDEX_DOT_ROC   => 'index.roc',
                            DO_OVERWRITE_INDEX_DOT_ROCK  => 'index.rock',
+
+                           DO_OVERWRITE_ADMIN_INDEX_DOT_ROC   => 'index.roc',
+                           DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK  => 'index.rock',
+
                            DO_OVERWRITE_BEDROCK_DOT_CGI => 'bedrock.cgi',
                            DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
                            DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF => undef,  # not yet known
@@ -311,6 +318,16 @@ Overwrite Options:
                      Force overwriting of \$sitedir/htdocs/index.rock
   --nooverwrite-index-dot-rock
                      Do not overwrite \$sitedir/htdocs/index.rock
+
+  --overwrite-admin-index-dot-roc
+                     Force overwriting of \$sitedir/htdocs/admin/index.roc
+  --nooverwrite-admin-index-dot-roc
+                     Do not overwrite \$sitedir/htdocs/admin/index.roc
+
+  --overwrite-admin-index-dot-rock
+                     Force overwriting of \$sitedir/htdocs/admin/index.rock
+  --nooverwrite-admin-index-dot-rock
+                     Do not overwrite \$sitedir/htdocs/admin/index.rock
 
   --overwrite-site-conf
                      Force overwriting of the specified Apache site config file
@@ -518,8 +535,60 @@ sub maybe_create_site_directory_tree_or_die {
     __maybe_create_site_subdirs_or_die( $site_dir );
 }
 
-# Worker function that always creates contents suitable for an index.rock
-# file in the file specified in the $indexrock_path param.
+
+# Worker function that always creates contents suitable for an
+# htdocs/admin/index.rock file in the file specified in the $indexrock_path
+# param.
+#
+# @param $indexrock_path - (required) Path where the file should be written.
+#
+# @return Does not return a meaningful value. Exits with an error status on
+#         error.
+#
+sub __create_admin_index_dot_rock_or_die {
+    my ($indexrock_path) = @_;
+    unless( open(INDEX_DOT_ROCK, ">$indexrock_path")) {
+        warn(qq{${PROG} (error): was unable to open file for writing "${indexrock_path}": $!\n});
+        exit 1;
+    }
+
+    # Note that the Bedrock/img/ path below is aliased in the Apache config
+    # file snippet that we create
+    my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
+    print INDEX_DOT_ROCK <<'EOF';
+<html>
+<body>
+  <h1>Admin Page</h1>
+<if $env.REMOTE_USER>
+  You have authenticated correctly and are logged in as: <b><var $env.REMOTE_USER></b>.
+  <hr>
+  Output from example BLM (BLM::Startup::HelloWorld)
+  Message: <b><var $helloworld.config.message></b>
+<pre>
+<trace --output $helloworld>
+</pre>
+<else>
+  There appears to be something wrong with the website configuration. You should have
+  had a REMOTE_USER environment variable.
+</if>
+  <hr>
+<pre>
+<trace --output \$env>
+</pre>
+</body>
+</html>
+EOF
+    unless( close(INDEX_DOT_ROCK)) {
+        warn (qq{${PROG} (warning): was error while closing file "$indexrock_path": $!}
+              . qq{; continuing anyway\n});
+    }
+    return;
+
+}
+
+
+# Worker function that always creates contents suitable for an
+# htdocs/index.rock file in the file specified in the $indexrock_path param.
 #
 # @param $indexrock_path - (required) Path where the file should be written.
 #
@@ -559,35 +628,62 @@ EOF
     }
     return;
 }
-# Looks for an 'index.roc' file and an 'index.rock' file (or symlink), and
-# creates one or both if not found ('index.rock', if created, will always be
-# a regular file, and 'index.roc', if created, will always be a symlink to
-# 'index.rock').
+
+# Parameterized function for creating these files:
 #
-# This function obeys these fine-grained overwrite flags:
-#     $DO_OVERWRITE_INDEX_DOT_ROC
-#     $DO_OVERWRITE_INDEX_DOT_ROCK
+#     htdocs/index.rock
+#     htdocs/admin/index.rock
 #
-# @param $site_dir - (required) The web site diretory as specified by the
-#                    user. The index.rock and index.roc files will live in
-#                    $site_dir/htdocs/
+# and the corresponding index.roc symlinks to them. This function basically
+# contains the logic for obeying the overwrite flags and logging messages,
+# etc., as appropriate. The function that actually creates the file contents
+# is passed by the caller as a code reference in the $content_creation_func
+# param.
+#
+# @param $indexrock - (required) The path to the file that will contain the
+#                     appropriate index.rock contents (as determined by
+#                     $content_creation_func).
+#
+# @param $indexroc - (required) The path to the file that, by default, will be
+#                    a symlink to the file specified by $indexrock.
+#
+# @param $overwrite_rock_flag - (required) Indicates whether or not we should
+#                               ovewrite the file named by $indexrock if it
+#                               already exists.
+#
+# @param $overwrite_roc_flag - (required) Indicates whether or not we should
+#                              ovewrite the file named by $indexroc if it
+#                              already exists.
+#
+# @param $content_creation_func - (required) reference to a function that
+#                                 should be invoked to create the contents in
+#                                 $indexrock. The function should take a
+#                                 single parameter (the path to write the file
+#                                 contents to) and exit on any error.
 #
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
-sub maybe_create_index_dot_rock_or_die {
-    my ($site_dir) = @_;
-    confess( __func, q{(): required '$site_dir' param not provided} )
-        unless defined $site_dir;
+sub __maybe_create_index_dot_rock_or_die {
+    my ($indexrock,           $indexroc,
+        $overwrite_rock_flag, $overwrite_roc_flag,
+        $content_creation_func) = @_;
 
-    my $indexrock = catdir( $site_dir, 'htdocs', 'index.rock');
-    my $indexroc  = catdir( $site_dir, 'htdocs', 'index.roc' );
+    confess( __func, q{(): required '$indexrock' param not provided} )
+        unless defined $indexrock;
+    confess( __func, q{(): required '$indexroc' param not provided} )
+        unless defined $indexroc;
+
+    # We'll accept undef as false for our $overwrite_roc?_flag params, so no need to validate them
+
+    confess( __func, q{(): required '$content_creation_func' param not provided} )
+        unless defined $content_creation_func;
 
     my $create_indexrock = 0;
     print STDERR qq{${PROG} (info): checking for the existince of file "$indexrock"...}
         if $BE_VERBOSE;
     if (-f $indexrock) {
-        if ($DO_OVERWRITE_INDEX_DOT_ROCK) {
+        if ($overwrite_rock_flag) {
             print STDERR qq{found; will overwrite.\n};
             $create_indexrock = 1;
         }
@@ -601,7 +697,7 @@ sub maybe_create_index_dot_rock_or_die {
     }
 
     if ($create_indexrock) {
-        __create_index_dot_rock_or_die( $indexrock );
+        &$content_creation_func( $indexrock );
         print STDERR qq{${PROG} (info): successfully created file "$indexrock"\n}
             if $BE_VERBOSE;
     }
@@ -610,7 +706,7 @@ sub maybe_create_index_dot_rock_or_die {
     print STDERR qq{${PROG} (info): checking for the existince of file "$indexroc"...}
         if $BE_VERBOSE;
     if (-f $indexroc) {
-        if ($DO_OVERWRITE_INDEX_DOT_ROC) {
+        if ($overwrite_roc_flag) {
             print STDERR qq{found; will overwrite.\n};
             $create_indexroc = 1;
         }
@@ -644,6 +740,77 @@ sub maybe_create_index_dot_rock_or_die {
             if $BE_VERBOSE;
     }
     return;
+}
+
+# Looks for the following files:
+#
+#     ${site_dir}/htdocs/index.roc
+#     ${site_dir}/htdocs/index.rock
+#
+# and creates one or both if not found ('index.rock', if created, will always
+# be a regular file, and 'index.roc', if created, will always be a symlink to
+# 'index.rock').
+#
+# This function obeys these fine-grained overwrite flags:
+#     $DO_OVERWRITE_INDEX_DOT_ROC
+#     $DO_OVERWRITE_INDEX_DOT_ROCK
+#
+# @param $site_dir - (required) The web site diretory as specified by the
+#                    user. The index.rock and index.roc files will live in
+#                    $site_dir/htdocs/
+#
+# @return Does not return a meaningful value. Exits with an error status on
+#         error.
+#
+sub maybe_create_index_dot_rock_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+
+    my $indexrock = catdir( $site_dir, 'htdocs', 'index.rock');
+    my $indexroc  = catdir( $site_dir, 'htdocs', 'index.roc' );
+
+    __maybe_create_named_index_dot_rock_file_or_die(
+        $indexrock, $indexroc,
+        $DO_OVERWRITE_INDEX_DOT_ROCK,
+        $DO_OVERWRITE_INDEX_DOT_ROC,
+        \&__create_index_dot_rock_or_die
+    );
+}
+
+# Looks for the following files:
+#     ${site_dir}/htdocs/admin/index.roc
+#     ${site_dir}/htdocs/admin/index.rock
+#
+# and creates one or both if not found ('index.rock', if created, will always
+# be a regular file, and 'index.roc', if created, will always be a symlink to
+# 'index.rock').
+#
+# This function obeys these fine-grained overwrite flags:
+#     $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC
+#     $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK
+#
+# @param $site_dir - (required) The web site diretory as specified by the
+#                    user. The index.rock and index.roc files will live in
+#                    $site_dir/htdocs/admin/
+#
+# @return Does not return a meaningful value. Exits with an error status on
+#         error.
+#
+sub maybe_create_admin_index_dot_rock_or_die {
+    my ($site_dir) = @_;
+    confess( __func, q{(): required '$site_dir' param not provided} )
+        unless defined $site_dir;
+
+    my $indexrock = catdir( $site_dir, 'htdocs', 'admin', 'index.rock');
+    my $indexroc  = catdir( $site_dir, 'htdocs', 'admin', 'index.roc' );
+
+    __maybe_create_named_index_dot_rock_file_or_die(
+        $indexrock, $indexroc,
+        $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK,
+        $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC,
+        \&__create_admin_index_dot_rock_or_die
+    );
 }
 
 # Looks for an 'error.roc' file and an 'error.rock' file (or symlink), and
@@ -1343,8 +1510,13 @@ unless ( GetOptions(
                     'O|overwrite'     => \$DO_OVERWRITE_ALL,
                     'overwrite-error-dot-roc!'   => \$DO_OVERWRITE_ERROR_DOT_ROC,
                     'overwrite-error-dot-rock!'  => \$DO_OVERWRITE_ERROR_DOT_ROCK,
+
                     'overwrite-index-dot-roc!'   => \$DO_OVERWRITE_INDEX_DOT_ROC,
                     'overwrite-index-dot-rock!'  => \$DO_OVERWRITE_INDEX_DOT_ROCK,
+
+                    'overwrite-admin-index-dot-roc!'   => \$DO_OVERWRITE_ADMIN_INDEX_DOT_ROC,
+                    'overwrite-admin-index-dot-rock!'  => \$DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK,
+
                     'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
                     'overwrite-apache-auth-db-include!'  => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
                     'overwrite-apache-mod-perl-startup!' => \$DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF,
@@ -1482,7 +1654,10 @@ if ($BE_VERBOSE) {
 }
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
+
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
+maybe_create_admin_index_dot_rock_or_die( $WEBSITE_DIR );
+
 maybe_copy_dist_bedrock_dot_cgi_or_die( $WEBSITE_DIR );
 maybe_copy_dist_error_dot_rock_or_die( $WEBSITE_DIR );
 
@@ -1666,12 +1841,17 @@ to:
 Some "*.rock" files will be created:
 
     $sitedir/htdocs/index.rock
+    $sitedir/htdocs/admin/index.rock
+
     $sitedir/htdocs/error.rock
+
 
 Symlinks will be made to corresponding "*.roc" files that point to the above
 named "*.rock" files:
 
     $sitedir/htdocs/index.roc
+    $sitedir/htdocs/admin/index.roc
+
     $sitedir/htdocs/error.roc
 
 
@@ -1960,6 +2140,26 @@ default behavior, unless the global C<--overwrite> option has been
 specified.
 
 
+=item --overwrite-admin-index-dot-roc
+
+(Optional) Force overwriting of C<$sitedir/htdocs/admin/index.roc>
+
+=item --nooverwrite-admin-index-dot-roc
+
+(Optional) Do not overwrite C<$sitedir/htdocs/admin/index.roc>. This is the
+default behavior, unless the global C<--overwrite> option has been specified.
+
+
+=item --overwrite-admin-index-dot-rock
+
+(Optional) Force overwriting of C<$sitedir/htdocs/admin/index.rock>
+
+=item --nooverwrite-admin-index-dot-rock
+
+(Optional) Do not overwrite C<$sitedir/htdocs/admin/index.rock>. This is the
+default behavior, unless the global C<--overwrite> option has been specified.
+
+
 =item --overwrite-site-conf
 
 (Optional) Force overwriting of file specified by the required
@@ -2093,6 +2293,8 @@ programs that enable and disable apache web sites. At the time of writing
 =item C</usr/sbin/a2ensite>
 
 =item C</usr/sbin/a2dissite>
+
+=back
 
 
 =head1 AUTHORS
