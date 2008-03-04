@@ -145,8 +145,10 @@ our $DO_OVERWRITE_INDEX_DOT_ROC  = -1;          # likewise
 our $DO_OVERWRITE_INDEX_DOT_ROCK = -1;          # likewise
 our $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC  = -1;    # likewise
 our $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK = -1;    # likewise
-our $DO_OVERWRITE_BEDROCK_DOT_CGI = -1;         # likewise
-our $DO_OVERWRITE_APACHE_SITE_CONF = -1;        # likewise
+our $DO_OVERWRITE_BEDROCK_DOT_CGI   = -1;       # likewise
+our $DO_OVERWRITE_TAGX_DOT_XML      = -1;       # likewise
+our $DO_OVERWRITE_TAGX_APPS_DOT_XML = -1;       # likewise
+our $DO_OVERWRITE_APACHE_SITE_CONF  = -1;       # likewise
 our $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE = -1;  # likewise
 our $DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF = -1;  # likewise
 
@@ -165,6 +167,10 @@ my %ALL_OVERWRITE_OPTS = ( DO_OVERWRITE_ERROR_DOT_ROC   => 'error.roc',
                            DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK  => 'index.rock',
 
                            DO_OVERWRITE_BEDROCK_DOT_CGI => 'bedrock.cgi',
+
+                           DO_OVERWRITE_TAGX_DOT_XML      => 'tagx.xml',
+                           DO_OVERWRITE_TAGX_APPS_DOT_XML => 'tagx_apps.xml',
+
                            DO_OVERWRITE_APACHE_SITE_CONF => undef,  # not yet known
                            DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF => undef,  # not yet known
                            DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE => undef,  # not yet known; may never be specified
@@ -335,6 +341,15 @@ Overwrite Options:
   --nooverwrite-site-conf
                      Do not overwrite the specified Apache site config file
 
+  --overwrite-tagx-dot-xml
+                     Force overwriting of \$sitedir/config/tagx.xml
+  --nooverwrite-tagx-dot-xml
+                     Do not overwrite \$sitedir/config/tagx.xml
+
+  --overwrite-tagx-apps-dot-xml
+                     Force overwriting of \$sitedir/config/tagx_apps.xml
+  --nooverwrite-tagx-apps-dot-xml
+                     Do not overwrite \$sitedir/config/tagx_apps.xml
 EOH
 }
 
@@ -715,63 +730,87 @@ EOF
     return;
 }
 
-# Parameterized function for creating these files:
+# Parameterized function for creating an arbitrary file, respecting the
+# overwrite flag(s). Prints "checking for the existence of..." messages, etc,
+# when program is in verbose mode to report progress and processing decisions.
 #
-#     htdocs/index.rock
-#     htdocs/admin/index.rock
+# In the simplest case, creates the file whose path is specified in the
+# MAINFILE param unless OVERWRITE_MAINFILE_FLAG is false.
 #
-# and the corresponding index.roc symlinks to them. This function basically
-# contains the logic for obeying the overwrite flags and logging messages,
-# etc., as appropriate. The function that actually creates the file contents
-# is passed by the caller as a code reference in the $content_creation_func
-# param.
+# If the SYMLINKFILE arg is defined, it is interpreted as the name of a
+# symlink that should be created in dirname(MAINFILE) to MAINFILE. This
+# capability is primarily included here to support creation of Bedrock *.roc
+# symlinks to corresponding *.rock files.
 #
-# @param $indexrock - (required) The path to the file that will contain the
-#                     appropriate index.rock contents (as determined by
-#                     $content_creation_func).
+# This function basically contains the logic for obeying the overwrite flags
+# and logging messages, etc., as appropriate. The function that actually
+# creates the file contents is passed by the caller as a code reference in the
+# CONTENT_CREATION_FUNC param.
 #
-# @param $indexroc - (required) The path to the file that, by default, will be
-#                    a symlink to the file specified by $indexrock.
+# @param MAINFILE - (required) The path to the file that will contain the
+#                   contents created by CONTENT_CREATION_FUNC.
 #
-# @param $overwrite_rock_flag - (required) Indicates whether or not we should
-#                               ovewrite the file named by $indexrock if it
-#                               already exists.
+# @param OVERWRITE_MAINFILE_FLAG - (required) Indicates whether or not we
+#                                  should ovewrite the file named by MAINFILE
+#                                  if it already exists.
 #
-# @param $overwrite_roc_flag - (required) Indicates whether or not we should
-#                              ovewrite the file named by $indexroc if it
-#                              already exists.
+# @param CONTENT_CREATION_FUNC - (required) reference to a function that
+#                                should be invoked to create the contents in
+#                                MAINFILE. The function should take a single
+#                                parameter (the path to write the file
+#                                contents to) and exit the program on any
+#                                error.
 #
-# @param $content_creation_func - (required) reference to a function that
-#                                 should be invoked to create the contents in
-#                                 $indexrock. The function should take a
-#                                 single parameter (the path to write the file
-#                                 contents to) and exit on any error.
+# @param SYMLINKFILE - (optional) The path to the file that, by default, will
+#                      be a symlink to the file specified by MAINFILE. The
+#                      link will be created in the same directory a MAINFILE,
+#                      and will be a simple relative link. If not defined,
+#                      then no symlink will be created.
+#
+#
+# @param OVERWRITE_SYMLINKFILE_FLAG - (optional) Indicates whether or not we
+#                                     should ovewrite the file named by
+#                                     SYMLINKFILE if it already exists. Only
+#                                     has an effect if the SYMLINKFILE param
+#                                     is defined.
 #
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
-sub __maybe_create_named_index_dot_rock_file_or_die {
-    my ($indexrock,           $indexroc,
-        $overwrite_rock_flag, $overwrite_roc_flag,
-        $content_creation_func) = @_;
+sub __maybe_create_named_file_or_die {
+    my %args = ( MAINFILE => undef,                    # required
+                 OVERWRITE_MAINFILE_FLAG => undef,     # required
 
-    confess( __func, q{(): required '$indexrock' param not provided} )
-        unless defined $indexrock;
-    confess( __func, q{(): required '$indexroc' param not provided} )
-        unless defined $indexroc;
+                 CONTENT_CREATION_FUNC => undef,       # required
 
-    # We'll accept undef as false for our $overwrite_roc?_flag params, so no need to validate them
+                 SYMLINKFILE => undef,                 # optional
+                 OVERWRITE_SYMLINKFILE_FLAG => undef,  # optional
 
-    confess( __func, q{(): required '$content_creation_func' param not provided} )
-        unless defined $content_creation_func;
+                 # caller-provided "named" params override above defaults
+                 @_
+               );
 
-    my $create_indexrock = 0;
-    print STDERR qq{${PROG} (info): checking for the existince of file "$indexrock"...}
+    confess( __func, q{(): required 'MAINFILE' param not provided} )
+        unless defined $args{MAINFILE};
+    confess( __func, q{(): required 'CONTENT_CREATION_FUNC' param not provided} )
+        unless defined $args{CONTENT_CREATION_FUNC};
+    # We'll accept undef as false for our OVERWRITE_*_FLAG params, so no need
+    # to validate them.
+
+    # For convenience...
+    my ( $mainfile,    $overwrite_mainfile_flag,
+         $symlinkfile, $overwrite_symlinkfile_flag,
+         $content_creation_func ) = ( $args{MAINFILE},    $args{OVERWRITE_MAINFILE_FLAG},
+                                      $args{SYMLINKFILE}, $args{OVERWRITE_SYMLINKFILE_FLAG},
+                                      $args{CONTENT_CREATION_FUNC} );
+
+    my $create_mainfile = 0;
+    print STDERR qq{${PROG} (info): checking for the existince of file "$mainfile"...}
         if $BE_VERBOSE;
-    if (-f $indexrock) {
-        if ($overwrite_rock_flag) {
+    if (-f $mainfile) {
+        if ($overwrite_mainfile_flag) {
             print STDERR qq{found; will overwrite.\n};
-            $create_indexrock = 1;
+            $create_mainfile = 1;
         }
         else {
             print STDERR qq{found; will not overwrite.\n};
@@ -779,22 +818,22 @@ sub __maybe_create_named_index_dot_rock_file_or_die {
     }
     else {
         print STDERR qq{not found; will create.\n};
-        $create_indexrock = 1;
+        $create_mainfile = 1;
     }
 
-    if ($create_indexrock) {
-        &$content_creation_func( $indexrock );
-        print STDERR qq{${PROG} (info): successfully created file "$indexrock"\n}
+    if ($create_mainfile) {
+        &$content_creation_func( $mainfile );
+        print STDERR qq{${PROG} (info): successfully created file "$mainfile"\n}
             if $BE_VERBOSE;
     }
 
-    my $create_indexroc = 0;
-    print STDERR qq{${PROG} (info): checking for the existince of file "$indexroc"...}
+    my $create_symlinkfile = 0;
+    print STDERR qq{${PROG} (info): checking for the existince of file "$symlinkfile"...}
         if $BE_VERBOSE;
-    if (-f $indexroc) {
-        if ($overwrite_roc_flag) {
+    if (-f $symlinkfile) {
+        if ($overwrite_symlinkfile_flag) {
             print STDERR qq{found; will overwrite.\n};
-            $create_indexroc = 1;
+            $create_symlinkfile = 1;
         }
         else {
             print STDERR qq{found; will not overwrite.\n};
@@ -802,28 +841,28 @@ sub __maybe_create_named_index_dot_rock_file_or_die {
     }
     else {
         print STDERR qq{not found; will create.\n};
-        $create_indexroc = 1;
+        $create_symlinkfile = 1;
     }
 
-    if ($create_indexroc) {
-        if (-f $indexroc) {
+    if ($create_symlinkfile) {
+        if (-f $symlinkfile) {
             # We need to unlink the symlink file if it already exists;
             # otherwise our symlink() command will fail.
-            unless( unlink( $indexroc )) {
-                warn(qq{${PROG} (error): was unable to unlink file "${indexroc}": $!\n});
+            unless( unlink( $symlinkfile )) {
+                warn(qq{${PROG} (error): was unable to unlink file "$symlinkfile": $!\n});
                 exit 1;
             }
         }
         eval {
-            die qq{was unable to create symlinks from "$indexroc" to "$indexrock": $!\n}
-                unless (with_changed_directory( dirname( $indexrock ),
-                                                sub { symlink( basename($indexrock), basename($indexroc)) })); # may throw fatal error
+            die qq{was unable to create symlinks from "$symlinkfile" to "$mainfile": $!\n}
+                unless (with_changed_directory( dirname( $mainfile ),
+                                                sub { symlink( basename($mainfile), basename($symlinkfile)) })); # may throw fatal error
         };
         if ($@) {
             warn(qq{${PROG} (error): was unable to create symlink: $@\n});
             exit 1;
         }
-        print STDERR qq{${PROG} (info): successfully created symlink "$indexroc"\n}
+        print STDERR qq{${PROG} (info): successfully created symlink "$symlinkfile"\n}
             if $BE_VERBOSE;
     }
     return;
@@ -857,11 +896,10 @@ sub maybe_create_index_dot_rock_or_die {
     my $indexrock = catdir( $site_dir, 'htdocs', 'index.rock');
     my $indexroc  = catdir( $site_dir, 'htdocs', 'index.roc' );
 
-    __maybe_create_named_index_dot_rock_file_or_die(
-        $indexrock, $indexroc,
-        $DO_OVERWRITE_INDEX_DOT_ROCK,
-        $DO_OVERWRITE_INDEX_DOT_ROC,
-        \&__create_index_dot_rock_or_die
+    __maybe_create_named_file_or_die(
+        MAINFILE    => $indexrock,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_INDEX_DOT_ROCK,
+        SYMLINKFILE => $indexroc,   OVERWRITE_SYMLINKFILE_FLAG => $DO_OVERWRITE_INDEX_DOT_ROC,
+        CONTENT_CREATION_FUNC => \&__create_index_dot_rock_or_die
     );
 }
 
@@ -892,11 +930,10 @@ sub maybe_create_admin_index_dot_rock_or_die {
     my $indexrock = catdir( $site_dir, 'htdocs', 'admin', 'index.rock');
     my $indexroc  = catdir( $site_dir, 'htdocs', 'admin', 'index.roc' );
 
-    __maybe_create_named_index_dot_rock_file_or_die(
-        $indexrock, $indexroc,
-        $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK,
-        $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC,
-        \&__create_admin_index_dot_rock_or_die
+    __maybe_create_named_file_or_die(
+        MAINFILE    => $indexrock,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK,
+        SYMLINKFILE => $indexroc,   OVERWRITE_SYMLINKFILE_FLAG => $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC,
+        CONTENT_CREATION_FUNC => \&__create_admin_index_dot_rock_or_die
     );
 }
 
@@ -1608,6 +1645,10 @@ unless ( GetOptions(
                     'overwrite-site-conf!'       => \$DO_OVERWRITE_APACHE_SITE_CONF,
                     'overwrite-apache-auth-db-include!'  => \$DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE,
                     'overwrite-apache-mod-perl-startup!' => \$DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF,
+
+                    'overwrite-tagx-dot-xml!'      => \$DO_OVERWRITE_TAGX_DOT_XML,
+                    'overwrite-tagx-apps-dot-xml!' => \$DO_OVERWRITE_TAGX_APPS_DOT_XML,
+
                     's|site-dir=s'    => \$WEBSITE_DIR,
 
                     'V|version'       => \$SHOW_VERSION,
@@ -1742,6 +1783,9 @@ if ($BE_VERBOSE) {
 }
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
+
+# maybe_create_tagx_dot_xml_or_die( $WEBSITE_DIR );
+# maybe_create_tagx_apps_dot_xml_or_die( $WEBSITE_DIR );
 
 maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
 maybe_create_admin_index_dot_rock_or_die( $WEBSITE_DIR );
@@ -1914,10 +1958,21 @@ to:
 
     $sitedir/cgi-bin
 
+=item *
+
+Two Bedrock configuration files will be created:
+
+    $sitedir/config/tagx.xml
+    $sitedir/config/tagx_apps.xml
+
+The C<tagx.xml> file is the primary Bedrock configuration file. The
+C<tagx_apps.xml> file is for configuration items specific to your application;
+this program creates a minimal (basically empty) version of this file.
+
 
 =item *
 
-Some "*.rock" files will be created:
+Some Bedrock "*.rock" files will be created:
 
     $sitedir/htdocs/index.rock
     $sitedir/htdocs/admin/index.rock
@@ -2250,6 +2305,26 @@ C<--site-conf=FILE> command line option.
 C<--site-conf=FILE> command line option. This is the default behavior,
 unless the global C<--overwrite> option has been specified.
 
+
+=item --overwrite-tagx-dot-xml
+
+(Optional) Force overwriting of C<$sitedir/config/tagx.xml>
+
+=item --nooverwrite-tagx-dot-xml
+
+(Optional) Do not overwrite C<$sitedir/config/tagx.xml>. This is the default
+behavior, unless the global C<--overwrite> option has been specified.
+
+
+=item --overwrite-tagx-apps-dot-xml
+
+(Optional) Force overwriting of C<$sitedir/config/tagx_apps.xml>
+
+=item --nooverwrite-tagx-apps-dot-xml
+
+(Optional) Do not overwrite C<$sitedir/config/tagx_apps.xml>. This is the
+default behavior, unless the global C<--overwrite> option has been specified.
+
 =back
 
 
@@ -2301,6 +2376,14 @@ assumes that you know what you are doing.
 =head1 BUGS
 
 =over 4
+
+=item *
+
+The site authentication capabilities are currently non-optional. While it's
+possible to run a Bedrock site that does not require authentication, the sites
+where it is currently deployed all require authentication of some
+type. Nevertheless, we should probably make the program more general to allow
+creation of simple sites that have no authentication requirements.
 
 =item *
 
