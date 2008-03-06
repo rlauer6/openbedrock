@@ -1738,34 +1738,84 @@ sub maybe_create_apache_site_config_file_or_die {
     my $have_apache_auth_db_include_fname = ((defined $apache_auth_db_include_fname
                                               && length $apache_auth_db_include_fname) ? 1 : 0);
 
-    my @confdirs = ( dirname( $apache_site_conf_path ) );
-    push (@confdirs, dirname( $apache_auth_db_include_fname ))
-        if $have_apache_auth_db_include_fname;
+    my $do_write_apache_site_conf_file = 0;
+    my $do_write_apache_auth_db_file = 0;
+    print STDERR qq{${PROG} (info): checking for the existince of file "$apache_site_conf_path"...}
+        if $BE_VERBOSE;
+    if (-f $apache_site_conf_path) {
+        if ($DO_OVERWRITE_APACHE_SITE_CONF) {
+            print STDERR qq{found; will overwrite.\n} if $BE_VERBOSE;
+            $do_write_apache_site_conf_file = 1;
+        }
+        else {
+            print STDERR qq{found; will not overwrite.\n} if $BE_VERBOSE;
+        }
+    }
+    else {
+        print STDERR qq{not found; will create.\n} if $BE_VERBOSE;
+        $do_write_apache_site_conf_file = 1;
+    }
+
+    if ($have_apache_auth_db_include_fname) {
+        print STDERR qq{${PROG} (info): checking for the existince of file "$apache_auth_db_include_fname"...}
+            if $BE_VERBOSE;
+        if (-f $apache_auth_db_include_fname) {
+            if ($DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE) {
+                print STDERR qq{found; will overwrite.\n} if $BE_VERBOSE;
+                $do_write_apache_auth_db_file = 1;
+            }
+            else {
+                print STDERR qq{found; will not overwrite.\n} if $BE_VERBOSE;
+            }
+        }
+        else {
+            print STDERR qq{not found; will create.\n} if $BE_VERBOSE;
+            $do_write_apache_auth_db_file = 1;
+        }
+    }
+
+    return unless ($do_write_apache_site_conf_file || $do_write_apache_auth_db_file);
+
+    my @confdirs = ();
+    push (@confdirs, dirname( $apache_site_conf_path )) if $do_write_apache_site_conf_file;
+    push (@confdirs, dirname( $apache_auth_db_include_fname )) if $do_write_apache_auth_db_file;
 
     __create_directories_or_die( @confdirs );
 
-    unless( open(APACHE_SITE_CONF, ">$apache_site_conf_path")) {
-        warn(qq{${PROG} (error): was unable to open file for writing "${apache_site_conf_path}": $!\n});
-        exit 1;
+    if ($do_write_apache_site_conf_file) {
+        unless( open(APACHE_SITE_CONF, ">$apache_site_conf_path")) {
+            warn(qq{${PROG} (error): was unable to open file for writing "${apache_site_conf_path}": $!\n});
+            exit 1;
+        }
     }
 
     my $was_error = 0;
 
     my $apache_auth_db_handle;
     if ($have_apache_auth_db_include_fname) {
-        unless( open($apache_auth_db_handle, ">$apache_auth_db_include_fname")) {
-            warn(qq{${PROG} (error): was unable to open file for writing "${apache_auth_db_include_fname}": $!\n});
-            $was_error = 1;
-            goto DONE_APACHE_SITE_CONF;
+        if ($do_write_apache_auth_db_file) {
+            unless( open($apache_auth_db_handle, ">$apache_auth_db_include_fname")) {
+                warn(qq{${PROG} (error): was unable to open file for writing "${apache_auth_db_include_fname}": $!\n});
+                $was_error = 1;
+                goto DONE_APACHE_SITE_CONF;
+            }
         }
     }
-    else {
+    elsif ($do_write_apache_site_conf_file) {
         $apache_auth_db_handle = \*APACHE_SITE_CONF;
     }
+    else {
+        # Internal consistency check
+        confess( __func, q{(): BUG: this statement should be unreachable} );
+    }
+
+    # Note that $apache_auth_db_handle will be undef if we have
+    # $have_apache_auth_db_include_fname, but
+    # $do_overwrite_apache_auth_db_include is false.
 
     my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
 
-    if ($DO_OVERWRITE_APACHE_SITE_CONF) {
+    if ($do_write_apache_site_conf_file) {
 # FIXME: correctly set PERL5LIB, if needed; for now I've temporarily disabled it
         print APACHE_SITE_CONF <<"EOF";
 <VirtualHost *>
@@ -1851,12 +1901,15 @@ ScriptAlias /admin/cgi-bin ${site_dir}/htdocs/admin/cgi-bin
 # This is where you might want to protect an area of your website
 EOF
 
-        # If the user provided an external file for the auth directives,
-        # then we'll provide an 'Include' directive to pull it in.
-        if ($have_apache_auth_db_include_fname) {
-            print APACHE_SITE_CONF <<"EOF";
+        if ($do_write_apache_auth_db_file) {
+            # If the user provided an external file for the auth directives,
+            # then we'll provide an 'Include' directive to pull it in.
+            if ($have_apache_auth_db_include_fname) {
+                print APACHE_SITE_CONF <<"EOF";
   Include $apache_auth_db_include_fname
+
 EOF
+            }
         }
 
         print APACHE_SITE_CONF <<"EOF";
@@ -1903,10 +1956,10 @@ EOF
     }
 
     if ( ((!$have_apache_auth_db_include_fname)
-          && $DO_OVERWRITE_APACHE_SITE_CONF)
+          && $do_write_apache_site_conf_file)
 
          || ($have_apache_auth_db_include_fname
-             && $DO_OVERWRITE_APACHE_AUTH_DB_INCLUDE))
+             && $do_write_apache_auth_db_file))
     {
         # Only print the "Autogenerated" message if printing to an external
         # file (we've already printed such a message above if writing to the
@@ -1950,7 +2003,9 @@ EOF
 
   DONE_APACHE_AUTH_DB:
     # Don't close if apache auth db is an indirect handle to APACHE_SITE_CONF
-    if ($have_apache_auth_db_include_fname) {
+    if ($have_apache_auth_db_include_fname
+        && $do_write_apache_auth_db_file)  # was only opened if we're supposed to write it
+    {
         unless( close($apache_auth_db_handle)) {
             warn (qq{${PROG} (warning): was error while closing file "$apache_auth_db_include_fname": $!}
                   . qq{; continuing anyway\n});
@@ -1958,9 +2013,11 @@ EOF
     }
 
   DONE_APACHE_SITE_CONF:
-    unless( close(APACHE_SITE_CONF)) {
-        warn (qq{${PROG} (warning): was error while closing file "$apache_site_conf_path": $!}
-              . qq{; continuing anyway\n});
+    if ($do_write_apache_site_conf_file) {  # was only opened if we're supposed to write it
+        unless( close(APACHE_SITE_CONF)) {
+            warn (qq{${PROG} (warning): was error while closing file "$apache_site_conf_path": $!}
+                  . qq{; continuing anyway\n});
+        }
     }
 
     exit 1 if $was_error;
