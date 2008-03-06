@@ -298,6 +298,7 @@ AC_CONFIG_FILES(
         [src/main/perl/lib/Makefile]
         [src/main/resources/Makefile]
         [src/main/resources/htdocs/Makefile]
+        [src/main/resources/htdocs/img/Makefile]
 )
 
 dnl Actually output the declared files
