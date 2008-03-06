@@ -100,6 +100,13 @@ my $SHOW_HELP    = 0;
 my $SHOW_VERSION = 0;
 my $DO_OVERWRITE_ALL = 0;
 
+my $TO_OWNER_NAME = getpwuid $>;  # maybe be overridden via the --owner opt
+my $TO_GROUP_NAME = getgrgid $>;  # maybe be overridden via the --group opt
+
+my $TO_OWNER_UID;  # numeric counterpart to $TO_OWNER_NAME; set during input validation
+my $TO_GROUP_GID;  # numeric counterpart to $TO_GROUP_NAME; set during input validation
+
+
 # Authentication options that end up as values in the generated Apache
 # config. Note that any defaults here are identical to those specified in
 # maybe_create_apache_site_config_file_or_die(); they're duplicated here for
@@ -213,7 +220,7 @@ eval {
 # Ignore $@; if we don't have the Hash::Util module, then the program is just
 # less locked-down.
 
-
+
 sub print_usage {
     my ($where) = @_;
     print $where <<"EOH";
@@ -242,8 +249,12 @@ General Options:
 * -f, --site-conf=FILE
                      Create Apache site config in FILE
 
+  -g, --group=GROUP  (Most) files will be owned by group GROUP [egid]
+
 * -m, --apache-mod-perl-startup=FILE
                      Create Bedrock mod_perl startup script in FILE
+
+  -o, --owner=OWNER  (Most) files will be owned by OWNER [euid]
 
 * -s, --site-dir=DIR Create the website in DIR
   -v, --verbose      Print program progress messages on stderr
@@ -380,6 +391,7 @@ EOV
     return;
 }
 
+
 # Returns the function name of the calling function. Functions can use this
 # as a generic way to get their own name without sprinkling clunky caller()
 # invocations all over the place.
@@ -468,17 +480,66 @@ sub with_changed_directory {
     return (wantarray ? @rtn : $rtn);
 }
 
+sub __poor_mans_touch {
+    my ($filepath) = @_;
+    confess( __func, q{(): required '$filepath' param not provided} )
+        unless defined $filepath;
+    return if -f $filepath;  # nothing to do
+
+    local *FILE;
+    unless( sysopen FILE, $filepath, Fcntl::O_CREAT() ) {
+        confess( __func, qq{(): was unable to create file: "$filepath": $! });
+    }
+
+    unless (close FILE) {
+        warn (qq{${PROG} (warning): was error while closing file "$filepath": $!}
+              . qq{; continuing anyway\n});
+    }
+    return;
+}
+
+# Changes user and group ownership for all files and/or directories listed
+# in @files. Similar to Perl's builtin 'chown' function, but also accepts
+# user name and group name arguments (not just numeric arguments) and
+# attempts to convert them to their corresponding numeric IDs.
+#
+sub __chown_chgrp_all {
+    my ($owner, $group, @files) = @_;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
+
+    # Convert user name string to uid, if needed
+    unless ($owner =~ m/^[0-9]{1,}$/) {
+        confess( __func, qq{(): no such user: $owner})
+            unless ( defined( $owner = getpwnam( $owner )));
+    }
+    # Convert group name string to gid, if needed
+    unless ($group =~ m/^[0-9]{1,}$/) {
+        confess( __func, qq{(): no such group: $group})
+            unless ( defined( $group = getgrnam( $group )));
+    }
+
+    map { confess( __func, qq{(): was unable to change ownership to ${owner}:${group} for $_: $!})
+              unless ( chown $owner, $group, $_ ) }
+        grep { defined } @files;
+
+    return;
+}
+
 # Creates all directories (and any needed parent directories) for the names
 # passed as args. Duplicates are allowed, and will be silently ignored.
 #
 # @param @directories - (optional) The names of directories that should be
 #                       created.
 #
-# @return Does not return a meaningful value. Exits program with an error
-#         status on error.
+# @return Returns a list of all directories (including intermediats) created.
 #
 sub __create_directories_or_die {
     my (@directories) = @_;
+
+    my @all_created = ();
 
     # prevents attempts to create duplicates which may have been passed;
     # also prevents spurious "checking..."  messages
@@ -492,17 +553,18 @@ sub __create_directories_or_die {
             print STDERR qq{found.\n} if $BE_VERBOSE;
         } else {
             print STDERR qq{not found; creating.\n} if $BE_VERBOSE;
-            eval { mkpath( $dir ) };
+            my @t_created = eval { mkpath( $dir ) };
             if ($@) {
                 warn(qq{${PROG} (error): was unable to create dir "${dir}": $@\n});
                 exit 1;
             }
             print STDERR qq{${PROG} (info): successfully created dir "$dir"\n}
                 if $BE_VERBOSE;
+            push( @all_created, @t_created ) if @t_created;
         }
         $seen->{$dir} = 1;
     }
-    return;
+    return @all_created;
 }
 
 # Checks for the existence of the user-specified site directory. If it does
@@ -511,8 +573,11 @@ sub __create_directories_or_die {
 # @param $site_dir - (required) The directory in which the user wants his
 #                    web site created.
 #
-# @return Does not return a meaningful value; exits with an error status on
+# @return Returns a boolean value indicating whether or not the site
+#         directory was created. Returns 1 if we needed to create it, 0 if
+#         it already exists. Exits the program with an error status on
 #         error.
+#
 sub __maybe_create_site_directory_or_die {
     my ($site_dir) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
@@ -522,19 +587,19 @@ sub __maybe_create_site_directory_or_die {
         if $BE_VERBOSE;
     if (-d $site_dir) {
         print STDERR "found\n" if $BE_VERBOSE;
-        return;
+        return 0;  # did not need to create the site directory
     }
-    else {
-        print STDERR "not found; creating\n" if $BE_VERBOSE;
-        eval { mkpath( $site_dir ) };
-        if ($@) {
-            warn(qq{${PROG} (error): was unable to create site dir "${site_dir}": $@\n});
-            exit 1;
-        }
-        print STDERR qq{${PROG} (info): successfully created site dir "$site_dir"\n}
-            if $BE_VERBOSE;
+
+    print STDERR "not found; creating\n" if $BE_VERBOSE;
+    eval { mkpath( $site_dir ) };
+    if ($@) {
+        warn(qq{${PROG} (error): was unable to create site dir "${site_dir}": $@\n});
+        exit 1;
     }
-    return;
+    print STDERR qq{${PROG} (info): successfully created site dir "$site_dir"\n}
+        if $BE_VERBOSE;
+
+    return 1;  # created the site directory
 }
 
 # Checks for the existence of all of our subdirs beneath the user-specified
@@ -543,12 +608,15 @@ sub __maybe_create_site_directory_or_die {
 # @param $site_dir - (required) The directory in which the user wants his
 #                    web site created.
 #
-# @return Does not return a meaningful value; exits with an error status on
-#         error.
+# @return Returns a list of all directories created. On error, exits the
+#         program with an error message.
+#
 sub __maybe_create_site_subdirs_or_die {
     my ($site_dir) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+
+    my @all_created = ();
 
     # FIXME: maybe change 'config' to 'bedrock-config', or maybe even make
     #        it conf/bedrock-config
@@ -589,13 +657,14 @@ sub __maybe_create_site_subdirs_or_die {
         }
         else {
             print STDERR "not found; creating\n" if $BE_VERBOSE;
-            eval { mkpath( $dir ) };
+            my @t_created = eval { mkpath( $dir ) };
             if ($@) {
                 warn(qq{${PROG} (error): was unable to create dir "${dir}": $@\n});
                 exit 1;
             }
             print STDERR qq{${PROG} (info): successfully created dir "$dir"\n}
                 if $BE_VERBOSE;
+            push( @all_created, @t_created );
         }
     }
 
@@ -627,26 +696,57 @@ sub __maybe_create_site_subdirs_or_die {
     print STDERR qq{${PROG} (info): successfully created dir symlink "$new"\n}
         if $BE_VERBOSE;
 
-    return;
+    return @all_created;
 }
 
 # Checks for the existence of the user-specified site directory. If it does
 # not exist, attempts to create it. Likewise for any subdirectories beneatch
 # $site_dir that we use.
 #
+# Set the user and group ownership for any newly created subdirectories. The
+# user and group ownership of any existing directories will not be changed.
+#
 # @param $site_dir - (required) The directory in which the user wants his
 #                    web site created.
+#
+# @param $owner - (required) Name or uid of the user who should own any
+#                 newly created directories.
+#
+# @param $group - (required) Name or gid of the group that should own any
+#                 newly created directories.
 #
 # @return Does not return a meaningful value; exits with an error status on
 #         error.
 #
 sub maybe_create_site_directory_tree_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
-    __maybe_create_site_directory_or_die( $site_dir );
-    __maybe_create_site_subdirs_or_die( $site_dir );
+    if ( __maybe_create_site_directory_or_die( $site_dir )) {
+        # We newly created the site directory, so make sure it's owner/group
+        # are correct
+        eval { __chown_chgrp_all( $owner, $group, $site_dir) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set directory ownership for "$site_dir": $@\n};
+            exit 1;
+        }
+    }
+
+    my @all_created = __maybe_create_site_subdirs_or_die( $site_dir );
+    if (@all_created) {
+        # We newly created one or more subdirectories beneath the site
+        # directory, so make sure their owner/group are correct
+        eval { __chown_chgrp_all( $owner, $group, @all_created) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set directory ownership: $@\n};
+            exit 1;
+        }
+    }
 }
 
 # Worker function that always creates contents suitable for an
@@ -784,8 +884,8 @@ EOF
 #                                     has an effect if the SYMLINKFILE param
 #                                     is defined.
 #
-# @return Does not return a meaningful value. Exits with an error status on
-#         error.
+# @return Returns a boolean value indicating whether or not MAINFILE needed
+#         to be created. Exits with an error status on error.
 #
 sub __maybe_create_named_file_or_die {
     my %args = ( MAINFILE => undef,                    # required
@@ -814,7 +914,8 @@ sub __maybe_create_named_file_or_die {
                                       $args{SYMLINKFILE}, $args{OVERWRITE_SYMLINKFILE_FLAG},
                                       $args{CONTENT_CREATION_FUNC} );
 
-    my $create_mainfile = 0;
+    my $newly_created_mainfile = 0;  # our return value
+    my $create_mainfile = 0; # will be trun creating new OR overwriting
     print STDERR qq{${PROG} (info): checking for the existince of file "$mainfile"...}
         if $BE_VERBOSE;
     if (-f $mainfile) {
@@ -829,6 +930,7 @@ sub __maybe_create_named_file_or_die {
     else {
         print STDERR qq{not found; will create.\n} if $BE_VERBOSE;
         $create_mainfile = 1;
+        $newly_created_mainfile = 1;
     }
 
     if ($create_mainfile) {
@@ -838,7 +940,7 @@ sub __maybe_create_named_file_or_die {
     }
 
     # If $symlinkfile is not defined, then we're done
-    return unless defined $symlinkfile;
+    return $newly_created_mainfile unless defined $symlinkfile;
 
     my $create_symlinkfile = 0;
     print STDERR qq{${PROG} (info): checking for the existince of file "$symlinkfile"...}
@@ -878,7 +980,7 @@ sub __maybe_create_named_file_or_die {
         print STDERR qq{${PROG} (info): successfully created symlink "$symlinkfile"\n}
             if $BE_VERBOSE;
     }
-    return;
+    return $newly_created_mainfile;
 }
 
 # Looks for the ${site_dir}/config/tagx.xml file, and creates it if not found.
@@ -886,8 +988,7 @@ sub __maybe_create_named_file_or_die {
 # This function obeys these fine-grained overwrite flag:
 #     $DO_OVERWRITE_TAGX_DOT_XML
 #
-# @param $site_dir - (required) The web site diretory as specified by the
-#                    user. The tagx.xml file will live in $site_dir/config/
+# FIXME: document params
 #
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
@@ -901,6 +1002,9 @@ sub maybe_create_tagx_dot_xml_or_die {
                  AUTH_PASSWORD => undef,  # required
 
                  AUTH_TABLE => undef,     # required
+
+                 OWNER => undef,          # required
+                 GROUP => undef,          # required
 
                  # passed "named" params will override above defaults
                  @_
@@ -920,12 +1024,17 @@ sub maybe_create_tagx_dot_xml_or_die {
     confess( __func, q{(): required 'AUTH_TABLE' param not provided} )
         unless defined $args{AUTH_TABLE};
 
+    confess( __func, q{(): required 'OWNER' param not provided} )
+        unless defined $args{OWNER};
+    confess( __func, q{(): required 'GROUP' param not provided} )
+        unless defined $args{GROUP};
+
     # For convenience...
     my $site_dir = $args{SITE_DIR};
 
     my $tagxxml = catdir( $site_dir, 'config', 'tagx.xml');
 
-    __maybe_create_named_file_or_die(
+    my $was_newly_created = __maybe_create_named_file_or_die(
         MAINFILE    => $tagxxml,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_TAGX_DOT_XML,
 
         # Closes over $site_dir and friends for text substitution params
@@ -1059,6 +1168,16 @@ EOF
             return;
         },
     );
+
+    if ($was_newly_created) {
+        # We newly created the $tagxxml file, so make sure it's owner/group
+        # are correct
+        eval { __chown_chgrp_all( $args{OWNER}, $args{GROUP}, $tagxxml ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set file ownership for "$tagxxml": $@\n};
+            exit 1;
+        }
+    }
 }
 
 # Looks for the ${site_dir}/config/tagx_apps.xml file, and creates it if not
@@ -1071,17 +1190,31 @@ EOF
 #                    user. The tagx_apps.xml file will live in
 #                    $site_dir/config/
 #
+# @param $owner - (required) The name or uid of the user that should own the
+#                 newly created tagx_apps.xml file, if we need to create it.  If
+#                 an existing tagx_apps.xml file is found, it will not have
+#                 its ownership changed.
+#
+# @param $group- (required) The name or gid of the group that should own the
+#                newly created tagx_apps.xml file, if we need to create
+#                it. If an existing tagx_apps.xml file is found, it will not
+#                have its ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_create_tagx_apps_dot_xml_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
     my $tagxappsxml = catdir( $site_dir, 'config', 'tagx_apps.xml');
 
-    __maybe_create_named_file_or_die(
+    my $was_newly_created = __maybe_create_named_file_or_die(
         MAINFILE    => $tagxappsxml,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_TAGX_APPS_DOT_XML,
 
         # Function that creates an empty shell of a tagx_apps.xml file
@@ -1105,6 +1238,17 @@ EOF
             return;
         },
     );
+
+    if ($was_newly_created) {
+        # We newly created the $tagxappsxml file, so make sure it's
+        # owner/group are correct
+        eval { __chown_chgrp_all( $owner, $group, $tagxappsxml ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set file ownership for "$tagxappsxml": $@\n};
+            exit 1;
+        }
+    }
+
 }
 
 # Looks for the following files:
@@ -1123,22 +1267,46 @@ EOF
 #                    user. The index.rock and index.roc files will live in
 #                    $site_dir/htdocs/
 #
+# @param $owner - (required) The name or uid of the user that should own the
+#                 newly created index.rock file, if we need to create it. If
+#                 an existing index.rock file is found, it will not have its
+#                 ownership changed.
+#
+# @param $group - (required) The name or gid of the group that should own
+#                 the newly created index.rock file, if we need to create
+#                 it. If an existing index.rock file is found, it will not
+#                 have its ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_create_index_dot_rock_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
     my $indexrock = catdir( $site_dir, 'htdocs', 'index.rock');
     my $indexroc  = catdir( $site_dir, 'htdocs', 'index.roc' );
 
-    __maybe_create_named_file_or_die(
+    my $was_newly_created = __maybe_create_named_file_or_die(
         MAINFILE    => $indexrock,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_INDEX_DOT_ROCK,
         SYMLINKFILE => $indexroc,   OVERWRITE_SYMLINKFILE_FLAG => $DO_OVERWRITE_INDEX_DOT_ROC,
         CONTENT_CREATION_FUNC => \&__create_index_dot_rock_or_die
     );
+
+    if ($was_newly_created) {
+        # We newly created the $indexrock file, so make sure it's
+        # owner/group are correct
+        eval { __chown_chgrp_all( $owner, $group, $indexrock ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set file ownership for "$indexrock": $@\n};
+            exit 1;
+        }
+    }
 }
 
 # Looks for the following files:
@@ -1157,22 +1325,49 @@ sub maybe_create_index_dot_rock_or_die {
 #                    user. The index.rock and index.roc files will live in
 #                    $site_dir/htdocs/admin/
 #
+# @param $owner - (required) The name or uid of the user that should own the
+#                 newly created $site_dir/htdocs/admin/index.rock, if we
+#                 need to create it.  If an existing
+#                 $site_dir/htdocs/admin/index.rock file is found, it will
+#                 not have its ownership changed.
+#
+# @param $group- (required) The name or gid of the group that should own the
+#                newly created $site_dir/htdocs/admin/index.rokc file, if we
+#                need to create it. If an existing
+#                $site_dr/htdocs/admin/index.rock file is found, it will not
+#                have its ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_create_admin_index_dot_rock_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
     my $indexrock = catdir( $site_dir, 'htdocs', 'admin', 'index.rock');
     my $indexroc  = catdir( $site_dir, 'htdocs', 'admin', 'index.roc' );
 
-    __maybe_create_named_file_or_die(
+    my $was_newly_created = __maybe_create_named_file_or_die(
         MAINFILE    => $indexrock,  OVERWRITE_MAINFILE_FLAG    => $DO_OVERWRITE_ADMIN_INDEX_DOT_ROCK,
         SYMLINKFILE => $indexroc,   OVERWRITE_SYMLINKFILE_FLAG => $DO_OVERWRITE_ADMIN_INDEX_DOT_ROC,
         CONTENT_CREATION_FUNC => \&__create_admin_index_dot_rock_or_die
     );
+
+    if ($was_newly_created) {
+        # We newly created the $site_dir/htdocs/admin/index.rock file, so
+        # make sure it's owner/group are correct
+        eval { __chown_chgrp_all( $owner, $group, $indexrock ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set file ownership for "$indexrock": $@\n};
+            exit 1;
+        }
+    }
+
 }
 
 # Looks for an 'error.roc' file and an 'error.rock' file (or symlink), and
@@ -1188,18 +1383,33 @@ sub maybe_create_admin_index_dot_rock_or_die {
 #                    user. The error.rock and error.roc files will live in
 #                    $site_dir/htdocs/
 #
+# @param $owner - (required) The name or uid of the user that should own the
+#                 newly copied error.rock, if an existing one is not
+#                 found. If an existing error.rock file is found, it will
+#                 not have its ownership changed.
+#
+# @param $group - (required) The name or gid of the group that should own
+#                 the newly copied error.rock file, if an existing one is
+#                 not found. If an existing error.rock file is found, it
+#                 will not have its ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_copy_dist_error_dot_rock_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
     my $errorrock = catdir( $site_dir, 'htdocs', 'error.rock');
     my $errorroc  = catdir( $site_dir, 'htdocs', 'error.roc' );
 
-    my $copy_errorrock = 0;
+    my $newly_copied = 0; # true iff does not exist
+    my $copy_errorrock = 0;  # true if does not exist OR overwriting
     print STDERR qq{${PROG} (info): checking for the existince of file "$errorrock"...}
         if $BE_VERBOSE;
     if (-f $errorrock) {
@@ -1214,6 +1424,7 @@ sub maybe_copy_dist_error_dot_rock_or_die {
     else {
         print STDERR qq{not found; will copy from Bedrock distribution.\n} if $BE_VERBOSE;
         $copy_errorrock = 1;
+        $newly_copied = 1;
     }
 
     if ($copy_errorrock) {
@@ -1229,6 +1440,16 @@ sub maybe_copy_dist_error_dot_rock_or_die {
         }
         print STDERR qq{${PROG} (info): successfully copied file "$errorrock" from Bedrock distribution\n}
             if $BE_VERBOSE;
+
+        if ($newly_copied) {
+            # We newly copied the $bedrock.cgi file, so make sure it's
+            # owner/group are correct
+            eval { __chown_chgrp_all( $owner, $group, $errorrock ) };
+            if ($@) {
+                print STDERR qq{${PROG} (error): was unable set file ownership for "$errorrock": $@\n};
+                exit 1;
+            }
+        }
     }
 
     my $create_errorroc = 0;
@@ -1283,17 +1504,32 @@ sub maybe_copy_dist_error_dot_rock_or_die {
 #                    user. The bedrock.cgi file will live in:
 #                        $site_dir/cgi-bin/
 #
+# @param $owner - (required) The name or uid of the user that should own the
+#                 newly copied bedrock.cgi, if an existing one is not
+#                 found. If an existing bedrock.cgi file is found, it will
+#                 not have its ownership changed.
+#
+# @param $group - (required) The name or gid of the group that should own
+#                 the newly copied bedrock.cgi file, if an existing one is
+#                 not found. If an existing bedrock.cgi file is found, it
+#                 will not have its ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_copy_dist_bedrock_dot_cgi_or_die {
-    my ($site_dir) = @_;
+    my ($site_dir, $owner, $group) = @_;
     confess( __func, q{(): required '$site_dir' param not provided} )
         unless defined $site_dir;
+    confess( __func, q{(): required '$owner' param not provided} )
+        unless defined $owner;
+    confess( __func, q{(): required '$group' param not provided} )
+        unless defined $group;
 
     my $bedrockcgi = catdir( $site_dir, 'cgi-bin', 'bedrock.cgi');
 
-    my $copy_bedrockcgi = 0;
+    my $newly_copied = 0; # true iff does not exist
+    my $copy_bedrockcgi = 0;  # true if does not exist OR overwriting
     print STDERR qq{${PROG} (info): checking for the existince of file "$bedrockcgi"...}
         if $BE_VERBOSE;
     if (-f $bedrockcgi) {
@@ -1308,6 +1544,7 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
     else {
         print STDERR qq{not found; will copy from Bedrock distribution.\n} if $BE_VERBOSE;
         $copy_bedrockcgi = 1;
+        $newly_copied = 1;
     }
 
     return unless $copy_bedrockcgi;
@@ -1324,6 +1561,16 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
     }
     print STDERR qq{${PROG} (info): successfully copied file "$bedrockcgi" from Bedrock distribution\n}
         if $BE_VERBOSE;
+
+    if ($newly_copied) {
+        # We newly copied the $bedrock.cgi file, so make sure it's
+        # owner/group are correct
+        eval { __chown_chgrp_all( $owner, $group, $bedrockcgi ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set file ownership for "$bedrockcgi": $@\n};
+            exit 1;
+        }
+    }
 
     my $mode = ( stat( $bedrockcgi ))[2];
 
@@ -1744,12 +1991,22 @@ EOF
 #                   SITE_DIR/cgi-bin/Perl directory onto Perl's @INC in the
 #                   generated file. FIXME: This is dubious.
 #
+# @param OWNER - (required) The name or uid of the user that should own any
+#                created files and/or directories. Existing files and
+#                directories will not have their ownership changed.
+#
+# @param GROUP- (required) The name or gid of the group that should own any
+#               created files and/or directories. Existing files and
+#               directories will not have their ownership changed.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
 sub maybe_create_apache_mod_perl_startup_dot_pl_file_or_die {
     my (%args) = (APACHE_MOD_PERL_STARTUP_CONF_PATH => undef,
                   SITE_DIR => undef,
+                  OWNER    => undef,
+                  GROUP    => undef,
                   # Passed "named" arguments override above defaults
                   @_);
 
@@ -1760,12 +2017,20 @@ sub maybe_create_apache_mod_perl_startup_dot_pl_file_or_die {
         unless (exists $args{SITE_DIR}
                 && defined $args{SITE_DIR});
 
+    confess( __func, q{(): required 'OWNER' param not provided} )
+        unless (exists $args{OWNER}
+                && defined $args{OWNER});
+    confess( __func, q{(): required 'GROUP' param not provided} )
+        unless (exists $args{GROUP}
+                && defined $args{GROUP});
 
+    my $overwriting = 0;
     print STDERR qq{${PROG} (info): checking for the existince of file "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}"...}
         if $BE_VERBOSE;
     if (-f $args{APACHE_MOD_PERL_STARTUP_CONF_PATH}) {
         if ($DO_OVERWRITE_APACHE_MOD_PERL_STARTUP_CONF) {
             print STDERR qq{found; will overwrite.\n} if $BE_VERBOSE;
+            $overwriting = 1;
         }
         else {
             print STDERR qq{found; will not overwrite.\n} if $BE_VERBOSE;
@@ -1777,7 +2042,28 @@ sub maybe_create_apache_mod_perl_startup_dot_pl_file_or_die {
     }
 
     # Create any parent directories, if needed
-    __create_directories_or_die( dirname( $args{APACHE_MOD_PERL_STARTUP_CONF_PATH} ) );
+    my @created_dirs = __create_directories_or_die( dirname( $args{APACHE_MOD_PERL_STARTUP_CONF_PATH} ) );
+    if (@created_dirs) {
+        eval { __chown_chgrp_all( $args{OWNER}, $args{GROUP}, @created_dirs ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable to set directory ownership: $@\n};
+            exit 1;
+        }
+    }
+    undef @created_dirs;
+
+    unless ($overwriting) {
+        eval { __poor_mans_touch( $args{APACHE_MOD_PERL_STARTUP_CONF_PATH} ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable to create file "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}": $@\n};
+            exit 1;
+        }
+        eval { __chown_chgrp_all( $args{OWNER}, $args{GROUP}, $args{APACHE_MOD_PERL_STARTUP_CONF_PATH} ) };
+        if ($@) {
+            print STDERR qq{${PROG} (error): was unable set ownership for file "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}": $@\n};
+            exit 1;
+        }
+    }
 
     unless( open(APACHE_MOD_PERL_STARTUP_CONF, ">$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}")) {
         warn(qq{${PROG} (error): was unable to open file for writing "$args{APACHE_MOD_PERL_STARTUP_CONF_PATH}": $!\n});
@@ -1864,9 +2150,11 @@ unless ( GetOptions(
                     'h|help'          => \$SHOW_HELP,
                     'd|domain-name=s' => \$DOMAIN_NAME,
                     'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
+                    'g|group=s'       => \$TO_GROUP_NAME,
                     'm|apache-mod-perl-startup=s' => \$APACHE_MOD_PERL_STARTUP_CONF_FNAME,
-                    'i|apache-auth-db-include=s'  => \$APACHE_AUTH_DB_INCLUDE_FNAME,
+                    'o|owner=s'       => \$TO_OWNER_NAME,
 
+                    'i|apache-auth-db-include=s' => \$APACHE_AUTH_DB_INCLUDE_FNAME,
                     't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
 
                     'apache-auth-db-host=s'   => \$AUTH_HOST,
@@ -1988,6 +2276,38 @@ unless (defined $AUTH_PASSWORD) {
     print "\n";
 }
 
+# If the user specified the --owner=OWNER or --group=GROUP options, verify
+# that the provided values are legit.
+if ($TO_OWNER_NAME =~ m/^[0-9]{1,}$/) {
+    $TO_OWNER_UID = $TO_OWNER_NAME;
+    # Make sure numeric user ID is legit, get string version
+    unless ( defined( $TO_OWNER_NAME = getpwuid( $TO_OWNER_UID ))) {
+        warn(qq{${PROG} (error): specified owner (${TO_OWNER_UID}) uid does not exist: $!\n});
+        exit 1;
+    }
+}
+else {
+    # Make sure provided user name is legit, get numeric version
+    unless ( defined( $TO_OWNER_UID = getpwnam( $TO_OWNER_NAME ))) {
+        warn(qq{${PROG} (error): specified owner (${TO_OWNER_NAME}) user name does not exist: $!\n});
+        exit 1;
+    }
+}
+if ($TO_GROUP_NAME =~ m/^[0-9]{1,}$/) {
+    $TO_GROUP_GID = $TO_GROUP_NAME;
+    # Make sure numeric group ID is legit, get string version
+    unless ( defined( $TO_GROUP_NAME = getgrgid( $TO_GROUP_GID ))) {
+        warn(qq{${PROG} (error): specified group (${TO_GROUP_GID}) gid does not exist: $!\n});
+        exit 1;
+    }
+}
+else {
+    # Make sure provided group name is legit, get numeric version
+    unless ( defined( $TO_GROUP_GID = getgrnam( $TO_GROUP_NAME ))) {
+        warn(qq{${PROG} (error): specified group (${TO_GROUP_NAME}) name does not exist: $!\n});
+        exit 1;
+    }
+}
 
 # Maybe print a summary of the configured options
 if ($BE_VERBOSE) {
@@ -2000,6 +2320,9 @@ if ($BE_VERBOSE) {
             foreach map { [ $REQUIRED_STR_OPTS{$_}->{desc}, $$_ ] }
                 sort keys %REQUIRED_STR_OPTS;
     }
+
+    printf STDERR qq{${PROG} (info): (most) files will be owned by user:  %s (%d)\n}, $TO_OWNER_NAME, $TO_OWNER_UID;
+    printf STDERR qq{${PROG} (info): (most) files will be owned by group: %s (%d)\n}, $TO_GROUP_NAME, $TO_GROUP_GID;
 
     if (defined $APACHE_AUTH_DB_INCLUDE_FNAME) {
         printf STDERR qq{${PROG} (info): apache auth db include: %s\n}, $APACHE_AUTH_DB_INCLUDE_FNAME;
@@ -2029,7 +2352,7 @@ if ($BE_VERBOSE) {
     }
 }
 
-maybe_create_site_directory_tree_or_die( $WEBSITE_DIR );
+maybe_create_site_directory_tree_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
 
 # tagx.xml
 maybe_create_tagx_dot_xml_or_die( SITE_DIR    => $WEBSITE_DIR,
@@ -2039,17 +2362,20 @@ maybe_create_tagx_dot_xml_or_die( SITE_DIR    => $WEBSITE_DIR,
                                   AUTH_USER     => $AUTH_USER,
                                   AUTH_PASSWORD => $AUTH_PASSWORD,
 
-                                  AUTH_TABLE => $AUTH_TABLE );
+                                  AUTH_TABLE => $AUTH_TABLE,
+
+                                  OWNER => $TO_OWNER_NAME,
+                                  GROUP => $TO_GROUP_NAME );
 # tagx_apps.xml
-maybe_create_tagx_apps_dot_xml_or_die( $WEBSITE_DIR );
+maybe_create_tagx_apps_dot_xml_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
 
 # htdocs/index.rock
-maybe_create_index_dot_rock_or_die( $WEBSITE_DIR );
+maybe_create_index_dot_rock_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
 # htdocs/admin/index.rock
-maybe_create_admin_index_dot_rock_or_die( $WEBSITE_DIR );
+maybe_create_admin_index_dot_rock_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
 
-maybe_copy_dist_bedrock_dot_cgi_or_die( $WEBSITE_DIR );
-maybe_copy_dist_error_dot_rock_or_die( $WEBSITE_DIR );
+maybe_copy_dist_bedrock_dot_cgi_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
+maybe_copy_dist_error_dot_rock_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
 
 maybe_create_apache_site_config_file_or_die(
     APACHE_SITE_CONF_PATH => $APACHE_SITE_CONF_FNAME,
@@ -2071,10 +2397,12 @@ maybe_create_apache_site_config_file_or_die(
 
     BEDROCK_HTDOCS_DIR => $BEDROCK_DIST_HTDOCS_DIR );
 
+
 maybe_create_apache_mod_perl_startup_dot_pl_file_or_die( 
     APACHE_MOD_PERL_STARTUP_CONF_PATH => $APACHE_MOD_PERL_STARTUP_CONF_FNAME,
-    SITE_DIR => $WEBSITE_DIR
-);
+    SITE_DIR => $WEBSITE_DIR,
+    OWNER => $TO_OWNER_NAME,
+    GROUP => $TO_GROUP_NAME );
 
 # XXX: The 'make_site.sh' program that was the original idea on which
 #      'bedrock-create-site' is based created a Bedrock 'perl.INC' file in the
@@ -2315,6 +2643,25 @@ with), but it is suitable for being included via the Apache C<Include>
 directive from your main Apache config file.
 
 
+=item -g, --group=GROUP
+
+(Optional) Set group ownershp for any created files and/or directories to
+GROUP. By default, most created files and directories will have group
+ownership by the effective group ID (egid) of the user running
+C<bedrock-create-site>.
+
+GROUP may be either the numer group id (gid) for the group or the group
+name.
+
+The Apache site config file (and the Apache auth db include file, if the
+C<--apache-auth-db-include=FILE> option is provided) are exceptions; these
+files will always be owned by the egid of the user running
+C<bedrock-create-site>.
+
+Any pre-existing files and directories will I<not> have their group
+ownership changed.
+
+
 =item -m, --apache-mod-perl-startup=FILE
 
 (Required) Create Bedrock mod_perl startup script in FILE.
@@ -2336,6 +2683,23 @@ site created beneath:
 then specify the option like this:
 
     --site-dir=/var/www/vhosts/example.com
+
+
+=item -o, --owner=OWNER
+
+(Optional) Make OWNER the owner of any created files and/or directories. By
+default, most created files and directories will be owned by the effective
+user ID (euid) of the user running C<bedrock-create-site>.
+
+OWNER may be either the numer user id (uid) for the user or the user name.
+
+The Apache site config file (and the Apache auth db include file, if the
+C<--apache-auth-db-include=FILE> option is provided) are exceptions; these
+files will always be owned by the euid of the user running
+C<bedrock-create-site>.
+
+Any pre-existing files and directories will I<not> have their ownership
+changed.
 
 
 =item -V
@@ -2880,6 +3244,25 @@ possible to run a Bedrock site that does not require authentication, the sites
 where Bedrock is currently deployed all require authentication of some
 type. Nevertheless, we should probably make the program more general to allow
 creation of simple sites that have no authentication requirements.
+
+=item *
+
+The Apache site config (or the Apache auth db file, if
+C<--apache-auth-db-include=FILE> was specified) should have its perms set to
+0600 by default because the program writes the database authentication
+credentials to the file. The program currently just inherits the umask to
+the current user.
+
+
+=item *
+
+The Bedrock C<tagx.xml> file should have it's perms locked down because it
+contains the database authentication credentials specified by the user. I'd
+like to make the perms 0600, but I suspect that that will only work if the
+file is owned by the user specified in the Apache C<User> directive (I think
+Bedrock will not be able to access the file otherwise), not C<root>, which
+is not ideal.
+
 
 =item *
 
