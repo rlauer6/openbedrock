@@ -1,5 +1,8 @@
 ## Process this file with automake to produce Makefile.in -*-Makefile-*-
 
+SUBDIRS = img \
+          .
+
 dist_htdocs_DATA = error.rock
 
 install-data-hook:
