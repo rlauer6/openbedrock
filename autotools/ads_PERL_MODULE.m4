@@ -182,8 +182,19 @@ AC_DEFUN([ads_PERL_MODULE], [
     AC_MSG_CHECKING([[for ${_tmp_check_msg}]])
 [
     # Invoking perl twice is inefficient, but better isolates our test
-    eval "'""${PERL}""'" "${ax_perl5_extra_includes_opt}" \
-              -we "'""use strict; use ${_tmp_perl_mod_name} ${_tmp_perl_mod_version};""'"
+
+    # Only redirect stderr to /dev/null if module is optional. This prevents
+    # Perl's error messages from cluttering up the 'configure' output with
+    # error messages that may look to the user as though something is wrong.
+    #
+    if test "${_tmp_perl_mod_required_or_optional}" = 'REQUIRED'; then
+        eval "'""${PERL}""'" "${ax_perl5_extra_includes_opt}" \
+                  -we "'""use strict; use ${_tmp_perl_mod_name} ${_tmp_perl_mod_version};""'"
+    else
+
+        eval "'""${PERL}""'" "${ax_perl5_extra_includes_opt}" \
+                  -we "'""use strict; use ${_tmp_perl_mod_name} ${_tmp_perl_mod_version};""'" 2>/dev/null
+    fi
     if test $? -eq 0; then
         # Great, we have the module. Now print where it was found:
         _tmp_perl_mod_path="$( eval "'""${PERL}""'" "${ax_perl5_extra_includes_opt}" \
