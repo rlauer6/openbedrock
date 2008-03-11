@@ -108,6 +108,8 @@ dnl with the Perl 5.8.8 core. This is done because I'm too lazy to track down
 dnl specifically /which/ version of Perl started shipping with each specific
 dnl module. These tests are cheap, so this should be a non-issue; it's
 dnl infinitely better than discovering an oversite at runtime.
+dnl
+# Required Perl modules
 ads_PERL_MODULE([Carp], [REQUIRED])
 ads_PERL_MODULE([Cwd],  [REQUIRED])
 ads_PERL_MODULE([DBI], [REQUIRED], [1.13])
@@ -117,16 +119,14 @@ ads_PERL_MODULE([File::Basename],  [REQUIRED])
 ads_PERL_MODULE([File::Copy],  [REQUIRED])
 ads_PERL_MODULE([File::Path],  [REQUIRED])
 ads_PERL_MODULE([File::Spec::Functions],  [REQUIRED])
-
 ads_PERL_MODULE([Getopt::Long], [REQUIRED])
-
 ads_PERL_MODULE([GDBM_File], [REQUIRED], [1.03])
-
-ads_PERL_MODULE([Hash::Util],  [REQUIRED])
-
 ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
+
+# Optional Perl modules
+ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
 
 
 dnl +----------------------+
