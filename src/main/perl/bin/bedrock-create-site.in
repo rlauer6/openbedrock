@@ -141,6 +141,8 @@ our $WEBSITE_DIR;
 our $APACHE_SITE_CONF_FNAME;  # where to write site (virtual host) configuration
 our $APACHE_MOD_PERL_STARTUP_CONF_FNAME;  # where to write startup.pl style file
 
+my @PERL5_EXTRA_INCLUDES = ();
+
 # These vars are also package scoped for dynamic dereferencing. These are
 # the fine-grained overwrite flags, mostly useful for allowing the user to
 # specify exceptions to the global --overwrite option. Without fine grained
@@ -250,6 +252,10 @@ General Options:
                      Create Apache site config in FILE
 
   -g, --group=GROUP  (Most) files will be owned by group GROUP [egid]
+
+  -I, --perl5-include=DIR
+                     Prepend DIR to any paths set in PERL5LIB in the generated
+                     site conf file. Multiple -I options may be provided.
 
 * -m, --apache-mod-perl-startup=FILE
                      Create Bedrock mod_perl startup script in FILE
@@ -1670,6 +1676,10 @@ sub maybe_copy_dist_bedrock_dot_cgi_or_die {
 #                             'htdocs' directory. Used to alias /Bedrock/img
 #                             directory in generated Apache config file.
 #
+# @param PERL5_EXTRA_INCLUDES - (optional) Reference to a list of directories
+#                               to prefix to the PERL5LIB environment variable
+#                               created in the generated Apache config file.
+#
 # @return Does not return a meaningful value. Exits with an error status on
 #         error.
 #
@@ -1692,6 +1702,8 @@ sub maybe_create_apache_site_config_file_or_die {
                   AUTH_PROMPT         => 'UNCONFIGURED',
 
                   BEDROCK_HTDOCS_DIR  => undef,
+
+                  PERL5_EXTRA_INCLUDES => [],
 
                   # Passed "named" arguments override above defaults
                   @_);
@@ -1822,6 +1834,12 @@ sub maybe_create_apache_site_config_file_or_die {
 
     my $now = localtime;  # e.g., "Thu Oct 13 04:54:34 2007"
 
+    my $str_SetEnv_PERL5LIB = '';
+# FIXME: verify that double quotes work with the SetEnv directive, and if so, use 'em.
+#     $str_SetEnv_PERL5LIB = ('SetEnv PERL5LIB "' . join(':', @{$args{PERL5_EXTRA_INCLUDES}}) . '"')
+    $str_SetEnv_PERL5LIB = ('SetEnv PERL5LIB ' . join(':', @{$args{PERL5_EXTRA_INCLUDES}}))
+        if @{$args{PERL5_EXTRA_INCLUDES}};
+
     if ($do_write_apache_site_conf_file) {
 # FIXME: correctly set PERL5LIB, if needed; for now I've temporarily disabled it
         print APACHE_SITE_CONF <<"EOF";
@@ -1832,6 +1850,7 @@ SetEnv     CONFIG_PATH ${site_dir}/config
 PerlSetEnv CONFIG_PATH ${site_dir}/config
 
 #SetEnv PERL5LIB \$BEDROCK_PERL_DIR
+$str_SetEnv_PERL5LIB
 
 # FIXME: we probably want to be using PerlPostConfigRequire instead of PerlRequire
 #PerlRequire ${site_dir}/conf/startup.pl
@@ -2211,12 +2230,13 @@ EOF
 # ----------------------------------------------------------------
 
 unless ( GetOptions(
-                    'h|help'          => \$SHOW_HELP,
-                    'd|domain-name=s' => \$DOMAIN_NAME,
-                    'f|site-conf=s'   => \$APACHE_SITE_CONF_FNAME,
-                    'g|group=s'       => \$TO_GROUP_NAME,
+                    'h|help'             => \$SHOW_HELP,
+                    'd|domain-name=s'    => \$DOMAIN_NAME,
+                    'f|site-conf=s'      => \$APACHE_SITE_CONF_FNAME,
+                    'g|group=s'          => \$TO_GROUP_NAME,
+                    'I|perl5-include=s@' => \@PERL5_EXTRA_INCLUDES,
                     'm|apache-mod-perl-startup=s' => \$APACHE_MOD_PERL_STARTUP_CONF_FNAME,
-                    'o|owner=s'       => \$TO_OWNER_NAME,
+                    'o|owner=s'          => \$TO_OWNER_NAME,
 
                     'i|apache-auth-db-include=s' => \$APACHE_AUTH_DB_INCLUDE_FNAME,
                     't|apache-auth-db-type=s'    => \$APACHE_AUTH_DB_TYPE,
@@ -2414,6 +2434,15 @@ if ($BE_VERBOSE) {
                     map { [ $ALL_OVERWRITE_OPTS{$_}, ( $$_ ? 'yes' : 'no' ) ] }
                         sort keys %ALL_OVERWRITE_OPTS;
     }
+
+    # If user provided extra Perl 5 include directories, display a summary of them
+    if (@PERL5_EXTRA_INCLUDES) {
+        my $l = @PERL5_EXTRA_INCLUDES;
+        map { printf STDERR qq{${PROG} (info): perl5 inc dir[%d]: "%s"\n}, $_, $PERL5_EXTRA_INCLUDES[$_] }
+            0..--$l;
+        printf STDERR qq{${PROG} (info): full PERL5LIB prefix: %s\n},
+            (join(':', @PERL5_EXTRA_INCLUDES));
+    }
 }
 
 maybe_create_site_directory_tree_or_die( $WEBSITE_DIR, $TO_OWNER_NAME, $TO_GROUP_NAME );
@@ -2459,7 +2488,9 @@ maybe_create_apache_site_config_file_or_die(
 
     AUTH_REALM    => $AUTH_REALM,
 
-    BEDROCK_HTDOCS_DIR => $BEDROCK_DIST_HTDOCS_DIR );
+    BEDROCK_HTDOCS_DIR => $BEDROCK_DIST_HTDOCS_DIR,
+
+    PERL5_EXTRA_INCLUDES => \@PERL5_EXTRA_INCLUDES );
 
 
 maybe_create_apache_mod_perl_startup_dot_pl_file_or_die( 
@@ -2734,6 +2765,29 @@ to write to files in the ${site_dir}/logs/html directory, which is where
 Bedrock attempts to write page-specific log files. Therefore you want to
 specify the same value as used for the Apache C<Group> directive in your
 main Apache configuration.
+
+
+=item -I, --perl5-include=DIR
+
+(Optional) Prepend DIR to any directories added to the PERL5LIB environment
+variable set in the $site-conf file. This variable is useful if you have Perl
+modules installed in non-standard locations, or if you intend to create one or
+more Bedrock loadable modules (BLMs) and you know where they will live.
+
+Specify multiple instances of this option to cause multiple directories to be
+prepended to the PERL5LIB. The order of the directories prepended to Perl's
+C<@INC> array will mirror the order in which the C<--perl5-include> options
+appear on the command line. For example,
+
+    $ bedrock-create-site ... -I /usr/foo -I /usr/bar ...
+
+will result in an C<@INC> that looks like this:
+
+    /usr/foo:/usr/bar:...
+
+Note that this option is provided merely as a convenience. If you do not
+specify this option, you will always be able to directly edit the value of
+PERL5LIB in the generated C<$site-conf> file.
 
 
 =item -m, --apache-mod-perl-startup=FILE
@@ -3277,6 +3331,27 @@ C<--overwrite-site-conf>) for the site conf file:
 The output of successive invocations of the above command will indicate that
 existing files are not being overwritten, I<except> for the file specified by
 the C<--site-conf=FILE> option.
+
+
+=head2 Example 7
+
+This example shows how a developer may invoke the program when he intends to
+create one or more Bedrock loadable modules (BLMs) in a specific
+directory. Use of the C<--perl5-include> options causes the generated
+C<$site-conf> file to have a PERL5LIB already configured to find his BLMs,
+which saves him the trouble of editing the file to add the entries manually.
+
+    $ bedrock-create-site \
+          --verbose \
+          --overwrite \
+          --domain-name=example.com \
+          --site-dir=/var/www/vhosts/example.com \
+          --site-conf=/etc/httpd/conf.d/example.com.conf \
+          --apache-mod-perl-startup=/etc/httpd/conf.d/example.com-startup.pl \
+          --apache-auth-db-user=foouser \
+          --perl5-include=/var/www/vhosts/example.com/lib/perl5 \
+          --perl5-include=/path/to/some/weirdo/perl5/lib/directory
+
 
 
 =head1 DIAGNOSTICS
