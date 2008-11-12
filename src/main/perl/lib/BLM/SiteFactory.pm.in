@@ -1,0 +1,428 @@
+#!/usr/bin/perl
+
+package BLM::SiteFactory;
+
+use vars qw(@ISA);
+use strict;
+use SIS::Hash;
+use SIS::Array;
+use SIS::Config;
+use BLM::DBHandler;
+
+use base qw( Exporter );
+
+use vars qw( @VERSION @EXPORT_OK );
+
+@EXPORT_OK = qw( _save_tagx_apps _read_tagx_apps );
+
+@ISA = qw(SIS::Hash);
+
+=pod
+
+=head1 NAME
+
+BLM::SiteFactory
+
+=head1 SYNOPSIS
+
+  package BLM::Startup::MyStartupBLM;
+
+  use BLM::SiteFactory;
+
+  use vars qw(@ISA);
+
+  @ISA = qw(BLM::SiteFactory);
+
+  1;
+
+=head1 DESCRIPTION
+
+C<BLM::SiteFactory> is a base class that can be used to provide all of
+the plumbing for your typical Bedrock Startup BLM.
+
+In general usage, it will also connect to a MySQL database if the
+startup BLM is properly configured, i.e. it has a C<data_source> entry
+in the config section.
+
+  <array name="MODULES"># -- save the tagx.xml config with module's current configuration...
+
+  ...
+
+   <object> 
+    <scalar name="binding">my_startup_blm</scalar> 
+    <scalar name="module">BLM::Startup::MyStartupBLM</scalar> 
+    <object name="config">
+      <scalar name="data_source">dbi:mysql:mydatabase</scalar>
+      <scalar name="username">fred</scalar>
+      <scalar name="password">pebbles</scalar>
+    </object>
+   </object> 
+
+  ...
+  </array>
+
+=cut
+
+sub TIEHASH
+{
+    my ($class, $ctx, $config) = @_;
+
+    my $self = bless {}, $class;
+    $self->{ctx} = $ctx;
+    $self->{config} = $config;
+
+    if ($config->{data_source}) {
+
+# mysql_client_found_rows allows up the UPDATE statement to return true if it updates
+# a row that has no changes.  Ex: update mytable set x=1 where x=1
+
+      $self->{dbi} = DBI->connect($config->{data_source}.":mysql_client_found_rows=1",
+				  $config->{username}, 
+				  $config->{password}, 
+				  { PrintError => 1, RaiseError => (exists $config->{raise_error}) || 0 }
+				 );
+    }
+    
+    $self;
+}
+
+=pod
+
+=head1 METHODS
+
+=head2 test_connection(data_source, username, password)
+
+=over 8
+
+=item data_source
+
+database name in DBI speak...e.g.:
+
+  dbi:mysql:baseball
+
+=item username
+
+Database user name.
+
+=item password
+
+password for this username.
+
+=back
+
+
+Example:
+
+  <null $mystartupblm.test_connect("dbi:mysql:baseball", "joe", "sayitaintso")>
+
+=cut
+
+sub test_connection {
+  my $self = shift;
+
+  my ($data_source, $username, $password) = @_;
+
+  my $dbi = DBI->connect($data_source,
+			 $username,
+			 $password,
+			 { PrintError => 1, RaiseError => 1 }
+			);
+  $dbi->disconnect;
+}
+
+=pod
+
+=head2 tables
+
+Returns a C<SIS::Array> that contains the tables in the currently open database.
+
+  <null --define-var="tables" $mystartupblm.tables()>
+
+=cut
+
+sub tables {
+  my $show_tables = BLM::DBHandler->new($_[0]->{dbi})->SelectList("show tables");
+
+  my @tables;
+
+  my ($key) = keys %{$show_tables->[0]};
+
+  foreach (@{$show_tables}) {
+    push @tables, $_->{$key};
+  }
+
+  return SIS::Array->new(@tables);
+}
+
+
+=pod
+
+=head2 dbi
+
+Returns the handle to the currently opened database.  This can be used
+in a Bedrock page directly or within your BLM.
+
+  <null --define-var="db" $mystartupblm.dbi()>
+
+  <sqlselect --db=$db --statement="select * from players">
+    <var $_.fname> <var $_.lname>
+  </sqlselect>
+
+=cut
+
+sub dbi {
+    return $_[0]->{dbi};
+}
+
+# -- set or return a value from this Modules 'config' section
+sub config {
+    my $self = shift;
+
+    $self->{config} = {} unless $self->{config};    
+    $self->{config}->{$_[0]} = $_[1] if scalar(@_) == 2;
+
+    return $self->{config}->{$_[0]};
+}
+
+sub _save_tagx {
+    my $site_config = shift;
+    my $filename  = shift || "tagx";
+
+    my $full_path = sprintf("%s/%s.xml", $ENV{CONFIG_PATH}, $filename);
+
+# - make a backup copy of previous config file
+    if (-s  $full_path."~") {
+	unlink $full_path."~";
+    }
+    
+    rename $full_path, $full_path."~";
+    my $xml = Bedrock::XML::writeXMLString($site_config);
+    
+# - write new config file
+    open FILE, ">$full_path";
+    print FILE $xml;
+    close FILE;
+}
+
+sub _read_tagx_apps {
+  my $path = $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH};
+
+  return SIS::Config->newFromXML($path."/tagx_apps.xml");
+}
+
+sub _save_tagx_apps {
+  _save_tagx($_[1], "tagx_apps");
+}
+
+sub save_tagx {
+  _save_tagx($_[1]);
+}
+
+=pod
+
+=head2 save_config
+
+Save the tagx.xml config with module's current configuration...
+
+=cut
+
+sub save_config {
+    my $self = shift;
+    my $class = shift || ref($self);
+
+# - tagx.xml
+    my $site_config = $self->{ctx}->{CONFIG};
+
+    die "This class (".ref($self).") cannot save tagx.xml!" unless $site_config;
+
+# - look for the module spec in tagx.xml
+    foreach (keys %{$site_config}) {
+	if ($_ eq "MODULES") {
+ 	    my @modules = @{$site_config->{MODULES}};
+	    foreach (@modules) {
+		if ($_->{module} =~/$class/) {
+		    $_->{config} = $self->{config};
+		}
+	    }
+	}
+    }
+    
+    _save_tagx($site_config);
+}
+
+
+sub _isIndex {
+    my $idx = shift;
+
+    return ($_[$idx] =~/^(\d+)$/) ? $1 : undef;
+}
+
+# parse an object that was turned into a bunch of hyphenated input variable names
+sub _parse {
+    my $config = shift;
+    my $input_var_name = shift;
+    my $input_value = shift;
+
+    my $temp = $input_var_name;
+    my @var = split "-", $input_var_name;
+
+    my $obj = $config;
+    my $key;
+
+    for (my $idx=0; $idx<$#var; $idx++) {
+	$key = $var[$idx];
+
+	if (defined _isIndex($idx, @var)) {
+	    $key = _isIndex($idx, @var);
+	    if (defined $obj->[$key]) {
+		$obj = $obj->[$key];
+	    }
+	    else {
+		$obj->[$key] = {};
+		$obj = $obj->[$key];
+	    }
+	}
+	elsif (defined $obj->{$key}) {
+	    $obj = $obj->{$key};
+	}
+	else {
+	    $obj->{$key} = (defined _isIndex($idx+1, @var)) ? [] : {};
+	    $obj = $obj->{$key};
+	}
+    }
+
+    $key = pop @var;
+
+    if (ref($obj) eq 'ARRAY') {
+	$obj->[$key] = $input_value if defined $input_value && $input_value ne '';
+    }
+    else {
+	if (defined $input_value) { 
+	    $obj->{$key} = $input_value;
+	}
+	else {
+	    $obj->{$key} = {};
+	}
+    }
+}
+
+sub delete_object {
+    my $self = shift;
+    my $input = shift;
+    my $object = shift;
+
+    foreach (keys %$input) {
+	if ($_ =~/^$object/) {
+	    delete $input->{$_};
+	    last;
+	}
+	else {
+	    if (ref($input->{$_}) =~/HASH/) {
+		$self->delete_object($input->{$_}, $object);
+	    }
+	}
+    }
+    
+    return $self->parse_input($input);
+}
+
+sub add_object {
+    my $self = shift;
+    my $input = shift;
+    my $key;
+
+    if ($input->{newobject_type} eq 'array') {
+	$key = sprintf("%s-%s-0", $input->{newobject_base}, $input->{newobject_name});
+	$input->{$key} = undef;
+	
+    }
+    elsif ($input->{newobject_type} eq 'object') {
+	$key = sprintf("%s-%s", $input->{newobject_base}, $input->{newobject_name});
+	$input->{$key} = undef;
+    }
+    elsif ($input->{newobject_type} eq 'scalar') {
+	$key = sprintf("%s-%s", $input->{newobject_base}, $input->{newobject_name});
+	$input->{$key} = "";
+    }
+
+    return $self->parse_input($input);
+    
+}
+
+sub parse_input {
+    my $self = shift;
+    my $input = shift;
+
+    my $config = {};
+    
+    foreach (keys(%{$input})) {
+	next unless ($_ =~/^config-/);
+	_parse($config, $_, $input->{$_});
+    }
+    
+    return SIS::Hash->new(%$config);
+}
+
+sub loadModule{
+  my $self = shift;
+  my @mods = @_;
+  
+  for my $class (@mods) {
+    $class =~ s!::!/!g;
+    $class =~ s!$!.pm! unless $class =~ /\.pm$/;
+    next if $INC{$class};
+    my $ret  = eval { require $class; };
+    return undef unless $ret;
+  }
+
+  return 1;
+}
+
+=pod
+
+=head table_handler
+
+See the documentation for C<BLM::IndexedTableHandler> for a full
+description of this method.
+
+=cut
+
+sub table_handler {
+    my $self = shift;
+    my ($table, $input) = @_;
+
+    my $class = "BLM::".ucfirst($table);
+
+    unless ($self->loadModule($class)) {
+      $class = "BLM::IndexedTableHandler";
+      $self->loadModule($class);
+    }
+
+    my $table_handler = $class->new($self->{dbi}, $input->{id}, $self->{config}, $table);
+
+    if ($input->{id} || $input->{action}) {
+	return $table_handler->handler($input);
+    }
+    else {
+	return $table_handler;
+    }
+}
+
+=pod
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer@signatureinfo.com
+
+=head1 SEE ALSO
+
+C<BLM::DBHandler>, C<BLM::IndexedRecordHandler>
+
+=cut
+
+# $Log$
+# Revision 1.1  2008/11/12 12:44:29  rlauer
+# added to bedrock project
+#
+
+1;
