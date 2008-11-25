@@ -8,4 +8,5 @@ dist_pebbles_DATA = \
     SquareTabs.peb \
     section.peb \
     selbox.peb \
-    simplemenu.peb
+    simplemenu.peb \
+    listmenu.peb

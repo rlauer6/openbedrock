@@ -29,6 +29,7 @@ perl5blmpdfrenderobjectlibdir = $(perl5libdir)/BLM/PDF/Render/Object
 perl5blmpdfrendertextlibdir   = $(perl5libdir)/BLM/PDF/Render/Text
 perl5blmpdftextlibdir         = $(perl5libdir)/BLM/PDF/Text
 perl5blmpdftexteffectslibdir  = $(perl5libdir)/BLM/PDF/Text/Effects
+perl5blmindexedtablehandlerlibdir = $(perl5libdir)/BLM/IndexedTableHandler
 perl5blmstartuplibdir 	      = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir  = $(perl5libdir)/BLM/Startup/Session
 
@@ -90,9 +91,12 @@ dist_perl5bedrocktexttagxtaglib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody.pm
 
 dist_perl5bedrocktexttagxtagnobodylib_DATA = \
+    Bedrock/Text/TagX/TAG/NoBody/Blm.pm \
     Bedrock/Text/TagX/TAG/NoBody/Exec.pm \
     Bedrock/Text/TagX/TAG/NoBody/Include.pm \
     Bedrock/Text/TagX/TAG/NoBody/NULL.pm \
+    Bedrock/Text/TagX/TAG/NoBody/Open.pm \
+    Bedrock/Text/TagX/TAG/NoBody/Pebble.pm \
     Bedrock/Text/TagX/TAG/NoBody/Raise.pm \
     Bedrock/Text/TagX/TAG/NoBody/SQL.pm \
     Bedrock/Text/TagX/TAG/NoBody/SQLConnect.pm \
@@ -131,6 +135,10 @@ dist_perl5bedrockxmlcontainerlib_DATA = \
 # BLM modules
 # -----------
 
+dist_perl5blmindexedtablehandlerlib_DATA = \
+    BLM/IndexedTableHandler/Common.pm \
+    BLM/IndexedTableHandler/RecordSet.pm
+
 dist_perl5blmlib_DATA = \
     BLM/Array.pm \
     BLM/Awk.pm \
@@ -141,6 +149,7 @@ dist_perl5blmlib_DATA = \
     BLM/Fortune.pm \
     BLM/Include.pm \
     BLM/Keys.pm \
+    BLM/List.pm \
     BLM/Mail.pm \
     BLM/Number.pm \
     BLM/OrderedObject.pm \
@@ -151,7 +160,10 @@ dist_perl5blmlib_DATA = \
     BLM/SMTP.pm \
     BLM/Stat.pm \
     BLM/String.pm \
-    BLM/Timenow.pm
+    BLM/Timenow.pm \
+    BLM/SiteFactory.pm \
+    BLM/DBHandler.pm \
+    BLM/IndexedTableHandler.pm
 
 dist_perl5blmstartuplib_DATA = \
     BLM/Startup/AutoDB.pm \
@@ -165,7 +177,8 @@ dist_perl5blmstartuplib_DATA = \
     BLM/Startup/Input.pm \
     BLM/Startup/Output.pm \
     BLM/Startup/Session.pm \
-    BLM/Startup/UserSession.pm
+    BLM/Startup/UserSession.pm \
+    BLM/Startup/Tiles.pm
 
 dist_perl5blmstartupsessionlib_DATA = \
     BLM/Startup/Session/GDBM.pm \

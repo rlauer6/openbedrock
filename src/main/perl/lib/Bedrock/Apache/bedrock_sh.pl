@@ -36,8 +36,9 @@ BEGIN
 	    chomp;
 	    if ( s/^inc\s+//i ) {
 		unshift @INC, $_;
-	    } elsif ( s/^config_path\s+//i ) {
-		$ENV{CONFIG_PATH} = $_;
+	    } elsif ( s/config_path\s+//i ) {
+		$ENV{BEDROCK_CONFIG_PATH} = $_;
+		$ENV{CONFIG_PATH} = $_; # deprecated
 	    }
 	}
 	close FILE;
@@ -57,6 +58,9 @@ exit 0;
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.3  2008/11/25 19:04:13  rlauer
+# changes based on Bedrock 2.0 migration plan
+#
 # Revision 1.2  2001/02/14 15:35:43  sridhar
 # Added copyright and GPL notice
 #

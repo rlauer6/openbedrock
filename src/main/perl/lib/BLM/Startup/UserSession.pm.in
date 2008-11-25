@@ -42,6 +42,32 @@ use Digest::MD5;
 use POSIX qw(strftime);
 @ISA = qw(SIS::Hash);
 
+=pod
+
+=head1 NAME
+
+BLM::Startup::UserSession
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+Implements stateful sessions stored to a MySQL database.  The session
+is accessed via the Bedrock object $session (or by whatever binding
+name you might configure in F<tagx.xml>.
+
+Sessions can be based on a session ID stored as a cookie or by using a
+CGI variable named C<session>.
+
+=head1 TECHNICAL NOTES
+
+*FIXME*
+
+=head1 METHODS
+
+=cut
+
+
 #
 # Table required is something like this:
 # create table junk_session (
@@ -132,6 +158,7 @@ sub send_cookie
 
     my $config = $self->{'config'};
     my ($cref, $header);
+
     for my $name (keys %{$self->{'cookies'}}) {
 	$cref = $self->{'cookies'}->{$name};
 	$header = $name . '=' . $cref->{'value'} . '; ';
@@ -183,11 +210,14 @@ sub newLoginCookie
     my $ctx = $self->{'ctx'};
     my $id = &digest;
 
-    # Set the cookie header
-    $self->cookie($config->{'login_cookie_name'},
-		  'value'	=> $id,
-		  'expires'	=> ( $config->{'login_cookie_expiry_days'} || 30 ) * 86400 );
-    $self->send_cookie;
+    unless ($config->{'cookieless_sessions'}) {
+      # Set the cookie header
+      $self->cookie($config->{'login_cookie_name'},
+		    'value'	=> $id,
+		    'expires'	=> ( $config->{'login_cookie_expiry_days'} || 30 ) * 86400 );
+      $self->send_cookie;
+    }
+    
     $id;
 }
 
@@ -198,13 +228,17 @@ sub newSessionID
     my $config = $self->{'config'};
     my $ctx = $self->{'ctx'};
     my $id = $self->{'session'} = &digest;
-
-    # Set the cookie header
+    
     my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
-    $self->cookie($self->{'name'},
-		  'value'	=> $id,
-		  'expires'	=> $secs);
-    $self->send_cookie;
+    
+    unless ($config->{'cookieless_sessions'}) {
+      # Set the cookie header
+      $self->cookie($self->{'name'},
+		    'value'	=> $id,
+		    'expires'	=> $secs);
+      $self->send_cookie;
+    }
+
     $id;
 }
 
@@ -306,11 +340,13 @@ sub readData
 	return;
     }
 
-    my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
-    $self->cookie($self->{'name'},
-		  'value'	=> $id,
-		  'expires'	=> $secs);
-    $self->send_cookie;
+    unless ($config->{'cookieless_sessions'}) {
+      my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
+      $self->cookie($self->{'name'},
+		    'value'	=> $id,
+		    'expires'	=> $secs);
+      $self->send_cookie;
+    }
 
     $self->{'session'} = $id;
     $self->init_session($aref);
@@ -329,13 +365,13 @@ sub newLoginSession
 				$login_id);
 
     unless ( $aref ) {
-	&log_message( undef, "Login cookie [$login_id] not found" ) if $verbose;
+	&log_message( undef, "Login session [$login_id] not found" ) if $verbose;
 	return;
     }
 
     my $data = {};
-    &log_message( undef, "Found login cookie [$login_id]\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
-    &log_message( undef, "Saved session info for login cookie [$login_id] is\n$aref->[-1]" ) if $verbose > 1;
+    &log_message( undef, "Found login session [$login_id]\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
+    &log_message( undef, "Saved session info for login session [$login_id] is\n$aref->[-1]" ) if $verbose > 1;
     @{$data}{qw(username firstname lastname email)} = (@{$aref}[0,1,2,3]);
     $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
 
@@ -374,34 +410,36 @@ sub TIEHASH
     $self->{'ctx'} = $ctx;
     $self->{'name'} = $name;
     $self->{'config'} = $config;
+
     my $verbose = $self->{'verbose'} = $config->{'verbose'};
 
     # Initialize session
     $self->startSession($config);
 
     # Check for an existing session
-    my $id = $ctx->getCookieValue($name);
-    &log_message( undef, "Read user's cookie: [$id]" ) if $id and $verbose;
+    my $id = $config->{'cookieless_sessions'} ? $ctx->getInputValue($name) : $ctx->getCookieValue($name);
 
     # Get the session data only if a session exists
     if ( defined( $id ) ) {
-	my $session = $self->readData($id);
-	&log_message( undef, "User has session cookie [$session]" ) if $session and $verbose;
-	return $self if $session;
+      &log_message( undef, "Read user's session: [$id]" ) if $verbose;
+      my $session = $self->readData($id);
+      &log_message( undef, "User has session [$session]" ) if $session and $verbose;
+      return $self if $session;
     }
 
     # No session cookie -- check to see if login cookie present
     my $login_cookie_name = $config->{'login_cookie_name'};
-    my $login_id = $ctx->getCookieValue($login_cookie_name) if $login_cookie_name;
+    my $login_id  = $config->{'cookieless_sessions'} ? $ctx->getInputValue($login_cookie_name) : $ctx->getCookieValue($login_cookie_name);
+
     if ( $login_id ) {
 	my $session = $self->newLoginSession($login_id);
-	&log_message( undef, "User has login cookie [$login_id] -- session cookie is [$session]" ) if $session and $verbose;
+	&log_message( undef, "User has login session [$login_id] -- session is [$session]" ) if $session and $verbose;
 	return $self if $session;
     }
 
     # everything failed -- need to create a new session
     my $session = $self->newSession;
-    &log_message( undef, "User does not have session or login cookie -- using [$session]" ) if $verbose;
+    &log_message( undef, "User does not have anonmous session or login session -- using [$session]" ) if $verbose;
 
     # And return the session object
     $self;
@@ -553,11 +591,28 @@ sub closeBLM
     $self->{'dbh'}->disconnect;
 }
 
+=pod
+
+=head2 clear
+
+Clear the session object.
+
+=cut
+
 sub clear
 {
     my $obj = shift;
     %{$obj} = ();
 }
+
+
+=pod
+
+=head2 register(username, password, firstname, lastname, email)
+
+Register a new user in the session table (login sessions).
+
+=cut
 
 sub register
 {
@@ -577,6 +632,13 @@ sub register
     &log_message( undef, "Registering user ($username, $password, $firstname, $lastname, $email): rows = [$rows]" )
 	if $verbose;
 }
+
+
+=pod
+
+=head2 login(username, password)
+
+=cut
 
 sub login
 {
@@ -618,28 +680,83 @@ sub login
     $self->do_sql($stm, @bind);
 }
 
-sub logout
-{
+
+=pod
+
+=head2 cookieless_session(session id)
+
+Start an anonymous cookieless session.
+
+=cut
+
+sub cookieless_session {
     my $obj = shift;
     my $self = tied(%{$obj});
 
     my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
-    my $t = $config->{'table_name'};
+    my $config = $self->{'config'};
+    my $ctx = $self->{'ctx'};
 
-    # Check if user has logged in; delete the session id in the database
-    # if the user has logged in
-    my $username = $self->{'data'}->{'username'};
-    $self->do_sql("update $t set session = null, expires = now() where username = ?",
-		  $username) if $username;
+    my $id = shift;
+    $self->{'new_session'} = 0 if $id;
+    $self->{'session'} = $id || $self->{'session'};
+    $self->readData($id);
 
-    # Reset data
-    $self->{'data'} = {};
+    $config->{'cookieless_sessions'} = 1;
 
+# kill the cookie if cookies are enabled, since on instantiation, UserSession ($session) will create a cookie
+    $self->cookie($self->{'name'},
+		  'value'	=> 'killed',
+		  'expires'	=> -864000);
+    $self->send_cookie;
+}
+
+=pod
+
+=head2 logout
+
+Logout and kill session.
+
+=cut
+
+sub logout {
+  my $obj = shift;
+  my $self = tied(%{$obj});
+  
+  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+  my $config = $self->{'config'};
+  my $ctx = $self->{'ctx'};
+
+  my $t = $config->{'table_name'};
+
+  # Expire the session (either login or anonymous)
+  if ($self->{'data'}->{'username'}) {
+    $self->do_sql("update $t set session = null, expires = now() where username = ?", $self->{'data'}->{'username'});
+  } else {
+    $self->do_sql("update $t set session = null, expires = now() where session = ? and username = ''", $self->{'session'});
+  }
+
+  # Reset data
+  $self->{'data'} = {};
+
+  unless ($config->{'cookieless_sessions'}) {
     # Delete the cookie
     $self->cookie($self->{'name'},
 		  'value'	=> 'killed',
 		  'expires'	=> -864000);
+    $self->send_cookie;
+  }
 }
+
+
+=pod
+
+=head2 change_passwd(oldpassword, newpassword)
+
+Change a user's password in the session table.
+
+=cut
+
 
 sub change_passwd
 {
@@ -662,6 +779,13 @@ sub change_passwd
     &log_message( undef, "Changed password returned [$rows]") if $verbose;
 }
 
+
+=pod
+
+=head2 remember_user
+
+=cut
+
 sub remember_user
 {
     my $obj = shift;
@@ -675,6 +799,7 @@ sub remember_user
 
     my $login_cookie_name = $config->{'login_cookie_name'};
     my $login_id = $ctx->getCookieValue($login_cookie_name);
+
     return length($login_id) ? 1 : 0 unless @_ > 0;
 
     my ($stm, @bind);
@@ -695,11 +820,37 @@ sub remember_user
     die "Could not update `remember_user' setting for user `$username'\n" unless $rows == 1;
 }
 
+
+=pod
+
+=head2 encrypt(password, salt)
+
+Encrypt a password suitable for storage in a file or database.
+
+=cut
+
+
+sub encrypt {
+  my $obj = shift;
+  my $self = tied(%{$obj});
+  my $password = shift;
+  my $salt = shift;
+  if ($salt) {
+      $self->do_select("select encrypt(?,?) passwd", $password, $salt)->[0];
+  }
+  else {
+      $self->do_select("select encrypt(?) passwd", $password)->[0];
+  }
+}
+
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2008/11/25 19:04:13  rlauer
+# changes based on Bedrock 2.0 migration plan
+#
 # Revision 1.6  2008/02/28 18:14:36  rlauer
 # Applying Rob's patches to make Bedrock work on Apache 2.x
 # (plus a few other obvious bug fixes).

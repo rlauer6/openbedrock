@@ -1,7 +1,6 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
 
-SUBDIRS = htdocs \
-          .
+SUBDIRS = .
 
 data_DATA = bedrock-perl5-inc-begin-block.snippet
 

@@ -1,4 +1,4 @@
-#!/export/home/perl5/bin/perl -w
+#!/usr/bin/perl -w
 
 # ident "@(#) $Header$"
 # ident "@(#)        $Name$"
@@ -29,6 +29,7 @@ use Carp;
 use File::Basename;
 use IO::Handle;
 use IO::File;
+use Cwd;
 
 BEGIN
 {
@@ -79,11 +80,17 @@ sub StartLogger
     my %args = @_;
 
     # Pick a directory to write the log file from, depending on where the file
-    # can be written: 1.User preference 2./raid/errs 3.Current dir 4./tmp
+    # can be written: 1. User preference 2. Current dir 3. /tmp
+
     my $dir = undef;
-    for ($args{'LOGDIR'}, '/raid/errs', './', '/tmp') {
+    for ($args{'LOGDIR'}, getcwd(), '/tmp') {
 	next unless $_;
-	do { $dir = $_; last } if -d $_ and -w $_;
+	warn "Warning! [$_] is not a directory!" unless -d  $_;
+	warn "Warning! [$_] is not writable!" unless -w $_;
+	if (-d $_ && -w $_ ) {
+	  $dir = $_;
+	  last;
+	}
     }
 
     # return undef if cannot open logfile
@@ -113,17 +120,22 @@ sub StartLogger
 	close FILE;
     }
 
+    warn sprintf("SIS::Log is logging to: [%s]",$Log_File);
+
     # Redirect STDERR too to append to logfile
     unless ( open( STDERR, ">> $Log_File" ) ) {
 	warn "Unable to append to log file $Log_File: $!\n";
 	return;
     }
+
     my $fd = new_from_fd IO::Handle ( 'STDERR', "a");
     $fd->autoflush ( 1 );
     $fd->close;
 
     # And log a sample message
     LOG_MESSAGE ( MSG_INFO, "=" x 80 . "\n$0: Starting now");
+
+    warn "STDERR now is appended to $Log_File...";
 
     # Log die and warn errors too if not redirected
     unless ( $SIG{__WARN__} ) {
@@ -143,8 +155,6 @@ sub LOG_MESSAGE
     my $level = &GET_LEVEL ( $arg_level );
     my $abort = &GET_ABORT ( $arg_level );
 
-    return unless $Log_File;
-
     # Check that level is valid and return if below cut off level
     $level = MSG_INFO unless defined($level) and $LevelStrings{$level};
     if ( $level >= $CutoffLevel ) {
@@ -152,8 +162,17 @@ sub LOG_MESSAGE
 	my $level_string = $LevelStrings{$level};
 
 	# Return undef if cannot write to file
-	my $fd = new IO::File ( $Log_File, "a");
-	return undef unless $fd;
+	my $fd;
+
+	if ($Log_File) {
+	    $fd = new IO::File ( $Log_File, "a");
+	    return undef unless $fd;
+	}
+	else {
+	    $fd = IO::Handle->new_from_fd(\*STDERR, "a");
+	    return undef unless $fd;
+	}
+
 	$fd->autoflush ( 1 );
 
 	# Make time
@@ -175,6 +194,9 @@ sub LOG_MESSAGE
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.5  2008/11/25 19:04:13  rlauer
+# changes based on Bedrock 2.0 migration plan
+#
 # Revision 1.4  2001/02/14 15:35:48  sridhar
 # Added copyright and GPL notice
 #

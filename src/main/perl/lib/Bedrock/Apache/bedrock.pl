@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl -w
+#!/usr/bin/perl
 
 # ident "@(#) $Header$"
 # ident "@(#)        $Name$"
@@ -30,8 +30,9 @@ BEGIN
 	    chomp;
 	    if ( s/^inc\s+//i ) {
 		unshift @INC, $_;
-	    } elsif ( s/^config_path\s+//i ) {
-		$ENV{CONFIG_PATH} = $_;
+	    } elsif ( s/config_path\s+//i ) {
+		$ENV{BEDROCK_CONFIG_PATH} = $_;
+		$ENV{CONFIG_PATH} = $_; # deprecated
 	    }
 	}
 	close FILE;
@@ -48,12 +49,37 @@ use Apache::Request_cgi;
 $SIG{TERM} = \&confess;
 $SIG{__WARN__} = \&Carp::cluck;
 my $code = &Apache::Bedrock::handler( Apache::Request_cgi->new );
-die "Bedrock handler returned code: $code" if $code;
+if ($code == 404) {
+    print <<eot;
+Content-type: text/html
+Status: 404
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html>
+<head>
+<title>404 Not Found</title>
+</head>
+<body>
+<h1>Not Found</h1>
+<p>The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server.</p>
+<hr>
+<address>$ENV{SERVER_SIGNATURE}</address>
+</body>
+</html>
+eot
+}
+else {
+    die "Bedrock handler returned code: $code" if $code;
+}
+
 exit 0;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.4  2008/11/25 19:04:13  rlauer
+# changes based on Bedrock 2.0 migration plan
+#
 # Revision 1.3  2001/02/14 15:35:43  sridhar
 # Added copyright and GPL notice
 #

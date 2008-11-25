@@ -6,7 +6,7 @@ dnl +-------------------------+
 
 dnl FIXME: Use 'bedrock-dev@signatureinfo.com' (or whatever) for
 dnl        the bug reporting address once the mailman server is set up.
-AC_INIT([bedrock], [1.6.6-snapshot], [ASalewski@signatureinfo.com])
+AC_INIT([bedrock], [2.0.0-snapshot], [ASalewski@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -155,11 +155,17 @@ AC_SUBST([pkglibdir])
 cgibindir=${pkglibdir}/cgi-bin
 AC_SUBST([cgibindir], ["\${pkglibdir}/cgi-bin"])
 
-htdocsdir=${datadir}/htdocs
-AC_SUBST([htdocsdir], ["\${datadir}/htdocs"])
+htdocsdir=${datadir}/${PACKAGE}/htdocs
+AC_SUBST([htdocsdir], ["\${datadir}/\${PACKAGE}/htdocs"])
 
-pebblesdir=${datadir}/pebbles
-AC_SUBST([pebblesdir], ["\${datadir}/pebbles"])
+pebblesdir=${datadir}/${PACKAGE}/pebbles
+AC_SUBST([pebblesdir], ["\${datadir}/\${PACKAGE}/pebbles"])
+
+imgdir=${datadir}/${PACKAGE}/img
+AC_SUBST([imgdir], ["\${datadir}/\${PACKAGE}/img"])
+
+cssdir=${datadir}/${PACKAGE}/css
+AC_SUBST([cssdir], ["\${datadir}/\${PACKAGE}/css"])
 
 
 # FIXME: These are not general, so won't be correct in all
@@ -224,6 +230,8 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]cgibindir[@],$(cgibindir),g'"'"' \
   -e '"'"'s,[@]htdocsdir[@],$(htdocsdir),g'"'"' \
   -e '"'"'s,[@]pebblesdir[@],$(pebblesdir),g'"'"' \
+  -e '"'"'s,[@]imgdir[@],$(imgdir),g'"'"' \
+  -e '"'"'s,[@]cssdir[@],$(cssdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
   \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
@@ -292,13 +300,14 @@ AC_CONFIG_FILES(
         [src/main/Makefile]
         [src/main/bedrock/Makefile]
         [src/main/bedrock/pebbles/Makefile]
+        [src/main/bedrock/img/Makefile]
+        [src/main/bedrock/htdocs/Makefile]
+        [src/main/bedrock/css/Makefile]
         [src/main/perl/Makefile]
         [src/main/perl/bin/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
         [src/main/resources/Makefile]
-        [src/main/resources/htdocs/Makefile]
-        [src/main/resources/htdocs/img/Makefile]
 )
 
 dnl Actually output the declared files
@@ -360,6 +369,7 @@ printf "                     pkglibdir: %s\n" "`__poor_mans_expand_file_name pkg
 printf "                     cgibindir: %s\n" "`__poor_mans_expand_file_name cgibindir`"
 printf "                     htdocsdir: %s\n" "`__poor_mans_expand_file_name htdocsdir`"
 printf "                    pebblesdir: %s\n" "`__poor_mans_expand_file_name pebblesdir`"
+printf "                        imgdir: %s\n" "`__poor_mans_expand_file_name imgdir`"
 printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
