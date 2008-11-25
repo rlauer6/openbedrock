@@ -304,7 +304,6 @@ AC_CONFIG_FILES(
         [src/main/bedrock/htdocs/Makefile]
         [src/main/bedrock/css/Makefile]
         [src/main/perl/Makefile]
-        [src/main/perl/bin/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
         [src/main/resources/Makefile]
