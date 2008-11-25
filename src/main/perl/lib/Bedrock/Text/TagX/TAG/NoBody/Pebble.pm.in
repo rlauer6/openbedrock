@@ -1,0 +1,227 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.org
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package TagX::TAG::NoBody::Pebble;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    @ISA	= qw (Exporter);
+}
+
+use vars qw($PWD);
+
+use SIS::Array;
+use TagX::Log 1.01;
+use TagX::TAG::NoBody 1.03;
+use SIS::BufferStream;
+use Cwd;
+
+@ISA = qw (TagX::TAG::NoBody);
+
+sub finalize
+{
+    my ($self, $tx, @context) = @_;
+
+    my %options = ('file=s'		=> undef,
+		   'object=s'		=> undef,
+		   'pebble=s'		=> undef,
+		   'expand-args'	=> undef);
+    my @argv = $self->parse_options (\%options, @context);
+    my $verbose = $self->verbose;
+
+    if ( $verbose ) {
+	my ($key, $value);
+	my $str = "$self: Options are\n";
+	while (($key, $value) = each %options) {
+	    $str .= "\t$key .. ($value)\n";
+	}
+	$str .= "Arguments are\n@argv";
+	&log_message( $self, $str );
+    }
+
+    my $input;
+
+#    die join("|", keys %{$tx->{out_handle}->{Handle}->{CONFIG}});
+
+    my $pwd = fastcwd;
+    if ( exists $options{'file'} ) {
+	$input = $options{'file'};
+	die "No file to exec.\n" unless length($input);
+	$input =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
+	die "Cannot exec `$input': is a directory.\n" if -d $input;
+	&log_message( $self, "Preparing to exec file [$input]" ) if $verbose;
+    } elsif ( exists $options{'object'} ) {
+	$input = $options{'object'};
+	&log_message( $self, "Preparing to exec object [$input]" ) if $verbose;
+    } elsif ( exists $options{'pebble'} ) {
+	$input = $options{'pebble'};
+	die "Specify name of the pebble to exec.\n" unless length($input);
+	my $dir;
+	die "PEBBLE_DIR not specified in config: cannot exec pebble `$input'\n"
+	    unless $dir = $tx->getoption('PEBBLE_DIR');
+	my $file = $dir . '/' . $input;
+	$file =~ s/$/.peb/ unless $file =~ /\.peb$/;
+	die "Cannot exec pebble `$input': not found.\n" unless -f $file;
+	$input = $file;
+    }
+    elsif ($argv[0] =~/^:/) {
+      # New pebble syntax <pebble:mypeb args>
+      $input = shift @argv;
+      $input =~s/^:(.*?)$/$1/;
+      $input = $input . ".peb" unless $input=~/\.peb/;
+
+      foreach my $dir ($pwd, $tx->getoption("PEBBLE_DIR"), $tx->getoption("BEDROCK_PEBBLE_DIR")) {
+	if (-s $dir . "/" . $input) {
+	  $input = $dir . "/" . $input;
+	  last;
+	}
+      }
+      die "Cannot exec pebble `$input': not found.\n" unless -s $input;
+    } elsif ( @argv ) {
+      my $buf = shift @argv;
+      if ( $verbose > 1 ) {
+	&log_message( $self, "Preparing to exec the following buffer (" . length( $buf ) . " bytes)\n"
+			  . $buf);
+      } elsif ( $verbose ) {
+	&log_message( $self, "Preparing to exec the following buffer (" . length( $buf ) . " bytes)\n"
+		      . substr( $buf, 0, 200 ) . "...." ) if $verbose;
+      }
+      $input = SIS::BufferStream->new($buf);
+      &log_message( $self, "Created a buffer stream object [$input]" ) if $verbose;
+    } else {
+      die "Must specify file or buffer as argument to <exec>.\n";
+    }
+    
+    my $subform = $tx->new ( $input );
+    $tx->{'VARS'}->new_frame;
+    
+    my @expanded;
+    if ( $options{'expand-args'} ) {
+	my $str = "Expanding arguments for <pebble>\n" if $verbose;
+	my $i = 0;
+	for my $item ( @argv ) {
+	    if ( ref($item) && &UNIVERSAL::isa($item, 'ARRAY') ) {
+		$str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
+		push @expanded, @{$item};
+	    } else {
+		$str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
+		push @expanded, $item;
+	    }
+	    $i++;
+	}
+	&log_message( $self, $str ) if $verbose;
+    } else {
+	@expanded = @argv;
+    }
+
+    $tx->param('ARGV' => SIS::Array->new( @expanded ));
+
+    &log_message( $self, "Starting the exec with [$subform] .." ) if $verbose;
+    $subform->output;
+    &log_message( $self, "Completed exec with [$subform] .." ) if $verbose;
+
+    $tx->{'VARS'}->end_frame;
+}
+
+=head1 TAG pebble
+
+=head1 PURPOSE
+
+Execute a Bedrock macro.
+
+=head1 SYNTAX
+  
+  <pebble:pebble-name [--file=file-name] [--pebble=pebble-name] [expand-args] statement | args ... >
+
+=head1 DESCRIPTION
+
+The pebble tag will create a separate namespace within which a set of
+Bedrock statements will be executed.  The pebble (file with a C<.peb>
+extension) should normally be installed in the site's pebble directory specified in
+the F<tagx.xml> file (C<PEBBLE_DIR>).
+
+Bedrock has a set of distribute pebbles located in the system pebble directory (C<BEDROCK_PEBBLE_DIR>).
+
+Bedrock will use the following protocol in looking for pebbles. 
+
+=over 5
+
+=item 1. 
+
+A fully qualified filename specified by the C<--file=> option.
+
+=item 2.
+
+A file with a C<.peb> extension specified with the C<--pebble=> directive located in the C<PEBBLE_DIR> as specfied in F<tagx.xml>.
+
+=item 3.
+
+A file with a C<.peb> extension whose name is specified after the colon in the tag name, starting first in the current working directory and then proceeding to look in the C<PEBBLE_DIR> as specified in F<tagx.xml>. 
+
+=back
+
+=head1 OPTIONS
+
+=over 5
+
+=item --file
+
+Fully qualified name of a file.  If the file is of the form C<~/filename> then the file is taken to be relative to the C<DOCUMENT_ROOT>.
+
+=item --pebble
+
+The name of a file with a C<.peb> extension in either the current
+working directory, site pebble directory (C<PEBBLE_DIR>) or the
+Bedrock global pebble directory (C<BEDROCK_PEBBLE_DIR>).
+
+=item --expand-args
+
+Expand arrays being passing as arguments to the pebble.  In essence, array references are sent as lists, rather than 1 element scalars.
+
+=back
+
+=head1 EXAMPLE
+
+  <pebble:mypeb "1" $input.hack>
+  <pebble --file="mypeb.inc" "1" $input.hack>
+  <pebble --pebble="mypeb" "1" $input.hack>
+  <pebble:mypeb --expand-args $args>
+
+=cut
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2008/11/25 14:32:36  rlauer
+# added as part of Bedrock 2.0.0 reorg
+#
+#
+
+1;
