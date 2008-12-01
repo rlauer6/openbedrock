@@ -121,6 +121,13 @@ ads_PERL_MODULE([File::Path],  [REQUIRED])
 ads_PERL_MODULE([File::Spec::Functions],  [REQUIRED])
 ads_PERL_MODULE([Getopt::Long], [REQUIRED])
 ads_PERL_MODULE([GDBM_File], [REQUIRED], [1.03])
+ads_PERL_MODULE([IO::File], [REQUIRED])
+ads_PERL_MODULE([IO::Handle], [REQUIRED])
+#
+# IO::Scalar is from the IO-stringy package, available here:
+#     http://www.cpan.org/modules/by-module/IO/
+ads_PERL_MODULE([IO::Scalar], [REQUIRED])
+#
 ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
