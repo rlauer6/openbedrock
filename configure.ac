@@ -6,7 +6,7 @@ dnl +-------------------------+
 
 dnl FIXME: Use 'bedrock-dev@signatureinfo.com' (or whatever) for
 dnl        the bug reporting address once the mailman server is set up.
-AC_INIT([bedrock], [2.0.5], [asalewski@signatureinfo.com])
+AC_INIT([bedrock], [2.0.6], [asalewski@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -110,6 +110,7 @@ dnl module. These tests are cheap, so this should be a non-issue; it's
 dnl infinitely better than discovering an oversite at runtime.
 dnl
 # Required Perl modules
+ads_PERL_MODULE([Apache2::Const], [REQUIRED])
 ads_PERL_MODULE([Carp], [REQUIRED])
 ads_PERL_MODULE([Cwd],  [REQUIRED])
 ads_PERL_MODULE([DBI], [REQUIRED], [1.13])
@@ -313,6 +314,7 @@ AC_CONFIG_FILES(
         [src/main/perl/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
+        [src/main/perl/lib/Bedrock/VERSION.pm]
         [src/main/resources/Makefile]
 )
 
