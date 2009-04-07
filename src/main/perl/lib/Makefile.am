@@ -240,3 +240,6 @@ dist_perl5blmpdftextlib_DATA = \
 
 dist_perl5blmpdftexteffectslib_DATA = \
     BLM/PDF/Text/Effects/Gradient.pm
+
+dist_noinst_DATA = \
+    Bedrock/VERSION.pm.in
