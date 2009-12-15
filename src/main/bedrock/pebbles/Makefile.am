@@ -9,4 +9,5 @@ dist_pebbles_DATA = \
     section.peb \
     selbox.peb \
     simplemenu.peb \
-    listmenu.peb
+    listmenu.peb \
+    select.peb
