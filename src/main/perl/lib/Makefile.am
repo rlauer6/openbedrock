@@ -65,6 +65,7 @@ dist_perl5bedrocksislib_DATA = \
     Bedrock/SIS/Handle.pm \
     Bedrock/SIS/Hash.pm \
     Bedrock/SIS/InputSource.pm \
+    Bedrock/SIS/JSON.pm \
     Bedrock/SIS/Log.pm
 
 dist_perl5bedrocksisinputsourcelib_DATA = \
