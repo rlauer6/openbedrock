@@ -38,6 +38,10 @@ BEGIN
 use TagX::Log 1.01;
 use Text::URLEncode 1.01;
 use TagX::TAG::NoBody 1.03;
+use BLM::IndexedTableHandler::Common qw(create_xhtml_element create_xhtml_element_header);
+use BLM::OrderedObject;
+use SIS::JSON;
+use Data::Dumper;
 
 @ISA = qw (TagX::TAG::NoBody);
 
@@ -51,7 +55,17 @@ sub finalize
 		   'format=s'	=> undef,
 		   'decode=s'	=> undef,
 		   'toggle=s'	=> undef,
-		   'default=s'	=> undef);
+		   'default=s'	=> undef,
+		   'table=s'    => undef,
+                   'ul=s'       => undef,
+		   'div=s'      => undef,
+                   'span=s'     => undef,
+                   'select=s'   => undef,
+		   'columns=s'  => undef,
+                   'textarea=s' => undef
+		  );
+
+    &log_message($self, Dumper(\%options, @context));
     my @argv = $self->parse_options (\%options, @context);
 
     my $verbose = $self->verbose;
@@ -69,8 +83,22 @@ sub finalize
     if ( exists $options{'name'} ) {
 	$value = $options{'name'};
     } elsif ( @argv == 0 ) {
+      # Oh Brother! Good thing Jay isn't around to see this hack...
+      # a) bedrock's parser is junk, ask Jay, he'll tell you.
+      # b) unfortunately, you cannot have an option that SOMETIMES takes an argument
+      # c) this is a guess as to what probably happened...so we try to make it right
+      if (defined $options{'table'} && (ref($options{'table'}) =~/array/i) ) {
+	$value = $options{'table'};
+	$options{'table'} = undef;
+      }
+      elsif (defined $options{'div'} && ! ref($options{'div'}) ) {
+	  $value = $options{'div'};
+	  $options{'div'} = undef;
+	}
+      else {
 	&log_message( $self, "No variable specified" );
 	return;
+      }
     } else {
 	$value = shift @argv;
     }
@@ -115,7 +143,132 @@ sub finalize
 	$value = ($value eq $a) ? $b : $a;
     }
 
+    if (exists $options{'div'} ) {
+      my $attributes = get_json_attributes('div', \%options);
+      $value = create_xhtml_element('div', $value, %{$attributes});
+    }
+
+    if (defined($options{'span'} ) ) {
+      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    }
+
+    if (defined($options{'textarea'} ) ) {
+      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    }
+
+    if (defined($options{'select'} ) ) {
+      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    }
+
+    if (defined($options{'ul'} ) ) {
+      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    }
+
+    if ( (exists $options{'table'}) && ref($value) =~/array/i ) {
+
+      my $column_attributes = {};
+      my @column_headers;
+      if (defined $options{columns} && $options{columns} =~/^\s*[\[]/) {
+	@column_headers = @{SIS::JSON::decode($options{columns})};
+	if (! is_simple_object(\@column_headers)) {
+	  $column_attributes = $column_headers[1];
+	  @column_headers = @{$column_headers[0]};
+	}
+      }
+      else {
+	@column_headers = (ref($value->[0]) =~/(hash|object)/i) ? keys %{$value->[0]} : ();
+      }
+
+      &log_message($self, sprintf("ref(0):%s Column headers are...%s" , ref($value->[0]),  join("|", @column_headers)) ) if $verbose;
+
+      my $table_attributes = get_json_attributes('table', \%options);
+      &log_message($self, Dumper($value, $table_attributes));
+
+      $value = create_xhtml_element('table', 
+				    eval {
+				      if (@column_headers) {
+					create_xhtml_element('tr', 
+							     eval {
+							       my $row;
+							       foreach (@column_headers) {
+								 $row .= create_xhtml_element('th', $_);
+							       }
+							       $row;
+							     }
+							    );
+				      }
+				      else {
+					undef;
+				      }
+				    } . 
+				    eval {
+				      my $text;
+				      foreach my $row (@$value) {
+
+					$text .= create_xhtml_element('tr',
+								      eval {
+									my $text;
+									# this obfuscation warrants an explanation... ;-)
+									# the object that contains the data for for the body of the table can be:
+									# ...an array ref or 
+									# ...a hash ref 
+									# if an array ref 
+									# ...then the order is dictated by the array's natural order
+									# if the object is a hashref && it is an ordered hash, all's well (or not ymmv),
+									# ...but if not you may have specified a column order (--columns=)
+									# ...in which case we'll slice the hash that way to get the values for the columns.
+									my @cell_values = ref($row) =~/array/i ? @$row : ((@column_headers > 0) ? @{$row}{@column_headers} : values %$row);
+									foreach (@cell_values) {
+									  $text .= create_xhtml_element('td', $_, %{$column_attributes});
+									}
+									$text;
+								      }
+								     );
+				      }
+				      $text;
+				    },
+				    %{$table_attributes}
+				   );
+      
+      &log_message($self, "error: ". $@) if $@;
+    }
+    
     $tx->out_handle->print($value);
+}
+
+sub get_json_attributes {
+  my $key = shift;
+  my $options = shift;
+
+  my $attributes = {};
+
+  if ($options->{$key} =~/^\s*[\{]/ ) {
+    $attributes = SIS::JSON::decode($options->{$key});
+  }
+  elsif ($options->{$key}) {
+    $attributes = {id => $options->{$key}};
+  }
+
+  $attributes;
+}
+
+sub is_simple_object {
+  my $obj = shift;
+
+  if (ref($obj) && ref($obj) =~/array/i) {
+    foreach (@$obj) {
+      return 0 if ref($_);
+    }
+    return 1;
+  }
+  elsif (ref($obj) =~/(object|hash)/i) {
+    foreach (keys %$obj) {
+      return 0 if ref($obj->{$_});
+    }
+    return 1;
+  }
+
+  return 1;
 }
 
 =pod
@@ -154,6 +307,9 @@ Include the value of a Bedrock expression.
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.16  2009/12/15 23:09:59  rlauer
+# wip - html options to var like --div/table/ul/select, etc
+#
 # Revision 1.15  2009/12/09 12:52:16  rlauer
 # added decode/toggle
 #
