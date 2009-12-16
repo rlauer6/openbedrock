@@ -61,8 +61,10 @@ sub finalize
 		   'div=s'      => undef,
                    'span=s'     => undef,
                    'select=s'   => undef,
+                   'select-group=s' => undef,
 		   'columns=s'  => undef,
-                   'textarea=s' => undef
+                   'textarea=s' => undef,
+                   'json'       => undef
 		  );
 
     &log_message($self, Dumper(\%options, @context));
@@ -94,6 +96,18 @@ sub finalize
       elsif (defined $options{'div'} && ! ref($options{'div'}) ) {
 	  $value = $options{'div'};
 	  $options{'div'} = undef;
+	}
+      elsif (defined $options{'ul'} && ref($options{'ul'}) ) {
+	  $value = $options{'ul'};
+	  $options{'ul'} = undef;
+	}
+      elsif (defined $options{'select'} && ref($options{'select'}) ) {
+	  $value = $options{'select'};
+	  $options{'select'} = undef;
+	}
+      elsif (defined $options{'select-group'} && ref($options{'select-group'}) ) {
+	  $value = $options{'select-group'};
+	  $options{'select-group'} = undef;
 	}
       else {
 	&log_message( $self, "No variable specified" );
@@ -129,13 +143,17 @@ sub finalize
     }
 
     if ( defined($options{'decode'}) ) {
-        my @list = split /\s*,\s*/, $options{'decode'};
-	my $default_value = pop @list;
-        &log_message($self, join("|", @list));
-        &log_message($self, $default_value);
-        &log_message($self,  $value);
-        my %decode_list = @list;
-	$value = (exists $decode_list{$value}) ? $decode_list{$value} : $default_value;
+      &log_message($self, "decode using ".$options{'decode'});
+      my $obj = SIS::JSON::decode($options{'decode'});
+      if (exists $obj->{$value}) {
+	$value = $obj->{$value};
+      }
+      elsif (exists $obj->{default}) {
+	$value = $obj->{default};
+      }
+      else {
+	$value = undef;
+      }
     }
 
     if ( defined($options{'toggle'}) ) {
@@ -149,21 +167,90 @@ sub finalize
     }
 
     if (defined($options{'span'} ) ) {
-      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+      my $attributes = get_json_attributes('div', \%options);
+      $value = create_xhtml_element('span', $value, %{$attributes});
     }
 
     if (defined($options{'textarea'} ) ) {
-      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+      my $attributes = get_json_attributes('textarea', \%options);
+      $value = create_xhtml_element('textarea', $value, %{$attributes});
     }
 
-    if (defined($options{'select'} ) ) {
-      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    # { 1: "that", 2: "this"}
+    # [ { 1: "this"}, {2: "that"}]
+    # [ 
+    #   { text: "this", attributes: {value : 1}}, 
+    #   { text: "that", attributes: {value : 2}}
+    # ]
+  
+    if (exists $options{'select'} ) {
+      my $attributes = get_json_attributes('select', \%options);
+      my @options;
+      if (ref($value) =~/(object|hash)/i) {
+        @options = map { { attributes => {value => $_}, text => $value->{$_} }; } keys %$value;
+      }
+      elsif (ref($value) =~/array/i) {
+	foreach (@$value) {
+	  if (exists $_->{text} && exists $_->{attributes}) {
+	    push @options, $_;
+	  }
+	  else {
+	    my $key = (keys %$_)[0]; # take first key we find
+	    push @options, {attributes  => {value => $key}, text => $_->{$key} };
+	  }
+	}
+      }
+      else {
+	die "Use array or hash to describe select options.";
+      }
+
+      $value = create_xhtml_element('select', join('', map { create_xhtml_element('option', $_->{text}, %{$_->{attributes}}) } @options), %$attributes);
     }
 
-    if (defined($options{'ul'} ) ) {
-      $value = create_xhtml_element('div', $value, ( id => $options{'div'} ) );
+    # [ { label: "foo",  group : [ { attributes : {value : 1}, text: "this"}, { attributes: { value: 2, selected: "selected"}, text: "that"}] }
+    #   { label: "foo2", group : [ { attributes : {value : 3}, text: "foo this"}, { attributes: { value: 4}, text: "foo that"}] }
+    # ]
+
+
+    if (exists $options{'select-group'} ) {
+      my $attributes = get_json_attributes('select', \%options);
+      if (ref($value) =~/array/i) {
+	$value = create_xhtml_element('select', 
+				      eval {
+					my $text;
+					foreach my $group (@$value) {
+					  $text .= create_xhtml_element('optgroup', 
+									join('',map { create_xhtml_element('option', $_->{text}, %{$_->{attributes}}) } @{$group->{group}}),
+									(label => $group->{label})
+								       );
+					}
+					$text;
+				      },
+				      %$attributes
+				     );
+      }
+      else {
+	die "--select-group requires an array of hashes.";
+      }
     }
 
+
+    if (exists $options{'ul'} ) {
+      die "--ul can only be used on arrays."
+	unless ref($value) =~/array/i;
+      my $attributes = get_json_attributes('select', \%options);
+      $value = create_xhtml_element('ul',join('', map { create_xhtml_element('li', $_) } @$value),  %{$attributes});
+    }
+
+    if (defined($options{'json'} ) ) {
+      if (ref($value)) {
+	$value = SIS::JSON::encode($value);
+      }
+      else {
+	die "Can't use --json on a scalar object."
+      }
+    }
+    
     if ( (exists $options{'table'}) && ref($value) =~/array/i ) {
 
       my $column_attributes = {};
@@ -307,6 +394,9 @@ Include the value of a Bedrock expression.
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.17  2009/12/16 23:25:09  rlauer
+# wip - html widgets
+#
 # Revision 1.16  2009/12/15 23:09:59  rlauer
 # wip - html options to var like --div/table/ul/select, etc
 #
