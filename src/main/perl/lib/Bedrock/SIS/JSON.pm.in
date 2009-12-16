@@ -37,15 +37,17 @@ BEGIN
 
 use SIS::Array;
 use SIS::Hash;
+use Data::Dumper;
 
-use JSON -support_by_pp;
-
+# we subclassed JSON::PP to provided ordered hashes - rcl 12/16/2009
+use SIS::JSON_PP_Ix; # use JSON -support_by_pp;
 
 sub new {
   my ($class, $thingy) = @_;
   bless \$thingy, ref($class) || $class;
 }
 
+# convert Bedrock objects -> regular perl objects
 sub devolve {
   my $this = shift;
 
@@ -71,6 +73,7 @@ sub devolve {
   }
 }
 
+# promote regular perl objects -> Bedrock objects
 sub evolve {
   my $this = shift;
 
@@ -91,37 +94,137 @@ sub evolve {
   }
 }
 
+# convert a JSON string into a Bedrock object
 sub decode {
-  my $this = ref($_[0]) ? ${$_[0]} : $_[0];
+  warn "JSON(decode): ". Dumper(@_);
+  my $this = (ref($_[0])=~/SIS::JSON/) ? ${$_[0]} : $_[0];
 
-  my $json = JSON->new;
+  my $json = SIS::JSON_PP_Ix->new;
 
   $json->relaxed(JSON::true);
   $json->loose(JSON::true);
   $json->allow_barekey(JSON::true);
+
+  my $obj;
+  eval {
+    $obj = $json->allow_barekey->decode($this);
+  };
+
+  die "There was a problem converting your JSON string ($this) to a Bedrock object - $@" if $@;
   
-  my $this = $json->allow_barekey->decode($this);
-  if ($this && ref($this) =~/^(ARRAY|HASH)$/) {
-    $this = &evolve($this);
+  if ($obj && ref($obj) =~/^(ARRAY|HASH)$/) {
+    $obj = &evolve($obj);
   }
 
-  return $this;
+  return $obj;
 }
 
+# convert a Bedrock object to a JSON string
 sub encode {
-  my $this = ref($_[0]) ? ${$_[0]} : $_[0];
+  warn "JSON(encode): ". Dumper(@_);
+  my $this = (ref($_[0])=~/SIS::JSON/) ? ${$_[0]} : $_[0];
 
-  my $json = new JSON;
+  my $json = SIS::JSON_PP_Ix->new;
   
-  return $json->encode(&devolve($this));
+  my $json_string;
+  eval {
+    $json_string = $json->encode(&devolve($this));
+  };
+
+  die "There was a problem converting your Berock object (".ref($this).") to a JSON string - $@" if $@;
+
+  return $json_string;
 }
 
+
+=pod
+
+=head1 NAME
+
+ C<SIS::JSON> - Manipulate JSON objects.
+
+=head1 SYNOPSIS
+
+ my $json = SIS::JSON->new($thingy);
+
+ # Depending on $thingy...
+ $json->encode(); 
+ $json->decode();
+
+ my $obj = SIS::JSON::decode('[{foo: "bar", baz : "buzz"}, {foo: "tan", baz: "fuz"}]');
+
+ my $json_string = SIS::encode($obj);
+
+=head1 DESCRIPTION
+
+A simple over on the CPAN JSON module.  You can count on your hashes being ordered however.
+
+perldoc C<JSON> and C<JSON::PP> for gory details.
+
+The implementation here is quite simple and does not provide all of
+the methods and features of the underlying JSON modules.  Enough has
+been implemented to allow you to use most JSON representations within
+Bedrock to be fairly dangerous.
+
+=head1 METHODS
+
+=head2 new
+
+=head2 decode([JSON string])
+
+Create a Bedrock object (array, hash) from the JSON string if called
+as a class method.  If called as an instance method, it operated on
+the $thingy that you instantiated the class with.
+
+=head2 encode([Bedrock object])
+
+Create a JSON string from a Bedrock object if called
+as a class method.  If called as an instance method, it operated on
+the $thingy that you instantiated the class with.
+
+=head1 NOTES
+
+Decoding (string -> object) is done with the most relaxed settings
+possible to allow the sloppiest JSON constructions to pass muster with
+C<JSON::PP>.  This means you can use bare key words in hashes:
+
+  [{label:"Date", value : "09/20/1959"}]
+
+This class is used throughout the underlying Bedrock code to provide
+support for JSON in a variety of situations, including:
+
+  <sink --define-var="foo" --json>
+  [
+    { name: "Ron",    label: "Date", value : "09/20/1959"},
+    { name: "Dave",   label: "Date", value : "09/29/1992"}
+  ]
+  </sink>
+
+  <null --define-var="foo" --json '["a", "b", "c"]>
+
+  <var --json $foo>
+
+Standard objects should probably be constructed using the standard
+Bedrock mechanisms, however JSON does give the developer an
+opportunity to create complex object without resorting to contortions
+within the Bedrock page.  Keeping in mind that Bedrock encourages
+programs to be written as BLMs, not web pages, providing a simple way
+to construct more complex objects is consistent with that philosophy.
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer@signatureinfo.com
+
+=cut
 
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.2  2009/12/16 23:26:05  rlauer
+# pod, use SIS::JSON_PP_Ix
+#
 # Revision 1.1  2009/12/15 23:05:54  rlauer
 # first check-in
 #
