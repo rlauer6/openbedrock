@@ -122,7 +122,7 @@ sub finalize
       if exists $options{'ordered'} and (exists $options{'define-var'} or exists $options{'define-array'});
 
     die "Use `--json only' only for `--define-var'.\n"
-      if exists $options{'json'} and (exists $options{'create-object'} or exists $options{'define-array'});
+      if exists $options{'json'} and exists $options{'define-array'};
     
     if ( exists $options{'define-var'} ) {
 	# Vanilla define-var does the following
@@ -134,7 +134,17 @@ sub finalize
 	if ( @argv > 1 ) {
 	    &log_message( $self, "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
 		if $verbose;
-	    $tx->param( $options{'define-var'} => SIS::Array->new(@argv) );
+	    # check to see if it's possible that this is just a trick
+	    # of quoting that resulted in the parser creating multiple
+	    # arguments - q{{foo:1, bar:2}}
+
+	    if ($options{'json'}) {
+	      my $json_string = join('', @argv);
+	      $tx->param($options{'define-var'}, SIS::JSON::decode($json_string));
+	    }
+	    else {
+	      $tx->param( $options{'define-var'} => SIS::Array->new(@argv) );
+	    }
 	} elsif ( @argv == 1 ) {
 	    &log_message( $self, "Assigning $argv[0] to $options{'define-var'}" ) if $verbose;
 	    if (defined $options{'json'}) {
@@ -156,6 +166,7 @@ sub finalize
 	$tx->param( $options{'define-array'} => SIS::Array->new(@argv) );
     } elsif ( exists $options{'create-object'} ) {
 	# create-object creates an object and does the following
+        #  0. If $options{'json'} then assume all args represent a JSON string to be converted into an object
 	#  1. If the number of args is even, uses the arguments as
 	#     key-value pairs to initialize the object
 	#  2. If the number of args is odd and the first or last argument is
@@ -164,34 +175,42 @@ sub finalize
 	#  3. In both cases, the key must be a scalar -- cannot be an object, array ..
 	#  4. Anything else is an error
 	my $nArgs = @argv;
-
-	unless ( int($nArgs / 2) * 2 == $nArgs ) {
-	    &log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
+	if ($options{'json'} || $nArgs == 1) {
+	  my $json_string = join('', @argv);
+	  # interpret the arguments as JSON string
+	  my $json = SIS::JSON->new($json_string);
+	  &log_message($self, "in NULL ".Dumper($json->decode)) if $verbose;
+	  $tx->param($options{'create-object'} => $json->decode);	  
+	}
+	else {
+	  unless ( int($nArgs / 2) * 2 == $nArgs ) {
+	  &log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
 	    my $aref = $argv[0];
 	    if ( &UNIVERSAL::isa($aref, 'ARRAY') ) {
-		shift @argv;
+	      shift @argv;
 		&log_message( $self, "Prepending the following array to (@argv)\n(@{$aref})" ) if $verbose;
 		unshift @argv, @{$aref};
-	    } elsif ( defined($aref = $argv[-1]) and &UNIVERSAL::isa($aref, 'ARRAY') ) {
-		pop @argv;
+	      } elsif ( defined($aref = $argv[-1]) and &UNIVERSAL::isa($aref, 'ARRAY') ) {
+	      pop @argv;
 		&log_message( $self, "Appending the following array to (@argv)\n(@{$aref})" ) if $verbose;
 		push @argv, @{$aref};
-	    }
-	}
-
+	      }
+	  }
+	
 	$nArgs = @argv;
 	die "Odd number of elements($nArgs) in object creation list.\n" unless int($nArgs / 2) * 2 == $nArgs;
 	&log_message( $self, "Key-value pairs for object creation are\n(@argv)" ) if $verbose;
 	my $obj = (exists $options{ordered}) ? BLM::OrderedObject->new(@argv) : SIS::Hash->new(@argv);
-#	my %args = @argv;
-#	for my $key ($obj->keys()) {
-#	    die "Cannot use `$key' as a property name: must be a scalar.\n"
-#		if ref($key);
-#	    $obj->{$key} = $args{$key};
-#	}
-
+	#	my %args = @argv;
+	#	for my $key ($obj->keys()) {
+	#	    die "Cannot use `$key' as a property name: must be a scalar.\n"
+	#		if ref($key);
+	#	    $obj->{$key} = $args{$key};
+	#	}
+	
 	&log_message( $self, "Creating an object named $options{'create-object'}" ) if $verbose;
 	$tx->param( $options{'create-object'} => $obj);
+      }
     }
 }
 
@@ -249,6 +268,9 @@ Create an ordered hash.
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.12  2009/12/17 23:23:30  rlauer
+# more JSON awareness
+#
 # Revision 1.11  2009/12/16 23:22:27  rlauer
 # fix docs, tighter error checing
 #
