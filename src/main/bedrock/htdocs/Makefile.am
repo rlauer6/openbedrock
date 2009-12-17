@@ -4,5 +4,5 @@ dist_htdocs_DATA = \
     error.roc \
     itworks.rock \
     index.rock \
-    notworking.html
-
+    notworking.html \
+    unit_test.rock
