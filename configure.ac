@@ -124,6 +124,9 @@ ads_PERL_MODULE([Getopt::Long], [REQUIRED])
 ads_PERL_MODULE([GDBM_File], [REQUIRED], [1.03])
 ads_PERL_MODULE([IO::File], [REQUIRED])
 ads_PERL_MODULE([IO::Handle], [REQUIRED])
+ads_PERL_MODULE([JSON], [REQUIRED])
+ads_PERL_MODULE([Tie::Hash::Indexed], [REQUIRED])
+
 #
 # IO::Scalar is from the IO-stringy package, available here:
 #     http://www.cpan.org/modules/by-module/IO/
