@@ -1,0 +1,89 @@
+The Bedrock 2 TODO List
+=======================
+
+Understand the Bedrock parser
+-----------------------------
+
+The Bedrock parse sucks, but it sortakinda works.  In fact, it works
+so poorly that it limits what we can do with the Bedrock "language",
+if you want to call it that.
+
+That's a blessing in reality as it prevents us from reinventing PHP.
+It does get a little frustrating though when simple things are
+difficult.  Take for example this type of feature you might be tempted
+to implement...
+
+ <some_new_tag --option=arg>
+ <some_new_tag --option>
+
+In this case we want a tag that has an option with an "optional"
+argument.  If the option exists however, it has some default meaning.
+A good example might be...
+
+ --verbose
+ --verbose=3
+
+Jay's solution was:
+
+ --verbose --verbose --verbose
+
+
+ARRGHHHH...in other words if he sees multiple instances of an option,
+he increments an counter so that in a tag implementation
+$options{'verbose'} would be 3.
+
+What happens when you just go ahead and drop the argument to an option
+that requires an argument?
+
+  <some_new_tag --verbosity-level=3 $foo>
+  <some_new_tag --verbosity-level $foo>
+
+Turns out that the way Bedrock parses a tag creates a bit of a
+problem since by the time a tag implementation is invoked, the parser
+has done some magic on this line and essentially created a bunch of
+evaluated arguments in @argv.  The tag implementation typically then
+calls `$sefl->parse_options()' as below:
+
+    my %options = ('verbosity-level=s'	=> undef,
+                   'htmlencode'         => undef
+		  );
+
+    my @argv = $self->parse_options (\%options, @context);
+
+Since the Bedrock options parser is being told (we presume as shown
+above with the =s specification) that the option requires an option it
+interprets the @context and returns an @argv in that light and
+slurps $foo as the verbosity level.
+
+So...as a hack, your tag implementation can, contextually determine
+that your tag can and often does NOT have an argument and seeing the
+next argument as something foreign (or not at all!) might rightly
+assume that the option slurped up the argument!
+
+In that case $foo will be found in $options{'verbosity-level'} and can
+be safely pushed back onto @argv for further processing...
+
+So you're code might look something like:
+
+  unless (@argv) {
+    # that's odd this tag needs an argument!
+    if ($options{'verbosity-level'}) {
+       # ...hmmm should I assume this was parsed incorrectly and the
+       #    text was really --verbosity-level with no argument?
+       # ...if $foo in my tag implementation was required to be of
+       #    certain type, additional sniffing might be helpful...
+       #    more evidence if (ref($options{'verbosity-level'} =~/array/i) ...
+      push @argv, $options{'verbosity-level'};
+      # make sure $options{'verbosity-level'} exists, but is undefined
+      # which was the true intent of --verbosity-level
+      $options{'verbosity-level'} = undef; 
+    }
+  }
+
+Later in your tag implementation you might simple test for the
+existence of 'verbosity-level' to determine if this is on or at what
+level, for example...
+
+Surprisingly, this method works in a variety of situations where you
+might think the parser would just screw up.  I think as long as you
+don't have two options like this, you should be good.
