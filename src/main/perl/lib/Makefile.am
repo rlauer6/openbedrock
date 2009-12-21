@@ -149,6 +149,7 @@ dist_perl5blmlib_DATA = \
     BLM/Benchmark.pm \
     BLM/Date.pm \
     BLM/File.pm \
+    BLM/Filter.pm \
     BLM/FileIO.pm \
     BLM/Fortune.pm \
     BLM/Include.pm \
