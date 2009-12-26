@@ -40,8 +40,10 @@ use SIS::Config;
 use SIS::Log;
 use CGI;
 use File::Basename;
+use Data::Dumper;
 
-sub args
+# deprecated in favor of CGI.pm
+sub args 
 {
     my $self = shift;
     my $q = $ENV{'QUERY_STRING'};
@@ -54,30 +56,7 @@ sub args
     @args;
 }
 
-sub upload_file {
-  my $self = shift;
-  my $form_var = shift;
-  my $upload_path = shift;
-
-  unless ($upload_path) {
-    my ($name, $path, $ext) = fileparse($self->cgi->param($form_var), qr/\.[^.]*/);
-    $upload_path = sprintf("%s/%s%s", $self->{CONFIG}->{UPLOAD_PATH} || '/tmp', $name, $ext); 
-  }
-
-  my $fh = $self->cgi->param($form_var);
-
-  open TEMPFILE, ">$upload_path";
-  my $buffer;
-  my $bytesread;
-  while ($bytesread = read($fh, $buffer, 1024)) {
-    print TEMPFILE $buffer;
-  }
-
-  close TEMPFILE;
-
-  return -s $upload_path;
-}
-
+# deprecated in favor of CGI.pm
 sub content
 {
     my $self = shift;
@@ -92,6 +71,63 @@ sub content
     }
     @args;
 }
+
+# upload_file(form-var-name, options ... | {})
+#  options: path =>
+#           Content-Type => scalar | []
+#           filename => name of file 
+sub upload_file {
+  my $self = shift;
+  my $form_var = shift;
+  my $options = {};
+
+  my $fh = $self->cgi->param($form_var);
+  die "upload_file upload error: ", $self->cgi->cgi_error() unless $fh;
+
+  if (UNIVERSAL::isa($_[0], 'HASH')) {
+    $options = shift;
+  }
+  else {
+    %{$options} = @_;
+  }
+
+  &LOG_MESSAGE(MSG_DEBUG, "upload_file options: ". Dumper($options));
+  # check to see if this is a valid mime-type to be uploaded
+  if ($options->{'Content-type'} || $options->{'content-type'}) {
+    my $content_type = $options->{'Content-type'} || $options->{'content-type'};
+    my @content_types;
+    push @content_types, (UNIVERSAL::isa($content_type, 'ARRAY')) ? @$content_type : $content_type;
+
+    &LOG_MESSAGE(MSG_DEBUG, sprintf("upload_file acceptable content-types: %s", join(",", @content_types)));
+    die sprintf("upload_file content_type error: uploading (%s), must be one of (%s)", $self->cgi->uploadInfo($fh)->{'Content-Type'}, join(",", @content_types)) unless
+      grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'}}  @content_types;
+  }
+  
+  my ($name, $path, $ext) = fileparse($self->cgi->param($form_var), qr/\.[^.]*/);
+  
+  my $upload_path;
+  my $upload_filename;
+  
+  $upload_path = $options->{path} || ($self->{CONFIG}->{UPLOAD_PATH} || '/tmp');
+  $upload_filename = $options->{filename} || ($name . $ext);
+
+  my $uploaded_file = sprintf("%s/%s", $upload_path, $upload_filename);
+  &LOG_MESSAGE(MSG_INFO, sprintf("upload_file processing: file => [%s], content-type => [%s]\n", $uploaded_file, $self->cgi->uploadInfo($fh)->{'Content-Type'}));
+
+  open TEMPFILE, ">$uploaded_file";
+  my $buffer;
+  my $bytesread;
+
+  while ($bytesread = read($fh, $buffer, 4096)) {
+    &LOG_MESSAGE(MSG_DEBUG, sprintf("upload_file bytes read: %d", $bytesread));
+    print TEMPFILE $buffer;
+  }
+
+  close TEMPFILE;
+
+  return ($uploaded_file && -s $uploaded_file) ? -s $uploaded_file : undef;
+}
+
 
 sub cgi {
   $_[0]->{cgi} = $_[0]->{cgi} ? $_[0]->{cgi} : new CGI;
@@ -309,6 +345,9 @@ sub input
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.8  2009/12/26 15:38:40  rlauer
+# use CGI for parsing GET/POST data, added upload_file method, args(), content() deprecated
+#
 # Revision 1.7  2009/12/23 12:26:04  rlauer
 # beefed up upload_file
 #
