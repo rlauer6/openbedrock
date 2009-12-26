@@ -159,6 +159,7 @@ dist_perl5blmlib_DATA = \
     BLM/Number.pm \
     BLM/OrderedObject.pm \
     BLM/Perldoc.pm \
+    BLM/PLUGIN.pm \
     BLM/Recycle.pm \
     BLM/Series.pm \
     BLM/SIMPLEFTP.pm \
