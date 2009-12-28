@@ -45,8 +45,6 @@ dist_perl5bedrockapachelib_DATA = \
     Bedrock/Apache/Bedrock.pm \
     Bedrock/Apache/bedrock.pl \
     Bedrock/Apache/bedrock_sh.pl \
-    Bedrock/Apache/PDFrock.pm \
-    Bedrock/Apache/pdfrock.pl \
     Bedrock/Apache/Request_cgi.pm \
     Bedrock/Apache/Request_shell.pm
 
@@ -84,6 +82,7 @@ dist_perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Array.pm \
     Bedrock/Text/TagX/TAG/NoBody/Blm.pm \
     Bedrock/Text/TagX/TAG/NoBody/Case.pm \
+    Bedrock/Text/TagX/TAG/NoBody/Exec.pm \
     Bedrock/Text/TagX/TAG/NoBody/Hash.pm \
     Bedrock/Text/TagX/TAG/NoBody/Include.pm \
     Bedrock/Text/TagX/TAG/NoBody/NULL.pm \
