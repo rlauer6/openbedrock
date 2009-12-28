@@ -95,7 +95,7 @@ dist_perl5bedrocktexttagxtaglib_DATA = \
 dist_perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Array.pm \
     Bedrock/Text/TagX/TAG/NoBody/Blm.pm \
-    Bedrock/Text/TagX/TAG/NoBody/Exec.pm \
+    Bedrock/Text/TagX/TAG/NoBody/Case.pm \
     Bedrock/Text/TagX/TAG/NoBody/Hash.pm \
     Bedrock/Text/TagX/TAG/NoBody/Include.pm \
     Bedrock/Text/TagX/TAG/NoBody/NULL.pm \

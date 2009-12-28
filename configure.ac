@@ -112,6 +112,7 @@ dnl
 # Required Perl modules
 ads_PERL_MODULE([Apache2::Const], [REQUIRED])
 ads_PERL_MODULE([Carp], [REQUIRED])
+ads_PERL_MODULE([CGI], [REQUIRED], [3.29])
 ads_PERL_MODULE([Cwd],  [REQUIRED])
 ads_PERL_MODULE([DBI], [REQUIRED], [1.13])
 ads_PERL_MODULE([Date::Calc], [REQUIRED], [4.3])
@@ -119,22 +120,22 @@ ads_PERL_MODULE([Fcntl],  [REQUIRED])
 ads_PERL_MODULE([File::Basename],  [REQUIRED])
 ads_PERL_MODULE([File::Copy],  [REQUIRED])
 ads_PERL_MODULE([File::Path],  [REQUIRED])
+ads_PERL_MODULE([File::Temp],  [REQUIRED])
 ads_PERL_MODULE([File::Spec::Functions],  [REQUIRED])
 ads_PERL_MODULE([Getopt::Long], [REQUIRED])
 ads_PERL_MODULE([GDBM_File], [REQUIRED], [1.03])
 ads_PERL_MODULE([IO::File], [REQUIRED])
 ads_PERL_MODULE([IO::Handle], [REQUIRED])
-ads_PERL_MODULE([JSON], [REQUIRED])
-ads_PERL_MODULE([Tie::Hash::Indexed], [REQUIRED])
-
 #
 # IO::Scalar is from the IO-stringy package, available here:
 #     http://www.cpan.org/modules/by-module/IO/
 ads_PERL_MODULE([IO::Scalar], [REQUIRED])
 #
+ads_PERL_MODULE([JSON], [REQUIRED])
 ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
+ads_PERL_MODULE([Tie::Hash::Indexed], [REQUIRED])
 
 # Optional Perl modules
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
