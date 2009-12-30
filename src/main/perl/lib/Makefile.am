@@ -143,7 +143,7 @@ dist_perl5blmlib_DATA = \
     BLM/PLUGIN.pm \
     BLM/Recycle.pm \
     BLM/Series.pm \
-    BLM/SIMPLEFTP.pm \
+    BLM/FTP.pm \
     BLM/SMTP.pm \
     BLM/Stat.pm \
     BLM/Timenow.pm \
