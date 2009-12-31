@@ -36,7 +36,7 @@
 .pebble div,pre         { margin-left:20; }
 .pebble code            { font-family:courier; font-size:8pt; color:green; }
 </style>
-<blm:Timenow --define-var = "timenow" >
+<plugin:Timenow>
 </head>
 
 <body>
@@ -50,7 +50,7 @@
   $Bedrock.version></b></td>
 </tr>
 <tr>
-  <td ><i>Timestamp:&nbsp;</i><b><var $timenow.ctime></b></td>
+  <td ><i>Timestamp:&nbsp;</i><b><var $Timenow.ctime></b></td>
 </tr>
 </table>
 
