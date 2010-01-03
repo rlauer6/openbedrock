@@ -29,6 +29,8 @@ use strict;
 use Bedrock::Hash;
 use Bedrock::Array;
 use Bedrock::JSON;
+use XML::Simple;
+use XML::Parser;
 
 BEGIN
 {
@@ -73,7 +75,9 @@ sub finalize
     my %options = ('define-var=s' => undef,
 		   'htmlencode'	=> undef,
 		   'htmldecode'	=> undef,
-		   'json' => undef);
+		   'json' => undef,
+                   'xml' => undef
+		  );
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
     if ( $verbose ) {
@@ -112,20 +116,33 @@ sub finalize
 	$data =~ s/\x3c/\&lt;/g;
 	$data =~ s/\x3e/\&gt;/g;
 	&log_message ( $self, "HTMLEncoded to <$data>" ) if $verbose > 1;
-    } elsif ( $options{'htmldecode'} ) {
+      } elsif ( $options{'htmldecode'} ) {
 	$data =~ s/\x26amp;/\x26/g;
 	$data =~ s/\x26lt;/\x3c/g;
 	$data =~ s/\x26gt;/\x3e/g;
 	&log_message ( $self, "HTMLDecoded to <$data>" ) if $verbose > 1;
       } elsif ($options{'json'}) {
 	$data = Bedrock::JSON::decode($data);
+      } elsif ($options{'xml'}) {
+	my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+	my $options = $config->{XML}->{in}->devolve;
+	my $xml = XML::Simple->new(%{$options});
+	# see if --xml in context of a file handle output
+	if (@argv == 1) {
+	  die "Use the --xml option of <sink> to decode XML to a Bedrock object.  If you wanted to write XML use <var --xml>."
+	}
+	# sinking xml to a variable?
+	else {
+	  # XMLin ?
+	  $data = $xml->XMLin($data);
+	}
       }
-
+      
     if ( exists $options{'define-var'} ) {
-	&log_message( $self, "Assigning contents of <SINK> to $options{'define-var'}" ) if $verbose;
-	$tx->param( $options{'define-var'} => $data );
+      &log_message( $self, "Assigning contents of <SINK> to $options{'define-var'}" ) if $verbose;
+      $tx->param( $options{'define-var'} => $data );
     }
-
+    
     # Expect a single argument which should be a handle to which we print
     # the frame contents to
     if ( @argv == 1 ) {
@@ -169,6 +186,7 @@ file descriptor.
 
  --define-var = var-name
  --json 
+ --xml
 
 =over 5
 
@@ -178,8 +196,15 @@ Name of scalar object that will contain the output.
 
 =item --json
 
-Consider the content of the <sink> block to be JSON and convert it
+The content of the E<lt>sinkE<gt> block is considered to be a JSON string.  Bedrock will convert it
 into a Bedrock object or array.
+
+=item --xml
+
+The content of the E<lt>sinkE<gt> block is considered to be an XML
+string.  Bedrock will convert it into a Bedrock object or array.
+I<See the E<lt>varE<gt> tag for details regarding XML conversions in
+Bedrock.>
 
 =item handle
 
@@ -193,8 +218,12 @@ An open handle, typically opened by another BLM.
 
 =item Sinking text to a scalar object
 
+Initialize a variable with some text:
+
   <sink --define-var="foo">This is a test of sinking some text to the scalar "foo"</sink>
   <var $foo>
+
+Create a Bedrock array using JSON notation:
 
   <sink:foo --json>
   [ 
@@ -202,6 +231,17 @@ An open handle, typically opened by another BLM.
     {item: "cooler", price: "29.95"},
     {item: "corona", price: "32"}
   ]
+  </sink>
+
+Create a Bedrock object usin XML notation:
+
+  <sink:foo --xml>
+  <document>
+    <item>
+      <date>01/03/2010</date>
+      <text>This is some text</text>
+    </item>
+  </document>
   </sink>
 
 =item Sinking text to a handle
@@ -218,6 +258,9 @@ An open handle, typically opened by another BLM.
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.17  2010/01/03 19:21:13  rlauer
+# added --xml option
+#
 # Revision 1.16  2009/12/31 18:38:43  rlauer
 # updated docs
 #
