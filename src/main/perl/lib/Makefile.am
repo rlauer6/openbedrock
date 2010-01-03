@@ -122,9 +122,8 @@ dist_perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Object.pm \
     Bedrock/XML/Container/Scalar.pm
 
-
-# BLM modules
-# -----------
+# Plugins
+# -------
 
 dist_perl5blmindexedtablehandlerlib_DATA = \
     BLM/IndexedTableHandler/RecordSet.pm
@@ -132,11 +131,13 @@ dist_perl5blmindexedtablehandlerlib_DATA = \
 dist_perl5blmlib_DATA = \
     BLM/Benchmark.pm \
     BLM/Date.pm \
+    BLM/DBHandler.pm \
     BLM/File.pm \
     BLM/Filter.pm \
     BLM/FileIO.pm \
     BLM/Fortune.pm \
     BLM/Include.pm \
+    BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
     BLM/Number.pm \
     BLM/Perldoc.pm \
@@ -148,8 +149,7 @@ dist_perl5blmlib_DATA = \
     BLM/Stat.pm \
     BLM/Timenow.pm \
     BLM/SiteFactory.pm \
-    BLM/DBHandler.pm \
-    BLM/IndexedTableHandler.pm
+    BLM/XML.pm
 
 dist_perl5blmstartuplib_DATA = \
     BLM/Startup/Bedrock.pm \
