@@ -136,6 +136,8 @@ ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
 ads_PERL_MODULE([Tie::Hash::Indexed], [REQUIRED])
+ads_PERL_MODULE([XML::Simple], [REQUIRED])
+ads_PERL_MODULE([XML::Parser], [REQUIRED])
 
 # Optional Perl modules
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
