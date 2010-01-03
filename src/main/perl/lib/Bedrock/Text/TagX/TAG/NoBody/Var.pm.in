@@ -41,6 +41,7 @@ use TagX::TAG::NoBody 1.03;
 use Bedrock::HTML::Helper qw(create_xhtml_element create_xhtml_element_header);
 use Bedrock::JSON;
 use Data::Dumper;
+use XML::Simple;
 
 @ISA = qw (TagX::TAG::NoBody);
 
@@ -63,11 +64,12 @@ sub finalize
                    'select-group=s' => undef,
 		   'columns=s'  => undef,
                    'textarea=s' => undef,
-                   'json'       => undef
+                   'json'       => undef,
+		   'xml'        => undef
 		  );
 
     my $verbose = $self->verbose;
-    &log_message($self, Dumper(\%options, @context))
+    &log_message($self, Dumper(\%options, @context, $self, $tx))
       if $verbose;
     my @argv = $self->parse_options (\%options, @context);
 
@@ -129,6 +131,20 @@ sub finalize
 	$value = $options{'default'} if exists $options{'default'};
     }
     return unless defined( $value );
+
+    if (defined($options{'xml'})) {
+      my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+      my $options = $config->{XML}->{out}->devolve;
+      &log_message($self, Dumper(%{$options})) 
+	if $verbose;
+
+      if (UNIVERSAL::isa($value, 'ARRAY')) {
+	$value = { $config->{RootName} => $value};
+      }
+
+      $value = XMLout($value, %{$options});
+    }
+
 
     if ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
 	&Text::URLEncode::encode( $value );
@@ -387,6 +403,7 @@ Output the value of a Bedrock expression.
  --format
  --default
  --json
+ --xml
 
 =head2 Experimental Options
 
@@ -431,6 +448,66 @@ Output the object or array as a JSON string.
  <null:foo 1 2 3 4 5>
 
  <var --json $foo> => ["1", "2", "3","4", "5"]
+
+=item --xml
+
+Output the object or array as an XML object. XML support is provided
+by the perl module C<XML::Simple>.
+
+The default options sent to XMLout can be configured in F<tagx.xml> as
+an object named XML and represents the options that you would send to
+the perl module C<XML::Simple> to control the behaviour of XML conversions.
+
+A sensible default configuration is shown below:
+
+ <object name="XML">
+   <object name="out">
+     <scalar name="NoAttr">1</scalar>
+     <scalar name="KeepRoot">0</scalar>
+     <scalar name="RootName">response</scalar>
+     <scalar name="NoSort">1</scalar>
+     <array name="KeyAttr"></array>
+     <scalar name="XMLDecl">1</scalar>
+     <scalar name="NoEscape">1</scalar>
+   </object>
+   <object name="in">
+     <scalar name="NoAttr">0</scalar>
+     <scalar name="KeepRoot">1</scalar>
+     <array name="KeyAttr"></array>
+   </object>
+
+While this provides something passable as an XML document it may not
+be exactly what you were looking for.  As shown above the options
+passed to C<XMLout> for the conversion from your object to an XML
+string should be contained in the F<tagx.xml> file as an object named
+C<XML>.  What you in the configuration above is workable, but you may
+want to change either the default or the behaviour on a case by case
+bases. You can do the latter by dynamically altering the configuration
+using the C<XML> method of the C<$config> object.
+
+ <null $config.XML('out', 'XMLDecl', 0)>
+
+The first argument to the C<XML> method is either the string 'in' or
+'out' which indicates which set of options you are about to set.
+Subsequent arguments should be key, value pairs that represent the
+options and values that will control either the conversion to or from
+XML.
+
+Converting an array to an XML document will generally require a root
+element.  Bedrock will use the C<RootName> option of the
+C<XML-E<gt>out> object as the root element when converting Bedrock
+arrays to XML.
+
+I<If your goal is to build a Bedrock component or service that outputs
+an XML document that may be utilized by another web application or an
+AJAX component for example, you may also want to set the content type
+of the document being served.  This can be done using the C<$header>
+object.>
+
+  <null $header.content_type('application/xml')><var --xml $xml>
+
+see perldoc C<XML::Simple> for more details regarding options that you
+can use to control XML parsing.
 
 =item  Experimental Options
 
@@ -552,6 +629,9 @@ object.  The jury is still out.  Send your comments to bedrock-dev@cj-mailman.ch
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.27  2010/01/03 19:15:24  rlauer
+# add --xml option
+#
 # Revision 1.26  2009/12/31 18:38:40  rlauer
 # updated docs
 #
