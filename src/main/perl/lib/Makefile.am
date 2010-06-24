@@ -32,7 +32,7 @@ dist_perl5bedrocklib_DATA = \
     Bedrock/XML.pm \
     Bedrock/Array.pm \
     Bedrock/BufferStream.pm \
-    Bedrock/Config.pm \
+    Bedrock/BedrockConfig.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
     Bedrock/Hash.pm \
