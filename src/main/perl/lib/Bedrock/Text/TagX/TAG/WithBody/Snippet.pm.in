@@ -1,0 +1,300 @@
+#!/usr/bin/perl -w
+
+# ident "@(#) $Header$
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.org
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package TagX::TAG::WithBody::Snippet;
+
+use strict;
+use Bedrock::Hash;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION    = 1.01;
+}
+
+use TagX::Log;
+use TagX::TAG::WithBody 1.12;
+
+@ISA = qw (TagX::TAG::WithBody);
+
+sub closure
+{
+    '/snippet';
+}
+
+sub evolve {
+  my $this = shift;
+
+  if (ref($this) eq 'HASH') {
+    foreach (keys %$this) {
+      $this->{$_} = evolve($this->{$_});
+    }
+    return Bedrock::Hash->new(%$this);
+  }
+  elsif (ref($this) eq 'ARRAY') {
+    for (my $idx=0; $idx<@$this; $idx++) {
+      $this->[$idx] = evolve($this->[$idx]);
+    }
+    return Bedrock::Array->new(@$this);
+  }
+  else {
+    return $this;
+  }
+}
+
+sub finalize
+{
+    my ($self, $tx, @context) = @_;
+
+    my %options = (
+		   'define-var=s' => '_',
+		   'define-plugin=s' => undef
+		  );
+
+    my @argv = $self->parse_options (\%options, @context);
+
+    my $verbose = $self->verbose;
+    $self->dump_options(\%options, @argv) if $verbose;
+
+
+    my ($snip_name, $var_name) = ($1, $2)
+      if $argv[0] =~/^:([^:]*):?(.*?)$/;
+
+    &log_message($self, 
+		 sprintf("ARGV[0] => [%s], 1 =>  [%s], 2 => [%s]", 
+			 $argv[0], 
+			 $snip_name, 
+			 $var_name
+			)
+		) 
+      if $verbose;
+
+    if ($snip_name && $var_name) {
+	$options{'define-var'} = $var_name;
+	$options{'define-snippet'} = $snip_name;
+	shift @argv;
+      }
+    elsif ( $snip_name ) {
+	$options{'define-snippet'} = $snip_name;
+	shift @argv;
+      }
+    else {
+      $options{'define-snippet'} = 'snippet';
+    }
+
+    # Create a frame for output. Note very carefully that we assign the frame
+    # to a lexical variable. Hence the destructor for the frame is not invoked
+    # When the lexical variable goes out of scope, the frame is destructed,
+    # and since we didn't invoke $frame->end_frame, the contents of the frame
+    # are discarded.
+    my $frame = $tx->out_handle->create_frame;
+    &log_message( $self, "Entering <SNIPPET> block .." ) if $verbose;
+    $self->SUPER::finalize ( $tx, @context );
+    &log_message( $self, "Exited <SNIPPET> block" ) if $verbose;
+
+    my $data = $tx->out_handle->frame_data;
+
+    my $obj;
+
+    eval {
+      $obj = $self->create_snippet_class("Snippet_".$$, $data);
+    };
+
+    die "There was an error creating your snippet:\n" . $@
+      if $@;
+
+    # the data is theoretically the code snippet
+
+    &log_message( $self, "Assigning result of <snippet> to $options{'define-var'}" ) 
+      if $verbose;
+    
+    my $snippet_value;
+
+    eval {
+      $snippet_value = $obj->init_snippet( @argv );
+    };
+
+    die "There was an error executing your snippet:\n" . $@
+      if $@;
+    
+
+    $tx->param($options{'define-snippet'} => $obj);
+    $tx->param($options{'define-var'} => $snippet_value);
+}
+
+# create_snippet_class( name, code );
+sub create_snippet_class {
+  my $self = shift;
+  my $snippet_name = shift;
+  my $code_snippet = shift;
+
+  my $snippet_def = q{
+package BLM::%s;
+
+use vars qw( @ISA ); 
+
+@ISA = qw( Bedrock::Hash BLM::SNIPPET );
+
+use Bedrock::Hash;
+
+sub new {
+  my $class = shift;
+
+  return $class->SUPER::new(@_);
+}
+};
+
+  $snippet_def .= q/
+sub init_snippet {
+  my $self = shift;
+
+  %s
+
+  return;
+}
+/;
+
+  $snippet_def = sprintf($snippet_def, $snippet_name, $code_snippet);
+
+  eval "$snippet_def";
+  
+  die "BAD SNIPPET DEFINITION: " . $@ 
+    if $@;
+  
+  my $obj;
+  
+  eval sprintf(q{
+$obj = BLM::%s->new(@_);
+},
+ $snippet_name); 
+  
+  die "COULD NOT INITITIALIZE SNIPPET " . $snippet_name . "\n", $@
+    if $@;
+  
+  return $obj;
+}
+
+
+1;
+
+=pod
+
+=head1 TAG - <snippet>
+
+=head1 PURPOSE
+
+=head1 SYNTAX
+
+=head1 DESCRIPTION
+
+=head1 OPTIONS
+
+ --define-var = "var-name"
+
+=over 5
+
+=item --define-var
+
+=back
+
+=head1 EXAMPLES
+
+=cut
+
+
+#
+# Name of Release: $Name$
+# $Log$
+# Revision 1.1  2010/11/08 03:16:00  rlauer
+# first check-in
+#
+# Revision 1.17  2010/01/03 19:21:13  rlauer
+# added --xml option
+#
+# Revision 1.16  2009/12/31 18:38:43  rlauer
+# updated docs
+#
+# Revision 1.15  2009/12/31 12:43:38  rlauer
+# docs tweaks
+#
+# Revision 1.14  2009/12/28 20:31:35  rlauer
+# move SIS:: up to Bedrock::
+#
+# Revision 1.13  2009/12/16 23:23:39  rlauer
+# use SIS::JSON, docs, sink:name tag syntax
+#
+# Revision 1.12  2009/12/15 12:39:58  rlauer
+# promote objects to bedrock objects with evolve
+#
+# Revision 1.11  2009/12/09 12:53:23  rlauer
+# very loose JSON decode - support bare word keys and embedded new lines
+#
+# Revision 1.10  2009/12/07 00:34:39  rlauer
+# make object from sink tag a SIS::Hash or SIS::Array
+#
+# Revision 1.9  2009/12/06 23:56:28  rlauer
+# JSON support
+#
+# Revision 1.8  2008/12/03 14:01:21  alans
+# We now use a hard-coded value for module $VERSION rather than a munged
+# version of the expansion of the CVS 'Revision' keyword; the module API
+# version number is orthogonal to the identifyer in the source control
+# system.
+#
+# This change makes it safe to import the Bedrock codebase into another
+# source repository (even CVS!) without breaking the code. We hit this
+# issue when we first released the libbedrock-perl .deb package, for which
+# we imported the release tarball sources into the 'bedrock-deb' CVS project.
+#
+# Revision 1.7  2008/11/12 12:51:31  rlauer
+# added pod
+#
+# Revision 1.6  2008/02/28 18:14:43  rlauer
+# Applying Rob's patches to make Bedrock work on Apache 2.x
+# (plus a few other obvious bug fixes).
+#
+# Revision 1.5  2002/02/13 17:56:56  sridhar
+# File handle arg is not closed.
+#
+# Revision 1.4  2001/02/14 15:35:50  sridhar
+# Added copyright and GPL notice
+#
+# Revision 1.3  2000/12/15 14:30:20  sridhar
+# Subclass overrides method `closure()' to report the correct way for
+# closing the tag.
+#
+# Revision 1.2  2000/11/21 19:18:05  sridhar
+# 1. Added --define-var option to <sink> for defining a variable with the
+# contents if <sink></sink>.
+# 2. Added --HTMLEncode and --HTMLDecode options to encoding and
+# decoding the contents of <sink></sink>
+#
+# Revision 1.1  2000/10/19 20:57:18  sridhar
+# Moved Hush.pm to Sink.pm and added capability for passing an argument
+# to <sink> tag which should be a handle to which the output of the body
+# of <sink> can be written
+#
+#
