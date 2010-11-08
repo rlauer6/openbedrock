@@ -31,7 +31,7 @@ BEGIN
 {
     use Exporter ();
     use vars	qw ($VERSION @ISA);
-    $VERSION    = 1.07;
+    $VERSION    = 1.08;
 }
 
 use Bedrock::Hash;
@@ -54,6 +54,7 @@ sub finalize
 		   'define-array=s'	=> undef,
 		   'default=s'          => undef,
 		   'create-object=s'	=> undef,
+		   'define-object=s'    => undef,
 		   'json'               => undef,
 		   'xml'                => undef,
 		   'filter-hash=s'      => undef
@@ -95,20 +96,24 @@ sub finalize
       shift @argv;
     }
 
+    if ( exists $options{'create-object'} ) {
+      $options{'define-object'} = $options{'create-object'};
+      delete $options{'create-object'};
+    }
+
     if ( exists $options{'define-var'} and
 	 exists $options{'define-array'} ) {
 	die "Use either `--define-var' or `--define-array' here.\n";
-
     }
 
     if ( exists $options{'define-var'} and
-	 exists $options{'create-object'} ) {
-	die "Use either `--define-var' or `--create-object' here.\n";
+	 exists $options{'define-object'} ) {
+	die "Use either `--define-var' or `--define-object' here.\n";
     }
 
     if ( exists $options{'define-array'} and
-	 exists $options{'create-object'} ) {
-	die "Use either `--define-array' or `--create-object' here.\n";
+	 exists $options{'define-object'} ) {
+	die "Use either `--define-array' or `--define-object' here.\n";
     }
 
     die "Use `--define-var' once only.\n"
@@ -117,8 +122,8 @@ sub finalize
     die "Use `--define-array' once only.\n"
       if exists $options{'define-array'} and ref($options{'define-array'});
 
-    die "Use `--create-object' once only.\n"
-      if exists $options{'create-object'} and ref($options{'create-object'});
+    die "Use `--define-object' once only.\n"
+      if exists $options{'define-object'} and ref($options{'define-object'});
 
     die "Use `--json only' only for `--define-var'.\n"
       if exists $options{'json'} and exists $options{'define-array'};
@@ -195,8 +200,8 @@ sub finalize
 	&log_message( $self, "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
 	    if $verbose;
 	$tx->param( $options{'define-array'} => Bedrock::Array->new(@argv) );
-    } elsif ( exists $options{'create-object'} ) {
-	# create-object creates an object and does the following
+    } elsif ( exists $options{'define-object'} ) {
+	# define-object creates an object and does the following
         #  0. If $options{'json'} then assume all args represent a JSON string to be converted into an object
 	#  1. If the number of args is even, uses the arguments as
 	#     key-value pairs to initialize the object
@@ -211,7 +216,7 @@ sub finalize
 	  # interpret the arguments as JSON string
 	  my $json = Bedrock::JSON->new($json_string);
 	  &log_message($self, "in NULL ".Dumper($json->decode)) if $verbose;
-	  $tx->param($options{'create-object'} => $json->decode);	  
+	  $tx->param($options{'define-object'} => $json->decode);	  
 	}
 	else {
 	  unless ( int($nArgs / 2) * 2 == $nArgs ) {
@@ -239,8 +244,8 @@ sub finalize
 	#	    $obj->{$key} = $args{$key};
 	#	}
 	
-	&log_message( $self, "Creating an object named $options{'create-object'}" ) if $verbose;
-	$tx->param( $options{'create-object'} => $obj);
+	&log_message( $self, "Creating an object named $options{'define-object'}" ) if $verbose;
+	$tx->param( $options{'define-object'} => $obj);
       }
     }
 }
@@ -251,13 +256,30 @@ sub finalize
 
 =head1 PURPOSE
 
-The C<null> tag allow for invocation of object methods and/or creation of Bedrock objects.
+The C<null> tag is the I<do something> tag.  It allows for invocation of
+object methods and/or the creation of Bedrock objects.
 
 =head1 SYNTAX
 
   <null[:type][:var-name] [options] expression>
 
-  type = 'hash' or 'array'
+I<type> should be one of:
+
+=over 5
+
+=item hash
+
+Create a Bedrock hash object
+       
+
+=item array
+
+Create a Bedrock array object
+
+=back
+
+If I<type> is not provided Bedrock will interpret the the type of
+B<expression> and create an object of the appropriate type.
 
 =head1 DESCRIPTION
 
@@ -266,10 +288,12 @@ objects when no output is desired.
 
 =head1 OPTIONS
 
- --define-var    = var-name
- --define-array  = var-name
- --create-object = var-name 
+ --define-var    = "var-name"
+ --define-array  = "var-name"
+ --define-object = "var-name"
+ --create-object = "var-name" I<deprecated>
  --json
+ --xml
 
 =over 5
 
@@ -281,13 +305,35 @@ Create a scalar, array or object (only if no content).
 
 Create an Bedrock array.
 
+=item --define-object
+
+Create a Bedrock hash.  All Bedrock hashes are ordered hashes.
+
+ <null:foo --define-object red 1 green 2 blue 3>
+
 =item --create-object
 
-Create a Bedrock hash.
+I<Deprecated> use C<--define-object>.
 
 =item --json
 
-For <--define-var> consider the string to be a JSON string.
+For C<--define-var> consider the string to be a JSON string.
+
+ <null:foo --json '{red : 1, green : 2, blue : 3}'>
+
+ <null --define-var='foo' --json '{red : 1, green : 2, blue : 3}'>
+
+=item --xml
+
+For C<--define-var> consider the string to be as XML string.  Consider using
+the C<< <sink> >> tag for this purpose.
+
+ <null $config.XML('in', 'KeepRoot', 0)>
+ <null:foo --xml '<colors\><red\>1</red\><green\>2</green\><blue\>2</blue\></colors\>'>
+
+=item --filter-hash
+
+B<EXPERIMENTAL>
 
 =back
 
@@ -299,15 +345,21 @@ Create an object as the return result from some method:
 
 Create a hash:
 
-  <null --create-object="foo" key1 value1 key2 value2>
+  <null --define-object="foo" key1 value1 key2 value2>
   <null:hash:foo key1 value1 key2 value2>
   <null:foo --json '{key1 : "value1", key2 : "value2"}'>
+
+Note that quotes around keys are not required.
 
 Create an array:
 
   <null --define-array="x" 1 2 3 4>
+
   <null:array:x 1 2 3 4>
+
+Bedrock assumes you want to create a list from a list.
   <null:x 1 2 3 4>
+
   <null:x --json '[1,2,3,4]'>
 
 Invoke a method, no return value
@@ -327,6 +379,11 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<Bedrock::Array>, C<Bedrock::Hash>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.20  2010/11/08 03:13:35  rlauer
+# - bump version
+# - support for --define-object, deprecate --create-object
+# - update documentaion, some options missing
+#
 # Revision 1.19  2010/01/11 22:44:24  rlauer
 # have default work like it does in <var>, i.e. default if undef
 #
