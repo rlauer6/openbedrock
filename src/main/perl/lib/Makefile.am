@@ -141,6 +141,7 @@ dist_perl5blmlib_DATA = \
     BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
     BLM/Number.pm \
+    BLM/OrderedObject.pm \
     BLM/Perldoc.pm \
     BLM/PLUGIN.pm \
     BLM/Recycle.pm \
