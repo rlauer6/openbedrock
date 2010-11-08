@@ -25,7 +25,7 @@
 package Apache::Bedrock;
 
 BEGIN {
-    require Apache2::compat if $ENV{MOD_PERL};
+  require Apache2::compat if $ENV{MOD_PERL};
 }
 
 use Apache2::Const -compile => qw( NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT );
@@ -88,8 +88,7 @@ sub build_body_section {
 
   if ($page_def->{actions}->{$action}) {
     $body_section = include(page_name($page_def->{actions}->{$action}));
-  }
-  else {
+  } else {
     $body_section = sprintf("<b>bedrock controller: </b>Page Under Construction - no action for '%s'", $action)
   }
 
@@ -104,11 +103,10 @@ sub build_head_section {
 
   my $page_def = $controller->{pages}->{$page};
 
-# if a framework defines it's own complete HEAD section we call that a "header" and include that 
+  # if a framework defines it's own complete HEAD section we call that a "header" and include that 
   if ($page_def->{header}) {
     $head_section = include(page_name($page_def->{header}));
-  } 
-  else {
+  } else {
     $head_section = "<head>\n";
     if (ref($page_def->{head}->{style}) =~/array/i) {
       $head_section .= join("\n", map { sprintf(q{<link rel="stylesheet" type="text/css" href="%s">}, $_) } @{$page_def->{head}->{style}}) . "\n";
@@ -178,12 +176,12 @@ sub config {
     push @{$conf->{'MODULES'}}, @{$app_modules} if $app_modules;
   }
   
-    # And voila! we have the merged config
+  # And voila! we have the merged config
   $conf;
 }
 
 sub error
-{
+  {
     my $r = shift;
     my $mesg = shift;
     my $code = shift || SERVER_ERROR;
@@ -191,6 +189,55 @@ sub error
     $r->log_error( $mesg );
     chdir $PWD;
     return $code;
+  }
+
+# show_pod(file, config-object, "tag|plugins");
+sub show_pod {
+  my $file = shift;
+  my $conf = shift;
+  my $return_to = shift;
+
+  my $outfile = tmpnam;
+  
+  &pod2html('--infile', $file,
+	    '--outfile', $outfile, 
+	    '--cachedir', File::Spec->tmpdir(), 
+	    $conf->{POD_CSS_PATH} ? "--css=".$conf->{POD_CSS_PATH} : ()
+	   );
+
+  # in the off chance somebody puts the stupid Bedrock images some place else
+  my $image_url = $conf->{IMAGE_URL} || "/bedrock/img";
+
+  my $snippet =<<html;
+<table width="100%">
+<tr>
+  <td align="left"><a href="/bedrock"><img src="$image_url/bedrock.jpg" border="0"></a></td>
+  <td align="right" valign="bottom" width="9999"><i>Bedrock Version: $Bedrock::VERSION::ID</i></td>
+</tr>
+<tr>
+  <td colspan="2"><hr></td>
+</tr>
+</table>
+html
+
+  # little or no pod?
+  if (-s $outfile > 600) {
+    open(FILE, $outfile) or die "Unable to open $outfile: $!\n";
+    local $/ = undef;
+    my $data = <FILE>;
+    close FILE;
+    
+    $data =~s/(<body(.*?)>)/$1\n$snippet/is;
+    
+    print "Content-type: text/html\n\n";
+    print $data;
+  } else {
+    print sprintf("Location: http://%s/bedrock/%s\n\n", $ENV{HTTP_HOST}, $return_to);
+  }
+  
+  unlink $outfile;
+
+  return OK;
 }
 
 sub blm_listing {
@@ -204,8 +251,7 @@ sub blm_listing {
     next if ($file =~/^\./);
     if (-d $dir . "/". $file) {
       push @listing, blm_listing($dir . "/" . $file);
-    }
-    else {
+    } else {
       push @listing, $dir . "/" . $1 if ($file =~/^(.*?)\.pm$/);
     }
   }
@@ -288,195 +334,170 @@ sub blm_ul {
 # | mod_perl HANDLER STARTS HERE |
 # +------------------------------+
 
-sub handler
-{
-    my $r = shift;
+sub handler {
+  my $r = shift;
 
-    my $file;
+  my $file;
 
-    $r->log->info("[Apache::Bedrock] started");
+  $r->log->info("[Apache::Bedrock] started");
 
-# - under mod_perl naked directory requests, intended for the bedrock controller
-#   are passed along prior to file checking.  Thus the content_type is directory
-    if ($r->content_type =~/directory/) {
-      $r->log->info(sprintf("[Apache::Bedrock] Directory requested: [%s]", $r->filename));
-      $file = "";
-      $ENV{PATH_TRANSLATED} = $r->filename;
-      $r->content_type('text/html');
+  # - under mod_perl naked directory requests, intended for the bedrock controller
+  #   are passed along prior to file checking.  Thus the content_type is directory
+  if ($r->content_type =~/directory/) {
+    $r->log->info(sprintf("[Apache::Bedrock] Directory requested: [%s]", $r->filename));
+    $file = "";
+    $ENV{PATH_TRANSLATED} = $r->filename;
+    $r->content_type('text/html');
+  }
+  # - under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
+  #   8< 
+  #     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
+  #   8<
+  else {
+    $file = $r->filename;
+    $r->log->info(sprintf("[Apache::Bedrock] File requested: [%s]", $r->filename));
+  }
+
+  my $path_info = $ENV{PATH_INFO};
+  $path_info =~s/(.*?)\/$/$1/;
+
+  $r->log->info(sprintf("[Apache::Bedrock] request file: [%s],  PATH_INFO: [%s],  PATH_TRANSLATED: [%s]",
+			$file,
+			$path_info,
+			$ENV{PATH_TRANSLATED}
+		       )
+	       );
+
+  # Parse for the URI components
+  my ($uri_name, $uri_dir) = &fileparse( $r->uri );
+
+  my $conf = &config($uri_dir);
+  my $ctx = Bedrock::Context->new (
+				   'APACHE_HANDLER' => $r,
+				   'CONFIG'         => $conf
+				  );
+  my $html;
+
+  if ($file) {
+    unless ($r->content_type eq 'text/html') {
+      &error($r, "[Apache Bedrock] content type: Content-type not text/html");
+      return DECLINED ;
     }
-# - under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
-#   8< 
-#     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
-#   8<
-    else {
-	$file = $r->filename;
-	$r->log->info(sprintf("[Apache::Bedrock] File requested: [%s]", $r->filename));
+
+    unless ( -e $r->filename ) {
+      &error($r, "[Apache Bedrock] File does not exist: $file");
+      return NOT_FOUND;
     }
 
-    my $path_info = $ENV{PATH_INFO};
-    $path_info =~s/(.*?)\/$/$1/;
-
-    $r->log->info(sprintf("[Apache::Bedrock] request file: [%s],  PATH_INFO: [%s],  PATH_TRANSLATED: [%s]",
-			  $file,
-			  $path_info,
-			  $ENV{PATH_TRANSLATED}
-		  )
-	);
-
-    # Parse for the URI components
-    my ($uri_name, $uri_dir) = &fileparse( $r->uri );
-
-    my $conf = &config($uri_dir);
-    my $ctx = Bedrock::Context->new ('CONFIG' => $conf,
-				     'APACHE_HANDLER' => $r);
-    my $html;
-
-    if ($file) {
-	unless ($r->content_type eq 'text/html') {
-	    &error($r, "[Apache Bedrock] content type: Content-type not text/html");
-	    return DECLINED ;
-	}
-
-	unless ( -e $r->filename ) {
-	    &error($r, "[Apache Bedrock] File does not exist: $file");
-	    return NOT_FOUND;
-	}
-
-	unless ( -r $r->filename ) {
-	    &error($r, "[Apache Bedrock] File permissions deny access: $file");
-	    return FORBIDDEN;
-	}
+    unless ( -r $r->filename ) {
+      &error($r, "[Apache Bedrock] File permissions deny access: $file");
+      return FORBIDDEN;
     }
-    elsif ($path_info =~/\/bedrock\/?(.*?)$/) {
-      $ENV{BEDROCK_REQUEST_DOC} = $1;
+  } elsif ($path_info =~/\/bedrock\/?(.*?)$/) {
+    $ENV{BEDROCK_REQUEST_DOC} = $1;
 
-      $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request denied by configuration.\n")) unless ($conf->{ALLOW_BEDROCK_INFO} =~/yes/i);
-      return FORBIDDEN unless $conf->{ALLOW_BEDROCK_INFO} =~/yes/i;
+    $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request denied by configuration.\n")) unless ($conf->{ALLOW_BEDROCK_INFO} =~/yes/i);
+    return FORBIDDEN unless $conf->{ALLOW_BEDROCK_INFO} =~/yes/i;
 
-      $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request [%s]\n", $ENV{BEDROCK_REQUEST_DOC}));
+    $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request [%s]\n", $ENV{BEDROCK_REQUEST_DOC}));
 
-      my $doc = $ENV{BEDROCK_REQUEST_DOC};
+    my $doc = $ENV{BEDROCK_REQUEST_DOC};
 
-      if ($doc =~/^plugins\/?(.*?)$/) {
-	my $file = "$1";
-	my $path;
-	if ($file) {
-	  my @blm_listing = get_all_blms();
-	  my @path_list = grep {/(BLM\/$file|BLM\/Startup\/$file)/i } @blm_listing;
+    if ($doc =~/^plugins\/?(.*?)$/) {
+      my $file = "$1";
+      my $path;
+      if ($file) {
+	my @blm_listing = get_all_blms();
+	my @path_list = grep {/(BLM\/$file|BLM\/Startup\/$file)/i } @blm_listing;
 
-	  $path = $path_list[0] . ".pm" if @path_list && -s $path_list[0] . ".pm";
-	  if ($path) {
-	    $path =~/(BLM\/.*?)\.pm$/;
-	    my $title = $1;
-	    $title =~s/\//::/g;
-
-	    my $outfile = tmpnam;
-	    &pod2html('--infile', $path, '--outfile', $outfile, '--cachedir', File::Spec->tmpdir(), $conf->{POD_CSS_PATH} ? "--css=".$conf->{POD_CSS_PATH} : ());
-	    # little or no pod?
-	    if (-s $outfile > 600) {
-	      open(FILE, $outfile) or die "Unable to open $outfile: $!\n";
-	      local $/ = undef;
-	      my $data = <FILE>;
-	      close FILE;
-	      print "Content-type: text/html\n\n";
-	      print $data;
-	    }
-	    else {
-	      print sprintf("Location: http://%s/bedrock/plugins\n\n", $ENV{HTTP_HOST});
-	    }
-
-	    unlink $outfile;
-	    return OK;
-	  }
-	  else {
-	    return NOT_FOUND;
-	  }
+	$path = $path_list[0] . ".pm" if @path_list && -s $path_list[0] . ".pm";
+	if ($path) {
+	  $path =~/(BLM\/.*?)\.pm$/;
+	  my $title = $1;
+	  $title =~s/\//::/g;
+	  return show_pod($path, $conf, "plugins");
+	} else {
+	  return NOT_FOUND;
 	}
-	else { # blm listing
-	  my @blm_listing = get_all_blms();
-	  my $blms = Bedrock::Hash->new;
+      } else {			# blm listing
+	my @blm_listing = get_all_blms();
+	my $blms = Bedrock::Hash->new;
 	  
-	  foreach (@blm_listing) {
-	    /BLM\/(.*?)$/;
-	    $blms->{$1} = "BLM/$1";
-	    $blms->{$1} =~s/\//::/g;
-	  }
+	foreach (@blm_listing) {
+	  /BLM\/(.*?)$/;
+	  $blms->{$1} = "BLM/$1";
+	  $blms->{$1} =~s/\//::/g;
+	}
 	  
-	  my $html = doc_head(title => "Bedrock Plugins", 
-			      stylesheet => $conf->{POD_CSS_PATH},
-			      home => "/bedrock",
-			      image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+	my $html = doc_head(title => "Bedrock Plugins", 
+			    stylesheet => $conf->{POD_CSS_PATH},
+			    home => "/bedrock",
+			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
 			   );
-	  print $html;
-	  print blm_ul($blms, "Plugins", grep (!/^Startup/, keys %$blms));
-	  print blm_ul($blms, "Application Plugins", grep (/^Startup/, keys %$blms));
-	  print "</body>\n</html>\n";
+	print $html;
+	print blm_ul($blms, "Plugins", grep (!/^Startup/, keys %$blms));
+	print blm_ul($blms, "Application Plugins", grep (/^Startup/, keys %$blms));
+	print "</body>\n</html>\n";
 
-	  return OK;
-	}
+	return OK;
       }
-      elsif ($doc =~/tag\/?(.*?)$/) {
-	my $tag = lc($1);
+    } elsif ($doc =~/tag\/?(.*?)$/) {
+      my $tag = lc($1);
 
-	if ($tag) {
-	  my $path;
-	  my $tag_file;
+      if ($tag) {
+	my $path;
+	my $tag_file;
 
-	  foreach my $inc (@INC) {
-	    foreach ("NoBody","WithBody","WithBody/Loop") {
-	      my $dir = sprintf("%s/Text/TagX/TAG/%s", $inc, $_);
-	      $r->log->info(sprintf("Looking in %s for %s\n", $dir, $tag));
-	      opendir TAGS, $dir;
-	      while (my $file = readdir TAGS) {
-		next unless $file =~/$tag\.pm$/i;
-		$tag_file = $dir . "/" . $file if (-s $dir . "/" . $file);
-		last;
-	      }
-	      closedir TAGS;
-	      last if $tag_file;
+	foreach my $inc (@INC) {
+	  foreach ("NoBody","WithBody","WithBody/Loop") {
+	    my $dir = sprintf("%s/Text/TagX/TAG/%s", $inc, $_);
+	    $r->log->info(sprintf("Looking in %s for %s\n", $dir, $tag));
+	    opendir TAGS, $dir;
+	    while (my $file = readdir TAGS) {
+	      next unless $file =~/$tag\.pm$/i;
+	      $tag_file = $dir . "/" . $file if (-s $dir . "/" . $file);
+	      last;
 	    }
+	    closedir TAGS;
 	    last if $tag_file;
 	  }
-	  
-	  if ($tag_file) {
-	    print "Content-type: text/html\n\n";
-	    pod2html($tag_file, "--quiet","--title=$tag", $conf->{POD_CSS_PATH} ? "--css=".$conf->{POD_CSS_PATH} : ());
-	    return OK;
-	  }
-	  else {
-	    return NOT_FOUND;
-	  }
+	  last if $tag_file;
 	}
-	else { # tag listing
-	  my $html = doc_head(title => "Bedrock Tag Listing", 
-			      stylesheet => $conf->{POD_CSS_PATH},
-			      home => "/bedrock",
-			      image => $conf->{IMAGE_URL} . "/bedrock.jpg"
-			     );
+	  
+	if ($tag_file) {
+	  return show_pod($tag_file, $conf, "tag");
+	} else {
+	  return NOT_FOUND;
+	}
+      } else {			# tag listing
+	my $html = doc_head(title => "Bedrock Tag Listing", 
+			    stylesheet => $conf->{POD_CSS_PATH},
+			    home => "/bedrock",
+			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			   );
 
-	  $Text::TagX::Opentag_expr =~/^\^\((.*?)\)/;
-	  my @tag_listing = split /\|/, $1;
-	  @tag_listing = map { !/(else|else\?if|exec|blm)/ ? sprintf(q{<a href="/bedrock/tag/%s">%s</a>}, $_, $_) : ()} sort @tag_listing;
-	  print $html."<ul>\n";
-	  map { print "<li>$_\n"; } @tag_listing;
-	  print <<eot;
+	$Text::TagX::Opentag_expr =~/^\^\((.*?)\)/;
+	my @tag_listing = split /\|/, $1;
+	@tag_listing = map { !/(else|else\?if|exec|blm)/ ? sprintf(q{<a href="/bedrock/tag/%s">%s</a>}, $_, $_) : ()} sort @tag_listing;
+	print $html."<ul>\n";
+	map { print "<li>$_\n"; } @tag_listing;
+	print <<eot;
 </ul>
 </body>
 </html>
 eot
 
-	  return OK;
-	}
+	return OK;
       }
-      elsif ($doc eq "env") {
+    } elsif ($doc eq "env") {
 
-	my $env = join("\n", map { sprintf("%s = (%s)", $_, $ENV{$_}); } keys %ENV);
-	my $html = doc_head(title => "Bedrock Environment",
-			    stylesheet => $conf->{POD_CSS_PATH},
-			    home => "/bedrock",
-			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
-			   );
-	print <<eot;
+      my $env = join("\n", map { sprintf("%s = (%s)", $_, $ENV{$_}); } keys %ENV);
+      my $html = doc_head(title => "Bedrock Environment",
+			  stylesheet => $conf->{POD_CSS_PATH},
+			  home => "/bedrock",
+			  image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			 );
+      print <<eot;
 $html
 <pre>
 $env
@@ -484,289 +505,293 @@ $env
 </body>
 </html>
 eot
-	return OK;
-      }
-      elsif ($doc eq "config") {
-	$html = doc_head(title => "Bedrock Configuration",
-			 stylesheet => $conf->{POD_CSS_PATH},
-			 home => "/bedrock",
-			 image => $conf->{IMAGE_URL} . "/bedrock.jpg",
-			 header => undef
-			);
-	$html .=<<eot;
+      return OK;
+    } elsif ($doc eq "config") {
+      $html = doc_head(title => "Bedrock Configuration",
+		       stylesheet => $conf->{POD_CSS_PATH},
+		       home => "/bedrock",
+		       image => $conf->{IMAGE_URL} . "/bedrock.jpg",
+		       header => undef
+		      );
+      $html .=<<eot;
 <pre>
 <trace --output \$config>
 </pre>
 </body>
 </html>
 eot
-      }
-      else {
-	my $html = doc_head(title => "Bedrock Info",
-			    stylesheet => $conf->{POD_CSS_PATH},
-			    home => "/bedrock",
-			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
-			   );
+    } else {
+      my $html = doc_head(title => "Bedrock Info",
+			  stylesheet => $conf->{POD_CSS_PATH},
+			  home => "/bedrock",
+			  image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			 );
 	
-	 print $html . "<ul>\n";
-	 my %links = ("tag" => "Bedrock Tags",
-		      "plugins" => "Bedrock Plugins",
-		      "config" => "Bedrock Configuration",
-		      "env" => "Bedrock Environment"
-		     );
+      print $html . "<ul>\n";
+      my %links = ("tag" => "Bedrock Tags",
+		   "plugins" => "Bedrock Plugins",
+		   "config" => "Bedrock Configuration",
+		   "env" => "Bedrock Environment"
+		  );
 	   
-	 while (my ($key, $value) = each %links)  {
-	   printf(q{<li><a href="/bedrock/%s">%s</a>} . "\n", $key, $value);
-	 }
+      while (my ($key, $value) = each %links) {
+	printf(q{<li><a href="/bedrock/%s">%s</a>} . "\n", $key, $value);
+      }
 
-print <<eot;
+      print <<eot;
 </body>
 </html>
 eot
-	return OK;
-      }
+      return OK;
+    }
+  }
+
+  $r->log->info("[Apache::Bedrock]:$html\n");
+
+  $PWD = &fastcwd unless defined($PWD);
+
+  local($SIG{__DIE__}, $SIG{__WARN__});
+
+  my $controller;
+  my $page;
+
+  unless ($file || $html) {
+    $controller = $conf->{framework};
+
+    unless ($controller) {
+      &error($r, "[Apache Bedrock] no framework object defined in 'tagx_apps.xml' for this directory.");
+      return NOT_FOUND;
+    }
+    # set some defaults
+    $controller->{meta} = {'http-equiv' => [ {'http-equiv' => "Content-Type", content => "text/html; charset=iso-8859-1"}] } unless $controller->{meta};
+    $page = $ctx->getInputValue("page") || $controller->{pages}->{default};
+    $page = $controller->{pages}->{default} if $page eq "default";
+    $controller->{title} = ucfirst($page) unless $controller->{title};
+  }
+
+  # Shove the URI params in environment.
+  local($ENV{'BEDROCK_URI'}) = $r->uri;
+  $uri_dir =~ s!/$!!;
+  local($ENV{'BEDROCK_URIDIR'}) = $uri_dir;
+  local($ENV{'BEDROCK_URINAME'}) = $uri_name;
+
+
+  # Parse the file components
+  my $app_dir;
+  my ($file_name, $file_dir);
+
+  ($file_name, $file_dir) = &fileparse( $r->filename ) if $file;
+
+  # And the file params too.
+  local($ENV{'BEDROCK_FILE'})            = $r->filename;
+  local($ENV{'BEDROCK_FILEDIR'})         = $file_dir;
+  local($ENV{'BEDROCK_FILENAME'})        = $file_name;
+  local($ENV{'BEDROCK_INCLUDE_DIR'} )    = $conf->{INCLUDE_DIR};
+  local($ENV{'BEDROCK_PEBBLE_DIR'})      = $conf->{BEDROCK_PEBBLE_DIR};
+  local($ENV{'BEDROCK_USER_PEBBLE_DIR'}) = $conf->{BEDROCK_USER_PEBBLE_DIR};
+  local($ENV{'BEDROCK_SESSION_DIR'})     = $conf->{SESSION_DIR};
+  local($ENV{'BEDROCK_CONFIG_PATH'})     = $conf->{BEDROCK_CONFIG_PATH} || $conf->{CONFIG_PATH} || $ENV{CONFIG_PATH};
+  local($ENV{'BEDROCK_LOG_DIR'})         = $conf->{LOGDIR};
+  local($ENV{'BEDROCK_HTML_LOG_DIR'})    = $conf->{HTML_LOGDIR};
+  local($ENV{'BEDROCK_LOG_FILE'})        = $conf->{LOGFILE};
+  local($ENV{'BEDROCK_IMAGE_DIR'})       = $conf->{BEDROCK_IMAGE_DIR};
+  local($ENV{'BEDROCK_IMAGE_URL'})       = $conf->{IMAGE_URL};
+
+  # - if file is null, then this is probably Bedrock Framework since $ENV{PATH_TRANSLATED} refers to a directory
+  $app_dir = $file ? $file_dir : $ENV{PATH_TRANSLATED};
+
+  unless ($html) {
+    unless ( chdir $app_dir ) {
+      return &error($r, "[Apache Bedrock] chdir($app_dir) failed: $!" );
+    }
+  }
+
+  # - either we'll be implementing Bedrock Framework or just serving a .roc[k] file
+  my $tx;
+  my $html_fd;
+
+  if ($controller) {
+    $r->log->info("[Apache Bedrock] Bedrock framework found in 'tagx_apps.xml', assuming this is a framework application ;-)");
+
+    unless ($controller->{pages}) {
+      return &error($r, "[Apache Bedrock] Misconfigured Bedrock framework - no 'pages' object found!");
     }
 
-    $r->log->info("[Apache::Bedrock]:$html\n");
 
-    $PWD = &fastcwd unless defined($PWD);
-
-    local($SIG{__DIE__}, $SIG{__WARN__});
-
-    my $controller;
-    my $page;
-
-    unless ($file || $html) {
-	$controller = $conf->{framework};
-
-	unless ($controller) {
-	    &error($r, "[Apache Bedrock] no framework object defined in 'tagx_apps.xml' for this directory.");
-	    return NOT_FOUND;
-	}
-# set some defaults
-	$controller->{meta} = {'http-equiv' => [ {'http-equiv' => "Content-Type", content => "text/html; charset=iso-8859-1"}] } unless $controller->{meta};
-	$page = $ctx->getInputValue("page") || $controller->{pages}->{default};
-	$page = $controller->{pages}->{default} if $page eq "default";
-	$controller->{title} = ucfirst($page) unless $controller->{title};
+    unless ($page) {
+      &error($r, "[Apache Bedrock] No page specified or no default 'page' set in Bedrock framework.");
     }
 
-    # Shove the URI params in environment.
-    local($ENV{'BEDROCK_URI'}) = $r->uri;
-    $uri_dir =~ s!/$!!;
-    local($ENV{'BEDROCK_URIDIR'}) = $uri_dir;
-    local($ENV{'BEDROCK_URINAME'}) = $uri_name;
+    my $action = $ctx->getInputValue("action") || "default";
+    $r->log->info(sprintf("[Apache Bedrock] bedrock framework page: [%s] action: [%s]", $page, $action));
 
-
-    # Parse the file components
-    my $app_dir;
-    my ($file_name, $file_dir);
-
-    ($file_name, $file_dir) = &fileparse( $r->filename ) if $file;
-
-    # And the file params too.
-    local($ENV{'BEDROCK_FILE'}) = $r->filename;
-    local($ENV{'BEDROCK_FILEDIR'}) = $file_dir;
-    local($ENV{'BEDROCK_FILENAME'}) = $file_name;
-    local($ENV{'BEDROCK_INCLUDE_DIR'}) = $conf->{INCLUDE_DIR};
-    local($ENV{'BEDROCK_PEBBLE_DIR'}) = $conf->{BEDROCK_PEBBLE_DIR};
-    local($ENV{'BEDROCK_USER_PEBBLE_DIR'}) = $conf->{BEDROCK_USER_PEBBLE_DIR};
-    local($ENV{'BEDROCK_SESSION_DIR'}) = $conf->{SESSION_DIR};
-    local($ENV{'BEDROCK_CONFIG_PATH'}) = $conf->{BEDROCK_CONFIG_PATH} || $conf->{CONFIG_PATH} || $ENV{CONFIG_PATH};
-    local($ENV{'BEDROCK_LOG_DIR'}) = $conf->{LOGDIR};
-    local($ENV{'BEDROCK_HTML_LOG_DIR'}) = $conf->{HTML_LOGDIR};
-    local($ENV{'BEDROCK_LOG_FILE'}) = $conf->{LOGFILE};
-    local($ENV{'BEDROCK_IMAGE_DIR'}) = $conf->{BEDROCK_IMAGE_DIR};
-    local($ENV{'BEDROCK_IMAGE_URL'}) = $conf->{IMAGE_URL};
-
-# - if file is null, then this is probably Bedrock Framework since $ENV{PATH_TRANSLATED} refers to a directory
-    $app_dir = $file ? $file_dir : $ENV{PATH_TRANSLATED};
-
-    unless ($html) {
-      unless ( chdir $app_dir ) {
-	return &error($r, "[Apache Bedrock] chdir($app_dir) failed: $!" );
-      }
-    }
-
-# - either we'll be implementing Bedrock Framework or just serving a .roc[k] file
-    my $tx;
-    my $html_fd;
-
-    if ($controller) {
-	$r->log->info("[Apache Bedrock] Bedrock framework found in 'tagx_apps.xml', assuming this is a framework application ;-)");
-
-	unless ($controller->{pages}) {
-	  return &error($r, "[Apache Bedrock] Misconfigured Bedrock framework - no 'pages' object found!");
-	}
-
-
-	unless ($page) {
-	  &error($r, "[Apache Bedrock] No page specified or no default 'page' set in Bedrock framework.");
-	}
-
-	my $action = $ctx->getInputValue("action") || "default";
-	$r->log->info(sprintf("[Apache Bedrock] bedrock framework page: [%s] action: [%s]", $page, $action));
-
-	my $page_def = $controller->{pages}->{$page};
+    my $page_def = $controller->{pages}->{$page};
  
-	unless ($page_def) {
-	  $r->warn ("[Apache Bedrock] No Bedrock framework definition for [$page] using defaults...");
-	  $html = sprintf("<html>\n<body>\n<b>Bedrock framework: </b>Page Under Construction - no controller for '%s'</b></body></html>", $page);
-	}
-	else {
-	  $html .= "<html>\n".build_head_section($controller, $page);
-	  $html .= build_body_tag($controller, $page);
-	  $html .= build_body_section($controller, $page, $action);
+    unless ($page_def) {
+      $r->warn ("[Apache Bedrock] No Bedrock framework definition for [$page] using defaults...");
+      $html = sprintf("<html>\n<body>\n<b>Bedrock framework: </b>Page Under Construction - no controller for '%s'</b></body></html>", $page);
+    } else {
+      $html .= "<html>\n".build_head_section($controller, $page);
+      $html .= build_body_tag($controller, $page);
+      $html .= build_body_section($controller, $page, $action);
 
 
-# - an optional page footer which can be defined by page or application globally 
-	  my $footer = $page_def->{footer} || $controller->{footer};
-	  $html .= include(page_name($footer)) if $footer;
-	  $html .= "</body>\n</html>\n";
-	}
-
-# - once a page is loaded, the page becomes the current page and the action is set to NULL, if the developer needs to know how they got here
-#   they can use the 'referrer' and 'referrer_action' CGI vars
-#   Note: setting the $ctx->input object as done below is valid at this point ONLY because $ctx->getInputValue was invoked at least once before 
-#         these references to $ctx->input (see Bedrock::Context if you really want to see the gory details)
-#
-	unless ($action eq "default") {
-	  my @pages = split ";", $page_def->{actions}->{$action};
-	  my $current_page = $pages[$#pages];
-	  $current_page =~s/\.inc$//;
-	  $ctx->input->{page} = $current_page;
-	  $ctx->input->{referrer} = $page;
-	  $ctx->input->{referrer_action} = $ctx->input->{action};
-	  $ctx->input->{action} = undef;
-	}
-
-	$html_fd = IO::Scalar->new(\$html);
-	$tx = Text::TagX->new ($html_fd, $ctx);
-    }
-    elsif ($html) {
-	$html_fd = IO::Scalar->new(\$html);
-	$tx = Text::TagX->new ($html_fd, $ctx);
-    }
-    else {
-	$tx = Text::TagX->new ($file, $ctx);
+      # - an optional page footer which can be defined by page or application globally 
+      my $footer = $page_def->{footer} || $controller->{footer};
+      $html .= include(page_name($footer)) if $footer;
+      $html .= "</body>\n</html>\n";
     }
 
+    # once a page is loaded, the page becomes the current page and
+    # the action is set to NULL, if the developer needs to know how
+    # they got here they can use the 'referrer' and 'referrer_action'
+    # CGI vars 
     #
-    # Set logging parameters, let's make the default Bedrock Framework log file bedrock-framework
+    # Note: setting the $ctx->input object as done below is
+    # valid at this point ONLY because $ctx->getInputValue was invoked
+    # at least once before these references to $ctx->input (see
+    # Bedrock::Context if you really want to see the gory details)
     #
-    my $default_framework_log = $uri_dir;
-    $default_framework_log =~s/\/$//;
-    $default_framework_log = sprintf("%s.bedrock-framework", $default_framework_log);
-
-    my $f = ($conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp') . '/' . ($uri_name || $default_framework_log);
-    my $sz = $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000;
-
-    $tx->options(LOG_PREFIX =>  $f,
-		 LOG_MAXSIZE => $sz,
-		 PEBBLE_DIR => $conf->{'PEBBLE_DIR'},
-		 BEDROCK_PEBBLE_DIR => $conf->{'BEDROCK_PEBBLE_DIR'},
-		 INCLUDE_DIR => $conf->{INCLUDE_DIR} || "."
-		);
-
-    #
-    # Load Generic startup BLMs
-    #
-    my $modules = $conf->{'MODULES'};
-    unless ( $modules ) {
-	return &error( $r, "Error in config file: MODULES is not defined." );
+    unless ($action eq "default") {
+      my @pages = split ";", $page_def->{actions}->{$action};
+      my $current_page = $pages[$#pages];
+      $current_page =~s/\.inc$//;
+      $ctx->input->{page} = $current_page;
+      $ctx->input->{referrer} = $page;
+      $ctx->input->{referrer_action} = $ctx->input->{action};
+      $ctx->input->{action} = undef;
     }
 
-    my @startup = @{$modules};
-    my $i = 0; my $header;
-    for my $modconf (@startup) {
+    $html_fd = IO::Scalar->new(\$html);
+    $tx = Text::TagX->new ($html_fd, $ctx);
+  } elsif ($html) {
+    $html_fd = IO::Scalar->new(\$html);
+    $tx = Text::TagX->new ($html_fd, $ctx);
+  } else {
+    $tx = Text::TagX->new ($file, $ctx);
+  }
 
-	unless ( defined( $modconf->{'binding'} ) ) {
-	    return &error( $r, "PID [$$]: Error in config: `binding' not defined for MODULES->[$i]" );
-	}
+  #
+  # Set logging parameters, let's make the default Bedrock Framework
+  # log file bedrock-framework
+  #
+  my $default_framework_log = $uri_dir;
+  $default_framework_log =~s/\/$//;
+  $default_framework_log = sprintf("%s.bedrock-framework", $default_framework_log);
 
-	my $type = $modconf->{'type'} || 'hash';
-	unless ( $type =~ /^(hash|array|handle|object)$/ ) {
-	    return &error( $r, "PID [$$]: Error in config: MODULES->[$i] defined with invalid `type'($type)" );
-	}
+  my $f = ($conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp') . '/' . ($uri_name || $default_framework_log);
+  my $sz = $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000;
 
-	# BLM specific configuration
-	my $config = $modconf->{'config'};
+  $tx->options(
+	       BEDROCK_PEBBLE_DIR => $conf->{'BEDROCK_PEBBLE_DIR'},
+	       LOG_MAXSIZE        => $sz,
+	       INCLUDE_DIR        => $conf->{INCLUDE_DIR} || ".",
+	       LOG_PREFIX         => $f,
+	       PEBBLE_DIR         => $conf->{'PEBBLE_DIR'},
+	       ALLOW_SNIPPET_TAG  => $conf->{'ALLOW_SNIPPET_TAG'}
+	      );
 
-	# Special handling for header module. We create the object immediately
-	# and bind it
-	if ( exists $modconf->{'header'} ) {
-	    # Croak if more than one module tries to become header module
-	    if ( $header ) {
-		return &error( $r, "PID [$$]: Error in config: Multiple modules defined with `header': ($header, $modconf->{'binding'})" );
-	    }
+  #
+  # Load Generic startup BLMs
+  #
+  my $modules = $conf->{'MODULES'};
+  unless ( $modules ) {
+    return &error( $r, "Error in config file: MODULES is not defined." );
+  }
 
-	    # Bind the header
-	    $header = $modconf->{'binding'};
+  my @startup = @{$modules};
+  my $i = 0; my $header;
+  for my $modconf (@startup) {
 
-	    my $modfile = $modconf->{'module'};
-	    $modfile =~ s!::!/!g;
-	    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-	    require $modfile;
-
-	    my $obj;
-	    if ( $type eq 'hash' or $type eq 'object' ) {
-		$obj = bless {}, $modconf->{'module'};
-		tie %{$obj}, $modconf->{'module'}, $ctx, $config;
-	    } elsif ( $type eq 'array' ) {
-		$obj = bless [], $modconf->{'module'};
-		tie @{$obj}, $modconf->{'module'}, $ctx, $config;
-	    } elsif ( $type eq 'handle' ) {
-		$obj = bless gensym, $modconf->{'module'};
-		tie *{$obj}, $modconf->{'module'}, $ctx, $config;
-	    }
-	    $tx->param($header => $obj);
-	    $tx->options('HEADER' => $obj);
-	    next;
-	}
-
-	# bind a subroutine to the names so the constructor gets
-	# invoked ONLY if the variable is accessed from the script.
-	$tx->param( $modconf->{'binding'}, sub {
-	    my $obj;
-	    my $modfile = $modconf->{'module'};
-	    $modfile =~ s!::!/!g;
-	    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-	    require $modfile;
-	    if ( $type eq 'hash' or $type eq 'object' ) {
-		$obj = bless {}, $modconf->{'module'};
-		tie %{$obj}, $modconf->{'module'}, $ctx, $config;
-	    } elsif ( $type eq 'array' ) {
-		$obj = bless [], $modconf->{'module'};
-		tie @{$obj}, $modconf->{'module'}, $ctx, $config;
-	    } elsif ( $type eq 'handle' ) {
-		$obj = bless gensym, $modconf->{'module'};
-		tie *{$obj}, $modconf->{'module'}, $ctx, $config;
-	    }
-	    $obj;
-	});
-    } continue {
-	$i++;
+    unless ( defined( $modconf->{'binding'} ) ) {
+      return &error( $r, "PID [$$]: Error in config: `binding' not defined for MODULES->[$i]" );
     }
 
-    # Croak if no header module
-    unless ( $header ) {
-	return &error( $r, "PID [$$]: Error in config file: No header module" );
+    my $type = $modconf->{'type'} || 'hash';
+    unless ( $type =~ /^(hash|array|handle|object)$/ ) {
+      return &error( $r, "PID [$$]: Error in config: MODULES->[$i] defined with invalid `type'($type)" );
     }
 
-    eval { $tx->output };
+    # BLM specific configuration
+    my $config = $modconf->{'config'};
 
-    if ( $@ ) {
-	$r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
-	my $error_location = $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
-	$tx->show_error( $error_location );
+    # Special handling for header module. We create the object immediately
+    # and bind it
+    if ( exists $modconf->{'header'} ) {
+      # Croak if more than one module tries to become header module
+      if ( $header ) {
+	return &error( $r, "PID [$$]: Error in config: Multiple modules defined with `header': ($header, $modconf->{'binding'})" );
+      }
+	  
+      # Bind the header
+      $header = $modconf->{'binding'};
+
+      my $modfile = $modconf->{'module'};
+      $modfile =~ s!::!/!g;
+      $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+      require $modfile;
+
+      my $obj;
+      if ( $type eq 'hash' or $type eq 'object' ) {
+	$obj = bless {}, $modconf->{'module'};
+	tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+      } elsif ( $type eq 'array' ) {
+	$obj = bless [], $modconf->{'module'};
+	tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+      } elsif ( $type eq 'handle' ) {
+	$obj = bless gensym, $modconf->{'module'};
+	tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+      }
+      $tx->param($header => $obj);
+      $tx->options('HEADER' => $obj);
+      next;
     }
 
-    chdir $PWD;
-    $tx->close;
+    # bind a subroutine to the names so the constructor gets
+    # invoked ONLY if the variable is accessed from the script.
+    $tx->param( $modconf->{'binding'}, sub {
+		  my $obj;
+		  my $modfile = $modconf->{'module'};
+		  $modfile =~ s!::!/!g;
+		  $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+		  require $modfile;
+		  if ( $type eq 'hash' or $type eq 'object' ) {
+		    $obj = bless {}, $modconf->{'module'};
+		    tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+		  } elsif ( $type eq 'array' ) {
+		    $obj = bless [], $modconf->{'module'};
+		    tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+		  } elsif ( $type eq 'handle' ) {
+		    $obj = bless gensym, $modconf->{'module'};
+		    tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+		  }
+		  $obj;
+		});
+  } continue {
+    $i++;
+  }
 
-# Apache 2 hack for redirection (mod_perl?)
-    $r->status(Apache2::Const::REDIRECT) if $ENV{MOD_PERL} && exists ${$r->err_headers_out}{Location} || exists ${$r->err_headers_out}{location};
+  # Croak if no header module
+  unless ( $header ) {
+    return &error( $r, "PID [$$]: Error in config file: No header module" );
+  }
 
-    return OK;
+  eval { $tx->output };
+
+  if ( $@ ) {
+    $r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
+    my $error_location = $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+    $tx->show_error( $error_location );
+  }
+
+  chdir $PWD;
+  $tx->close;
+
+  # Apache 2 hack for redirection (mod_perl?)
+  $r->status(Apache2::Const::REDIRECT) 
+    if $ENV{MOD_PERL} && exists ${$r->err_headers_out}{Location} || exists ${$r->err_headers_out}{location};
+
+  return OK;
 }
 
 1;
@@ -774,6 +799,10 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.18  2010/11/08 03:20:02  rlauer
+# - added subroutine show_pod, add <img> tag to plugin/tag documentation
+# - pass ALLOW_SNIPPET_TAG in option hash to TagX
+#
 # Revision 1.17  2010/10/30 21:45:51  rlauer
 # - deprecate ERROR_LOCATION (relative to document root), in favor of
 #   BEDROCK_ERROR_LOCATION which is an absolute path
