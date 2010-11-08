@@ -100,6 +100,7 @@ dist_perl5bedrocktexttagxtagwithbodylib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/If.pm \
     Bedrock/Text/TagX/TAG/WithBody/Loop.pm \
     Bedrock/Text/TagX/TAG/WithBody/Sink.pm \
+    Bedrock/Text/TagX/TAG/WithBody/Snippet.pm \
     Bedrock/Text/TagX/TAG/WithBody/Try.pm
 
 dist_perl5bedrocktexttagxtagwithbodyiflib_DATA = \
