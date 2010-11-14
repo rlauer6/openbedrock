@@ -36,6 +36,9 @@ BEGIN
 }
 
 use UNIVERSAL qw (isa);
+
+use Data::Dumper;
+
 use TagX::Log 1.01;
 use TagX::TAG::WithBody::Loop 1.03;
 
@@ -68,7 +71,7 @@ sub finalize
 	&log_message( $self, $str );
     }
 
-    if ( @argv != 1 ) {
+    if ( @argv > 1 ) {
 	&log_message( $self, "Invalid number of argument(@{[scalar(@argv)]}):\n\t(@argv)");
 	return;
     } elsif ( ref($argv[0]) ) {
@@ -76,54 +79,76 @@ sub finalize
 	return;
     }
 
-    unless ( exists $self->{'__term'} ) {
-	local($_) = $argv[0];
-	$self->{'__term'} = &TagX::Parser::parse_stm;
-	&log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
-	    if $verbose;
+    # <while "expression"> : expression must be non-null
+    # <while 0 >           : valid
+    # <while "" >          : invalid
+    
+    unless ( exists $self->{'__term'} || ! @argv || ! length($argv[0]) ) {
+      local($_) = $argv[0];
+      $self->{'__term'} = &TagX::Parser::parse_stm;
+      &log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
+	if $verbose;
     }
+    else {
+      &log_message($self, "term[?]: ". Dumper([$self->{'__term'}])) if $verbose;
+    }
+    
     my $term = $self->{'__term'};
+    &log_message($self, "term: ". Dumper([$term])) if $verbose;
     my @children = @{$self->{'subobjs'}};
-
+    
     my $start = defined( $options{'start-index'} ) ? $options{'start-index'} : 0;
-
+    
     #
     # Defining these things as options override defaults
     #
     my $end;
     if ( defined( $options{'end-index'} ) ) {
-	$end = $options{'end-index'};
+      $end = $options{'end-index'};
     } elsif ( defined( $options{'max-items'} ) ) {
-	my $nItems = $options{'max-items'};
+      my $nItems = $options{'max-items'};
 	$end = $start + $nItems - 1;
     }
     my $define_index = $options{'define-index'} if exists $options{'define-index'};
     my $define_var = $options{'define-var'} if exists $options{'define-var'};
     &log_message( $self, "begin loop with term = [$argv[0]], start = [$start], end = [$end], define-index = [$define_index], define-var = [$define_var]" ) if $verbose;
 
-    for (my $i = 0 ;
-	 ;
-	 $i++ ) {
-	last if defined( $end ) and $i > $end;
-	my $data = defined( $define_index ) ? $term->eval( {$define_index => $i}, @context )
-	    : $term->eval( @context );
+    unless (defined $end || defined $term) {
+      die "usage: <while> requires either an expression to evaluate, --max-items, or --end-index\n";
+    }
+
+    for (my $i = 0 ;; $i++ ) {
+      last if defined( $end ) and $i > $end;
+      my $data;
+
+      &log_message($self, "term: ". Dumper([$term])) if $verbose;
+
+      # if there is no term to evaluate then don't
+      if ( $term ) {
+	$data = defined( $define_index ) ? $term->eval( {$define_index => $i}, @context ) : $term->eval( @context );
 	&log_message( $self, "Loop $i: Condition [$argv[0]] evaluated to [$data] ("
 		      . (defined( $data ) ? "defined" : "undefined") . ")" ) if $verbose;
 	last unless defined( $data ) and $data;
-	next if $i < $start;
+      }
 
-	my $loop_data = {};
-	$loop_data->{$define_var} = $data if defined( $define_var );
-	$loop_data->{$define_index} = $i if defined( $define_index );
-	if ( defined($verbose) and $verbose > 1 ) {
-	    my $str = "Loop $i >>\n";
-	    for my $key (sort keys %{$loop_data}) {
-		$str .= "    $key => $loop_data->{$key}\n";
-	    }
-	    &log_message( $self, $str );
+      next if $i < $start;
+      
+      my $loop_data = {};
+
+      # make the while var the value of the expression or the value of the iterator
+      $loop_data->{$define_var} = (defined $term) ? $data : $i;
+
+      $loop_data->{$define_index} = $i if defined( $define_index );
+      
+      if ( defined($verbose) and $verbose > 1 ) {
+	my $str = "Loop $i >>\n";
+	for my $key (sort keys %{$loop_data}) {
+	  $str .= "    $key => $loop_data->{$key}\n";
 	}
-
-	$self->{'finalize_children'}->($self->{'subobjs'}, $tx, $loop_data, @context );
+	&log_message( $self, $str );
+      }
+      
+      $self->{'finalize_children'}->($self->{'subobjs'}, $tx, $loop_data, @context );
     }
 }
 
@@ -137,7 +162,7 @@ Iterate over a block while a condition is true.
 
 =head1 SYNTAX
 
-  <while [options] expression>
+  <while [options] [expression]>
   </while>
 
 =head1 OPTIONS
@@ -153,7 +178,8 @@ Iterate over a block while a condition is true.
 =item --define-var
 
 Variable to hold the term value that is evaluated each time through
-the loop (default = "_")
+the loop (default = "_").  Note that if no expression is given the
+loop variable will take on the value of the iterator.
 
 =item --define-index
 
@@ -193,6 +219,13 @@ C<E<lt>whileE<gt>> is not terribly useful in practice.
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.12  2010/11/14 21:09:53  rlauer
+# - allow 0 arguments (naked while)
+# - if no arguments, then insist on an end-index either as a result
+#   of --max-items or --end-index
+# - also some formatting changes to hopefully make this mess a bit more
+#   readable
+#
 # Revision 1.11  2009/12/31 12:43:45  rlauer
 # better explanation of <while>
 #
