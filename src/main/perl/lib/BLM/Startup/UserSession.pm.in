@@ -40,6 +40,7 @@ use Bedrock::Hash;
 use TagX::Log;
 use Digest::MD5;
 use POSIX qw(strftime);
+
 @ISA = qw(Bedrock::Hash);
 
 =pod
@@ -50,66 +51,129 @@ C<BLM::Startup::UserSession> - provides a persistent store for Bedrock applicati
 
 =head1 SYNOPSIS
 
+ <var $session.set('foo', 'bar')>
+
 =head1 DESCRIPTION
 
 Implements stateful sessions stored to a MySQL database.  The session
-is accessed via the Bedrock object $session (or by whatever binding
+is accessed via the Bedrock object C<$session> (or by whatever binding
 name you might configure in F<tagx.xml>.
 
-Sessions can be based on a session ID stored as a cookie or by using a
+Sessions can be based on a session identifier stored as a B<cookie> on the user's browser or by using a
 CGI variable named C<session>.
+
+=head1 CONFIGURING Bedrock FOR SESSIONS
+
+The C<BLM::Startup::UserSession> is typically the mechanism Bedrock
+web applications use to maintain persitence. It uses a MySQL table to
+store the user's session information.  A database and table need to be
+created before you can use the C<$session> object.
+
+First you'll want to create a MySQL database or if you already have
+one that you are going to use to hold user session data then skip this
+part.
+
+  $ mysqladmin create berock -u root -p
+  $ cat > create_session.sql
+ drop table if exists session;
+
+ create table session
+  (
+   id           int(11)      not null auto_increment,
+   session      varchar(50)  not null default '',
+   login_cookie varchar(50)  not null default '',
+   username     varchar(50)  not null default '',
+   password     varchar(30)  default null,
+   firstname    varchar(30)  default null,
+   lastname     varchar(50)  default null,
+   email        varchar(100) default null,
+   prefs        text,
+   updated      timestamp    not null default current_timestamp on update current_timestamp,
+   added        datetime     default null,
+   expires      datetime     default null,
+   primary      key  (id)
+ );
+ 
+ grant all privileges on bedrock.* to fred@localhost identified by 'flintstone';
+ ^D
+ $ cat create_session.sql | mysql -u root -p bedrock
+
+At this point you should have a database named B<bedrock> and a table name B<session>.
+
+Now you need to configure the C<BLM::Startup::UserSession> module in F<tagx.xml>.
+
+In the C<MODULES> array add the C<BLM::Startup::UserSession> module:
+
+   <array name="MODULES">
+
+    <object>
+
+     <scalar name="binding">session</scalar>
+     <scalar name="module">BLM::Startup::UserSession</scalar>
+
+     <object name="config">
+      <scalar name="verbose">2</scalar>
+      <scalar name="param">session</scalar>
+      <scalar name="login_cookie_name">usession_login</scalar>
+      <scalar name="login_cookie_expiry_days">365</scalar>
+      <scalar name="data_source">dbi:mysql:bedrock</scalar>
+      <scalar name="username">bedrock</scalar>
+      <scalar name="password">fred</scalar>
+      <scalar name="table_name">session</scalar>
+      <scalar name="purge_user_after">30</scalar>
+      <scalar name="cookieless_sessions></scalar>
+      <object name="cookie">
+ 	<scalar name="path">/</scalar>
+ 	<scalar name="expiry_secs">3600</scalar>
+ 	<scalar name="domain"></scalar>
+      </object>
+
+     </object>
+
+    </object>
+
+   </array>
+
+You now can use the C<$session> object in your Bedrock applications.
+Note that users should have cookies enabled on their web browser in
+order to support cookie based sessions.
+
+=head1 COOKIELESS SESSIONS
+
+By default user session require that cookies are enabled on the user's
+web browser.  This is because the C<$session> object will use the
+value of a cookie (C<session>) to identify the user's session.  If you
+need to run in an environment where cookies cannot be enabled, then
+you can use cookieless sessions. In that case, the
+C<BLM::Startup::UserSession> will use a CGI variable by the same name
+to hold the session value.  It is the responsibility then of the
+application to carry around the session identifier from page to page.
+
+To enable I<cookieless> sessions, first set the configuration value
+C<cookieless_sessions> to 1 in F<tagx.xml> in the
+C<BLM::Startup::UserSession> section.
+
+In your application...
+
+ <if $input.session>
+   <null $session.cookieless_session($input.session)>
+ <else>
+   <null $input.set('session', $session.session)>
+ </if>
+
+This either starts a new session or tells C<BLM::Startup::UserSession>
+to use an existing session.  You'll then want to carry around that
+session identifier in your web pages either as part of a form or in a
+URL.
+
+ <input type="hidden" name="session" value="<var $input.session>">
+
+ <a href="/index.roc?session=<var $input.session>">link to another page in application...</a>
 
 =head1 METHODS
 
 =cut
 
-
-#
-# Table required is something like this:
-# create table junk_session (
-#  id integer auto_increment primary key,
-#  session varchar(50) unique,
-#  login_cookie varchar(50) unique,
-#  username varchar(30) unique,
-#  password varchar(30),
-#  firstname varchar(30),
-#  lastname varchar(50),
-#  email varchar(100),
-#  prefs text,
-#  updated timestamp,
-#  added datetime,
-#  expires datetime
-# );
-#
-
-#
-# Configuration required is something like this
-#  <object name="/user_session">
-#   <array name="MODULES">
-#    <object>
-#     <scalar name="binding">usession</scalar>
-#     <scalar name="module">BLM::Startup::UserSession</scalar>
-#     <object name="config">
-#      <scalar name="verbose">2</scalar>
-#      <scalar name="param">usession</scalar>
-#      <scalar name="login_cookie_name">usession_login</scalar>
-#      <scalar name="login_cookie_expiry_days">365</scalar>
-#      <scalar name="data_source">dbi:mysql:bedrock</scalar>
-#      <scalar name="username">bedrock</scalar>
-#      <scalar name="password">fred</scalar>
-#      <scalar name="table_name">junk_session</scalar>
-#      <scalar name="purge_user_after">30</scalar>
-#      <object name="cookie">
-# 	<scalar name="path">/user_session</scalar>
-# 	<scalar name="expiry_secs">60</scalar>
-# 	<scalar name="domain"></scalar>
-#      </object>
-#     </object>
-#    </object>
-#   </array>
-#  </object>
-#
- 
 sub digest
 {
     my $md5 = Digest::MD5->new;
@@ -608,7 +672,7 @@ sub clear
 
 =head2 register(username, password, firstname, lastname, email)
 
-Register a new user in the session table (login sessions).
+Register a new user in the session table (login sessions).  The new user's information is written to the session table.
 
 =cut
 
@@ -636,12 +700,16 @@ sub register
 
 =head2 login(username, password)
 
+C<username> is looked up in the session table and given a new session
+identifier.  If the password is incorrect an exception is thrown.
+
 =cut
 
 sub login
 {
     my $obj = shift;
     my $self = tied(%{$obj});
+
     my ($username, $password) = @_;
 
     my ($verbose) = @{$self}{qw(verbose)};
@@ -683,9 +751,11 @@ sub login
 
 =pod
 
-=head2 cookieless_session(session id)
+=head2 cookieless_session(session-id)
 
-Start an anonymous cookieless session.
+Retrieve an anonymous cookieless session.  This is required to tell
+C<BLM::Startup::UserSession> to use the session identified by the
+session-id that is passed.
 
 =cut
 
@@ -831,8 +901,10 @@ Encrypt a password suitable for storage in a file or database.
 sub encrypt {
   my $obj = shift;
   my $self = tied(%{$obj});
+
   my $password = shift;
   my $salt = shift;
+
   if ($salt) {
       $self->do_select("select encrypt(?,?) passwd", $password, $salt)->[0];
   }
@@ -846,6 +918,9 @@ sub encrypt {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.15  2010/11/16 00:18:54  rlauer
+# - added more documentation about required table and cookieless sessions
+#
 # Revision 1.14  2010/11/15 02:12:10  rlauer
 # - make PUBLIC
 # - minor documentation tweaks
