@@ -320,7 +320,6 @@ AC_CONFIG_FILES(
         [src/main/perl/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
-        [src/main/perl/lib/Bedrock/VERSION.pm]
         [src/main/resources/Makefile]
 )
 
