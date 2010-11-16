@@ -173,3 +173,10 @@ dist_perl5blmstartupsessionlib_DATA = \
 
 dist_noinst_DATA = \
     Bedrock/VERSION.pm.in
+
+@do_subst_command@
+
+Bedrock/VERSION.pm: % : %.in
+	$(do_subst) $< > $@
+
+CLEANFILES = Bedrock/VERSION.pm
