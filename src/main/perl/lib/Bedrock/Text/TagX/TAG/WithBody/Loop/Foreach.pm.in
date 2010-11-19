@@ -31,7 +31,7 @@ BEGIN
 {
     use Exporter ();
     use vars	qw ($VERSION @ISA);
-    $VERSION    = 1.19;
+    $VERSION    = 1.20;
     @ISA	= qw (Exporter);
 }
 
@@ -50,19 +50,22 @@ sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('define-index=s'	=> undef,
-		   'start-index=i'	=> undef,
-		   'end-index=i'	=> undef,
-		   'max-items=i'	=> undef,
-		   'counter-start'      => 0,
+    my %options = ('define-index=s'	 => undef,
+		   'start-index=i'	 => undef,
+		   'end-index=i'	 => undef,
+		   'max-items=i'	 => undef,
+		   'counter-start'       => 0,
 		   'counter-increment=i' => 1,
-		   'define-counter=s'   => undef,
-		   'alias=s'		=> undef,
-	           'define-var=s'       => '_');
+		   'define-counter=s'    => undef,
+		   'alias=s'		 => undef,
+	           'define-var=s'        => '_');
 
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
+
     my $isHash; # true if looping over a hash...
+
+    $self->dump_options(\%options) if $verbose;
 
     if ( $verbose ) {
 	my ($key, $value);
@@ -78,50 +81,52 @@ sub finalize
 
     my ($start, $end, $nItems, $data);
     if ( @argv > 1 ) {
-	# Force the argument list into an array
-	&log_message( $self, "More than one args found -- forced into an array: (@argv)" )
-	    if $verbose > 1;
-	$data = \@argv;
-	$start = 0;
-	$nItems = @argv;
-	$end = $nItems - 1;
-    } elsif ( @argv == 1 ) {
-	$data = $argv[0];
-	unless ( defined ($data) ) {
-	    &log_message( $self, "argument [$data] is undefined" );
-	    return;
-	}
-
-	unless ( &UNIVERSAL::isa( $data, 'ARRAY' ) ) {
-	    &log_message( $self, "argument [$data] was not an array .. Bedrock I would have forced into one" )
-		if $verbose;
-	    if (&UNIVERSAL::isa( $data, 'HASH') ) {
-	      my @keys = keys %$data;
-	      &log_message($self, "keys: ". join("|", @keys));
-	      &log_message($self, "\t". ref($data));
-	      $isHash = $data;
-	      $data = \@keys;
-	    }
-	    else {
-	      $data = [$data];
-	    }
-	}
-
-	$start = 0;
-	$nItems = @{$data};
-	$end = $nItems - 1;
-    } else {
-	$start = 0;
+      # Force the argument list into an array
+      &log_message( $self, "More than one args found -- forced into an array: (@argv)" )
+	if $verbose > 1;
+      $data = \@argv;
+      $start = 0;
+      $nItems = @argv;
+      $end = $nItems - 1;
     }
-
+    elsif ( @argv == 1 ) {
+      $data = $argv[0];
+      unless ( defined ($data) ) {
+	&log_message( $self, "argument [$data] is undefined" );
+	return;
+      }
+      
+      unless ( &UNIVERSAL::isa( $data, 'ARRAY' ) ) {
+	&log_message( $self, "argument [$data] was not an array .. Bedrock I would have forced into one" )
+	  if $verbose;
+	# iterate over a hash where $_ eq {}
+	if (&UNIVERSAL::isa( $data, 'HASH') ) {
+	  &log_message( $self, "argument [$data] was is a hash .." );
+	  my @tmp = map { { key=> $_, value => $data->{$_} }; } keys %$data;
+	  $data = \@tmp;
+	}
+	# promote a scalar to 1 element array
+	else {
+	  $data = [$data];
+	}
+      }
+      # defaults
+      $start = 0;
+      $nItems = @{$data};
+      $end = $nItems - 1;
+    } 
+    else {
+      $start = 0;
+    }
+    
     #
     # Defining these things as options override defaults
     #
     $start = $options{'start-index'} if defined( $options{'start-index'} );
-
+    
     my $increment = $options{'counter-increment'};
     my $counter_start = $options{'counter-start'};
-
+    
     if ( defined( $options{'end-index'} ) ) {
 	$end = $options{'end-index'};
     } elsif ( defined( $options{'max-items'} ) ) {
@@ -143,45 +148,43 @@ sub finalize
 		  . "alias = [$alias]" ) if $verbose;
     my $counter_idx = $counter_start;
     my $index = 1;
+
     for (my $i = $start ; $i <= $end ; $i++ ) {
-	# Begin building the arg list for children
-	my @loop_args = ($tx);
+      # Begin building the arg list for children
+      my @loop_args = ($tx);
+      
+      # Get the current element from the array
+      my $loop_data = defined($data) ? $data->[$i] : $i;
 
-	# Get the current element from the array
-	my $loop_data = defined($data) ? $data->[$i] : $i;
-
-	# Create a hashref for storing loop vars
-	# Alias the current element; note that alias is present even
-	# if the current element is undefined. This way, the alias
-	# evaluates to undef.
-	my $loop_vars = {$alias => $loop_data};
-
-	# Store index in loop vars hash if defined
-	$loop_vars->{$define_index} = $i if defined($define_index);
-	$loop_vars->{$counter} = $counter_idx;
-        $loop_vars->{'_index'} = $index++;
-	if ($isHash) {
-	  $loop_vars->{_key} = $loop_data;
-	  $loop_vars->{_value} = $isHash->{$loop_data};
+      # Create a hashref for storing loop vars
+      # Alias the current element; note that alias is present even
+      # if the current element is undefined. This way, the alias
+      # evaluates to undef.
+      my $loop_vars = {$alias => $loop_data};
+      
+      # Store index in loop vars hash if defined
+      $loop_vars->{$define_index} = $i if defined($define_index);
+      $loop_vars->{$counter} = $counter_idx;
+      $loop_vars->{'_index'} = $index++;
+      
+      $counter_idx += $increment;
+      push @loop_args, $loop_vars;
+      
+      # Store the current element too in the loop args list
+      if ( defined( $loop_data ) and &UNIVERSAL::isa( $loop_data, 'HASH') ) {
+	push @loop_args, $loop_data;
+	
+	# echo the loop data if requested
+	if ( defined($verbose) and $verbose > 1 ) {
+	  my $str = "Loop $i >>\n";
+	  for my $key (sort keys %{$loop_data}) {
+	    $str .= "    $key => $loop_data->{$key}\n";
+	  }
+	  &log_message( $self, $str );
 	}
-	$counter_idx += $increment;
-	push @loop_args, $loop_vars;
-
-	# Store the current element too in the loop args list
-	if ( defined( $loop_data ) and &UNIVERSAL::isa( $loop_data, 'HASH') ) {
-	    push @loop_args, $loop_data;
-
-	    # echo the loop data if requested
-	    if ( defined($verbose) and $verbose > 1 ) {
-		my $str = "Loop $i >>\n";
-		for my $key (sort keys %{$loop_data}) {
-		    $str .= "    $key => $loop_data->{$key}\n";
-		}
-		&log_message( $self, $str );
-	    }
-	}
-
-	$self->{'finalize_children'}->($self->{'subobjs'}, @loop_args, @context );
+      }
+      
+      $self->{'finalize_children'}->($self->{'subobjs'}, @loop_args, @context );
     }
 }
 
@@ -271,20 +274,27 @@ options to control the number of times the block is processed.
 
 =item * Iterating over hashes
 
-When iterating over hashes two system variables are defined within the
-scope of the loop:
+Iterating over hashes entails traversing the hash in key order I<(which
+in Bedrock 2 happens to be the order in which the hash was defined)>
+and presenting a two-element hash within the scope of the loop.  The
+hash members are naturally 'key' and 'value'.
 
-  $_key   => the current hash key 
-  $_value => the current hash value associate with that key
+  $_.key   => the current hash key 
+  $_.value => the current hash value associate with that key
 
-The perl equivalent would look something like:
+Assuming C<$data> was your hash to iterate over, the perl equivalent
+would look something like:
 
- while (my ($_key, $_value) = each %$hash) {
-  ...
+ my @loop_data = map { {key => $_, value => $data->{$_}} } keys %$data;
+ foreach (@loop_data) {
+   print $_->key . ': . $_->value . "\n";
  } 
 
-I<All hashes are ordered hashes, thus they are iterated over in the order in which they were
-defined.>
+I<All hashes are ordered hashes, thus they are iterated over in the
+order in which they were defined.>
+
+The name of the two-element hash by default is C<$_> however you can
+change that using C<--define-alias>.
 
 =item * C<$_index>
 
@@ -307,7 +317,7 @@ iterated over.
 =item * Iterate over a hash
 
   <foreach $input>
-     <var $_key>:<var $_value><br>
+     <var $_.key>:<var $_.value><br>
   </foreach>
 
 =item Iterate over a simple list
@@ -330,6 +340,10 @@ C<E<lt>whileE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.28  2010/11/19 13:36:56  rlauer
+# - implement iteration on hashes as iterating over a list of hashes where each hash
+#   has a 'key' and 'value' member exposing the key and value of the hash
+#
 # Revision 1.27  2010/11/17 02:27:40  rlauer
 # - pod cleanup
 #
