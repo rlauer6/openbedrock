@@ -181,6 +181,9 @@ AC_SUBST([imgdir], ["\${datadir}/\${PACKAGE}/img"])
 cssdir=${datadir}/${PACKAGE}/css
 AC_SUBST([cssdir], ["\${datadir}/\${PACKAGE}/css"])
 
+configdir=${datadir}/${PACKAGE}/config
+AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config"])
+
 
 # FIXME: These are not general, so won't be correct in all
 #        circumstances. They'll work correctly once we have full Perl
@@ -246,6 +249,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]pebblesdir[@],$(pebblesdir),g'"'"' \
   -e '"'"'s,[@]imgdir[@],$(imgdir),g'"'"' \
   -e '"'"'s,[@]cssdir[@],$(cssdir),g'"'"' \
+  -e '"'"'s,[@]configdir[@],$(configdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
   \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
@@ -317,6 +321,7 @@ AC_CONFIG_FILES(
         [src/main/bedrock/img/Makefile]
         [src/main/bedrock/htdocs/Makefile]
         [src/main/bedrock/css/Makefile]
+        [src/main/bedrock/config/Makefile]
         [src/main/perl/Makefile]
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
