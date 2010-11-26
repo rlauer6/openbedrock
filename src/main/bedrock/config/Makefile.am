@@ -15,6 +15,8 @@ $(GCONFIG): % : %.in
 
 config_DATA = $(GCONFIG)
 
+dist_config_DATA = bedrock.users
+
 dist_noinst_DATA = $(CONFIG)
 
 all: 
