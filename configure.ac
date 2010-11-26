@@ -6,7 +6,7 @@ dnl +-------------------------+
 
 dnl FIXME: Use 'bedrock-dev@signatureinfo.com' (or whatever) for
 dnl        the bug reporting address once the mailman server is set up.
-AC_INIT([bedrock], [2.0.10-snapshot], [rlauer@signatureinfo.com])
+AC_INIT([bedrock], [2.0.10], [rlauer@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -181,8 +181,8 @@ AC_SUBST([imgdir], ["\${datadir}/\${PACKAGE}/img"])
 cssdir=${datadir}/${PACKAGE}/css
 AC_SUBST([cssdir], ["\${datadir}/\${PACKAGE}/css"])
 
-configdir=${datadir}/${PACKAGE}/config
-AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config"])
+configdir=${libdir}/${PACKAGE}/config
+AC_SUBST([configdir], ["\${libdir}/\${PACKAGE}/config"])
 
 
 # FIXME: These are not general, so won't be correct in all
