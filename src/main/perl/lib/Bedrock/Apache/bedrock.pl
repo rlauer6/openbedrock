@@ -5,7 +5,7 @@
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
-#    Check out http://www.openbedrock.org
+#    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -77,6 +77,9 @@ exit 0;
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.5  2010/11/29 15:57:52  rlauer
+# - change openbedrock.org to openbedrock.net
+#
 # Revision 1.4  2008/11/25 19:04:13  rlauer
 # changes based on Bedrock 2.0 migration plan
 #
