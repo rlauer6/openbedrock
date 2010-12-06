@@ -46,7 +46,10 @@ use Bedrock::BedrockConfig;
 use Bedrock::Context;
 use Bedrock::Hash;
 use Bedrock::VERSION;
+use Bedrock::Dump;
+
 use Text::TagX;
+use Text::URLEncode qw/Htmlencode/;
 
 use Cwd;
 use File::Basename;
@@ -55,6 +58,7 @@ use File::Spec;
 use Symbol;
 use Pod::Html;
 use IO::Scalar;
+use IO::File;
 
 my $PWD;
 
@@ -206,7 +210,7 @@ sub show_pod {
 	   );
 
   # in the off chance somebody puts the stupid Bedrock images some place else
-  my $image_url = $conf->{IMAGE_URL} || "/bedrock/img";
+  my $image_url =  $conf->{BEDROCK_IMAGE_URL} || "/bedrock/img";
 
   my $snippet =<<html;
 <table width="100%">
@@ -325,6 +329,19 @@ eot
 }
 
 
+sub ul_links {
+  my $links = Bedrock::Hash->new(@_);
+  my $ul = "<ul>\n";
+  
+  while (my ($key, $value) = each %{$links}) {
+    $ul .= sprintf(q{<li><a href="/bedrock/%s">%s</a>} . "\n", $key, $value);
+  }
+  
+  $ul .= "</ul>\n";
+
+  return $ul;
+}
+
 sub page_name {  $_[0] .= ".inc" unless $_[0]=~/\.inc$/; $_[0]; }
 
 sub include {
@@ -341,11 +358,12 @@ sub include {
 sub blm_ul {
   my $blms = shift;
   my $h2 = shift;
-
+  
   return unless @_;
+  my $html;
 
-  printf("<h2>%s</h2>\n", $h2);
-  return sprintf("<ul>\n%s\n</ul>\n", join("\n", map { sprintf(q{<li><a href="/bedrock/plugins/%s">%s</a>}, $_, $blms->{$_}) } @_));
+  $html = sprintf("<h2>%s</h2>\n", $h2);
+  return $html . sprintf("<ul>\n%s\n</ul>\n", join("\n", map { sprintf(q{<li><a href="/bedrock/plugins/%s">%s</a>}, $_, $blms->{$_}) } @_));
 }
 
 
@@ -391,6 +409,9 @@ sub handler {
   my ($uri_name, $uri_dir) = &fileparse( $r->uri );
 
   my $conf = &config($uri_dir);
+
+  $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
+
   my $ctx = Bedrock::Context->new (
 				   'APACHE_HANDLER' => $r,
 				   'CONFIG'         => $conf
@@ -448,15 +469,18 @@ sub handler {
 	  $blms->{$1} =~s/\//::/g;
 	}
 	  
-	my $html = doc_head(title => "Bedrock Plugins", 
+	my $html = doc_head(title      => "Bedrock Plugins", 
 			    stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-			    home => "/bedrock",
-			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			    home       => "/bedrock",
+			    image      => $conf->{BEDROCK_IMAGE_URL} . "/bedrock.jpg"
 			   );
+	
+	$html .= blm_ul($blms, "Plugins", grep (!/^Startup/, keys %$blms));
+	$html .= "<hr>\n";
+	$html .= blm_ul($blms, "Application Plugins", grep (/^Startup/, keys %$blms));
+	$html .= "</body>\n</html>\n";
+
 	print $html;
-	print blm_ul($blms, "Plugins", grep (!/^Startup/, keys %$blms));
-	print blm_ul($blms, "Application Plugins", grep (/^Startup/, keys %$blms));
-	print "</body>\n</html>\n";
 
 	return OK;
       }
@@ -489,10 +513,10 @@ sub handler {
 	  return NOT_FOUND;
 	}
       } else {			# tag listing
-	my $html = doc_head(title => "Bedrock Tag Listing", 
+	my $html = doc_head(title      => "Bedrock Tag Listing", 
 			    stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-			    home => "/bedrock",
-			    image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			    home       => "/bedrock",
+			    image      => $conf->{BEDROCK_IMAGE_URL} . "/bedrock.jpg"
 			   );
 
 	$Text::TagX::Opentag_expr =~/^\^\((.*?)\)/;
@@ -508,59 +532,108 @@ eot
 
 	return OK;
       }
-    } elsif ($doc eq "env") {
-
-      my $env = join("\n", map { sprintf("%s = (%s)", $_, $ENV{$_}); } keys %ENV);
-      my $html = doc_head(title => "Bedrock Environment",
+    } elsif ($doc =~/^(env|config)$/) {
+      
+      my %vars = (
+		  env    => ['Environment', \%ENV],
+		  config => ['Configuration', $conf]
+		 );
+      
+      my $html = doc_head(title      => "Bedrock " .  $vars{$doc}->[0],
 			  stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-			  home => "/bedrock",
-			  image => $conf->{IMAGE_URL} . "/bedrock.jpg"
+			  home       => "/bedrock",
+			  image      => $conf->{BEDROCK_IMAGE_URL} . "/bedrock.jpg"
 			 );
-      print <<eot;
-$html
-<pre>
-$env
-</pre>
-</body>
-</html>
+      $html .= q{<table cellpadding="0" cellspacing="0" border="0">} . "\n";
+      foreach (sort keys %{$vars{$doc}->[1]}) {
+	my $val = $vars{$doc}->[1]->{$_};
+	my $string_val = ref($val) ? '<pre class="configref">' . Bedrock::Dump::compact( $val ) . '</pre>' : '<code class="configvar">' . $val . '</code>';
+	$html .=<<eot;
+<tr>
+  <th valign="top" align="right"><code>$_</code>&nbsp;</th>
+  <td valign="top">$string_val</td>
+</tr>
 eot
-      return OK;
-    } elsif ($doc eq "config") {
-      $html = doc_head(title => "Bedrock Configuration",
-		       stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		       home => "/bedrock",
-		       image => $conf->{IMAGE_URL} . "/bedrock.jpg",
-		       header => undef
-		      );
-      $html .=<<eot;
-<pre>
-<trace --output \$config>
-</pre>
-</body>
-</html>
-eot
-    } else {
-      my $html = doc_head(title => "Bedrock Info",
-			  stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-			  home => "/bedrock",
-			  image => $conf->{IMAGE_URL} . "/bedrock.jpg"
-			 );
-	
-      print $html . "<ul>\n";
-      my %links = ("tag" => "Bedrock Tags",
-		   "plugins" => "Bedrock Plugins",
-		   "config" => "Bedrock Configuration",
-		   "env" => "Bedrock Environment"
-		  );
-	   
-      while (my ($key, $value) = each %links) {
-	printf(q{<li><a href="/bedrock/%s">%s</a>} . "\n", $key, $value);
       }
 
-      print <<eot;
+      $html .= "</table>\n</body>\n</html>\n";
+
+      print $html;
+
+      return OK;
+    }
+    else {
+      my $html = doc_head(title      => "Bedrock Reference Guide",
+			  stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+			  home       => "/bedrock",
+			  image      => $conf->{BEDROCK_IMAGE_URL} . "/bedrock.jpg"
+			 );
+	
+      
+
+      $html .= ul_links(
+			"tag"     => "Bedrock Tags",
+			"plugins" => "Bedrock Plugins"
+		       );
+      
+      $html .= "<hr>\n";
+      $html .= "<h1>Bedrock Environment</h1>\n";
+      $html .= ul_links(
+			"config"  => "Bedrock Configuration",
+			"env"     => "Bedrock Environment"
+		       );
+
+# See if logs are working...
+      $html .= "<hr>\n";
+      $html .= "<h1>Bedrock Logs</h1>\n";
+
+      my $logfile = sprintf("%s/%s", @$conf{qw(LOGDIR LOGFILE)});
+
+      unless ($conf->{LOGDIR} && $conf->{LOGFILE}) {
+	# no LOGDIR specified
+	$html .= q{<span class="error">No log directory or log file specified in <strong>tagx.xml</strong>.  Set <strong>LOGDIR and LOGFILE</strong></span> } . "\n";
+      }
+      elsif (-d $conf->{LOGDIR} && ! -s $logfile) {
+	# directory defined
+	$html .= q{<span class="error">Directory specified but no <strong>} . $logfile . "</strong> can be found.  Check permissions.</span>\n";
+      }
+      elsif (! -d $conf->{LOGDIR}) {
+	# directory not defined
+	$html .= q{<span class="error">Log directory is specified but <strong>} . $conf->{LOGDIR} . "</strong> does not exist.  Create the directory.  Make sure the Apache user can write to this directory.\n";
+      }
+      elsif (! -d $conf->{HTML_LOGDIR}) {
+	# directory not defined
+	$html .= q{<span class="error">HTML log directory is specified but <strong>} . $conf->{HTML_LOGDIR} . "</strong> does not exists.  Create the directory. Make sure the Apache user can write to this directory.\n";
+      }
+      else {
+	# defined and present
+	$html .= "<ul>\n";
+	$html .= q{<li><span class="code">LOGDIR:</span>&nbsp;<strong>} . $conf->{LOGDIR} . "</strong></li>\n";
+	$html .= q{<li><span class="code">LOGFILE:</span>&nbsp;<strong>} . $conf->{LOGFILE} . "</strong></li>\n";
+	$html .= q{<li><span class="code">HTML_LOGDIR:</span>&nbsp;<strong>} . $conf->{HTML_LOGDIR} . "</strong></li>\n";
+	$html .= q{<li><span class="code">LOGLEVEL:</span>&nbsp;<strong>} . $conf->{LOGLEVEL} . "</strong></li>\n";
+	$html .= "</ul>\n";
+	$html .= "<hr>\n";
+	$html .= "<h3>Bedrock Log Tail</h3>\n";
+	$html .= q{<pre class="codeframe" style="height:150px; width:600px;">} . "\n";
+
+	my $fd = IO::File->new($logfile, "r");
+	my $pos = (-s $fd > 4000) ? -s $fd - 4000 : 0;
+
+	$fd->setpos($pos);
+	while (<$fd>) {
+	  $html .= Htmlencode($_);
+	}
+	$html .= "</pre>\n";
+	$fd->close;
+      }
+
+      $html .= <<eot;
 </body>
 </html>
 eot
+      print $html;
+
       return OK;
     }
   }
@@ -614,7 +687,7 @@ eot
   local($ENV{'BEDROCK_HTML_LOG_DIR'})    = $conf->{HTML_LOGDIR};
   local($ENV{'BEDROCK_LOG_FILE'})        = $conf->{LOGFILE};
   local($ENV{'BEDROCK_IMAGE_DIR'})       = $conf->{BEDROCK_IMAGE_DIR};
-  local($ENV{'BEDROCK_IMAGE_URL'})       = $conf->{IMAGE_URL};
+  local($ENV{'BEDROCK_IMAGE_URL'})       = $conf->{BEDROCK_IMAGE_URL};
 
   # - if file is null, then this is probably Bedrock Framework since $ENV{PATH_TRANSLATED} refers to a directory
   $app_dir = $file ? $file_dir : $ENV{PATH_TRANSLATED};
@@ -818,6 +891,13 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.23  2010/12/06 14:14:43  rlauer
+# - use BEDROCK_IMAGE_URL primarily, deprecate IMAGE_URL
+# - status page changes
+#   + prettification
+#   + log configuration checking and display
+#   + bedrock.log dump of tail
+#
 # Revision 1.22  2010/11/23 00:06:12  rlauer
 # - use BEDROCK_POD_CSS_URL instead of POD_CSS_URL
 #
