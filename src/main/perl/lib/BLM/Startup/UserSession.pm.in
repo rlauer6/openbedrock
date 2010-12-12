@@ -27,27 +27,23 @@ package BLM::Startup::UserSession;
 
 use strict;
 
+use BLM::Startup::MySQLSession;
+
 BEGIN
 {
     use Exporter ();
     use vars	qw ($VERSION @ISA);
-    $VERSION	= 1.07;
+    $VERSION	= 2.0;
 }
 
-use Carp;
-use DBI;
-use Bedrock::Hash;
-use TagX::Log;
-use Digest::MD5;
-use POSIX qw(strftime);
-
-@ISA = qw(Bedrock::Hash);
+@ISA = qw( BLM::Startup::MySQLSession );
 
 =pod
 
 =head1 PUBLIC
 
-C<BLM::Startup::UserSession> - provides a persistent store for Bedrock applications.
+C<BLM::Startup::UserSession> - Implements a persistent
+store for anonymous or login sessions stored in a SQL database.
 
 =head1 SYNOPSIS
 
@@ -55,25 +51,39 @@ C<BLM::Startup::UserSession> - provides a persistent store for Bedrock applicati
 
 =head1 DESCRIPTION
 
-Implements stateful sessions stored to a MySQL database.  The session
-is accessed via the Bedrock object C<$session> (or by whatever binding
-name you might configure in F<tagx.xml>.
+Implements stateful sessions stored in a SQL database.  The session is
+accessed via the Bedrock object C<$session> (or by whatever binding
+name you might configure in F<tagx.xml>.  This implementation provides
+both I<anonymous> sessions and sessions based on the concept of users
+that must be authenticated. User account information is typically
+stored in a session table allowing your application to provide an
+authentication layer.
 
-Sessions can be based on a session identifier stored as a B<cookie> on the user's browser or by using a
-CGI variable named C<session>.
+An HTTP connection is connected to a particular essions based on a
+session identifier stored as a B<cookie> on the user's browser or by
+using a CGI variable named C<session>.
+
+The C<BLM::Startup::UserSession> module provides a base class with
+which you can implement your own session implementation based on
+whatever persistent storage mechanism you might choose.
+Implmentations based on MySQL and PostgreSQL are included as part of
+Bedrock.
+
+The default session mechanism used by Bedrock is based on the MySQL
+implementation.
 
 =head1 CONFIGURING Bedrock FOR SESSIONS
 
 The C<BLM::Startup::UserSession> is typically the mechanism Bedrock
-web applications use to maintain persitence. It uses a MySQL table to
+web applications use to maintain persitence. It uses some kind of SQL table to
 store the user's session information.  A database and table need to be
 created before you can use the C<$session> object.
 
-First you'll want to create a MySQL database or if you already have
-one that you are going to use to hold user session data then skip this
-part.
+First you'll want to create a MySQL database and an appropriately
+defined table.  If you're implementing your own session object then
+your table might look different than the one shown below.
 
-  $ mysqladmin create berock -u root -p
+  $ mysqladmin create bedrock -u root -p
   $ cat > create_session.sql
  drop table if exists session;
 
@@ -98,7 +108,7 @@ part.
  ^D
  $ cat create_session.sql | mysql -u root -p bedrock
 
-At this point you should have a database named B<bedrock> and a table name B<session>.
+At this point you should have a database named B<bedrock> and a table named B<session>.
 
 Now you need to configure the C<BLM::Startup::UserSession> module in F<tagx.xml>.
 
@@ -122,6 +132,7 @@ In the C<MODULES> array add the C<BLM::Startup::UserSession> module:
       <scalar name="table_name">session</scalar>
       <scalar name="purge_user_after">30</scalar>
       <scalar name="cookieless_sessions></scalar>
+
       <object name="cookie">
  	<scalar name="path">/</scalar>
  	<scalar name="expiry_secs">3600</scalar>
@@ -129,9 +140,7 @@ In the C<MODULES> array add the C<BLM::Startup::UserSession> module:
       </object>
 
      </object>
-
     </object>
-
    </array>
 
 You now can use the C<$session> object in your Bedrock applications.
@@ -172,584 +181,43 @@ URL.
 
 =head1 METHODS
 
-=cut
+=head2 change_passwd(oldpassword, newpassword)
 
-sub digest
-{
-    my $md5 = Digest::MD5->new;
-    $md5->add( sprintf("%012d:%20s:%08d:%.10f", time, $ENV{REMOTE_ADDR}, $$, rand) );
-    $md5->hexdigest;
-}
-
-# 
-# Convenience routine for setting a cookie.
-# Invoked as follows:
-# $self->cookie($cookie_name, param, value, ..)
-# where the valid params are
-#   value	=> value for the cookie
-#   expires	=> time for cookie expiration in seconds
-#   domain	=> value for domain
-#   path	=> value for path
-#
-sub cookie
-{
-    my $self = shift;
-    my $name = shift;
-
-    $self->{'cookies'} = {} unless $self->{'cookies'};
-    $self->{'cookies'}->{$name} = {} unless $self->{'cookies'}->{$name};
-    my $cref = $self->{'cookies'}->{$name};
-    if ( ref($_[0]) ) {
-	for my $param (keys %{$_[0]}) {
-	    $cref->{$param} = $_[0]->{$param};
-	}
-    } else {
-	my %args = @_;
-	for my $param (keys %args) {
-	    $cref->{$param} = $args{$param};
-	}
-    }
-}
-
-sub send_cookie
-{
-    my $self = shift;
-    return unless $self->{'cookies'};
-
-    my $config = $self->{'config'};
-    my ($cref, $header);
-
-    for my $name (keys %{$self->{'cookies'}}) {
-	$cref = $self->{'cookies'}->{$name};
-	$header = $name . '=' . $cref->{'value'} . '; ';
-
-	$header .= 'path=' . ($cref->{'path'} || $config->{'cookie'}->{'path'} || '/') . '; ';
-
-	my $domain = $config->{'cookie'}->{'domain'};
-	$header .= 'domain=' . $domain . '; ' if length( $domain );
-
-	if ( exists $cref->{'expires'} ) {
-	    my $expiry = POSIX::strftime("%a, %d-%b-%Y %T GMT", gmtime(time + $cref->{'expires'}));
-	    $header .= 'expires=' . $expiry . '; ';
-	}
-
-	$self->{'ctx'}->cgi_header_out('Set-Cookie', $header);
-	&log_message( undef, "Set cookie header: [Set-Cookie => $header]" ) if $self->{'verbose'} > 1;
-    }
-}
-
-sub startSession
-{
-    my ($self, $config) = @_;
-
-    $self->{'config'} = $config;
-
-    # Get the required database params
-    my $dsn = $config->{'data_source'};
-    die ref($self), "->startSession(): param `data_source' must be specified in config\n"
-	unless $dsn;
-
-    my $table = $config->{'table_name'};
-    die ref($self), "->readData(): param `table_name' must be specified in config\n"
-	unless $table;
-
-    my $u = $config->{'username'};
-    my $p = $config->{'password'};
-
-    # And do the connect
-    my $dbh = DBI->connect ( $dsn, $u, $p );
-    die "Could not connect to database `$dsn': ", $DBI::errstr, "\n" unless $dbh;
-    $self->{'dbh'} = $dbh;
-}
-
-sub newLoginCookie
-{
-    my $self = shift;
-
-    my $config = $self->{'config'};
-    my $ctx = $self->{'ctx'};
-    my $id = &digest;
-
-    unless ($config->{'cookieless_sessions'}) {
-      # Set the cookie header
-      $self->cookie($config->{'login_cookie_name'},
-		    'value'	=> $id,
-		    'expires'	=> ( $config->{'login_cookie_expiry_days'} || 30 ) * 86400 );
-      $self->send_cookie;
-    }
-    
-    $id;
-}
-
-sub newSessionID
-{
-    my $self = shift;
-
-    my $config = $self->{'config'};
-    my $ctx = $self->{'ctx'};
-    my $id = $self->{'session'} = &digest;
-    
-    my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
-    
-    unless ($config->{'cookieless_sessions'}) {
-      # Set the cookie header
-      $self->cookie($self->{'name'},
-		    'value'	=> $id,
-		    'expires'	=> $secs);
-      $self->send_cookie;
-    }
-
-    $id;
-}
-
-sub do_select
-{
-    my $self = shift;
-    my $stm = shift;
-    my $dbh = $self->{'dbh'};
-
-    my $sth = $dbh->prepare($stm);
-    die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n" unless $sth;
-
-    for (my $i = 1 ; $i <= @_ ; $i++ ) {
-	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
-    }
-
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
-
-    my ($aref, $n);
-    $n = 0;
-    while ( $_ = $sth->fetch ) {
-	$aref = $_;
-	$n++;
-    }
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-    die "Query found more than 1 row (found $n rows).\n" if $n > 1;
-    $aref;
-}
-
-sub do_sql
-{
-    my $self = shift;
-    my $stm = shift;
-    my $dbh = $self->{'dbh'};
-
-    my $sth = $dbh->prepare($stm);
-    die "Unable to prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
-
-    for (my $i = 1 ; $i <= @_ ; $i++ ) {
-	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
-    }
-
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
-    $rows;
-}
-
-sub newSession
-{
-    my $self = shift;
-
-    $self->newSessionID;
-    $self->{'new_session'} = 1;
-    $self->{'data'} = {'prefs' => {}};
-    $self->{'session'};
-}
-
-sub init_session
-{
-    my $self = shift;
-    my $aref = shift;
-
-    my ($verbose) = @{$self}{qw(verbose)};
-    if ( $aref ) {
-	&log_message( undef, "Initializing session\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
-	&log_message( undef, "Session prefs are\n$aref->[-1]" ) if $verbose > 1;
-	my $data = {};
-	@{$data}{qw(username firstname lastname email)} = (@{$aref}[0,1,2,3]);
-	$data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
-	$data->{'prefs'} = {} unless $data->{'prefs'};
-
-	$self->{'data'} = $data;
-    } else {
-	&log_message( undef, "Initializing new session" ) if $verbose;
-	$self->newSession;
-    }
-}
-
-#
-# `session' is stored under $self
-# `username', `password', `firstname', `lastname', `email' if stored under $self->{'data'}
-# `new_session' is set to 1 if no previous session info found for user
-# Other than these are stored under $self->{'data'}->{'prefs'}
-#
-sub readData
-{
-    my ($self, $id) = @_;
-
-    my ($config, $verbose) = @{$self}{qw(config verbose)};
-
-    &log_message( undef, "Reading data for session [$id]" ) if $verbose;
-    my $t = $config->{'table_name'};
-    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
-				   from $t where session = ? and expires > now()),
-				$id);
-    unless ( $aref ) {
-	&log_message( undef, "Unable to read data for session [$id]" ) if $verbose;
-	return;
-    }
-
-    unless ($config->{'cookieless_sessions'}) {
-      my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400; $self->{'expires'} = $secs;
-      $self->cookie($self->{'name'},
-		    'value'	=> $id,
-		    'expires'	=> $secs);
-      $self->send_cookie;
-    }
-
-    $self->{'session'} = $id;
-    $self->init_session($aref);
-    $self->{'session'};
-}
-
-sub newLoginSession
-{
-    my $self = shift;
-    my $login_id = shift;
-
-    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
-    my $t = $config->{'table_name'};
-    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
-				   from $t where login_cookie = ?),
-				$login_id);
-
-    unless ( $aref ) {
-	&log_message( undef, "Login session [$login_id] not found" ) if $verbose;
-	return;
-    }
-
-    my $data = {};
-    &log_message( undef, "Found login session [$login_id]\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])" ) if $verbose;
-    &log_message( undef, "Saved session info for login session [$login_id] is\n$aref->[-1]" ) if $verbose > 1;
-    @{$data}{qw(username firstname lastname email)} = (@{$aref}[0,1,2,3]);
-    $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] ) if length( $aref->[-1] );
-
-    # Create new session id
-    my $id = $self->newSessionID;
-
-    # Prepare SQL statement to save the session id in the database.
-    my $stm = qq{update $t set session = ?};
-    my @bind = ($id);
-
-    if ( $self->{'expires'} ) {
-	$stm .= ", expires = date_add(now(), interval ? second)";
-	push @bind, $self->{'expires'};
-    }
-
-    $stm .= " where login_cookie = ?";
-    push @bind, $login_id;
-    my $rows = $self->do_sql($stm, @bind);
-    &log_message( undef, "Updating session = [$id] for login session [$login_id]: rows = [$rows]\n$stm" ) if $verbose;
-
-    $data->{'prefs'} = {} unless $data->{'prefs'};
-    $self->{'data'} = $data;
-    $self->{'session'};
-}
-
-sub TIEHASH
-{
-    my ($class, $ctx, $config) = @_;
-
-    # What is the name of the session variable being used?
-    my $name = $config->{'param'};
-    die "$class->TIEHASH(): `param' not set in config\n" unless $name;
-
-    # Create session object
-    my $self = bless {}, $class;
-    $self->{'ctx'} = $ctx;
-    $self->{'name'} = $name;
-    $self->{'config'} = $config;
-
-    my $verbose = $self->{'verbose'} = $config->{'verbose'};
-
-    # Initialize session
-    $self->startSession($config);
-
-    # Check for an existing session
-    my $id = $config->{'cookieless_sessions'} ? $ctx->getInputValue($name) : $ctx->getCookieValue($name);
-
-    # Get the session data only if a session exists
-    if ( defined( $id ) ) {
-      &log_message( undef, "Read user's session: [$id]" ) if $verbose;
-      my $session = $self->readData($id);
-      &log_message( undef, "User has session [$session]" ) if $session and $verbose;
-      return $self if $session;
-    }
-
-    # No session cookie -- check to see if login cookie present
-    my $login_cookie_name = $config->{'login_cookie_name'};
-    my $login_id  = $config->{'cookieless_sessions'} ? $ctx->getInputValue($login_cookie_name) : $ctx->getCookieValue($login_cookie_name);
-
-    if ( $login_id ) {
-	my $session = $self->newLoginSession($login_id);
-	&log_message( undef, "User has login session [$login_id] -- session is [$session]" ) if $session and $verbose;
-	return $self if $session;
-    }
-
-    # everything failed -- need to create a new session
-    my $session = $self->newSession;
-    &log_message( undef, "User does not have anonmous session or login session -- using [$session]" ) if $verbose;
-
-    $self->{'data'}->{'prefs'}->{expiry_secs} = $self->{'config'}->{'cookie'}->{'expiry_secs'};
-
-    # And return the session object
-    $self;
-}
-
-sub FETCH
-{
-    my ($self, $key) = @_;
-    if ( $key eq 'session' ) { return $self->{$key} }
-    elsif ( $key =~ /^(username|firstname|lastname|email|config)$/ ) { return $self->{'data'}->{$key} }
-    elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { $self->{'data'}->{'prefs'}->{$key} }
-    else { return $self->{'config'}->{'default_prefs'}->{$key} }
-}
-
-# Just store the value in the session and return the value
-sub STORE
-{
-    my ($self, $key, $value) = @_;
-    if ( $key =~ /^(session|username)$/ ) {
-	die "Cannot set `$key': attribute is read-only.\n";
-    } elsif ( $key eq 'password' ) {
-	die "Cannot set `password': Use `change_password()' instead.\n";
-    } elsif ( $key =~ /^(firstname|lastname|email)$/ ) {
-	die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
-	    unless $self->{'data'}->{'username'};
-	die "Cannot store empty string in `$key'.\n" if $key =~ /^(firstname|lastname)$/ and length($value) == 0;
-	&log_message( undef, "Storing [$key] = [$value]" ) if $self->{'verbose'};
-	return $self->{'data'}->{$key} = $value;
-    } else {
-	&log_message( undef, "Stored [$key] = [$value] into prefs" )
-	    if $self->{'verbose'};
-	return $self->{'data'}->{'prefs'}->{$key} = $value;
-    }
-}
-
-# Invoked to loop over the properties of the session
-sub FIRSTKEY
-{
-    my $self = shift;
-
-    delete $self->{'keys'};
-
-    my $k = {'session' => $self->{'session'},
-	     'username' => $self->{'data'}->{'username'},
-	     'firstname' => $self->{'data'}->{'firstname'},
-	     'lastname' => $self->{'data'}->{'lastname'},
-	     'email' => $self->{'data'}->{'email'}};
-
-    my %keys;
-    @keys{keys %{$self->{'data'}->{'prefs'}}, keys %{$self->{'config'}->{'default_prefs'}}} = ();
-    for my $key (keys %keys) {
-	if ( exists $self->{'data'}->{'prefs'}->{$key} ) {
-	    $k->{$key} = $self->{'data'}->{'prefs'}->{$key};
-	} else {
-	    $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
-	}
-    }
-    $self->{'keys'} = $k;
-    each %{$self->{'keys'}};
-}
-
-sub NEXTKEY
-{
-    each %{shift->{'keys'}};
-}
-
-sub EXISTS
-{
-    my ($self, $key) = @_;
-    if ( $key eq 'session' ) { return 1 }
-    elsif ( $key =~ /^(username|password|firstname|lastname|email)$/ ) { return exists $self->{'data'}->{$key} }
-    elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { return 1 }
-    else { exists $self->{'config'}->{'default_prefs'}->{$key} }
-}
-
-sub DELETE
-{
-    my ($self, $key) = @_;
-    if ( $key =~ /^(session|username|firstname|lastname|email|password)$/ ) {
-	die "Cannot delete `$key': illegal operation.\n";
-    } else {
-	return delete $self->{'data'}->{'prefs'}->{$key};
-    }
-}
-
-sub CLEAR
-{
-    my $self = shift;
-    %{$self->{'data'}->{'prefs'}} = ();
-}
-
-sub db_handle
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    $self->{'dbh'};
-}
-
-sub closeBLM
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-
-    my ($verbose, $session) = @{$self}{qw(verbose session)};
-    my $prefs = $self->{'data'}->{'prefs'};
-    $prefs = $self->{'config'}->{'default_prefs'} if keys %{$prefs} == 0;
-    my $xml = Bedrock::XML::writeXMLString($prefs);
-    &log_message( undef, "Saving session [$session] data\n$xml" ) if $verbose > 1;
-
-    my $t = $self->{'config'}->{'table_name'};
-    if ( $self->{'new_session'} ) {
-	# Insert anon session
-	my $rows = $self->do_sql("insert into $t (added, session, prefs) values(now(), ?, ?)",
-				 $session, $xml);
-	&log_message( undef, "Inserting session [$session]: rows = [$rows]" ) if $verbose;
-
-	if ( $self->{'expires'} ) {
-	    my $rows = $self->do_sql(qq(update $t set updated = null, expires = date_add(now(), interval ? second)
-					where session = ?),
-				     $self->{'expires'}, $session);
-	    &log_message( undef, "Updated expiry date for session [$session]: rows = [$rows]" ) if $verbose;
-	}
-    } else {
-	# Build statement for updating session
-	my $stm = "update $t set updated = null, prefs = ?";
-	my @bind = ($xml);
-	my $data = $self->{'data'};
-	for my $name (qw(firstname lastname email)) {
-	    next unless exists $data->{$name};
-	    $stm .= ", $name = ?";
-	    push @bind, $data->{$name};
-	}
-
-	$stm .= ", expires = date_add(now(), interval ? second)";
-	if ( exists $self->{'expires'} ) {
-	    push @bind, $self->{'expires'};
-	} else {
-	    push @bind, $self->{'config'}->{'cookie'}->{'expiry_secs'} || 86400;
-	}
-
-	$stm .= " where session = ?";
-	push @bind, $session;
-	my $rows = $self->do_sql($stm, @bind);
-	&log_message( undef, "Updated session [$session] with\n$stm\nBind values are (@bind)" ) if $verbose;
-    }
-
-    # Table cleanup
-    $self->do_sql("delete from $t where expires < now() and (username = '' or username is null)");
-    $self->{'dbh'}->disconnect;
-}
-
-=pod
+Change a user's password in the session table.
 
 =head2 clear
 
 Clear the session object.
 
-=cut
+=head2 cookie( cookie-name, parm, value ... )
 
-sub clear
-{
-    my $obj = shift;
-    %{$obj} = ();
-}
+=head2 cookie( cookie-name, hash )
 
+Convenience routine for setting a cookie. 
 
-=pod
+  <var $session.cookie('sandie', 'value', 'abcde', 'path', '/', 'expires', 86400)>
 
-=head2 register(username, password, firstname, lastname, email)
+Parameters are typically:
 
-Register a new user in the session table (login sessions).  The new user's information is written to the session table.
+=over 5
 
-=cut
+=item value 
 
-sub register
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my ($username, $password, $firstname, $lastname, $email) = @_;
-    
-    if ($self->do_select(qq(select username from $self->{'config'}->{'table_name'} where username = ?), $username)) {
-	die "username exists";
-    }
+Value for the cookie
 
-    my $verbose = $self->{'verbose'};
-    my $rows = $self->do_sql(qq(insert into $self->{'config'}->{'table_name'}
-				(username, password, firstname, lastname, email, added)
-				values( ?, encrypt(?), ?, ?, ?, now())),
-			     $username, $password, $firstname, $lastname, $email);
-    &log_message( undef, "Registering user ($username, $password, $firstname, $lastname, $email): rows = [$rows]" )
-	if $verbose;
-}
+=item expires
 
+Time for cookie expiration in seconds
 
-=pod
+=item domain
 
-=head2 login(username, password)
+Value for domain
 
-C<username> is looked up in the session table and given a new session
-identifier.  If the password is incorrect an exception is thrown.
+=item path
 
-=cut
+Value for path
 
-sub login
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-
-    my ($username, $password) = @_;
-
-    my ($verbose) = @{$self}{qw(verbose)};
-    &log_message( undef, "Attempting to log in user ($username, $password)" ) if $verbose;
-
-    my $aref = $self->do_select(qq(select username, firstname, lastname, email, prefs
-                                   from $self->{'config'}->{'table_name'}
-                                   where username = ? and
-                                   (password = encrypt(?, substring(password, 1, 2)) or
-                                   password = password(?))),
-                                $username, $password, $password);
-    die "Unable to login `$username': invalid username/password.\n" unless defined($aref);
-
-    $self->init_session($aref);
-
-    # The merged prefs
-    my $xml = Bedrock::XML::writeXMLString($self->{'data'}->{'prefs'});
-
-    # Create a new session id for the user
-    my $session = $self->newSessionID;
-
-    # Delete the `new_session' flag
-    delete $self->{'new_session'};
-
-    # Save the merged prefs and the session id in the database.
-    my $stm = "update $self->{'config'}->{'table_name'} set session = ?, prefs = ? ";
-    my @bind = ($session, $xml);
-
-    if ( $self->{'expires'} ) {
-	$stm .= ", expires = date_add(now(), interval ? second)";
-	push @bind, $self->{'expires'};
-    }
-
-    $stm .= " where username = ?";
-    push @bind, $username;
-    $self->do_sql($stm, @bind);
-}
-
-
-=pod
+=back
 
 =head2 cookieless_session(session-id)
 
@@ -757,167 +225,52 @@ Retrieve an anonymous cookieless session.  This is required to tell
 C<BLM::Startup::UserSession> to use the session identified by the
 session-id that is passed.
 
-=cut
+=head2 encrypt(password, salt)
 
-sub cookieless_session {
-    my $obj = shift;
-    my $self = tied(%{$obj});
+Encrypt a password suitable for storage in a file or database.
 
-    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+=head2 login(username, password)
 
-    my $id = shift;
-    $self->{'new_session'} = 0 if $id;
-    $self->{'session'} = $id || $self->{'session'};
-    $self->readData($id);
-
-    $config->{'cookieless_sessions'} = 1;
-
-# kill the cookie if cookies are enabled, since on instantiation, UserSession ($session) will create a cookie
-    $self->cookie($self->{'name'},
-		  'value'	=> 'killed',
-		  'expires'	=> -864000);
-    $self->send_cookie;
-}
-
-=pod
+C<username> is looked up in the session table and given a new session
+identifier.  If the password is incorrect an exception is thrown.
 
 =head2 logout
 
 Logout and kill session.
 
-=cut
+=head2 remember_user( on/off )
 
-sub logout {
-  my $obj = shift;
-  my $self = tied(%{$obj});
-  
-  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+Provides the ability to essentially keep a user logged on to their
+session by sending a cookie on the user's browser that identifies the
+user.  The login cookie will still time out after whatever period you
+define for the login cookie in the configuration section.
 
-  my $t = $config->{'table_name'};
+   <scalar name="login_cookie_name">session_login</scalar>
+   <scalar name="login_cookie_expiry_days">365</scalar>
 
-  # Expire the session (either login or anonymous)
-  if ($self->{'data'}->{'username'}) {
-    $self->do_sql("update $t set session = null, expires = now() where username = ?", $self->{'data'}->{'username'});
-  } else {
-    $self->do_sql("update $t set session = null, expires = now() where session = ? and username is null", $self->{'session'});
-  }
+=head2 register(username, password, firstname, lastname, email)
 
-  # Reset data
-  $self->{'data'} = {};
+Register a new user in the session table (login sessions).  The new
+user's information is written to the session table.
 
-  unless ($config->{'cookieless_sessions'}) {
-    # Delete the cookie
-    $self->cookie($self->{'name'},
-		  'value'	=> 'killed',
-		  'expires'	=> -864000);
-    $self->send_cookie;
-  }
-}
+=head2 remove_user(username, password)
 
-
-=pod
-
-=head2 change_passwd(oldpassword, newpassword)
-
-Change a user's password in the session table.
+Remove a user from the user registry.  If the user is logged in, he is
+logged out first.
 
 =cut
-
-
-sub change_passwd
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my ($opasswd, $npasswd) = @_;
-
-    my $username = $self->{'data'}->{'username'};
-    die "Cannot change password: user not logged in.\n" unless length($username);
-
-    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
-    my $t = $config->{'table_name'};
-
-    &log_message( undef, "Attempting to change password to `$npasswd' from `$opasswd' for `$username'" )
-	if $verbose;
-    my $rows = $self->do_sql(qq(update $t set password = password(?), updated = null
-				where username = ? and password = password(?)),
-			     $npasswd, $username, $opasswd);
-    die "Cannot change password for `$username': could not authenticate user.\n" unless $rows == 1;
-    &log_message( undef, "Changed password returned [$rows]") if $verbose;
-}
-
-
-# FIXME: figure out what this subroutine actually does.
-#
-#=pod
-#
-#=head2 remember_user
-#
-#=cut
-#
-sub remember_user
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-
-    return 0 unless length($self->{'data'}->{'username'});
-    my $username = $self->{'data'}->{'username'};
-
-    my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
-    my $t = $config->{'table_name'};
-
-    my $login_cookie_name = $config->{'login_cookie_name'};
-    my $login_id = $ctx->getCookieValue($login_cookie_name);
-
-    return length($login_id) ? 1 : 0 unless @_ > 0;
-
-    my ($stm, @bind);
-    if ( $_[0] =~ /on/i ) {
-	$login_id = $self->newLoginCookie;
-	$stm = "update $t set login_cookie = ? where username = ?";
-	push @bind, $login_id, $username;
-    } else {
-	# Delete the login cookie
-	$self->cookie($login_cookie_name,
-		      'value'	=> 'killed',
-		      'expires'	=> -864000);
-	$stm = "update $t set login_cookie = null where username = ?";
-	push @bind, $username;
-    }
-
-    my $rows = $self->do_sql($stm, @bind);
-    die "Could not update `remember_user' setting for user `$username'\n" unless $rows == 1;
-}
-
-
-=pod
-
-=head2 encrypt(password, salt)
-
-Encrypt a password suitable for storage in a file or database.
-
-=cut
-
-
-sub encrypt {
-  my $obj = shift;
-  my $self = tied(%{$obj});
-
-  my $password = shift;
-  my $salt = shift;
-
-  if ($salt) {
-      $self->do_select("select encrypt(?,?) passwd", $password, $salt)->[0];
-  }
-  else {
-      $self->do_select("select encrypt(?) passwd", $password)->[0];
-  }
-}
 
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.17  2010/12/12 16:34:01  eutl420
+# - This module has essentially become a virtual class that sub-classes one of the
+#   other session managers like MySQLSession.pm, or PostgreSQLSession.pm.  The idea is
+#   that Bedrock will provide a "default" session manager (probably MySQLSession.pm) but
+#   Bedrock sites can chose a different session manager by default.
+#
 # Revision 1.16  2010/11/29 15:57:51  rlauer
 # - change openbedrock.org to openbedrock.net
 #
