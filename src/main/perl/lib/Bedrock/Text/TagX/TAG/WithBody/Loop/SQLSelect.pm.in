@@ -71,18 +71,12 @@ sub finalize
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
 
-    if ( $verbose ) {
-	my ($key, $value);
-	my $str = "$self: Options are\n";
-	while (($key, $value) = each %options) {
-	    $str .= "\t$key .. ($value)\n";
-	}
-	&log_message( $self, $str );
-    }
+    $self->dump_options( \%options ) if $verbose;
+    
+    my $tag_opts = $self->parse_tag_name( $argv[0] );
 
-    $argv[0] =~/^:([^:]*)$/;
-    if ($1) {
-      $options{'define-var'} = $1;
+    if ( $tag_opts->{name} ) {
+      $options{'define-var'} = $tag_opts->{name};
       shift @argv;
     }
 
@@ -100,11 +94,44 @@ sub finalize
 	$dbh = $tx->{'DB'}->{&ANONYMOUS};
     }
 
-    die "No database connection to execute SQL statement.\n"
-	unless defined($dbh) and ref($dbh);
+    unless ( defined($dbh) and ref($dbh) )  {
+      my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+      my $dsn;
+      if ( length($ENV{'DBI_DSN'}) ) {
+	$dsn = $ENV{'DBI_DSN'};
+	$options{username} = $options{username} || $ENV{DBI_USER};
+	$options{password} = $options{password} || $ENV{DBI_PASS};
+      }
+      elsif ( $config->{DBI_DSN} ) {
+	&log_message($self, "DSN will be taken from configuration...");
+	$dsn = $config->{DBI_DSN};
+	$options{username} = $options{username} || $config->{DBI_USER};
+	$options{password} = $options{password} || $config->{DBI_PASS};
+	&log_message($self, "DSN: $dsn username: " . $options{username} . " password: ". $options{password});
+      }
+      else {
+	die "No database connection to execute SQL statement.\n";
+      }
+
+      my $name = &ANONYMOUS;
+    
+      $dbh = DBI->connect ( $dsn, @options{qw(username password)},
+			    {
+			      'AutoCommit' => 1,
+			      'PrintError' => 1,
+			      'RaiseError' => 1,
+			      'ChopBlanks' => 1
+			     } 
+			   );
+      die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+
+      &log_message( $self, "Connected to database, handle = <$dbh>\n" ) if $verbose;
+    
+      $tx->{'DB'}->{$name} = $dbh;
+    }
 
     &log_message ( $self, "Using database handle ($dbh)")
-	if $verbose;
+      if $verbose;
 
     die "Specify SQL statement using --statement or as argument, not both.\n"
 	if exists $options{'statement'} and @argv > 0;
@@ -421,6 +448,10 @@ C<E<lt>sqlE<gt>>, C<E<lt>sqlconnectE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.28  2010/12/12 16:20:09  eutl420
+# - use dump_options
+# - attempt auto connect if no current DBI connection
+#
 # Revision 1.27  2010/11/29 15:57:55  rlauer
 # - change openbedrock.org to openbedrock.net
 #
