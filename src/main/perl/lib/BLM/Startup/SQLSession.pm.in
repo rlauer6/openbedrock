@@ -1,0 +1,427 @@
+package BLM::Startup::SQLSession;
+
+use strict;
+
+use DBI;
+use BLM::Startup::SessionManager;
+use TagX::Log;
+use Data::Dumper;
+
+use vars qw ( @ISA );
+
+@ISA = qw( BLM::Startup::SessionManager );
+
+our %SQL;
+
+sub startSession {
+  my $self = shift;
+  my $config = shift;
+
+  foreach (keys %SQL) {
+    $SQL{$_}->{sql} = sprintf( $SQL{$_}->{sql}, $config->{table_name} );
+  }
+  
+  $self->SUPER::startSession( $config );
+}
+
+sub do_sql {
+  my $self = shift;
+  my $what = shift;
+  my %options = @_;
+
+  my $sql = $SQL{$what}->{sql};
+  my @args = @options{@{$SQL{$what}->{args}}};
+
+  $self->_do_sql($sql, @args);
+}
+
+sub do_select {
+  my $self = shift;
+  my $what = shift;
+  my %options = @_;
+
+  my $sql = $SQL{$what}->{sql};
+
+  my @args = @options{@{$SQL{$what}->{args}}};
+
+  $self->_do_select($sql, @args);
+}
+
+sub _do_sql
+  {
+    my $self = shift;
+    my $stm = shift;
+
+    my $dbh = $self->{'dbh'};
+
+    my $sth = $dbh->prepare($stm);
+    die "Unable to prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
+
+    for (my $i = 1 ; $i <= @_ ; $i++ ) {
+      $sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
+    }
+
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
+    $rows;
+  }
+
+sub db_handle
+  {
+    my $obj = shift;
+    my $self = tied(%{$obj});
+
+    $self->{'dbh'};
+  }
+
+sub _do_select
+  {
+    my $self = shift;
+    my $stm = shift;
+    my $dbh = $self->{'dbh'};
+
+    my $sth = $dbh->prepare($stm);
+    die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n" unless $sth;
+
+    &log_message(undef, "statement: $stm\n");
+
+    for (my $i = 1 ; $i <= @_ ; $i++ ) {
+      $sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n"; 
+    }
+
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: $stm\n", $sth->errstr, "\n" unless defined $rows;
+
+    my ($aref, $n);
+    $n = 0;
+    while ( $_ = $sth->fetch ) {
+      $aref = $_;
+      $n++;
+    }
+    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+    die "Query found more than 1 row (found $n rows).\n" if $n > 1;
+    $aref;
+  }
+
+
+# +---------------------------------------------------------------+
+# | ->CONNECT( %options )                                         |
+# |                                                               |
+# | config      => configuration object                           | 
+# |                                                               |
+# | Purpose: perform any database connection ritual required.     |
+# |          This method will be called when the session object   |
+# |          is instantiated.                                     |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub CONNECT {
+  my $self = shift;
+  my %options = @_;
+
+  # Get the required database params
+  die ref($self), "->CONNECT(): param `data_source' must be specified in config\n"
+    unless $options{config}->{data_source};
+
+  $self->{dbh} = DBI->connect( @{$options{config}}{ qw(data_source username password) } );
+
+  die "Could not connect to database `" . $options{config}->{data_source} . "': ", $DBI::errstr, "\n" 
+    unless $self->{dbh};
+}
+
+# +---------------------------------------------------------------+
+# | ->DISCONNECT( %options )                                      |
+# |                                                               |
+# | config      => configuration object                           | 
+# |                                                               |
+# | Purpose: perform any database disconnect ritual required.     |
+# |          This function will be called from the DESTROY        |
+# |          method of the session object.                        |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub DISCONNECT {
+  my $self = shift;
+
+  $self->{dbh}->disconnect if $self->{dbh};
+}
+
+# +---------------------------------------------------------------+
+# | ->FETCH_LOGIN_SESSION( %options )                             |
+# |                                                               |
+# | login_id => login-id                                          |
+# | config   => configuration object                              |
+# |                                                               |
+# | Purpose: read row from the session table based on a login     |
+# |          identifier (usually a cookie value)                  |
+# | Returns: reference to session data                            |
+# +---------------------------------------------------------------+
+sub FETCH_LOGIN_SESSION {
+  my $self = shift;
+  my %options = @_;
+  
+  return  $self->do_sql( 'FETCH_LOGIN_SESSION', %options );
+}
+
+# +---------------------------------------------------------------+
+# | ->STORE_LOGIN_SESSION( %options )                             |
+# |                                                               |
+# | session  => session-id                                        |
+# | login_id => login-id                                          |
+# | expires  => expiry-time                                       |
+# | username => username                                          |
+# | data     => ref(session-data)                                 |
+# | config   => configuration object                              |
+# |                                                               |
+# | Purpose: This function should be prepared to update the       |
+# |          session table based on username or login_id          |
+# |          depending on which one is passed.  You should        |
+# |          update the expiration time of the session data.      |
+# |          You are also responsible for storing the data        |
+# |          which is passed as a reference to a hash             |
+# |                                                               |
+# |            $options{data}->{prefs}                            |
+# |                                                               |
+# | Returns: 1 if successfully updated session data               |
+# +---------------------------------------------------------------+
+sub STORE_LOGIN_SESSION {
+  my $self = shift;
+  my %options = @_;
+
+  $options{expires} = 0 unless exists $options{expires};
+
+  if ( $options{username} ) {
+    $self->do_sql('STORE_LOGIN_SESSION_BY_USERNAME', %options);
+  }
+  else {
+    $self->do_sql('STORE_LOGIN_SESSION_BY_LOGIN_ID', %options);
+  }
+}
+
+
+# +---------------------------------------------------------------+
+# | ->UPDATE_LOGIN_SESSION( %options )                            |
+# |                                                               |
+# | config   => configuration object                              |
+# | username => username                                          |
+# | login_id => login-id                                          |
+# |                                                               |
+# | Purpose: This function gives the implementation the login-id  |
+# |          associated with this session.  You should probably   |
+# |          save this to the session in the 'login_cookie'       |
+# |          column. This column is then used to identify this    |
+# |          user's session.                                      |
+# | Returns: 1 if successfully updated session data               |
+# +---------------------------------------------------------------+
+sub UPDATE_LOGIN_SESSION {
+  my $self = shift;
+  my %options = @_;
+  
+  my $rows = $self->do_sql( 'UPDATE_LOGIN_SESSION', %options );
+  die "Could not update settings for user `" . $options{username} . "'\n" 
+    unless $rows == 1;
+
+  $rows;
+}
+
+# +---------------------------------------------------------------+
+# | ->FETCH_SESSION( %options )                                   |
+# |                                                               |
+# | config   => configuration object                              |
+# | session  => session-id                                        |
+# |                                                               |
+# | Purpose: This function retrieves the session data base on a   |
+# |          session identifier.                                  |
+# | Returns: reference to session data if successful              |
+# +---------------------------------------------------------------+
+sub FETCH_SESSION {
+  my $self = shift;
+  my %options = @_;
+
+  &log_message(undef, "fetching session\n");
+  $self->do_select( 'FETCH_SESSION', %options );
+}
+
+
+# +---------------------------------------------------------------+
+# | ->SESSION_CLEANUP( %options )                                 |
+# |                                                               |
+# | config => configuration object                                |
+# |                                                               |
+# | Purpose: This function is called prior to destruction of the  |
+# |          session object to give the implementation a chance   |
+# |          to clean up stale sessions.                          |
+# | Returns: reference to session data if successful              |
+# +---------------------------------------------------------------+
+sub SESSION_CLEANUP {
+  my $self = shift;
+  my %options = @_;
+
+  $self->do_sql( 'SESSION_CLEANUP', %options );
+}
+
+# +---------------------------------------------------------------+
+# | ->STORE_SESSION( %options )                                   |
+# |                                                               |
+# | session => session-id                                         |
+# | new     => 1 indicates that the session is new                |
+# | expires => expiry-time                                        |
+# | data    => session-data                                       |
+# | config  => configuration object                               |
+# | verbose => >= 0                                               |
+# |                                                               |
+# | Purpose: This function is called prior to destruction of the  |
+# |          session object to give the implementation a chance   |
+# |          to save the session data.                            |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub STORE_SESSION
+  {
+    my $self = shift;
+    my %options = @_;
+
+    if ( $options{new} ) {
+
+      my $rows = $self->do_sql( 'STORE_SESSION_INSERT', %options );
+      &log_message( undef, "Inserting session [" . $options{session} . "]: rows = [$rows]" ) if $options{verbose};
+    
+      if ( $options{'expires'} ) {
+	
+	my $rows = $self->do_sql( 'UPDATE_SESSION', %options );
+	&log_message( undef, "Updated expiry date for session [" . $options{session} . "]: rows = [$rows]" ) if $options{verbose};
+      }
+    }
+    else {
+      $options{expires} = $options{expires} || $options{config}->{'cookie'}->{'expiry_secs'} || 86400;
+      $options{prefs} = $options{data}->{prefs};
+      $options{firstname} = $options{data}->{firstname};
+      $options{lastname} = $options{data}->{lastname};
+      $options{email} = $options{data}->{email};
+      my $rows = $self->do_sql( 'STORE_SESSION_UPDATE', %options );
+      &log_message( undef, 'Updated session [' . $options{session} . "] with\n" . $SQL{STORE_SESSION_UPDATE}->{sql} . "\nBind values are (" . @options{qw{expires prefs firstname lastname email session}} . "]" ) if $options{verbose};
+    }
+  }
+
+# +---------------------------------------------------------------+
+# | ->REGISTER( %options )                                        |
+# |                                                               |
+# | config    => configuration object                             |
+# | username  => username                                         |
+# | password  => password                                         |
+# | firstname => first name                                       |
+# | lastname  => last name                                        |
+# | email     => email address                                    |
+# |                                                               |
+# | Purpose:  Register a new user.  Usually involves writing the  |
+# |           user's information to a database so they can login  |
+# |           later.                                              |
+# | Returns: 1 if successfully added user                         |
+# +---------------------------------------------------------------+
+sub REGISTER {
+  my $self = shift;
+  my %options = @_;
+  
+  if ($self->do_select( 'LOOKUP_USER', %options ) ) {
+    die "username exists\n";
+  }
+
+  return $self->do_sql( 'REGISTER', %options );
+}
+
+# +---------------------------------------------------------------+
+# | ->REMOVE_USER( %options )                                     |
+# |                                                               |
+# | config    => configuration object                             |
+# | username  => username                                         |
+# | password  => password                                         |
+# |                                                               |
+# | Purpose:  Remove user from system.                            |
+# | Returns: 1 if successfully added user                         |
+# +---------------------------------------------------------------+
+sub REMOVE_USER {
+  my $self = shift;
+  my %options = @_;
+  
+  unless ($self->do_select( 'LOOKUP_USER', %options )) {
+    die "username does not exist\n";
+  }
+
+  return $self->do_sql( 'REMOVE_USER', %options );
+}
+
+# +---------------------------------------------------------------+
+# | ->UPDATE_LOGIN_PASSWORD( %options )                           |
+# |                                                               |
+# | config    => configuration object                             |
+# | username  => username                                         |
+# | password  => [new-password, old-password                      |
+# |                                                               |
+# | Purpose:  Change a user's password. Note that                 |
+# |           $options{password} is an array reference where      |
+# |           element 0 is the new password and element 1 is the  |
+# |           old password.                                       |
+# | Returns: 1 if successfully added user                         |
+# +---------------------------------------------------------------+
+sub UPDATE_LOGIN_PASSWORD {
+  my $self = shift;
+  my %options = @_;
+  
+  my $rows = $self->do_sql('UPDATE_LOGIN_PASSWORD', %options );
+
+  die "Cannot change password for `" . $options{username} . "': could not authenticate user.\n" 
+    unless $rows == 1;
+}
+
+
+# +---------------------------------------------------------------+
+# | ->LOGOUT( %options )                                          |
+# |                                                               |
+# | config   => configuration object                              |
+# | username => username                                          |
+# | session  => session-id                                        |
+# |                                                               |
+# | Purpose:  Log a user out of the session.  This method is      |
+# |           called when the logout() session method is called.  |
+# |           You probably want to indicate that the session is   |
+# |           expired.  Note that if the method is called with    |
+# |           $options{username} set then this is a login session,|
+# |           otherwise it is an anonymous session.               |
+# | Returns: 1 if successfully added user                         |
+# +---------------------------------------------------------------+
+sub LOGOUT {
+  my $self = shift;
+  my %options = @_;
+
+  # Expire the session (either login or anonymous)
+  if ( $options{username} ) {
+    $self->do_sql( 'LOGOUT_USER', %options );
+  } 
+  else { 
+    $self->do_sql( 'LOGOUT_ANON', %options );
+  }
+}
+
+# +---------------------------------------------------------------+
+# | ->LOGIN( %options )                                           |
+# |                                                               |
+# | config   => configuration object                              |
+# | username => username                                          |
+# | password => password                                          |
+# |                                                               |
+# | Purpose:  Log in and start a login session.                   |
+# |           called when the logout() session method is called.  |
+# | Returns: reference to session data if successful              |
+# +---------------------------------------------------------------+
+sub LOGIN 
+  {
+    my $self = shift;
+    my %options = @_;
+    
+    my $aref = $self->do_select( 'LOGIN', %options );
+  
+    die "Unable to login `" . $options{username} . "': invalid username/password.\n" 
+      unless defined($aref);
+
+    return $aref;
+
+  }
+  
+1;
