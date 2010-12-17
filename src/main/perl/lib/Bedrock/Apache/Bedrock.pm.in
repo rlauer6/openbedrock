@@ -46,12 +46,12 @@ use constant	REDIRECT 	=> Apache2::Const::REDIRECT;
 
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
-use Bedrock::Hash;
-use Bedrock::VERSION;
 use Bedrock::Dump;
+use Bedrock::Hash;
+use Bedrock::Text::URLEncode;
+use Bedrock::VERSION;
 
 use Text::TagX;
-use Bedrock::Text::URLEncode;
 
 use Cwd;
 use File::Basename;
@@ -149,39 +149,96 @@ sub build_head_section {
   $head_section;
 }
 
+sub merge_config {
+  my ($dest_config, $src_config) = @_;
+
+  # Extract startup modules from src config
+  my $src_modules = delete $src_config->{'MODULES'};
+    
+  # merge source-config with dest-config (override)
+  my @kys = keys %$src_config;
+  @{$dest_config}{@kys} = @{$src_config}{@kys};
+
+  # Append app startup modules to master startup module list
+  push @{$dest_config->{'MODULES'}}, @{$src_modules} if $src_modules;
+
+  return $dest_config;
+}
+
+# config( uri-dir )
 sub config {
   my $dir = shift;
-  $dir =~ s!/$!!;
-  
-  my $conf = Bedrock::Config->new( 'tagx.xml' );
-  my @app_conf_files;
-  
-  # Look for application config
-  push @app_conf_files, $conf->{'APP_CONFIG'} if $conf->{'APP_CONFIG'};
-  my $framework_conf = sprintf("%s/framework%s.xml", $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH}, $dir);
 
+  $dir =~ s!/$!!;
+
+  # Bedrock 2 wants the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH} it can be overridden or merged with local
+  # configuration files.  To override the master, add this to the master tagx.xml file
+  #
+  #  <scalar name="REPLACE_CONFIG">yes</scalar>
+  #
+  my $conf;
+  eval {
+    Bedrock::Config->new( 'tagx.xml' );
+  };
+
+  if ($@) {
+    warn "Problem reading ". $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml";
+    $conf = { REPLACE_CONFIG => 'yes' };
+  }
+  
+  if (-r $ENV{CONFIG_PATH} . '/tagx.xml') {
+    if ( $conf->{REPLACE_CONFIG} =~/^y/i )  {
+      warn $ENV{CONFIG_PATH} . '/tagx.xml replaces system '. $ENV{BEDROCK_CONFIG_PATH} . '/tagx.xml.';
+      $conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+    }
+    else {
+      my $local_conf =  Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+      $conf = ($local_conf->{REPLACE_CONFIG} =~/^y/i) ? $local_conf : merge_config($conf, $local_conf);
+    }
+  }
+
+  die "No tagx.xml found at BEDROCK_CONFIG_PATH or CONFIG_PATH" unless $conf;
+
+  # Look for auxillary application configurations and merge with (or replace)  master
+  
+  my @app_conf_files;
+  # These are directory level configurations (tagx_apps.xml)
+  push @app_conf_files, $conf->{'APP_CONFIG'} if $conf->{'APP_CONFIG'};
+
+  my $framework_conf = sprintf("%s/framework%s.xml", $ENV{CONFIG_PATH}, $dir);
   push @app_conf_files, $framework_conf if -s $framework_conf;
   
   foreach my $dir_conffile (@app_conf_files) {
-    # Load the directory config
+    # Load the config file
     my $dir_conf = Bedrock::Config->new( $dir_conffile );
     
     # Look up the app config, based on directory of current request
     my $app_conf = $dir_conf->{$dir} || $dir_conf->{$dir . '/'};
-    
-    # Extract startup modules from app config
-    my $app_modules = delete $app_conf->{'MODULES'};
-    
-    # merge generic bedrock conf with app config. Note that app config
-    # overrides default config
-    for my $key (keys %{$app_conf}) {
-      $conf->{$key} = $app_conf->{$key};
-    }
-    
-    # Append app startup modules to master startup module list
-    push @{$conf->{'MODULES'}}, @{$app_modules} if $app_modules;
+    $conf = merge_config($conf, $app_conf);
   }
   
+  # look for more config files to merge
+  foreach ( ($ENV{CONFIG_PATH}, $ENV{CONFIG_PATH} . ".d")  ) {
+    next unless  -d $_;
+    local( *CONFIG_FILES );
+    opendir CONFIG_FILES, "$_";
+    while (my $file = readdir CONFIG_FILES) {
+      next unless $file=~/\.xml$/ && $file ne "tagx.xml";
+      
+      $conf = merge_config( $conf, Bedrock::Config->newFromXML( $_ . '/' . $file ) );
+    }
+  }
+  
+  # look for module configs
+  if (-d $ENV{CONFIG_PATH} . ".d/startup") {
+    local( *CONFIG_FILES );
+    opendir CONFIG_FILES, "$_";
+    while (my $file = readdir CONFIG_FILES) {
+      next unless $file=~/\.xml$/;
+      push @{$conf->{MODULES}}, Bedrock::Config->newFromXML( $_ . '/' . $file );
+    }
+  }
+
   # And voila! we have the merged config
   $conf;
 }
@@ -364,10 +421,17 @@ sub blm_ul {
   return unless @_;
   my $html;
 
-  $html = sprintf("<h2>%s</h2>\n", $h2);
-  return $html . sprintf("<ul>\n%s\n</ul>\n", join("\n", map { sprintf(q{<li><a href="/bedrock/plugins/%s">%s</a>}, $_, $blms->{$_}) } @_));
-}
+  my %blm_listing;
+  # just the names
 
+  foreach (@_) {
+    $blm_listing{$_} = $blms->{$_};
+    $blm_listing{$_} =~s/^(.*)::(.*)$/$2/;
+  }
+
+  $html = sprintf("<h2>%s</h2>\n", $h2);
+  return $html . sprintf("<ul>\n%s\n</ul>\n", join("\n", map { sprintf(q{<li><a href="/bedrock/plugins/%s">%s</a>}, $_, $blm_listing{$_}) } @_));
+}
 
 # +------------------------------+
 # | mod_perl HANDLER STARTS HERE |
@@ -400,7 +464,8 @@ sub handler {
   my $path_info = $ENV{PATH_INFO};
   $path_info =~s/(.*?)\/$/$1/;
 
-  $r->log->info(sprintf("[Apache::Bedrock] request file: [%s],  PATH_INFO: [%s],  PATH_TRANSLATED: [%s]",
+  $r->log->info(
+		sprintf("[Apache::Bedrock] request file: [%s],  PATH_INFO: [%s],  PATH_TRANSLATED: [%s]",
 			$file,
 			$path_info,
 			$ENV{PATH_TRANSLATED}
@@ -410,7 +475,7 @@ sub handler {
   # Parse for the URI components
   my ($uri_name, $uri_dir) = &fileparse( $r->uri );
 
-  my $conf = &config($uri_dir);
+  my $conf = &config( $uri_dir );
 
   $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
 
@@ -893,6 +958,14 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.26  2010/12/17 16:52:51  eutl420
+# - remove the BLM::Startup/BLM:: from plugin titles on the Bedrock doc pages
+# - move the implementation of config.d merging into this module since it
+#   really is a Bedrock system behavior that is independent of config file
+#   reading and processing.  Now any .xml file on the config directory is
+#   merged with the config object and one can override the default
+#   tagx.xml configuration settings using REPLACE_CONFIG in tagx.xml
+#
 # Revision 1.25  2010/12/12 21:27:44  eutl420
 # - added Apache log modules
 #
