@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl -w
+#!/usr/bin/perl -w
 
 # ident "@(#) $Header$"
 # ident "@(#)        $Name$"
@@ -36,43 +36,19 @@ BEGIN
 
 use IO::File;
 use File::Basename;
+
 use Bedrock::Hash 1.01;
 use Bedrock::XML;
 use Bedrock::Dump;
 
 @ISA	= qw (Bedrock::Hash);
 
-sub _locate_file
-{
-    my $file = shift;
-
-    if ( $file =~ m!/! ) {
-	# No search for config file if filename specified with path
-	die "_locate_file: Config file $file not found" unless -e $file;
-	die "_locate_file: Cannot open config file $file for reading."
-	    unless -r $file;
-	return $file;
-    } elsif ( -e $file ) {
-	# look for file in current dir
-	die "_locate_file: Cannot open config file $file for reading."
-	    unless -r $file;
-	return $file;
-    } else {
-	# search for config file in path
-	my $path = $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH};
-	warn "[Bedrock::Config] deprecated use of CONFIG_PATH. Use BEDROCK_CONFIG_PATH instead." if $ENV{CONFIG_PATH};
-	die "_locate_file: Could not locate $file and BEDROCK_CONFIG_PATH not set in environment"
-	    unless $path;
-	for my $dir (split ':', $path) {
-	    my $fullpath = $dir . '/' . $file;
-	    next unless -e $fullpath;
-	    die "_locate_file: Cannot open config file $fullpath for reading."
-		unless -r $fullpath;
-	    return $fullpath;
-	}
-	die "_locate_file: Could not locate $file in $path";
-    }
-}
+# ******************************************************************************
+# Note: 'warn' is used instead of a logging function in this
+#        module, since this function may be called prior to logging being
+#        configured - Bedrock::Config is used to get logging configuration thus
+#        its premature to assume logging is available.
+# ******************************************************************************
 
 sub _load
 {
@@ -153,89 +129,66 @@ sub newFromXML
     bless Bedrock::XML->new( shift ), $class;
 }
 
+
+sub _locate_file
+{
+    my $file = shift;
+
+    if ( $file =~ m!/! ) {
+        # No search for config file if filename specified with path
+        die "_locate_file: Config file $file not found" unless -e $file;
+        die "_locate_file: Cannot open config file $file for reading."
+            unless -r $file;
+        return $file;
+    } elsif ( -e $file ) {
+        # look for file in current dir
+        die "_locate_file: Cannot open config file $file for reading."
+            unless -r $file;
+        return $file;
+    } else {
+        # search for config file in path
+        my $path = $ENV{'BEDROCK_CONFIG_PATH'};
+        die "_locate_file: Could not locate $file and CONFIG_PATH not set in environment"
+            unless $path;
+        for my $dir (split ':', $path) {
+            my $fullpath = $dir . '/' . $file;
+            next unless -e $fullpath;
+            die "_locate_file: Cannot open config file $fullpath for reading."
+                unless -r $fullpath;
+            return $fullpath;
+        }
+        die "_locate_file: Could not locate $file in $path";
+    }
+}
+
+
 sub new
 {
     my $proto = shift;
     my $class = ref ($proto) || $proto;
     my $self = bless $class->SUPER::new, $class;
-
     return $self unless @_ > 0;
 
     my $fd = shift;
-    my $counter;
     unless ( ref( $fd ) ) {
-	my $file = $fd;
-	my $config = Bedrock::Config->newFromXML( &_locate_file( $file ) ) if $file =~ /\.xml$/i;
-
-	if ($config) {
-	  my $path = $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH};
-	  my $config_d = sprintf("%s.d", $path);
-	  my @modules;
-	  @modules = @{$config->{MODULES}} if $config->{MODULES};
-
-# - merge additional .xml files in sub-directory $ENV{BEDROCK_CONFIG_PATH}.d/*.xml
-	  if ( -d "$config_d") {
-	    opendir CONFIGS, "$config_d";
-	    while (my $file = readdir CONFIGS) {
-	      next unless $file=~/\.xml$/;
-	      my $newObj = Bedrock::Config->newFromXML("$config_d/$file");
-# -- merge keys, except for MODULES...which we will append
-	      foreach (keys %{$newObj}) {
-		unless ($_ eq 'MODULES') {
-		  $config->{$_} = $newObj->{$_};
-		}
-		else {
-		  warn "Adding a new MODULE...";
-		  warn  Bedrock::Dump::compact([@{$newObj->{MODULES}}]);
-		  push @modules, @{$newObj->{MODULES}};
-		}
-	      }
-	    }
-
-	    $config->{MODULES} = Bedrock::Array->new(@modules);
-	    closedir CONFIGS;
-	  }
-
-# - look for application specific BLM::Startup modules, iterate over
-#   $ENV{BEDROCK_CONFIG_PATH}.d/startup/*.xml
-	  my $startup_dir = sprintf("%s.d/startup", $path);
-	  if ( -d "$startup_dir") {
-	    opendir MODULES, "$startup_dir";
-	    while (my $file = readdir MODULES) {
-	      next unless $file=~/\.xml$/;
-	      my $newObj = Bedrock::Config->newFromXML("$startup_dir/$file");
-	      warn "Adding a new MODULE...";
-	      warn  Bedrock::Dump::compact([$newObj]);
-	      push @modules, $newObj if $newObj;
-	    }
-
-	    closedir MODULES;
-
-	    $config->{MODULES} = Bedrock::Array->new(@modules);
-	  }
-
-	  return $config;
-	}
-
-	if ( $file =~ m!/! ) {
-	    my $dir = dirname ( $file );
-	    if ( $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH} ) {
-	      $ENV{BEDROCK_CONFIG_PATH} = $ENV{CONFIG_PATH} if $ENV{CONFIG_PATH}; # deprecated use of CONFIG_PATH
-	      $ENV{'BEDROCK_CONFIG_PATH'} = $dir . ':' . $ENV{'BEDROCK_CONFIG_PATH'};
-	    } else {
-		$ENV{BEDROCK_CONFIG_PATH} = $dir;
-	    }
-	}
-	$fd = IO::File->new ( &_locate_file( $file ) );
-	die "$self: Unable to open $file: $!\n" unless $fd;
+        my $file = $fd;
+        return Bedrock::Config->newFromXML( &_locate_file( $file ) ) if $file =~ /\.xml$/i;
+        if ( $file =~ m!/! ) {
+            my $dir = dirname ( $file );
+            if ( $ENV{'BEDROCK_CONFIG_PATH'} ) {
+                $ENV{'BEDROCK_CONFIG_PATH'} = $dir . ':' . $ENV{'BEDROCK_CONFIG_PATH'};
+            } else {
+                $ENV{'BEDROCK_CONFIG_PATH'} = $dir;
+            }
+        }
+        $fd = IO::File->new ( &_locate_file( $file ) );
+        die "$self: Unable to open $file: $!\n" unless $fd;
     }
-
     $self->_load( $fd );
     $self->_interp_vars;
-
-
     $self;
 }
+
 
 sub XML {
   my $self = shift;
@@ -284,6 +237,14 @@ sub get_module_config {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2010/12/17 16:49:59  eutl420
+# - revert to old Bedrock::Config->new behavior and take out default merging
+#   of config.d/startup/*.xml.  This behavior should be implemented in the
+#   Bedrock handler, not here, since this module could conceivably be used
+#   outside of Bedrock in perhaps a CGI script.
+# - _locate_file sub was slightly altered and returned
+#    along with new() to its original and upright position ;-)
+#
 # Revision 1.6  2010/12/12 17:16:40  eutl420
 # - remove use of Data::Dumper
 #
