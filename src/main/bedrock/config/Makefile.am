@@ -1,5 +1,7 @@
 SUBDIRS = .
 
+ax_perl5_extra_includes = @ax_perl5_extra_includes@
+
 @do_subst_command@
 
 CONFIG = \
