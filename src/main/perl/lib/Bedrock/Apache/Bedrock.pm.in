@@ -224,20 +224,26 @@ sub config {
     opendir CONFIG_FILES, "$path";
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/ && $file !~/^tagx/;
-      
+      warn "Loading $file...";
       $conf = merge_config( $conf, Bedrock::Config->newFromXML( $path . '/' . $file ) );
     }
+    closedir CONFIG_FILES;
   }
   
   # look for module configs
   if (-d $ENV{CONFIG_PATH} . ".d/startup") {
+    my $path = $ENV{CONFIG_PATH} . ".d/startup";
     local( *CONFIG_FILES );
-    opendir CONFIG_FILES, "$_";
+    opendir CONFIG_FILES, "$path";
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/;
-      push @{$conf->{MODULES}}, Bedrock::Config->newFromXML( $_ . '/' . $file );
+      warn "Loading $file...";
+      push @{$conf->{MODULES}}, Bedrock::Config->newFromXML( $path . '/' . $file );
     }
+    closedir CONFIG_FILES;
   }
+
+  $conf->{CONFIG_PATH} = $ENV{CONFIG_PATH};
 
   # And voila! we have the merged config
   $conf;
@@ -510,8 +516,8 @@ sub handler {
   } elsif ($path_info =~/\/bedrock\/?(.*?)$/) {
     $ENV{BEDROCK_REQUEST_DOC} = $1;
 
-    $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request denied by configuration.\n")) unless ($conf->{ALLOW_BEDROCK_INFO} =~/yes/i);
-    return FORBIDDEN unless $conf->{ALLOW_BEDROCK_INFO} =~/yes/i;
+    $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request denied by configuration.\n")) unless ($conf->{ALLOW_BEDROCK_INFO} =~/(yes|docs)/i);
+    return FORBIDDEN unless $conf->{ALLOW_BEDROCK_INFO} =~/(yes|docs)/i;
 
     $r->log->info(sprintf("[Apache Bedrock] Bedrock admin directory request [%s]\n", $ENV{BEDROCK_REQUEST_DOC}));
 
@@ -651,55 +657,54 @@ eot
 		       );
       
       $html .= "<hr>\n";
-      $html .= "<h1>Bedrock Environment</h1>\n";
-      $html .= ul_links(
-			"config"  => "Bedrock Configuration",
-			"env"     => "Bedrock Environment"
-		       );
 
-# See if logs are working...
-      $html .= "<hr>\n";
-      $html .= "<h1>Bedrock Logs</h1>\n";
+      unless ($conf->{ALLOW_BEDROCK_INFO} eq 'docs') {
+	$html .= "<h1>Bedrock Environment</h1>\n";
+	$html .= ul_links(
+			  "config"  => "Bedrock Configuration",
+			  "env"     => "Bedrock Environment"
+			 );
 
-      my $logfile = sprintf("%s/%s", @$conf{qw(LOGDIR LOGFILE)});
-
-      unless ($conf->{LOGDIR} && $conf->{LOGFILE}) {
-	# no LOGDIR specified
-	$html .= q{<span class="error">No log directory or log file specified in <strong>tagx.xml</strong>.  Set <strong>LOGDIR and LOGFILE</strong></span> } . "\n";
-      }
-      elsif (-d $conf->{LOGDIR} && ! -s $logfile) {
-	# directory defined
-	$html .= q{<span class="error">Directory specified but no <strong>} . $logfile . "</strong> can be found.  Check permissions.</span>\n";
-      }
-      elsif (! -d $conf->{LOGDIR}) {
-	# directory not defined
-	$html .= q{<span class="error">Log directory is specified but <strong>} . $conf->{LOGDIR} . "</strong> does not exist.  Create the directory.  Make sure the Apache user can write to this directory.\n";
-      }
-      elsif (! -d $conf->{HTML_LOGDIR}) {
-	# directory not defined
-	$html .= q{<span class="error">HTML log directory is specified but <strong>} . $conf->{HTML_LOGDIR} . "</strong> does not exists.  Create the directory. Make sure the Apache user can write to this directory.\n";
-      }
-      else {
-	# defined and present
-	$html .= "<ul>\n";
-	$html .= q{<li><span class="code">LOGDIR:</span>&nbsp;<strong>} . $conf->{LOGDIR} . "</strong></li>\n";
-	$html .= q{<li><span class="code">LOGFILE:</span>&nbsp;<strong>} . $conf->{LOGFILE} . "</strong></li>\n";
-	$html .= q{<li><span class="code">HTML_LOGDIR:</span>&nbsp;<strong>} . $conf->{HTML_LOGDIR} . "</strong></li>\n";
-	$html .= q{<li><span class="code">LOGLEVEL:</span>&nbsp;<strong>} . $conf->{LOGLEVEL} . "</strong></li>\n";
-	$html .= "</ul>\n";
+	# See if logs are working...
 	$html .= "<hr>\n";
-	$html .= "<h3>Bedrock Log Tail</h3>\n";
-	$html .= q{<pre class="codeframe" style="height:150px; width:600px;">} . "\n";
+	$html .= "<h1>Bedrock Logs</h1>\n";
 
-	my $fd = IO::File->new($logfile, "r");
-	my $pos = (-s $fd > 4000) ? -s $fd - 4000 : 0;
+	my $logfile = sprintf("%s/%s", @$conf{qw(LOGDIR LOGFILE)});
 
-	$fd->setpos($pos);
-	while (<$fd>) {
-	  $html .= Text::URLEncode::Htmlencode($_);
+	unless ($conf->{LOGDIR} && $conf->{LOGFILE}) {
+	  # no LOGDIR specified
+	  $html .= q{<span class="error">No log directory or log file specified in <strong>tagx.xml</strong>.  Set <strong>LOGDIR and LOGFILE</strong></span> } . "\n";
+	} elsif (-d $conf->{LOGDIR} && ! -s $logfile) {
+	  # directory defined
+	  $html .= q{<span class="error">Directory specified but no <strong>} . $logfile . "</strong> can be found.  Check permissions.</span>\n";
+	} elsif (! -d $conf->{LOGDIR}) {
+	  # directory not defined
+	  $html .= q{<span class="error">Log directory is specified but <strong>} . $conf->{LOGDIR} . "</strong> does not exist.  Create the directory.  Make sure the Apache user can write to this directory.\n";
+	} elsif (! -d $conf->{HTML_LOGDIR}) {
+	  # directory not defined
+	  $html .= q{<span class="error">HTML log directory is specified but <strong>} . $conf->{HTML_LOGDIR} . "</strong> does not exists.  Create the directory. Make sure the Apache user can write to this directory.\n";
+	} else {
+	  # defined and present
+	  $html .= "<ul>\n";
+	  $html .= q{<li><span class="code">LOGDIR:</span>&nbsp;<strong>} . $conf->{LOGDIR} . "</strong></li>\n";
+	  $html .= q{<li><span class="code">LOGFILE:</span>&nbsp;<strong>} . $conf->{LOGFILE} . "</strong></li>\n";
+	  $html .= q{<li><span class="code">HTML_LOGDIR:</span>&nbsp;<strong>} . $conf->{HTML_LOGDIR} . "</strong></li>\n";
+	  $html .= q{<li><span class="code">LOGLEVEL:</span>&nbsp;<strong>} . $conf->{LOGLEVEL} . "</strong></li>\n";
+	  $html .= "</ul>\n";
+	  $html .= "<hr>\n";
+	  $html .= "<h3>Bedrock Log Tail</h3>\n";
+	  $html .= q{<pre class="codeframe" style="height:150px; width:600px;">} . "\n";
+
+	  my $fd = IO::File->new($logfile, "r");
+	  my $pos = (-s $fd > 4000) ? -s $fd - 4000 : 0;
+
+	  $fd->setpos($pos);
+	  while (<$fd>) {
+	    $html .= Text::URLEncode::Htmlencode($_);
+	  }
+	  $html .= "</pre>\n";
+	  $fd->close;
 	}
-	$html .= "</pre>\n";
-	$fd->close;
       }
 
       $html .= <<eot;
@@ -965,6 +970,12 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.31  2010/12/20 21:29:24  eutl420
+# - closedir
+# - config.d directory was not being scanned and files were not loaded properly
+# - allow use of either yes or docs to ALLOW_BEDROCK_INFO
+# - set CONFIG_PATH in configuration object from enviroment
+#
 # Revision 1.30  2010/12/18 16:31:50  eutl420
 # - make sure that LOGDIR is writeable and set config if we use /tmp
 #
