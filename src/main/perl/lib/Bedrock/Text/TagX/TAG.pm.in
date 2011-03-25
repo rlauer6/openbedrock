@@ -28,18 +28,18 @@ package TagX::TAG;
 use strict;
 
 BEGIN
-{
+  {
     use Exporter ();
     use vars	qw ($VERSION @ISA @INC);
     $VERSION	= 1.23;
     @ISA	= qw (Exporter);
-}
+  }
 
 use TagX::Log 1.01;
 use TagX::Parser 1.04;
 
 sub new
-{
+  {
     my $class = shift;
     my $self = bless {}, $class;
     $self->{'nobjs'} = 0;
@@ -48,130 +48,153 @@ sub new
     my $tx = shift if @_ == 1;
     $self->{'TagX'} = $tx;
     $self;
-}
+  }
 
 
 # Store the location where the tag definition started in the input
 # Invoked with: $file, $line
 sub start_location
-{
+  {
     my $self = shift;
+
     if ( @_ > 0 ) {
-	my ($file, $line) = @_;
-	$self->{'file'} = $file;
-	$self->{'line'} = $line;
-	$self->{'__start_location'} = "$file($line)";
+      my ($file, $line) = @_;
+      $self->{'file'} = $file;
+      $self->{'line'} = $line;
+      $self->{'__start_location'} = "$file($line)";
     }
+
     wantarray ? (@{$self}{qw(file line)}) : $self->{'__start_location'};
-}
+  }
 
 sub name
-{
+  {
     my $self = shift;
     $self->{'name'} = shift if @_ == 1;
     $self->{'name'};
-}
+  }
 
 sub parent
-{
+  {
     my $self = shift;
     $self->{'parent'} = shift if @_ == 1;
     $self->{'parent'};
-}
+  }
 
 sub __save_option
-{
+  {
     my ($argv, $optv, $generic, $key, $term) = @_;
 
     if ( defined ($key) && exists $generic->{$key} ) {
-	$generic->{$key}++ unless defined( $term );
-	return;
+      $generic->{$key}++ unless defined( $term );
+      return;
     }
 
     if ( defined( $term ) && defined( $key ) ) {
-	push @{$argv}, $key, $term;
-	if ( exists ( $optv->{$key} ) ) {
-	    $optv->{$key} = [$optv->{$key}] unless ref($optv->{$key}) eq 'ARRAY';
-	    push @{$optv->{$key}}, $term;
-	} else {
-	    $optv->{$key} = $term;
-	}
+      push @{$argv}, $key, $term;
+      if ( exists ( $optv->{$key} ) ) {
+	$optv->{$key} = [$optv->{$key}] unless ref($optv->{$key}) eq 'ARRAY';
+	push @{$optv->{$key}}, $term;
+      } else {
+	$optv->{$key} = $term;
+      }
     } elsif ( defined( $key ) ) {
-	push @{$argv}, $key;
-	$optv->{$key}++;
+      push @{$argv}, $key;
+      $optv->{$key}++;
     } else {
-	push @{$argv}, $term;
+      push @{$argv}, $term;
     }
-}
+  }
 
 #
 # Parse Tag options, and return an array of parsed options. Takes an array reference to populate
 # the options, and the string to parse. Returns the array reference
 #
 sub tagOptions_as_array
-{
+  {
+    my $self = shift;
+
     my $args = shift;
     local $_ = shift;
     my $generic = shift;
     my $optref = {};
+
+    $self->{'__term_type'} = [];
+
     my $term;
     while ( length ) {
-	s/^\s+// and next;
-
-	# Check for option with value
-	if ( s/^--([\w-]+)\s*=\s*//oi ) {
-	    my $key = $1;
-	    &__save_option ( $args, $optref, $generic, $key, &TagX::Parser::parse_stm );
-	    next;
+      s/^\s+// and next;
+    
+      # Check for option with value
+      if ( s/^--([\w-]+)\s*=\s*//oi ) {
+	my $key = $1;
+	&__save_option ( $args, $optref, $generic, $key, &TagX::Parser::parse_stm );
+      
+	unless ( defined ($key) && exists $generic->{$key} ) {
+	  push @{$self->{'__term_type'}}, 'term';
+	  push @{$self->{'__term_type'}}, 'term';
 	}
-
-	# Check for flag option -- option without '='
-	if ( s/^--([\w-]+)//oi ) {
-	    &__save_option ( $args, $optref, $generic, $1 );
-	    next;
+      
+	next;
+      }
+    
+      # Check for flag option -- option without '='
+      if ( s/^--([\w-]+)//oi ) {
+	&__save_option ( $args, $optref, $generic, $1 );
+	unless ( defined ($1) && exists $generic->{$1} ) {
+	  push @{$self->{'__term_type'}}, 'optional';
 	}
+	
+	next;
+      }
+    
+      &__save_option ( $args, $optref, $generic, undef, &TagX::Parser::parse_stm );
 
-	&__save_option ( $args, $optref, $generic, undef, &TagX::Parser::parse_stm );
+      push @{$self->{'__term_type'}}, 'term';
     }
+
     $optref;
-}
+  }
+
 
 sub options
-{
+  {
     my $self = shift;
-    if ( @_ == 1 ) {
-	my $optstring = shift;
-	$self->{'__optstring'} = $optstring;
-	$self->{'__argv'} = [];
-	my %generic = ('verbose' => undef);
-	$self->{'__options'} = &tagOptions_as_array ( $self->{'__argv'}, $optstring, \%generic);
-	map { $self->{'__' . $_} = $generic{$_} if defined $generic{$_} } keys %generic;
-	my $verbose = defined($self->{'__verbose'}) ? $self->{'__verbose'} : 0;
 
-	if ( $verbose > 1 ) {
-	    my $str = "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
-	    $str .= "  Options are\n";
-	    for my $key (sort keys %{$self->{'__options'}}) {
-		$str .= "\t$key => [" . $self->{'__options'}->{$key} . "]\n";
-	    }
-	    $str .= "  Generic options are\n";
-	    for my $key (sort keys %generic) {
-		$str .= "\t$key => [" . $generic{$key} . "]";
-	    }
-	    &log_message( $self, "$str\n" );
+    if ( @_ == 1 ) {
+      my $optstring = shift;
+      $self->{'__optstring'} = $optstring;
+      $self->{'__argv'} = [];
+      my %generic = ('verbose' => undef);
+      $self->{'__options'} = &tagOptions_as_array ( $self, $self->{'__argv'}, $optstring, \%generic);
+      map { $self->{'__' . $_} = $generic{$_} if defined $generic{$_} } keys %generic;
+      my $verbose = defined($self->{'__verbose'}) ? $self->{'__verbose'} : 0;
+	
+      if ( $verbose > 1 ) {
+	my $str = "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
+	$str .= " Option types:\n\t@{$self->{'__term_type'}}\n";
+	$str .= " Options are\n";
+	for my $key (sort keys %{$self->{'__options'}}) {
+	  $str .= "\t$key => [" . $self->{'__options'}->{$key} . "]\n";
 	}
+	$str .= "  Generic options are\n";
+	for my $key (sort keys %generic) {
+	  $str .= "\t$key => [" . $generic{$key} . "]";
+	}
+	&log_message( $self, "$str\n" );
+      }
     }
     $self->{'__options'};
-}
+  }
 
 sub verbose
-{
+  {
     my $self = shift;
     $self->{'__verbose'};
-}
+  }
 
 sub eval_args
-{
+  {
     my $self = shift;
     my $optref = shift;
 
@@ -183,50 +206,50 @@ sub eval_args
     my ($key, $value);
     %{$optref} = ();
     while (($key, $value) = each %{$self->{'__options_to_eval'}}) {
-	my $ref = ref( $value );
-	if ( $ref eq 'ARRAY' ) {
-	    # more than one value for this option
-	    # need to eval all
-	    my @optvals;
-	    for my $arg (@{$value}) {
-		if ( ref( $arg ) ) {
-		    $arg->verbose($verbose) if $verbose;
-		    push @optvals, $arg->eval(@_);
-		    $arg->verbose(0) if $verbose;
-		} else {
-		    push @optvals, $arg;
-		}
-	    }
-	    $optref->{$key} = \@optvals;
-	} elsif ( $ref ) {
-	    $value->verbose($verbose) if $verbose;
-	    $optref->{$key} = $value->eval(@_);
-	    $value->verbose(0) if $verbose;
-	} else {
-	    $optref->{$key} = $value;
+      my $ref = ref( $value );
+      if ( $ref eq 'ARRAY' ) {
+	# more than one value for this option
+	# need to eval all
+	my @optvals;
+	for my $arg (@{$value}) {
+	  if ( ref( $arg ) ) {
+	    $arg->verbose($verbose) if $verbose;
+	    push @optvals, $arg->eval(@_);
+	    $arg->verbose(0) if $verbose;
+	  } else {
+	    push @optvals, $arg;
+	  }
 	}
+	$optref->{$key} = \@optvals;
+      } elsif ( $ref ) {
+	$value->verbose($verbose) if $verbose;
+	$optref->{$key} = $value->eval(@_);
+	$value->verbose(0) if $verbose;
+      } else {
+	$optref->{$key} = $value;
+      }
     }
 
     # Reset any options to defaults if values for them not specified.
     for my $key (keys %{$self->{'__option_defaults'}}) {
-	next if exists $optref->{$key};
-	$optref->{$key} = $self->{'__option_defaults'}->{$key};
+      next if exists $optref->{$key};
+      $optref->{$key} = $self->{'__option_defaults'}->{$key};
     }
 
     # Evaluate arguments now
     my @args;
     for my $arg (@{$self->{'__args_to_eval'}}) {
-	if ( ref($arg) ) {
-	    $arg->verbose($verbose) if $verbose;
-	    push @args, $arg->eval(@_);
-	    $arg->verbose(0) if $verbose;
-	} else {
-	    push @args, $arg;
-	}
+      if ( ref($arg) ) {
+	$arg->verbose($verbose) if $verbose;
+	push @args, $arg->eval(@_);
+	$arg->verbose(0) if $verbose;
+      } else {
+	push @args, $arg;
+      }
     }
 
     @args;
-}
+  }
 
 
 # getname(\%options, @argv)
@@ -249,20 +272,19 @@ sub get_name {
 }
 
 sub parse_tag_name 
-{
-  my $self = shift;
+  {
+    my $self = shift;
 
-  return {} unless $_[0] =~/^:/;
+    return {} unless $_[0] =~/^:/;
 
-  my (undef, $type, $name) = split ':', shift;
+    my (undef, $type, $name) = split ':', shift;
   
-  if ( $name ) {
-    return { type => $type, name => $name};
+    if ( $name ) {
+      return { type => $type, name => $name};
+    } else {
+      return { name => $type };
+    }
   }
-  else {
-    return { name => $type };
-  }
-}
 
 # dump_options(\%options)
 sub dump_options {
@@ -284,124 +306,147 @@ sub dump_options {
   &log_message( $self, $str );
 }
 
-sub parse_options
-{
-    my $self = shift;
-    return $self->eval_args(@_) if exists $self->{'__args_to_eval'};
-    my $optref = shift;
+sub parse_options {
+  my $self = shift;
+  return $self->eval_args(@_) if exists $self->{'__args_to_eval'};
+  my $optref = shift;
 
-    my $verbose = defined($self->{'__verbose'}) ? $self->{'__verbose'} : 0;
+  my $verbose = defined($self->{'__verbose'}) ? $self->{'__verbose'} : 0;
 
-    # The supported options list is contained in %keys_lc (key is the name of option (in lowercase)
-    # and value is the flag specified: `=s' if the option takes an argument)
-    # and the defaults specified therein are in %defaults
-    # %keys contains lower case options mapped to options with the right case
-    my (%keys, %keys_lc, %defaults);
-    for my $key (keys %$optref) {
-	next unless $key =~ /^([^=:]+)([:=].*)?$/;
-	my $lc = lc($1);
-	$keys_lc{$lc} = $2;
-	$keys{$lc} = $1;
-	$defaults{$lc} = $optref->{$key} if defined( $optref->{$key} );
+  # The supported options list is contained in %keys_lc (key is the name of option (in lowercase)
+  # and value is the flag specified: `=s' if the option takes an argument)
+  # and the defaults specified therein are in %defaults
+  # %keys contains lower case options mapped to options with the right case
+  my (%keys, %keys_lc, %defaults);
+  for my $key (keys %$optref) {
+    next unless $key =~ /^([^=:]+)([:=].*)?$/;
+    my $lc = lc($1);
+    $keys_lc{$lc} = $2;
+    $keys{$lc} = $1;
+    $defaults{$lc} = $optref->{$key} if defined( $optref->{$key} );
+  }
+  
+  # Do some logging
+  if ( $verbose > 1 ) {
+    my ($key, $value, $str);
+    $str = "Arguments [@{[scalar(@{$self->{__argv}})]}] are\n\t(@{$self->{__argv}})\n";
+    while (($key, $value) = each %keys_lc) {
+      $str .= "  options{$key} => [";
+      $str .= $value if defined($value);
+      $str .= "] (default: ";
+      $str .= $defaults{$key} if defined($defaults{$key});
+      $str .= ")\n";
+    }
+    &log_message( $self, "$str\n");
+  }
+  
+  # Step thru' the arguments list
+  my ($arg, $arg_lc, @argv, $i, %options);
+  my @opt_type = @{$self->{'__term_type'}};
+
+  for ( $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
+    # Get the next argument
+    $arg = $self->{'__argv'}->[$i];
+
+    # Is the argument a `Term' or an `Expr'
+    if ( ref( $arg ) ) {
+      push @argv, $arg;
+      next;
     }
 
-    # Do some logging
-    if ( $verbose > 1 ) {
-	my ($key, $value, $str);
-	$str = "Arguments [@{[scalar(@{$self->{__argv}})]}] are\n\t(@{$self->{__argv}})\n";
-	while (($key, $value) = each %keys_lc) {
-	    $str .= "  options{$key} => [";
-	    $str .= $value if defined($value);
-	    $str .= "] (default: ";
-	    $str .= $defaults{$key} if defined($defaults{$key});
-	    $str .= ")\n";
-	}
-	&log_message( $self, "$str\n");
+    # Argument is not a `Term' or an `Expr'
+    # Is the argument an option which requires an argument?
+    $arg_lc = lc( $arg );
+
+
+    # consider the case of 'optional' arguments...  when an option
+    # like --table is used without an argument but has been defined
+    # to accept one, we have a problem, so `tag_Options_as_array'
+    # was modifed to to identify each term of a Bedrock tag as
+    # 'optional' or 'term' - meaning it is an 'option' with no
+    # arguments. That way the code below can interpret the option
+    # meta-data and determine if it should grab the next term as an
+    # argument or let it be.
+    #
+    # A better approach is to have more a robust option handler that
+    # identifies such types of options ala GetOptions...I suspect
+    # Jay regrets that laziness but it worked for a long time.
+
+    if ( defined( $keys_lc{$arg_lc} ) && $opt_type[$i] ne 'optional') {
+      # Yes, fetch the next argument
+      $i++;
+      my $optval = $self->{'__argv'}->[$i];
+	  
+      # is this option repeated? if so, make an array ref and
+      # push the value into the array along with the earlier value
+      if ( exists ( $options{$arg_lc} ) ) {
+	# make an array ref
+	$options{$arg_lc} = [$options{$arg_lc}]
+	  unless ref($options{$arg_lc}) eq 'ARRAY';
+	push @{$options{$arg_lc}}, $optval;
+      } else {
+	$options{$arg_lc} = $optval;
+      }
+      next;
     }
 
-    # Step thru' the arguments list
-    my ($arg, $arg_lc, @argv, $i, %options);
-    for ( $i = 0 ; $i < @{$self->{'__argv'}} ; $i++ ) {
-	# Get the next argument
-	$arg = $self->{'__argv'}->[$i];
-
-	# Is the argument a `Term' or an `Expr'
-	if ( ref( $arg ) ) {
-	    push @argv, $arg;
-	    next;
-	}
-
-	# Argument is not a `Term' or an `Expr'
-	# Is the argument an option which requires an argument?
-	$arg_lc = lc( $arg );
-	if ( defined( $keys_lc{$arg_lc} ) ) {
-	    # Yes, fetch the next argument
-	    $i++;
-	    my $optval = $self->{'__argv'}->[$i];
-
-	    # is this option repeated? if so, make an array ref and
-	    # push the value into the array along with the earlier value
-	    if ( exists ( $options{$arg_lc} ) ) {
-		# make an array ref
-		$options{$arg_lc} = [$options{$arg_lc}]
-		    unless ref($options{$arg_lc}) eq 'ARRAY';
-		push @{$options{$arg_lc}}, $optval;
-	    } else {
-		$options{$arg_lc} = $optval;
-	    }
-	    next;
-	}
-
-	# Check whether the argument is an option which does not require a
-	# value
-	if ( exists( $keys_lc{$arg_lc} ) ) {
-	    # if so, increment the option value.
-	    # note that multiple occurences of such options results in
-	    # the value being incremented.
-	    $options{$arg_lc}++;
-	    next;
-	}
-
-	# if not an option, push into args array -- effectively just returns 
-	# unsupported options to caller.
-	push @argv, $arg;
+    # Check whether the argument is an option which does not require a
+    # value
+    if ( exists( $keys_lc{$arg_lc} ) ) {
+      # if so, increment the option value.
+      # note that multiple occurences of such options results in
+      # the value being incremented.
+      $options{$arg_lc}++;
+      next;
     }
 
-    # Remap the case of the options to the required case and save the parsed options
-    for my $key (keys %options) {
-	$self->{'__options_to_eval'}->{$keys{$key}} = $options{$key};
+    # if not an option, push into args array -- effectively just returns 
+    # unsupported options to caller.
+    push @argv, $arg;
+  }
+
+  # Remap the case of the options to the required case and save the parsed options
+  for my $key (keys %options) {
+    $self->{'__options_to_eval'}->{$keys{$key}} = $options{$key};
+  }
+
+  # Save the defaults too
+  for my $key (keys %defaults) {
+    $self->{'__option_defaults'}->{$keys{$key}} = $defaults{$key};
+  }
+
+  # and save the arguments too
+  $self->{'__args_to_eval'} = \@argv;
+
+  # Leave a trace before doing the eval
+  if ( $verbose > 1 ) {
+    my $str = "Specified options are\n";
+    for my $key (sort keys %{$self->{'__options_to_eval'}}) {
+      $str .= "  $key => [" . $self->{'__options_to_eval'}->{$key} . "]\n";
     }
 
-    # Save the defaults too
-    for my $key (keys %defaults) {
-	$self->{'__option_defaults'}->{$keys{$key}} = $defaults{$key};
+    $str .= "Defaults are\n";
+    for my $key (sort keys %{$self->{'__option_defaults'}}) {
+      $str .= "  $key => [" . $self->{'__option_defaults'}->{$key} . "]\n";
     }
 
-    # and save the arguments too
-    $self->{'__args_to_eval'} = \@argv;
+    $str .= "Arguments are\n  (@argv)";
+    &log_message( $self, $str);
+  }
 
-    # Leave a trace before doing the eval
-    if ( $verbose > 1 ) {
-	my $str = "Specified options are\n";
-	for my $key (sort keys %{$self->{'__options_to_eval'}}) {
-	    $str .= "  $key => [" . $self->{'__options_to_eval'}->{$key} . "]\n";
-	}
-
-	$str .= "Defaults are\n";
-	for my $key (sort keys %{$self->{'__option_defaults'}}) {
-	    $str .= "  $key => [" . $self->{'__option_defaults'}->{$key} . "]\n";
-	}
-
-	$str .= "Arguments are\n  (@argv)";
-	&log_message( $self, $str);
-    }
-
-    return $self->eval_args($optref, @_);
+  return $self->eval_args($optref, @_);
 }
 
-#
+  #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.29  2011/03/25 17:46:40  eutl420
+# - changes to Bedrock's option parser to allow for optional arguments, i.e.  --table or --table=$foo
+#   + in tagOptions_as_array keep track of options that are supposed to have arguments
+#     but no argument was supplied
+#   + in parse_options, use the info tracked in tagOptions_as_array to determine whether
+#     to grab the next argument or not
+#
 # Revision 1.28  2010/12/12 17:12:17  eutl420
 # - add sub parse_tag_name
 # - make get_name use parse_tag_name
