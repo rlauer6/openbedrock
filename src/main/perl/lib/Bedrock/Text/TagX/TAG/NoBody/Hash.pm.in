@@ -43,11 +43,28 @@ use Bedrock::JSON;
 
 @ISA = qw (TagX::TAG::NoBody);
 
+sub decode_json_string {
+  my $json_string = shift;
+  my $obj;
+  
+  eval {
+    $obj = Bedrock::JSON::decode( $json_string );
+    die "Not a hash definition ($json_string)!"
+      unless ( UNIVERSAL::isa($obj, 'HASH') ) ;
+  };
+  
+  die "possibly invalid JSON string: $@\n"
+    if $@;
+  
+  return $obj;
+}
+
+
 sub finalize
 {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('json' => undef,
+    my %options = ('json'       => undef,
 		   'define-var' => undef
 		  );
 
@@ -65,51 +82,46 @@ sub finalize
 
     my $obj;
 
-    if ($options{'json'}) {
-      my $json_string = join('', @argv);
-      $obj = Bedrock::JSON::decode($json_string);
-      die "Not a hash definition ($json_string)!"
-	unless (UNIVERSAL::isa($obj, 'HASH')) ;
+    if ( exists $options{'json'} ) {
+      $obj = decode_json_string( join('', @argv) );
     }
-    else {
+    elsif ( @argv == 1 && ! ref( $argv[0] )) {
+      $obj = decode_json_string( $argv[0] );
+    } 
+    # see if odd number of elements
+    elsif ( @argv % 2 ) {
+      &log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
+      my $aref = $argv[0];
       
-      # see if odd number of elements
-      if ( @argv % 2 ) {
-
-	&log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
-	my $aref = $argv[0];
+      if ( &UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH') )  {
 	
-	if ( &UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH') )  {
-
-	  shift @argv;
-
-	  if (&UNIVERSAL::isa($aref, 'ARRAY')) {
-	    &log_message( $self, "Prepending the following array to (@argv)\n(@{$aref})" ) if $verbose;
-	      unshift @argv, @{$aref};
-	  }
+	shift @argv;
+	
+	if (&UNIVERSAL::isa($aref, 'ARRAY')) {
+	  &log_message( $self, "Prepending the following array to (@argv)\n(@{$aref})" ) if $verbose;
+	  unshift @argv, @{$aref};
+	}
 	  else {
 	    &log_message( $self, "Prepending the following array to (@argv)\n(%{$aref})" ) if $verbose;
 	    unshift @argv, %$aref;
 	  }
-	} 
-	elsif ( defined($aref = $argv[-1]) and (&UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH')) ) {
-
-	  pop @argv;
-
-	  if (&UNIVERSAL::isa($aref, 'ARRAY')) {
+      } 
+      elsif ( defined($aref = $argv[-1]) and (&UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH')) ) {
+	
+	pop @argv;
+	
+	if (&UNIVERSAL::isa($aref, 'ARRAY')) {
 	    &log_message( $self, "Appending the following array to (@argv)\n(@{$aref})" ) if $verbose;
 	    push @argv, @{$aref};
 	  }
-	  else {
-	    &log_message( $self, "Appending the following array to (@argv)\n(%{$aref})" ) if $verbose;
-	    push @argv, %$aref;
-	  }
+	else {
+	  &log_message( $self, "Appending the following array to (@argv)\n(%{$aref})" ) if $verbose;
+	  push @argv, %$aref;
 	}
       }
-	
-      $obj = Bedrock::Hash->new(@argv);
     }
 
+    $obj = Bedrock::Hash->new( @argv );
     $tx->{'VARS'}->{$name} = $obj;
 
     return $obj;
@@ -206,7 +218,11 @@ A complex hash:
   <trace --output $foo>
   </pre>
 
-I<You can also use the E<lt>nullE<gt> and E<lt>sinkE<gt> tags to create hashes.  Methods also may return hashes.>
+If there is only 1 scalar argument then it is considered to be a JSON
+string to be interpreted as a hash (the C<--json> is optional).
+
+I<You can also use the E<lt>nullE<gt> and E<lt>sinkE<gt> tags to
+create hashes.  Methods also may return hashes.>
 
 I<All hashes are ordered hashes!  WooHoo!  Who the heck wants random hashes?>
 
@@ -309,6 +325,11 @@ C<E<lt>nullE<gt>>, C<E<lt>arrayE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.14  2011/03/25 13:51:11  eutl420
+# - added method decode_json_string
+# - replace inline code with call to new method decode_json_string
+# - if only 1 scalar argument, consider that to be a JSON string
+#
 # Revision 1.13  2010/12/12 17:10:35  eutl420
 # - use parse_tag_name
 # - use dump_options
