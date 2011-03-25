@@ -149,30 +149,66 @@ sub build_head_section {
   $head_section;
 }
 
-sub merge_config {
+
+
+sub merge_modules {
+  my $r = shift;
   my ($dest_config, $src_config) = @_;
 
-  # Extract startup modules from src config
-  my $src_modules = delete $src_config->{'MODULES'};
+  my $src_modules = $src_config->{'MODULES'};
+
+  return unless $src_modules && @$src_modules;
+
+  my %dest_modules;
+
+  map { $dest_modules{$_->{'binding'}} = $_; } @{$dest_config->{'MODULES'}};
+  
+  if ( $src_modules && @$src_modules ) {
+    foreach ( @$src_modules ) {
+
+      $r->log->warn( "overriding MODULE binding ". $_->{'binding'} ) 
+	if exists $dest_modules{$_->{'binding'}};
+
+      $r->log->debug( sprintf(" merging module:\n%s\n", Bedrock::Dump::compact($_)));
+
+      $dest_modules{$_->{'binding'}} = $_;
+    }
     
-  # merge source-config with dest-config (override)
-  my @kys = keys %$src_config;
-  @{$dest_config}{@kys} = @{$src_config}{@kys};
-
-  # Append app startup modules to master startup module list
-  push @{$dest_config->{'MODULES'}}, @{$src_modules} if $src_modules;
-
-  return $dest_config;
+    my @modules = values %dest_modules;
+    $dest_config->{'MODULES'} = \@modules;
+  }
 }
 
-# config( uri-dir )
+sub merge_config {
+  my $r = shift;
+  # bedrock master config, local config
+  my ($dest_config, $src_config) = @_;
+
+  $r->log->debug( sprintf("merging configs:\n%s\n...\n%s\n",
+			  Bedrock::Dump::compact($dest_config),
+			  Bedrock::Dump::compact($src_config)
+			  )
+		  );
+
+  # merge source-config with dest-config (override)
+  map { $dest_config->{$_} = $src_config->{$_} unless $_ eq 'MODULES'; } keys %$src_config;
+
+  # merge modules
+  merge_modules($r, $dest_config, $src_config);
+
+  $dest_config;
+}
+
+# config( apache-request, uri-dir )
 sub config {
+  my $r = shift;
   my $dir = shift;
 
   $dir =~ s!/$!!;
 
-  # Bedrock 2 wants the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH} it can be overridden or merged with local
-  # configuration files.  To override the master, add this to the master tagx.xml file
+  # Bedrock 2 wants the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH}
+  # it can be overridden or merged with local configuration files.  To
+  # override the master, add this to the master tagx.xml file
   #
   #  <scalar name="REPLACE_CONFIG">yes</scalar>
   #
@@ -182,22 +218,30 @@ sub config {
   };
 
   if ( $@ ) {
-    warn "Problem reading ". $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml";
-    $conf = { REPLACE_CONFIG => 'yes' };
+    $r->log->warn("Problem reading ". $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml");
   }
   
   if (-r $ENV{CONFIG_PATH} . '/tagx.xml') {
-    if ( $conf->{REPLACE_CONFIG} =~/^y/i )  {
-      warn $ENV{CONFIG_PATH} . '/tagx.xml replaces system '. $ENV{BEDROCK_CONFIG_PATH} . '/tagx.xml.';
+    if ( ! $conf || $conf->{REPLACE_CONFIG} =~/^y/i )  {
+
+      $r->log->warn(sprintf("%s/tagx.xml replaces system %s/tagx.xml.", 
+			    $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH})
+		    );
+
       $conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
     }
     else {
       my $local_conf =  Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
-      $conf = ($local_conf->{REPLACE_CONFIG} =~/^y/i) ? $local_conf : merge_config($conf, $local_conf);
+      $conf = ($local_conf->{REPLACE_CONFIG} =~/^y/i) ? $local_conf : merge_config($r, $conf, $local_conf);
     }
   }
 
-  die "No tagx.xml found at BEDROCK_CONFIG_PATH or CONFIG_PATH" unless $conf;
+  $r->log->debug("config: ".Bedrock::Dump::compact( $conf ));
+
+  die sprintf("No or empty 'tagx.xml' found.\n\nBEDROCK_CONFIG_PATH: [%s]\nCONFIG_PATH: [%s]\n",
+	      $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}
+	     )
+    unless $conf && keys %$conf;
 
   # Look for auxillary application configurations and merge with (or replace)  master
   
@@ -214,7 +258,7 @@ sub config {
     
     # Look up the app config, based on directory of current request
     my $app_conf = $dir_conf->{$dir} || $dir_conf->{$dir . '/'};
-    $conf = merge_config($conf, $app_conf);
+    $conf = merge_config($r, $conf, $app_conf);
   }
   
   # look for more config files to merge
@@ -224,8 +268,8 @@ sub config {
     opendir CONFIG_FILES, "$path";
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/ && $file !~/^(tagx|tagx_apps)\.xml$/;
-      warn "Loading $file...";
-      $conf = merge_config( $conf, Bedrock::Config->newFromXML( $path . '/' . $file ) );
+      $r->log->warn("Loading configuration file: $file");
+      $conf = merge_config( $r, $conf, Bedrock::Config->newFromXML( $path . '/' . $file ) );
     }
     closedir CONFIG_FILES;
   }
@@ -237,8 +281,9 @@ sub config {
     opendir CONFIG_FILES, "$path";
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/;
-      warn "Loading $file...";
-      push @{$conf->{MODULES}}, Bedrock::Config->newFromXML( $path . '/' . $file );
+      $r->log->warn("Loading configuration file: $file");
+      merge_modules($r, $conf, { MODULES => [ Bedrock::Config->newFromXML( $path . '/' . $file )] } );
+      $r->log->debug(sprintf("[Apache::Bedrock] Directory requested: [%s]", $r->filename));
     }
     closedir CONFIG_FILES;
   }
@@ -481,7 +526,28 @@ sub handler {
   # Parse for the URI components
   my ($uri_name, $uri_dir) = &fileparse( $r->uri );
 
-  my $conf = &config( $uri_dir );
+  my $conf;
+  eval {
+    $conf = &config( $r, $uri_dir );
+  };
+
+  if ( $@ ) {
+    &error($r, "[Apache Bedrock] Could not read config file.");
+print <<eot;
+Content-type: text/html
+
+<html>
+<head>
+<title>Bedrock Configuration Error</title>
+</head>
+<body>
+<div style="color:red;">An error was encountered while trying to read Bedrock's configuration file:</div>
+<pre>$@</pre>
+</body>
+</html>
+eot
+    return OK;
+  }
 
   $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
 
@@ -799,7 +865,7 @@ eot
     my $page_def = $controller->{pages}->{$page};
  
     unless ($page_def) {
-      $r->warn ("[Apache Bedrock] No Bedrock framework definition for [$page] using defaults...");
+      $r->log->warn ("[Apache Bedrock] No Bedrock framework definition for [$page] using defaults...");
       $html = sprintf("<html>\n<body>\n<b>Bedrock framework: </b>Page Under Construction - no controller for '%s'</b></body></html>", $page);
     } else {
       $html .= "<html>\n".build_head_section($controller, $page);
@@ -970,6 +1036,14 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.33  2011/03/25 17:15:29  eutl420
+# - create method merge_modules() which does a true merge or the modules instead
+#   of just replacing or appending
+# - die if the tagx.xml file is empty
+# - call merge_modules() when merging configs from config.d/startup directory
+# - output error page when config problem instead of just logging message and
+#   issuing a status 500
+#
 # Revision 1.32  2011/01/12 19:15:50  eutl420
 # - use exact regexp to see if trying to reload tagx.xml
 #
