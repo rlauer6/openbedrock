@@ -27,13 +27,12 @@ package TagX::TAG::NoBody::Var;
 
 use strict;
 
-BEGIN
-{
+BEGIN {
     use Exporter ();
     use vars	qw ($VERSION @ISA);
-    $VERSION    = 1.13;
+    $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r if @r};
     @ISA	= qw (Exporter);
-}
+  }
 
 use TagX::Log 1.01;
 use Bedrock::Text::URLEncode;
@@ -45,97 +44,212 @@ use XML::Simple;
 
 @ISA = qw (TagX::TAG::NoBody);
 
+sub create_label {
+  my $attributes = shift;
+  my $options = shift; 
+
+  my $label_element;
+
+  my $label = delete $attributes->{'label'};
+
+  unless ( exists $options->{'no_style'} ) {
+    my @style =  split ";", $attributes->{'style'};
+    push @style, 'vertical-align:middle;';
+    $attributes->{'style'} =  join(';', @style);
+  }
+
+  if ( $attributes->{'id'} && $label ) {
+    return create_xhtml_element('label', 
+				$label,
+				"for", $attributes->{'id'}
+			       );
+  }
+
+  # auto labeling...
+  return if (
+	     exists $options->{'no-label'} ||
+	     exists $options->{'button'} ||
+	     exists $options->{'submit'}
+	    );
+
+  if ( (exists $options->{'checkbox'}) || (exists $options->{'radio'}) ) {
+    return create_xhtml_element('label', 
+				$attributes->{'value'} . '&nbsp;',
+				"for", $attributes->{'id'}
+			       );
+    
+  }
+  else {
+    return create_xhtml_element('label', 
+				$attributes->{'name'} . '&nbsp;',
+				"for", $attributes->{'id'}
+			       );
+  }
+}
+
+sub create_widget_registry {
+  my $context = shift;
+
+  $context->{'__widgets'} = {} unless exists $context->{'__widgets'};
+  return  $context->{'__widgets'};
+}
+
+sub set_last_widget {
+  my ($widgets, $attributes, $type) = @_;
+  my $attr = {};
+
+  map { $attr->{$_} = $attributes->{$_} } keys %$attributes; 
+  $attr->{'type'} = $type;
+
+  $widgets->{'__last_widget'} = $attr;
+
+  $widgets->{'__last_widget_name'} = $attr->{'name'};
+}
+
+sub get_last_widget_name {
+  my $widgets = shift;
+
+  return $widgets->{'__last_widget'}->{'name'};
+}
+
+sub get_last_widget_type {
+  my $widgets = shift;
+
+  return $widgets->{'__last_widget'}->{'type'};
+}
+
+sub get_last_widget_id {
+  my $widgets = shift;
+
+  return $widgets->{'__last_widget'}->{'id'};
+}
+
+sub get_next_widget_id {
+  my $widgets = shift;
+  my $type = shift;
+
+  $widgets->{$type}->{'__id'} = 0 unless exists $widgets->{$type}->{'__id'};
+  $widgets->{$type}->{'__id'}++;
+
+  $widgets->{$type}->{'__last_widget_id'} = $type . '_' . $widgets->{$type}->{'__id'};
+
+  $widgets->{$type}->{'__last_widget_id'};
+}
+
+
+sub register_widget {
+  my ($widgets, $type, $attributes)= @_;
+
+  die "register_widget: \$attributes must be HASH"
+    unless UNIVERSAL::isa( $attributes, 'HASH');
+  
+  $widgets->{$type} = {} unless exists $widgets->{$type};
+
+  set_last_widget( $widgets, $attributes, $type );
+
+  return undef if $attributes->{'id'};
+
+  $attributes = {} unless ref( $attributes );
+  $attributes->{'id'} = get_next_widget_id($widgets, $type);
+
+  if ($type =~/(button|checkbox|file|radio|select|select-group|submit|text|textarea)/ ) {
+    $attributes->{'name'} = $attributes->{'id'} unless $attributes->{'name'};
+  }
+
+  set_last_widget( $widgets, $attributes, $type );
+
+  return $attributes->{'id'};
+}
+
+sub is_form_widget {
+  my $options = shift;
+
+  my $tag_type;
+
+  my @form_elements = qw(button checkbox file radio select select-group text textarea);
+
+  ($tag_type) = map { exists $options->{$_} ? $_ : () } @form_elements;
+
+  return $tag_type;
+}
+
 sub finalize
-{
+  {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('name=s'	=> undef,
-		   'urlencode'	=> undef,
-		   'htmlencode'	=> undef,
-		   'format=s'	=> undef,
-		   'decode=s'	=> undef,
-		   'toggle=s'	=> undef,
-		   'default=s'	=> undef,
-		   'table=s'    => undef,
-                   'ul=s'       => undef,
-		   'div=s'      => undef,
-		   'radio=s'    => undef,
-		   'checkbox=s' => undef,
-                   'span=s'     => undef,
-                   'select=s'   => undef,
-                   'select-group=s' => undef,
-		   'columns=s'  => undef,
-                   'textarea=s' => undef,
-                   'json'       => undef,
-		   'xml'        => undef
+
+    my %options = (
+		   'address=s'      => undef,
+		   'anchor=s'       => undef,
+		   'blockquote=s'   => undef,
+		   'button=s'       => undef,
+		   'checkbox=s'     => undef,
+		   'code=s'         => undef,
+		   'columns=s'      => undef,
+		   'decode=s'	    => undef,
+		   'default=s'	    => undef,
+		   'div=s'          => undef,
+		   'file=s'         => undef,
+		   'format=s'	    => undef,
+		   'group'          => undef,
+ 		   'htmlencode'	    => undef,
+		   'img=s'          => undef,
+		   'json'           => undef,
+		   'name=s'	    => undef,
+		   'no-style'       => undef,
+		   'no-handler'     => undef,
+		   'no-label'       => undef,
+		   'ol=s'           => undef,
+		   'p=s'            => undef,
+		   'pre=s'          => undef,
+		   'radio=s'        => undef,
+		   'span=s'         => undef,
+		   'submit=s'       => undef,
+		   'select=s'       => undef,
+		   'select-group=s' => undef,
+		   'table=s'        => undef,
+		   'textarea=s'     => undef,
+		   'text=s'         => undef,
+	           'toggle=s'	    => undef,
+		   'ul=s'           => undef,
+		   'urlencode'	    => undef,
+		   'xml'            => undef
 		  );
 
     my $verbose = $self->verbose;
+
+    &log_message($self, 'context: ' . Bedrock::Dump::compact(\@context)) if $verbose;
+
     my @argv = $self->parse_options (\%options, @context);
 
-    $self->dump_options( \%options ) if $verbose;
+    $self->dump_options( \%options, @argv ) if $verbose;
+
+    # create a widget registry
+    my $widgets = create_widget_registry( $context[0] );
 
     my $value;
-    if ( exists $options{'name'} ) {
-	$value = $options{'name'};
-    } elsif ( @argv == 0 ) {
-      # Oh Brother! Good thing Jay isn't around to see this hack...
-      # a) bedrock's parser is junk, ask Jay, he'll tell you.
-      # b) unfortunately, you cannot have an option that SOMETIMES takes an argument
-      # c) this is a guess as to what probably happened...so we try to make it right
-      # d) so we take the arguments value if it makes sense and set the option value to undef,
-      #    the option is still in effect, but it has not JSON attributes
-      if (defined $options{'table'} && (ref($options{'table'}) =~/array/i) ) {
-	$value = $options{'table'};
-	$options{'table'} = undef;
-      }
-      elsif (defined $options{'div'} && ! ref($options{'div'}) ) {
-	  $value = $options{'div'};
-	  $options{'div'} = undef;
-	}
-      elsif (defined $options{'span'} && ! ref($options{'span'}) ) {
-	  $value = $options{'span'};
-	  $options{'span'} = undef;
-	}
-      elsif (defined $options{'ul'} && ref($options{'ul'}) ) {
-	  $value = $options{'ul'};
-	  $options{'ul'} = undef;
-	}
-      elsif ( defined $options{'radio'} ) {
-  	  die "usage: <var --radio=json-string expression>";
-	}
-      elsif (defined $options{'checkbox'} && ref($options{'radio'}) ) {
-  	  die "usage: <var --checkbox=json-string expression|array>";
-	}
-      elsif (defined $options{'select'} && ref($options{'select'}) ) {
-	  $value = $options{'select'};
-	  $options{'select'} = undef;
-	}
-      elsif (defined $options{'select-group'} && ref($options{'select-group'}) ) {
-	  $value = $options{'select-group'};
-	  $options{'select-group'} = undef;
-	}
-      else {
-	&log_message( $self, "No variable specified" );
-	return;
-      }
-    } else {
-	$value = shift @argv;
+    my $tag_type;
+
+    if ( @argv == 0 ) {
+      &log_message( $self, "warning: No variable specified." );
+      &log_message ( $self, "Value not defined, default is <$options{'default'}>" )
+	if $verbose && exists $options{'default'};
+      $value = $options{'default'} 
+	if exists $options{'default'};
+    }
+    else {
+      $value = shift @argv;
     }
 
-    &log_message( $self, "Value = <$value>" ) if $verbose;
+    &log_message( $self, "Value: <$value>" ) 
+      if $verbose;
 
-    unless ( defined ( $value ) ) {
-	&log_message ( $self, "Value not defined, default is <$options{'default'}>" )
-	    if $verbose;
-	$value = $options{'default'} if exists $options{'default'};
-    }
-
-    return unless defined( $value );
-
-    if (defined($options{'xml'})) {
+    if ( defined($options{'xml'}) ) {
       my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-      my $options = $config->{XML}->{out}->devolve;
+      die "no XML options defined in tagx.xml\n"
+	unless exists $config->{'XML'};
+
+      my $options = $config->{'XML'}->{'out'}->devolve;
       &log_message($self, "XML:out options " . Bedrock::Dump::compact($options)) 
 	if $verbose;
 
@@ -145,195 +259,456 @@ sub finalize
 
       $value = XMLout($value, %{$options});
     }
-
-
-    if ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
-	&Text::URLEncode::encode( $value );
-	&log_message ( $self, "URLEncoded to <$value>" ) if $verbose;
+    elsif ( defined($options{'format'}) ) {
+      $value = sprintf $options{'format'}, $value;
     }
-
-    if ( defined($options{'format'}) ) {
-	$value = sprintf $options{'format'}, $value;
-    }
-
-    if ( defined($options{'decode'}) ) {
+    elsif ( defined($options{'decode'}) ) {
       &log_message($self, "decode using ".$options{'decode'}) if $verbose;
       my $obj = Bedrock::JSON::decode($options{'decode'});
       if (exists $obj->{$value}) {
 	$value = $obj->{$value};
-      }
-      elsif (exists $obj->{default}) {
+      } elsif (exists $obj->{default}) {
 	$value = $obj->{default};
-      }
-      else {
+      } else {
 	$value = undef;
       }
     }
-
-    if ( defined($options{'toggle'}) ) {
-        my ($a,$b) = split /\s*,\s*/, $options{'toggle'};
-	$value = ($value eq $a) ? $b : $a;
+    elsif ( defined($options{'toggle'}) ) {
+      my ($a,$b) = split /\s*,\s*/, $options{'toggle'};
+      $value = ($value eq $a) ? $b : $a;
     }
-
-    if (exists $options{'div'} ) {
-      my $attributes = get_json_attributes('div', \%options);
-      $value = create_xhtml_element('div', $value, %{$attributes});
+    elsif ( exists $options{'anchor'} ) {
+      my $attributes = get_json_attributes('anchor', \%options);
+      register_widget($widgets, 'anchor', $attributes);
+      unless ( $attributes->{'href'} || @argv == 0) {
+	$attributes->{'href'} = shift @argv;
+      }
+      $value = create_xhtml_element('a', $value, %{$attributes});
     }
-
-
-    if (exists $options{'radio'} ) {
-      my $attributes = get_json_attributes('radio', \%options);
-
-      die q/radio widgets must have 'name' and 'value' keys defined. --radio='{name :"foo", value : 1}'/
-	unless (exists $attributes->{name} && exists $attributes->{value});
-
-      $attributes->{checked} = 'checked' if $value eq $attributes->{value};
-      $attributes->{type} = 'radio';
-
-# vertically align radio buttons
-#    <label for="fruits-1">Banana &nbsp;<var --radio='{name : "fruits", value : "banana", id : "fruits_1", style : "vertical-align:middle;"}' $foo></label>
-
-      $value = create_xhtml_element('input', undef, %{$attributes});
+    elsif ( exists $options{'img'} ) {
+      my $attributes = get_json_attributes('img', \%options);
+      register_widget($widgets, 'img', $attributes);
+      unless ( $attributes->{'src'} ) {
+	$attributes->{'src'} = $value;
+      }
+      $value = create_xhtml_element('img', undef, %{$attributes});
     }
+    elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(address blockquote code div  p pre span textarea) ) {
+      my $attributes = get_json_attributes($tag_type, \%options);
+      register_widget($widgets, $tag_type, $attributes);
+      $value = create_xhtml_element($tag_type, $value, %{$attributes});
+    }
+    elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(radio checkbox) ) {
+      my $attributes = get_json_attributes($tag_type, \%options);
 
-    if (exists $options{'checkbox'} ) {
+      &log_message($self, Bedrock::Dump::compact( [$value, scalar(@argv), $attributes] ) )
+	if $verbose;
 
-      my $attributes = get_json_attributes('checkbox', \%options);
-      if ( ref($value) =~/array/i ) {
-	my $this = $attributes->{value};
+      if ( (exists $options{'group'}) && ! $attributes->{'name'}) {
+	&log_message($self, "warning: --group only valid for same type of form elements\n")
+	  unless $tag_type eq get_last_widget_type( $widgets );
 
-	$attributes->{checked} = 'checked' 
-	  if grep(/$this/, @{$value});
+	$attributes->{'name'} = get_last_widget_name( $widgets )
+	  if $tag_type eq get_last_widget_type( $widgets );
+
+	&log_message($self, 'group name set to: ' . $attributes->{'name'} . "\n") if $verbose;
+      }
+
+      # <var --radio/checkbox value default-value name label>
+      if ( @argv ) {
+	if ( exists $attributes->{'value'} ) {
+	  # ignore already captured $value
+	  $value = shift @argv;
+	}
+	else {
+	  $attributes->{'value'} = $value;
+	  $value = shift @argv;
+	}
+	
+	
+	if ( $attributes->{'name'} ) {
+	  shift @argv;
+	}
+	else {
+	  $attributes->{'name'} = shift @argv;
+	}
+	$attributes->{'label'} = shift @argv unless $attributes->{'label'};
+      }
+      elsif ( defined $value ) {
+	$attributes->{'value'} = $value;
+	$value = undef;
+      }
+
+      if ( exists $options{'group'} && ! $attributes->{'name'} ) {
+	&log_message($self, "$tag_type will have a the group's name " . get_last_widget_id( $widgets ));
+      }
+
+      register_widget($widgets, $tag_type, $attributes);
+
+      if ( UNIVERSAL::isa($value, 'HASH') ) {
+	$value = $value->{$attributes->{'name'}};
+      }
+
+      &log_message($self, "attributes:\n" . Bedrock::Dump::compact($attributes)) 
+	if $verbose;
+
+      die "usage: <var --$tag_type value default-value name label> or <var --$tag_type=JSON-STRING \$input.name>\n"
+	unless ( defined $attributes->{'name'} && exists $attributes->{'value'} );
+
+      if ( UNIVERSAL::isa($value, 'HASH') ) {
+	$value = $value->{$attributes->{'name'}};
+      }
+
+      if ( UNIVERSAL::isa($value, 'ARRAY')) {
+	$attributes->{checked} = 'checked' if (grep { /$attributes->{value}/ } @$value);
       }
       else {
 	$attributes->{checked} = 'checked' if $value eq $attributes->{value};
       }
 
-      $attributes->{type} = 'checkbox';
-#
-## vertically align radio buttons
-##    <label for="fruits-1">Banana &nbsp;<var --radio='{name : "fruits", value : "banana", id : "fruits_1", style : "vertical-align:middle;"}' $foo></label>
+      $attributes->{type} = $tag_type;
+
+      &log_message($self, sprintf("[%s]\n[%s]\n%s\n",
+				  Bedrock::Dump::compact( $value ),
+				  Bedrock::Dump::compact( $attributes->{value}), 
+				  Bedrock::Dump::compact( $attributes)
+				 )
+		   ) if $verbose;
 
       $value = create_xhtml_element('input', undef, %{$attributes});
+      $value .= create_label($attributes, \%options);
     }
-
-    if (defined($options{'span'} ) ) {
-      my $attributes = get_json_attributes('span', \%options);
-      $value = create_xhtml_element('span', $value, %{$attributes});
-    }
-
-    if (defined($options{'textarea'} ) ) {
-      my $attributes = get_json_attributes('textarea', \%options);
-      $value = create_xhtml_element('textarea', $value, %{$attributes});
-    }
-
     # { 1: "that", 2: "this"}
     # [ { 1: "this"}, {2: "that"}]
     # [ 
     #   { text: "this", attributes: {value : 1}}, 
     #   { text: "that", attributes: {value : 2}}
     # ]
-  
-    if (exists $options{'select'} ) {
+    elsif (exists $options{'select'} ) {
       my $attributes = get_json_attributes('select', \%options);
-      my @options;
-      if (ref($value) =~/(object|hash)/i) {
-        @options = map { { attributes => {value => $_}, text => $value->{$_} }; } keys %$value;
+
+      my $cur_selected = shift @argv;
+
+      if ( @argv ) {
+	$attributes->{'name'} = shift @argv unless exists $attributes->{'name'};
+	$attributes->{'label'} = shift @argv unless exists $attributes->{'label'};
       }
-      elsif (ref($value) =~/array/i) {
-	foreach (@$value) {
-	  if (exists $_->{text} && exists $_->{attributes}) {
-	    push @options, $_;
+
+      &log_message($self, "attributes: ". Bedrock::Dump::compact($attributes)) if $verbose;
+      register_widget($widgets, 'select', $attributes);
+
+      if ( ! ref($value) ) { # <var --select '["this",1,"that",2]'
+
+	eval {
+	  $value = Bedrock::JSON::decode( $value );
+	};
+
+	die "possibly an invalid JSON string: " . $value . " - $@\n"
+	  if $@;
+
+	die "scalar argument to --select must be JSON string that evaluates to an array\n"
+	  unless UNIVERSAL::isa( $value, 'ARRAY');
+      }
+
+      if ( UNIVERSAL::isa( $cur_selected, 'HASH') ) {
+	$cur_selected = $cur_selected->{$attributes->{'name'}};
+      }
+
+      my @options;
+      if ( UNIVERSAL::isa( $value, 'ARRAY') ) {
+	my @rows = @$value;
+	while ( @rows ) {
+	  my $text = shift @rows;
+	  my $key = shift @rows;
+
+	  my $item = {};
+
+	  if ( UNIVERSAL::isa( $key, 'HASH') ) {
+	    if ( exists $key->{'value'} && ! ref($text) ) {
+	      $item = { attributes => $key,
+			text       => $text
+		      };
+	    }
+	    else {
+	      die "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
+	    }
 	  }
 	  else {
-	    my $key = (keys %$_)[0]; # take first key we find
-	    push @options, {attributes  => {value => $key}, text => $_->{$key} };
+	    $item = { attributes => { 
+				     value => $key
+				    },
+		      text       => $text
+		    };
 	  }
+
+	  # set selected if provided
+	  if ( defined $cur_selected ) {
+	    unless ( UNIVERSAL::isa( $cur_selected, 'ARRAY') ) {
+	      $item->{'attributes'}->{'selected'} = 'selected' 
+		if $cur_selected eq $item->{'attributes'}->{'value'};
+	    }
+	    else { # multiple select box
+	      $item->{'attributes'}->{'selected'} = 'selected'
+		if grep { /$item->{'attributes'}->{'value'}/ } @$cur_selected
+	      }
+	  }
+
+	  push @options, $item
 	}
       }
       else {
-	die "Use array or hash to describe select options.";
+	die "usage: <var --select=attributes value default-value name label\n";
       }
 
-      $value = create_xhtml_element('select', join('', map { create_xhtml_element('option', $_->{text}, %{$_->{attributes}}) } @options), %$attributes);
+      &log_message($self, Bedrock::Dump::compact( @options ));
+
+      $value = create_label($attributes, \%options);
+      $value .= create_xhtml_element('select', 
+				    join('', map { create_xhtml_element(
+									'option', 
+									$_->{text}, 
+									%{$_->{attributes}}) 
+						 } @options), 
+				     %$attributes
+				   );
     }
 
     # [ { label: "foo",  group : [ { attributes : {value : 1}, text: "this"}, { attributes: { value: 2, selected: "selected"}, text: "that"}] }
     #   { label: "foo2", group : [ { attributes : {value : 3}, text: "foo this"}, { attributes: { value: 4}, text: "foo that"}] }
     # ]
-    if (exists $options{'select-group'} ) {
-      my $attributes = get_json_attributes('select', \%options);
-      if (ref($value) =~/array/i) {
-	$value = create_xhtml_element('select', 
-				      eval {
-					my $text;
-					foreach my $group (@$value) {
-					  $text .= create_xhtml_element('optgroup', 
-									join('',map { create_xhtml_element('option', $_->{text}, %{$_->{attributes}}) } @{$group->{group}}),
-									(label => $group->{label})
-								       );
-					}
-					$text;
+    elsif (exists $options{'select-group'} ) {
+      my $attributes = get_json_attributes('select-group', \%options);
+
+      my $cur_selected = shift @argv;
+
+      if ( @argv ) {
+	$attributes->{'name'} = shift @argv unless exists $attributes->{'name'};
+	$attributes->{'label'} = shift @argv unless exists $attributes->{'label'};
+      }
+
+      &log_message($self, "attributes: ". Bedrock::Dump::compact($attributes)) if $verbose;
+      register_widget($widgets, 'select-group', $attributes);
+
+      # <var --select-group '{ menu1 : ["this",1,"that",2], menu2 : [ "foo", 3, "bar", 4] }'
+      if ( ! ref($value) ) { 
+
+	eval {
+	  $value = Bedrock::JSON::decode( $value );
+	};
+
+	die "possibly an invalid JSON string: " . $value . " - $@\n"
+	  if $@;
+
+	die "scalar argument to --select-group must be JSON string that evaluates to a hash\n"
+	  unless UNIVERSAL::isa( $value, 'HASH');
+      }
+
+
+    # { "foo"  : [ {value : 1}, "this",     {value: 2}, "that"]
+    #   "foo2" : [ {value : 3}, "foo this", {value: 4}, "foo that"]
+    # }
+    # 
+      my @opt_group;
+
+      if ( UNIVERSAL::isa( $cur_selected, 'HASH') ) {
+	$cur_selected = $cur_selected->{$attributes->{'name'}};
+      }
+
+      if ( UNIVERSAL::isa( $value, 'HASH') ) {
+	my @labels = keys %$value;
+	my @menus  = values %$value;
+
+	foreach my $group ( @menus ) {
+	  my @options;
+	  my @rows = @$group;
+	  my $this_group = { label => shift @labels };
+
+	  while ( @rows ) {
+	    my $text = shift @rows;
+	    my $key = shift @rows;
+	    my $item = {};
+
+	    if ( UNIVERSAL::isa( $key, 'HASH') ) {
+	      if ( exists $key->{'value'} && ! ref($text) ) {
+		$item = { attributes => $key,
+			  text       => $text,
+			};
+	      }
+	      else {
+		die "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
+	      }
+	    }
+	    else {
+	      $item = { attributes => { 
+				       value => $key
 				      },
-				      %$attributes
-				     );
-      }
-      else {
-	die "--select-group requires an array of hashes.";
-      }
-    }
+			text       => $text,
+		      };
+	  }
+	    
+	    # set selected if provided
+	    if ( defined $cur_selected ) {
+	      unless ( UNIVERSAL::isa( $cur_selected, 'ARRAY') ) {
+		$item->{'attributes'}->{'selected'} = 'selected' 
+		  if $cur_selected eq $item->{'attributes'}->{'value'};
+	      }
+	      else { # multiple select box
+		$item->{'attributes'}->{'selected'} = 'selected'
+		  if grep { /$item->{'attributes'}->{'value'}/ } @$cur_selected
+		}
+	    }
+	    push @options, $item
+	  }
 
-
-    if (exists $options{'ul'} ) {
-      die "--ul can only be used on arrays."
-	unless ref($value) =~/array/i;
-      my $attributes = get_json_attributes('ul', \%options);
-      $value = create_xhtml_element('ul',join('', map { create_xhtml_element('li', $_) } @$value),  %{$attributes});
-    }
-
-    if (defined($options{'json'} ) ) {
-      if (ref($value)) {
-	$value = Bedrock::JSON::encode($value);
-      }
-      else {
-	die "Can't use --json on a scalar object."
-      }
-    }
-    
-    if ( (exists $options{'table'}) && ref($value) =~/array/i ) {
-
-      my $column_attributes = {};
-      my @column_headers;
-      if (defined $options{columns} && $options{columns} =~/^\s*[\[]/) {
-	@column_headers = @{Bedrock::JSON::decode($options{columns})};
-	if (! is_simple_object(\@column_headers)) {
-	  $column_attributes = $column_headers[1];
-	  @column_headers = @{$column_headers[0]};
+	  $this_group->{'group'} = \@options;
+	  push @opt_group, $this_group;
 	}
       }
       else {
-	@column_headers = (ref($value->[0]) =~/(hash|object)/i) ? keys %{$value->[0]} : ();
+	die "usage: <var --select=attributes value default-value name label\n";
       }
 
-      &log_message($self, sprintf("ref(0):%s Column headers are...%s" , ref($value->[0]),  join("|", @column_headers)) ) if $verbose;
+      &log_message($self, Bedrock::Dump::compact( @opt_group )) if $verbose;
+
+      $value = create_label($attributes, \%options);
+      $value = $value . create_xhtml_element('select', 
+					     eval {
+					       my $text;
+					       foreach my $group ( @opt_group ) {
+						 $text .= create_xhtml_element('optgroup', 
+									       join('', map { create_xhtml_element('option', $_->{text}, %{$_->{attributes}}) } @{$group->{group}}),
+									       (label => $group->{label})
+									      );
+					       }
+					       $text;
+					     },
+					     %$attributes
+					    );
+      
+    }
+    elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(button submit text file) ) {
+
+      my $attributes = get_json_attributes( $tag_type, \%options);
+
+      if ( @argv ) {
+	$attributes->{'value'} = $value;
+	if ( exists $attributes->{'name'} ) {
+	  shift @argv;
+	}
+	else {
+	  $attributes->{'name'} = shift @argv;
+	}
+	
+	$attributes->{'label'} = shift @argv unless $attributes->{'label'};
+      }
+      elsif ( UNIVERSAL::isa($value, 'ARRAY') ) {
+	die "usage: <var --$tag_type\[=json-attributes] value name label>\n";
+      }
+      
+      unless ( $tag_type eq 'text' || $attributes->{'value'} ) {
+	$attributes->{'value'} = { submit => 'Submit',
+				   button => 'Button',
+				   text   => ''
+				 }->{$tag_type};
+      }
+      
+      if ( $tag_type eq 'button' && 
+	   (! exists $options{'no-handler'}) &&
+	   (! (exists $attributes->{'onClick'} || exists $attributes->{'onclick'})) ) {
+	$attributes->{'onClick'} = 'javascript: this.form.submit();'
+      }
+
+      $attributes->{'type'} = $tag_type;
+
+      register_widget($widgets, $tag_type, $attributes);
+
+      if ( UNIVERSAL::isa( $attributes->{'value'}, 'HASH') ) {
+	$attributes->{'value'} = $attributes->{'value'}->{$attributes->{'name'}};
+      }
+
+      $value = create_label($attributes, \%options);
+      $value .= create_xhtml_element('input', undef, %$attributes);
+    }
+    elsif ( ($tag_type) = map { exists $options{$_} ? $_ : ()} qw(ol ul) ) {
+      my $attributes = get_json_attributes($tag_type, \%options);
+      register_widget($widgets, $tag_type, $attributes);
+	     
+      # allow <var --ul aa bb cc>
+      $value = UNIVERSAL::isa($value, 'ARRAY') ? $value : [$value, @argv];
+      $value = create_xhtml_element($tag_type, join('', map { create_xhtml_element('li', $_) } @$value),  %{$attributes});
+    }
+    elsif ( defined($options{'json'} ) ) {
+      if ( ref($value) ) {
+	$value = Bedrock::JSON::encode($value);
+      } else {
+	die "Can't use --json on a scalar object."
+      }
+    }
+    # <var --columns= --table array>
+    elsif ( (exists $options{'table'}) && UNIVERSAL::isa( $value, 'ARRAY') ) {
+
+      &log_message($self, "table: " . Bedrock::Dump::compact( $value ) ) if $verbose;
+
+      my $column_attributes = {};
+      my $header_attributes = {};
+      my @column_headers;
+
+      # allow a JSON string, an array, or a comma or pipe delimited string
+      if ( defined $options{'columns'} ) {
+	if ( $options{'columns'} =~/^\s*[\[]/) {
+	  eval {
+	    @column_headers = @{Bedrock::JSON::decode($options{'columns'})};
+	  };
+	  
+	  die "possible invalid JSON string: $@\n"
+	    if $@;
+	}
+	elsif ( UNIVERSAL::isa($options{'columns'}, 'ARRAY') ) {
+	  @column_headers = @{$options{'columns'}};
+	}
+	elsif (! ref( $options{'columns'}) ) {
+	  @column_headers = split /[,|]+/, $options{'columns'};
+	}
+
+	unless ( @column_headers ) {
+	  die "invalid argument for --columns\n";
+	}
+	# --columns='["foo", "bar", "baz"]'
+	# --columns='[["foo", "bar", "baz"], {valign:"top", align:"right"}]'
+
+	if (! is_simple_object(\@column_headers)) {
+	  $column_attributes = $column_headers[1];
+	  $header_attributes = $column_headers[2];
+	  @column_headers = @{$column_headers[0]};
+	}
+      } else {
+	@column_headers = UNIVERSAL::isa($value->[0], 'HASH') ? keys %{$value->[0]} : ();
+      }
+
+      &log_message($self, 
+		   sprintf("ref(0):%s Column headers are...%s" , 
+			   ref( $value->[0] ),  
+			   join("|", @column_headers)
+			  ) 
+		  ) if $verbose;
 
       my $table_attributes = get_json_attributes('table', \%options);
+      register_widget($widgets, 'table', $table_attributes);
       &log_message($self, Bedrock::Dump::compact($value, $table_attributes)) if $verbose;
 
       $value = create_xhtml_element('table', 
 				    eval {
-				      if (@column_headers) {
+				      if ( @column_headers ) {
 					create_xhtml_element('tr', 
 							     eval {
 							       my $row;
 							       foreach (@column_headers) {
-								 $row .= create_xhtml_element('th', $_);
+								 $row .= create_xhtml_element('th', $_, %{$header_attributes});
 							       }
 							       $row;
 							     }
 							    );
-				      }
-				      else {
+				      } else {
 					undef;
 				      }
 				    } . 
@@ -368,11 +743,9 @@ sub finalize
       
       &log_message($self, "error: ". $@) if $@;
     }
-
-    if (UNIVERSAL::isa($value, 'ARRAY')) {
+    elsif ( UNIVERSAL::isa($value, 'ARRAY') ) {
       $value = join('', @$value);
-    }
-    elsif (UNIVERSAL::isa($value, 'Tie::Scalar')) {
+    } elsif (UNIVERSAL::isa($value, 'Tie::Scalar')) {
       $value = $$value;
     }
 
@@ -382,40 +755,49 @@ sub finalize
       $value =~ s/\x3e/&gt;/g;
       &log_message ( $self, "HTMLEncoded to <$value>" ) if $verbose;
     }
-        
+    elsif ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
+      &Text::URLEncode::encode( $value );
+      &log_message ( $self, "URLEncoded to <$value>" ) if $verbose;
+    }
+
     $tx->out_handle->print($value);
-}
+  }
 
 sub get_json_attributes {
   my $key = shift;
   my $options = shift;
 
   my $attributes = {};
+  return $attributes unless ( exists $options->{$key} && defined $options->{$key} );
 
-  if ($options->{$key} =~/^\s*[\{]/ ) {
-    $attributes = Bedrock::JSON::decode($options->{$key});
-  }
-  # if it's not a JSON string, then consider it an HTML element ID
-  # <var --ul='foo' $some_array>
-  elsif ($options->{$key}) {
-    $attributes = {id => $options->{$key}};
-  }
+  my $options_val = $options->{$key};
 
+  unless ( ref($options_val) || ($options_val !~/^\s*[\{\[]/ ) ) {
+    eval {
+      $attributes = Bedrock::JSON::decode($options_val);
+    };
+    
+    die "possibly an invalid JSON string: " . $options_val . "\n"
+      if $@;
+  }
+  elsif ( UNIVERSAL::isa($options_val, 'HASH') ) {
+    $attributes = $options_val;
+  }
+  
   $attributes;
 }
 
 sub is_simple_object {
   my $obj = shift;
 
-  if (ref($obj) && ref($obj) =~/array/i) {
-    foreach (@$obj) {
+  if ( ref($obj) && ref($obj) =~/array/i) {
+    foreach ( @$obj ) {
       return 0 if ref($_);
     }
     return 1;
-  }
-  elsif (ref($obj) =~/(object|hash)/i) {
+  } elsif ( ref($obj) =~/(object|hash)/i ) {
     foreach (keys %$obj) {
-      return 0 if ref($obj->{$_});
+      return 0 if ref( $obj->{$_} );
     }
     return 1;
   }
@@ -614,21 +996,10 @@ object.  The jury is still out.  Send your comments to bedrock-dev@cj-mailman.ch
 
 =head1 EXPERIMENTAL OPTIONS
 
+=head2 Translation Options
+
  --decode
  --toggle
- --table
- --ul
- --div
- --span
- --select
- --select-group
- --column
- --textarea
- --radio
- --checkbox
-
-There are some experimental options that may be implemented or
-partially implented.  In fact they may or may not be useful.  YMMV.
 
 =over 5
 
@@ -653,43 +1024,433 @@ Outputs a value based on two alternatives, alternating between the two.
 If C<$foo> = 'a', then Bedrock will output 'b', else if C<$foo> is 'b'
 Bedrock will output 'a'
 
+
 =back
+
+=head2 HTML Widgets
+
+B<The following options are experimental.>
+
+These B<experimental options> represent a set of HTML widget
+constructors.  A "widget" is defined by Bedrock to be a small snippet
+of HTML that provides a standardized way to express an HTML pattern.
+
+It is produced by providing the C<E<lt>varE<gt>> tag with certain
+options and arguments depending upon the widget being
+produced. Widgets for most of the commonly used HTML constructions,
+including form elements are available.
+
+Some of these widgets are self explanatory and obvious, some may seem
+esoteric and may have limited usage for those who prefer clean and
+crisp, self documented HTML pages.  If you like "frameworks" and want
+to standardize your web development, you might find these widgets very
+usef. There are situations where the best approach is to DIY. As
+always YMMV.
+
+In general, the idea is to create an intuitive interface for
+constructing HTML elements.  The widget option (C<--checkbox>, for
+example) will commonly accept an argument that represents the various
+attributes possible for that HTML tag.  For example consider the
+C<E<lt>ulE<gt>> tag:
+
+ <ul style="color:red;margin-top:5px;" id="fruits">
+   <li>Apples</li>
+   <li>Pears</li>
+ </ul>
+
+Here we have two elements being set; C<style> and C<id>.  The Bedrock
+widget equivalent would be:
+
+ <var --ul='{style:"color:red;margin-top:5px", id:"fruits"}' Apple Pears>
+
+Note that the argument to the widget option C<--ul> is a JSON string
+where the hash contains key/value pairs of the C<ul> attributes you
+want to set.  Of course, TIMTOWTDI:
+
+ <hash:ul style color:red;margin-top:5px 
+          id    fruits>
+ <array:fruits Apples Pears>
+
+ <var --ul=$ul $fruits>
+
+As you can see the option argument for C<ul>, like most widget
+options, can be a JSON string or a Bedrock object.
+
+If you do not provide an C<id> attribute then Bedrock will
+automatically create a unique C<id> for each widget it creates.
+
+You can inspect the last widget id created using the variable
+C<$__widgets.__last_widget_id>.
+
+  <var --ul Apples Pears>
+  The id for the the <code>ul</code> was <var $__widgets.__last_widget_id>
+
+Frameworks can be a good thing, but the perl way (and Bedrock's) is
+that I<There Is More Than One To Do IT> (TIMTOWTDI).
+
+=head3 Form Widgets
+
+ --button
+ --checkbox
+ --file
+ --select
+ --select-group
+ --submit
+ --text
+ --textarea
+ --radio
+
+Form widgets that create form elements have a very specific interface
+which creates a flexible but intuituive way to construct HTML forms.
+Whereas the argument to non-form HTML widgets is typically a data
+object that is used in the construction of the widget (e.g. an array
+or scalar), the form widgets have a functional argument syntax.
+The generalized interface is as follows:
+
+For C<checkbox>, C<radio>, C<select>, C<select-group> form elements the generalized form is:
+
+ <var --widget[=attributes] value default-value name label >
+
+For the C<text>, C<textarea>, C<file> form element the generalized form is:
+
+ <var --widget[=attributes] default-value name label >
+
+For the C<submit> and C<button> elements, the generalized form is:
+
+ <var --widget[=attributes] default-value name >
+
+The arguments are described below.
 
 =over 5
 
-B<The following options are HIGHLY experimental...and thus not yet documented!>
+=item attributes
 
-The gist of these experimental options is to help in the construction
-of HTML pages.  Some of these are self explanatory, some are highly
-esoteric.
+This is an optional JSON string that should interpret to a hash
+element. The argument can also be a Bedrock hash object.  The argument
+is used to provide additional attributes to the form element being
+constructed.  Additionally, you can provide the C<name>, C<value> or
+C<label> right hand arguments in this hash.
 
-=item table
+Using a JSON string:
 
-=item ul
+The attributes argument let's you pass a JSON string that
+represents a HASH of attributes to apply to the HTML element.
 
-Try this on an array.
+ <var --text='{label:"Last Name ",size:20,maxlength:40}' $input.text>
 
-=item div
+...would be equivalent to:
 
-Try this on a scalar.
+  <label for="text_1">Last Name </label><input type="text" name="text_1" size="40" maxlength="60" value="<var $input.text_1>">
 
-=item span
+=item value
 
-Try this on a scalar.
+The value of the form element when submitted.  For C<select> and
+C<select-group> widgets the C<value> argument is a more robust data
+structure that describes the select object (it's option values and
+text).  See L<select> and L<select-group> below.
 
-=item select
+=item default-value
 
-=item select-group
+Typically this is the value the C<$input> object has for that form
+element.  You can pass the entire C<$input> object and Bedrock will
+fish for the value in the hash.
 
-=item column
+=item name
 
-Used with the C<--table> option, expects an array object.
+The name of the HTML form element.
 
-=item textarea
+=item label
+
+The text value that should be used to label the form element.  Bedrock
+will automatically add a label element to each form element.  You can
+prevent Bedrock from doing this by including the C<--no-label> option.
+
+  <var --radio "Apple" $input.fruit fruit>
+
+Would result in an HTML construction:
+
+  <input type="radio" value="Apple" name="fruit" id="radio_1"/><label for="radio_1">Apple</label>
+
+If you do not provide a label value, Bedrock will use as the label
+value the widget's C<value> argument for I<checkbox> and I<radios> or
+the form element's C<name> argument for all other form input objects.
+
+=back
+
+The Bedrock widget constructor will provide an C<id> and C<name>
+element if you do not provide these.  You can inspect the value of
+these elements by looking at:
+
+ $__widgets.__last_widget_id
+ $__widgets.__last_widget_name
+
+
+The Bedrock widget constructor will provide intelligent defaults for
+missing parameters and create labels for your form elements.
+
+Create a set of radio buttons:
+
+  <var --radio='{name:"fruit",value:"Apple"}' '' $input.fruit>
+  <var --radio='{name:"fruit",value:"Pear"}'  '' $input.fruit>
+
+For checkboxes and radio buttons if you do not provide a label, the
+label will be taken from the C<value> the radio or checkbox element.
+
+  <var --radio Apple $input.fruit fruit >
+  <var --radio Pear $input.fruit fruit >
+
+You can create checkbox or radio "groups" by using the --group option.
+
+  <var --radio Apples $input.fruit fruit >
+  <foreach Pears Bananas Oranges>
+  <var ---group --radio $_ $input.fruit></foreach>
+
+The element's C<name> for grouped objects will be taken from the most
+recent widget created if one is not provided.  If the widget element being created is
+different than the last widget created and the C<--group> option is
+used, then a new name will be created.  Thus, this can be a valid construction:
+
+  <foreach Apples Pears Bananas Oranges>
+  <var ---group --radio $_ $input.fruit></foreach>
+
+...as long as the last widget constructed was not a radio.
+
+=head4 Form Widget Listing
+
+=item button
+
+Creates a button with a default handler for submitting the form.  The
+argument to the button is the value of the button text.
+
+  <var --button[=attributes] value name>
+
+Example:
+
+  <var --button "Click-Me">
+
+The default handler simply submits the form.
+
+  onClick='javascript: this.form.submit();'
+
+You can turn off the association of a handler with the button by
+either providing your own C<onClick> handler or providing the
+C<--no-handler> option.
+
+  <var --no-handler --button "I'm a Do Nothing Button">
 
 =item checkbox
 
 =item radio
+
+Creates a checkbox or radio element.
+
+  <var --checkbox[=attributes] value default-value name label>
+
+Examples:
+
+  <var --checkbox='{name:"foo", value:1}' $input.foo>
+
+  <var --checkbox foo 1 $input.foo>
+
+  <var --checkbox=$attributes $input.foo>
+
+=item file
+
+Create an upload file form element.
+
+  <var --file[=attributes] default-value name label>
+
+=item select
+
+Create a simple select element.
+
+  <var --select[=attributes] value default-value name label>
+
+C<value> is either a JSON string that evaluates to an array or a Bedrock array.
+
+The array can be a simple array that defines pairs of values that
+represent the option text and the option value or a more complex array
+where the second item in the tuple is a hash that is interpreted to be
+the attributes (including the value of the option) to be applied to
+the option tag.
+
+  <var --select '["this", 1, "that", 2]' $input.foo foo>
+
+  <var --select '["this", {value:1, style:"color:green;"},"that", 2]' $input>
+
+=item select-group
+
+Creates a 'grouped' select box where items are grouped under headings.
+
+  <var --select-group[=attributes] value default-value name label>
+
+C<value> is a JSON string that evaluates to a hash or a Bedrock hash.
+
+The hash keys are the labels used for each menu group, the values are
+arrays as required by the C<--select> widget.
+
+  <var --select-group '{Fruits:["Apple",1,"Pear"],Veggie:["Peas",3,"Carrots",4]}' $input.food food>
+
+The HTML element is constructed using the C<E<lt>optgroupE<gt>> tags.  When rendered groups are
+indented under a label similar to the menus below.
+
+  Fruits
+    Apple
+    Pear
+  Veggies
+    Peas
+    Carrots
+
+=item submit
+
+Creates a submit button.
+
+  <var --submit[=attributes] value name>
+
+=item textarea
+
+Creates a textarea form element.
+
+  <var --textarea[=attributes] default-value name label>
+=item text
+
+
+=item radio
+
+See `checkbox'.
+
+=head3 HTML Block Widgets
+
+ --anchor
+ --address
+ --blockquote
+ --code
+ --div
+ --img
+ --ol
+ --pre
+ --p
+ --span
+ --table
+ --ul
+
+Most of these are probably not terribly useful.  You may find the
+C<ol>, C<ul>, and the C<table> widgets somewhat useful.
+
+=head4 HTML Widget Listing
+
+=over 5
+
+=item address
+
+=item anchor
+
+Create an link object.
+
+  <var --anchor[=attributes] value link>
+
+Example:
+
+  <var --anchor Google http://www.google.com>
+
+=item blockquote
+
+=item code
+
+=item div
+
+=item pre
+
+=item p
+
+=item span
+
+Create a block object.
+
+  <var --div[=attributes] value>
+
+=item ol
+
+See L<ul>
+
+=item img
+
+Create an image tag.
+
+  <var --img[=attributes] image-path>
+
+=item table
+
+  <var --table[=attributes] value>
+
+Use C<--table> to quickly dump an array of arrays that represent the
+rows and columns of a table.  
+
+The object you want to convert to a table can also be an array of
+hashes.  This might be the return value for example of a query that
+returns an array of hashes representing a result set.  If no
+C<--columns> option is present the widget constructor will use the
+hash keys a column names.
+
+  <hash:foo red 1 blue 2 green 3>
+  <array:foo_array $foo $foo $foo>
+  <var --table $foo_array>
+  
+  <sink:flintstones --json>
+    [
+     ["fred", "flintstone","fflintstone@openbedrock.net"],
+     ["barney" "rubble", "brubble@openbedrock.net"]
+    ]
+  </sink>
+  
+  <var --table $flintstones>
+
+Add table headers using the C<--columns option>
+
+  <var --columns='["First Name", "Last Name", "E-Mail"]' --table $foo_array>
+  <var --table $foo_array>
+
+The C<--columns> option can be any of:
+
+=over 5
+
+=item an array object
+
+  <array:headers this that "the other">
+  <var --table --columns=$headers $foo>
+
+=item an JSON string representing an array
+
+  <var --table --columns='["this", "that", "the other"]' $foo>
+
+=item a comma, space or pipe delimited string
+
+  <var --table --columns="this,that,the&nbsp;other" $foo>
+
+=back
+
+Attributes for the cells of the table (C<td>) and each header element
+(C<th>) can be addded by adding a second and third element to the JSON
+object when specifiying a JSON string as argument for the C<--columns>
+option.
+
+ <var --table --columns=='[["this", "that", "the other"], {valign:"top", class:"foo"}, {align:"left"}]' $foo>
+
+=item ul
+
+Creates an HTML C<ul> element from an array.
+
+  <var --ul[=attributes] value>
+
+Examples:
+
+  <array:pepboyz manny moe jack>
+  <var --ul $pepboyz>
+
+You can specify attributes such as styles by setting the C<--ul>
+option to a hash or JSON string.
+
+ <var -ul='{ style: color:"red" }' $pepbozy>
 
 =back
 
@@ -734,6 +1495,10 @@ Convenience routine for C<align>.
 =head2 chr
 
 Same as perl C<chr>.
+
+=head2 chomp
+
+Same as perl C<chomp>
 
 =head2 crypt(salt)
 
@@ -892,6 +1657,20 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<E<lt>nullE<gt>>, C<E<lt>sinkE<gt>>,
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.35  2011/03/25 18:05:52  eutl420
+# - created a set of methods to support the creation of widgets and auto naming and auto id generation
+#   create_label, create_widget_registry, set_last_widget, get_last_widget_name, get_last_widget-id,
+#   get_next_widget_id, is_form_widget
+# - added new widgets and options
+#   + text, file, code, img, pre, p, anchor, submit, button, blockquote, address
+# - --group added to group radio and checkbox elements by using same name
+# - --no-style option to prevent auto alignment of <label> element with form element
+# - --no-lable to prevent auto labeling of form elements
+# - --no-handler to prevent attaching a handler to the submit or button element
+# - removed all the logic that tested for the option parsing bug, when the user does not
+#   provide an argument to an option defined to accept one, the parser did not associate the arguments correctly
+# - standardized the interface for widgets
+#
 # Revision 1.34  2010/12/12 17:03:14  eutl420
 # - Bedrock::Text::URLEncode
 # - remove Data:Dumper in favor of Bedrock::Dump
