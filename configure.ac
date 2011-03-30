@@ -193,6 +193,7 @@ AC_SUBST([perl5_pkglibdir],  ["\${libdir}/${PACKAGE}/perl5"])
 AC_SUBST([perl5_pkgvdatadir], ["\${datadir}/${PACKAGE}-${VERSION}/perl5"])
 AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
 
+AX_DISTCHECK_HACK
 
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
