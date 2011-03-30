@@ -17,3 +17,9 @@ $(GPERLSCRIPTS): $(PERLSCRIPTS)
 	$(do_subst) $< > $@
 
 CLEANFILES = $(GPERLSCRIPTS)
+
+if DISTCHECK_HACK_ENABLED
+else
+install-data-hook:
+	ln -f -s @bindir@/bedrock /bin/bedrock
+endif
