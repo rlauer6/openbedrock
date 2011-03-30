@@ -23,3 +23,5 @@ MAINTAINERCLEANFILES = config.status \
                        config.log    \
                        $(PACKAGE)-$(VERSION).tar.gz \
                        *~
+
+DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
