@@ -236,7 +236,7 @@ sub config {
     }
   }
 
-  $r->log->debug("config: ".Bedrock::Dump::compact( $conf ));
+  $r->log->debug("config: " . Bedrock::Dump::compact( $conf ));
 
   die sprintf("No or empty 'tagx.xml' found.\n\nBEDROCK_CONFIG_PATH: [%s]\nCONFIG_PATH: [%s]\n",
 	      $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}
@@ -1018,9 +1018,32 @@ eot
   eval { $tx->output };
 
   if ( $@ ) {
-    $r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
-    my $error_location = $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
-    $tx->show_error( $error_location );
+    if ( $ENV{SERVER_SIGNATURE} =~/apache/i ) {
+      $r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
+      my $error_location = $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+      $tx->show_error( $error_location );
+    }
+    else {
+      $r->log_error( "PID [$$]: Script $file encountered the following error\n    $@" );
+
+      # output error to STDERR
+      my $line = $tx->{'error'}->line;
+      my $file = $tx->{'error'}->file;
+
+      open FILE, "<" . $file or die "Could not open source file " . $file;
+      my $source;
+      while ( $source = <FILE> ) {
+	chomp $source;
+	last if --$line == 0;
+      }
+      close FILE;
+
+      print STDERR sprintf("Error on line [%d] (%s) - %s" , $tx->{'error'}->line, $file, $@);
+      print STDERR sprintf("[%d] %s\n", $tx->{'error'}->line, $source);
+
+      exit -1;
+    }
+
   }
 
   chdir $PWD;
@@ -1032,7 +1055,7 @@ eot
       if $ENV{MOD_PERL} && exists ${$r->err_headers_out}{Location} || exists ${$r->err_headers_out}{location};
   }
   
-  return OK;
+  return $ENV{SERVER_SIGNATURE} =~/apache/i ? OK : 0;
 }
 
 1;
@@ -1040,6 +1063,11 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.35  2011/03/30 18:05:33  eutl420
+# - for shell users, show a useful error message with line number and offending
+#   line of the Bedrock file
+# - for shell users, return 0 not 200
+#
 # Revision 1.34  2011/03/29 14:16:26  eutl420
 # - do not test for redirects unless running under Apache
 #
