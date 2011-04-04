@@ -27,28 +27,29 @@ package TagX::TAG::NoBody::Plugin;
 
 use strict;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA @INC);
-    $VERSION    = 1.01;
-    @ISA	= qw (Exporter);
+BEGIN {
+  
+  use Exporter ();
+  use vars	qw ($VERSION @ISA @INC);
+  $VERSION    = 1.01;
+  @ISA	= qw (Exporter);
 }
 
 use TagX::Log 1.01;
 use TagX::TAG::NoBody 1.03;
 use Symbol;
+use BLM::PLUGIN;
 
 @ISA = qw (TagX::TAG::NoBody);
 
 sub finalize
-{
+  {
     my ($self, $tx, @context) = @_;
 
     my %options = ('define-var=s'    => undef,
 		   'dir-prefix=s'    => undef,
 		   'define-plugin=s' => undef
-		   );
+		  );
 
     my @argv = $self->parse_options (\%options, @context);
     my $verbose = $self->verbose;
@@ -61,6 +62,7 @@ sub finalize
 
     my $class = $tag_opts->{type} || $tag_opts->{name};
     my $name =  $options{'define-plugin'} || $tag_opts->{name};
+    $name =~s/:://g;
 
     unless ( $name ) {
       $name = $class;
@@ -70,11 +72,15 @@ sub finalize
     }
 
     if (exists $options{'dir-prefix'}) {
-	push @INC, $options{'dir-prefix'} unless grep { $options{'dir-prefix'} } @INC;
+      push @INC, $options{'dir-prefix'} unless grep { $options{'dir-prefix'} } @INC;
     }
 
     $class = 'BLM::' . $class unless $class =~ /^BLM::/;
-    $self->loadModule($class);
+
+    unless ( $self->loadModule( $class ) ) {
+      die "Could not load module: $class\n";
+    }
+
     my $obj;
 
     if ( &UNIVERSAL::can( $class, 'TIEHASH' ) ) {
@@ -107,28 +113,36 @@ sub finalize
 	$tx->{'VARS'}->{$options{'define-var'}} = $obj->init_plugin( @argv );
       }
       $tx->{'VARS'}->{$name} = $obj;
-    }
-    else {
+    } else {
       $tx->{'VARS'}->{$name} = $obj;
     }
 
     return $tx->{'VARS'}->{$name};
-}
+  }
 
 sub loadModule
-{
+  {
     my $self = shift;
     my @mods = @_;
 
     my $verbose = $self->{'config'}->{'verbose'};
-    for my $class (@mods) {
-	$class =~ s!::!/!g;
-	$class =~ s!$!.pm! unless $class =~ /\.pm$/;
-	next if $INC{$class};
+    for my $class ( @mods ) {
+      $class =~ s!::!/!g;
+      $class =~ s!$!.pm! unless $class =~ /\.pm$/;
+      next if $INC{$class};
+      eval {
 	require $class;
+      };
+
+      unless ( $@ ) {
 	&log_message( undef, "$class loaded successfully" ) if $verbose;
+      } else {
+	return 0;
+      }
     }
-}
+
+    return 1;
+  }
 
 =head1 TAG - C<E<lt>pluginE<gt>>
 
@@ -226,6 +240,10 @@ C<BLM::PLUGIN>, C<E<lt>pebbleE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.9  2011/04/04 13:42:54  eutl420
+# - take the :: out of plugin names in case we get something like <plugin:MIME::Lite>
+# - sub loadModule() now returns a 0/1 on success so error can be propagated from caller
+#
 # Revision 1.8  2011/03/15 13:31:53  eutl420
 # - set the value of a tied scalar after the tie because
 #   of what seems to be bug in Tie::StdArray
