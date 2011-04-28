@@ -127,7 +127,8 @@ dist_perl5bedrockxmlcontainerlib_DATA = \
 # -------
 
 dist_perl5blmindexedtablehandlerlib_DATA = \
-    BLM/IndexedTableHandler/RecordSet.pm
+    BLM/IndexedTableHandler/RecordSet.pm \
+    BLM/IndexedTableHandler/Common.pm
 
 dist_perl5blmlib_DATA = \
     BLM/Awk.pm \
