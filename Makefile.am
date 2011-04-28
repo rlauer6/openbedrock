@@ -17,7 +17,7 @@ ACLOCAL_AMFLAGS = -I autotools
 
 
 ## ensure that these files make it into the distribution tarball
-EXTRA_DIST = BUGS HACKING
+EXTRA_DIST = BUGS HACKING bedrock.spec.in bedrock.spec
 
 MAINTAINERCLEANFILES = config.status \
                        config.log    \
