@@ -313,6 +313,7 @@ dnl      strings. Region is already set up because we set the mark above.
 
 dnl Declare our output Makefiles
 AC_CONFIG_FILES(
+	[${PACKAGE_NAME}.spec]
         [Makefile]
         [bin/Makefile]
         [src/Makefile]
