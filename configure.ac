@@ -24,8 +24,8 @@ AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 dnl AC_REVISION puts cvs revision in comment at top of generated 'configure'
 AC_REVISION([$Revision$])dnl
 
-# DFLT_MAINTAINER="ASalewski@signatureinfo.com"
-# AC_SUBST([DFLT_MAINTAINER])
+DFLT_MAINTAINER="rlauer@signatureinfo.com"
+AC_SUBST([DFLT_MAINTAINER])
 
 dnl +------------------------+
 dnl |  Checks for programs.  |
@@ -82,6 +82,42 @@ if test -z "$RMDIR"; then
     AC_MSG_ERROR([rmdir not found])
 fi
 
+dnl ...for Debian layouts, we use a2ensite to enable a virtual host
+AC_PATH_PROG([A2ENSITE],
+        [a2ensite])
+
+apache_layout=Debian
+AC_ARG_WITH(
+        [apache-layout],[  --with-apache-layout=LAYOUT      apache layout style (Debian or RedHat), default=Debian],
+        [
+         case "$withval" in
+
+           'Debian')
+                     apache_layout="$withval"
+                     if test -z "$A2ENSITE"; then
+                       AC_ERROR([Debian layout doubtful, no a2ensite?])
+                     fi
+                     ;;
+          'RedHat')
+                     apache_layout="$withval"
+                     ;;
+                 *)
+                    if test "$withval"; then
+                      AC_ERROR([only values Debian or RedHat allowed])
+                    fi
+                    ;;
+         esac
+        ]
+        )
+
+AC_SUBST([apache_layout])
+
+apache_default_htdocsdir=/var/www
+if test "$apache_layout" = "RedHat"; then
+  apache_default_htdocsdir=/var/www/html
+fi
+
+AC_SUBST([apache_default_htdocsdir])
 
 dnl require /at least/ perl version 5.8.0
 ads_PROG_PERL([5.008000])
@@ -132,6 +168,7 @@ ads_PERL_MODULE([IO::Handle], [REQUIRED])
 ads_PERL_MODULE([IO::Scalar], [REQUIRED])
 #
 ads_PERL_MODULE([JSON], [REQUIRED])
+ads_PERL_MODULE([JSON::PP], [REQUIRED])
 ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
@@ -261,6 +298,8 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]perl5_pkgvdatadir[@],$(perl5_pkgvdatadir),g'"'"' \
   -e '"'"'s,[@]perl5_pkglibdir[@],$(perl5_pkglibdir),g'"'"' \
   -e '"'"'s,[@]perl5_pkgvlibdir[@],$(perl5_pkgvlibdir),g'"'"' \
+\
+  -e '"'"'s,[@]apache_default_htdocsdir[@],$(apache_default_htdocsdir),g'"'"' \
   \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
   -e '"'"'s,[@]CAT[@],$(CAT),g'"'"' \
