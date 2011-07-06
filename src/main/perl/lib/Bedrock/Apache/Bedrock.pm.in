@@ -169,7 +169,7 @@ sub merge_modules {
       $r->log->warn( "overriding MODULE binding ". $_->{'binding'} ) 
 	if exists $dest_modules{$_->{'binding'}};
 
-      $r->log->debug( sprintf(" merging module:\n%s\n", Bedrock::Dump::compact($_)));
+      $r->log->debug( sprintf(" merging module: %s", Bedrock::Dump::compact($_)));
 
       $dest_modules{$_->{'binding'}} = $_;
     }
@@ -184,11 +184,8 @@ sub merge_config {
   # bedrock master config, local config
   my ($dest_config, $src_config) = @_;
 
-  $r->log->debug( sprintf("merging configs:\n%s\n...\n%s\n",
-			  Bedrock::Dump::compact($dest_config),
-			  Bedrock::Dump::compact($src_config)
-			  )
-		  );
+  $r->log->debug( sprintf("merging configs: %s", Bedrock::Dump::compact($dest_config)));
+  $r->log->debug( sprintf("merging configs: %s", Bedrock::Dump::compact($src_config)));
 
   # merge source-config with dest-config (override)
   map { $dest_config->{$_} = $src_config->{$_} unless $_ eq 'MODULES'; } keys %$src_config;
@@ -205,6 +202,14 @@ sub config {
   my $dir = shift;
 
   $dir =~ s!/$!!;
+
+  $r->log->debug(sprintf("env: %s", Bedrock::Dump::compact(\%ENV)));
+
+  $r->log->debug(sprintf("uri-dir: %s DOCUMENT_ROOT: %s", $dir, $ENV{DOCUMENT_ROOT}));
+
+  $dir =~s/^$ENV{DOCUMENT_ROOT}//; # Bedrock shell
+
+  $r->log->debug(sprintf("uri-dir: %s CONFIG_PATH: %s", $dir, $ENV{CONFIG_PATH}));
 
   # Bedrock 2 wants the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH}
   # it can be overridden or merged with local configuration files.  To
@@ -250,20 +255,25 @@ sub config {
   push @app_conf_files, $conf->{'APP_CONFIG'} if $conf->{'APP_CONFIG'};
 
   my ($dummy, $framework_dir) = split /\//, $dir;
-  $r->log->info("framework directory [$framework_dir]");
+  $r->log->debug("Looking for framework config file [${framework_dir}.xml");
 
   my $framework_conf = sprintf("%s/framework/%s.xml", $ENV{CONFIG_PATH}, $framework_dir);
 
+  $r->log->debug(sprintf("%s %s", (-s $framework_conf) ? "FOUND" : "DID NOT FIND"));
   push @app_conf_files, $framework_conf if -s $framework_conf;
   
   # look for more config files to merge
-  foreach my $path ( ($ENV{CONFIG_PATH}, $ENV{CONFIG_PATH} . ".d")  ) {
+  foreach my $path ( ($ENV{BEDROCK_CONFIG_PATH} . "d" , 
+		      $ENV{CONFIG_PATH}, 
+		      $ENV{CONFIG_PATH} . ".d")  ) {
+    $r->log->debug(sprintf("Looking for config files in [%s]\n", $path));
+
     next unless  -d $path;
     local( *CONFIG_FILES );
     opendir CONFIG_FILES, "$path";
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/ && $file !~/^(tagx|tagx_apps)\.xml$/;
-      $r->log->warn("Loading configuration file: $file");
+      $r->log->info("Merging configuration file: $file");
       $conf = merge_config( $r, $conf, Bedrock::Config->newFromXML( $path . '/' . $file ) );
     }
     closedir CONFIG_FILES;
@@ -284,7 +294,7 @@ sub config {
   }
 
   foreach my $dir_conffile ( @app_conf_files ) {
-    $r->log->info(sprintf("Loading application configuration file: %s\n", $dir_conffile));
+    $r->log->info(sprintf("Loading application configuration file: %s", $dir_conffile));
 
     # Load the config file
     my $dir_conf = Bedrock::Config->new( $dir_conffile );
@@ -295,7 +305,7 @@ sub config {
       $dir_path .= $dir_part;
 
       # Look up the app config, based on directory of current request
-      $r->log->info("looking up directory configuration [$dir_path]");
+      $r->log->debug("Looking up directory configuration [$dir_path] in config object.");
       my $app_conf = $dir_conf->{$dir_path} || $dir_conf->{$dir_path . '/'};
 
       $conf = merge_config($r, $conf, $app_conf) if $app_conf;
@@ -540,7 +550,7 @@ sub handler {
 
   # Parse for the URI components
   my ($uri_name, $uri_dir) = &fileparse( $r->uri );
-
+  
   my $conf;
   eval {
     $conf = &config( $r, $uri_dir );
@@ -1076,6 +1086,10 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.38  2011/07/06 16:21:01  eutl420
+# - read config files from ${BEDROCK_CONFIG_PATH}.d
+# - remove ${DOCUMENT_ROOT} from start of uri-dir to support bedrock shell
+#
 # Revision 1.37  2011/07/05 20:34:26  eutl420
 # - tagx_apps.xml style files loaded from  the framework directory should be named for the root directory for which
 #   the configuration applies
