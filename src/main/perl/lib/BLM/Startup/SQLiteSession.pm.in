@@ -1,0 +1,187 @@
+package BLM::Startup::SQLiteSession;
+
+use strict;
+
+use BLM::Startup::SQLSession;
+use POSIX qw/strftime/;
+
+use vars qw (@ISA );
+
+@ISA = qw( BLM::Startup::SQLSession );
+
+=begin comment
+ This is the reference implementation of using SQLite:
+
+ create table session
+  (
+   id           integer primary key autoincrement not null,
+   session      varchar(50)  not null default '',
+   login_cookie varchar(50)  not null default '',
+   username     varchar(50)  not null default '',
+   password     varchar(30)  default null,
+   firstname    varchar(30)  default null,
+   lastname     varchar(50)  default null,
+   email        varchar(100) default null,
+   prefs        text,
+   updated      timestamp    not null default current_timestamp,
+   added        datetime     default null,
+   expires      datetime     default null
+ );
+
+  CREATE TRIGGER session_updates AFTER UPDATE ON session
+    BEGIN
+      UPDATE session SET updated=CURRENT_TIMESTAMP where rowid=new.rowid;
+    END;
+
+  <scalar name="data_source">dbi:SQLite:dbname=/tmp/bedrock.sqlite</scalar>
+  <scalar name="username"></scalar>
+  <scalar name="password"></scalar>
+
+=cut
+
+sub CONNECT {
+  my $self = shift;
+
+  $self->SUPER::CONNECT(@_);
+  $self->{'dbh'}->sqlite_create_function( 'encrypt', 1,
+    sub { my $pw=shift; return crypt($pw, substr($pw,2)); }
+  );
+
+}
+
+%BLM::Startup::SQLSession::SQL =  (
+  FETCH_LOGIN_SESSION => {
+    sql => q{
+      select username, firstname, lastname, email, prefs 
+      from %s 
+      where login_cookie = ? 
+    },
+    args => [ 'login_id' ]
+  },
+  FETCH_SESSION => {
+    sql => q{
+      select username, firstname, lastname, email, prefs 
+      from %s 
+      where session = ? and expires > datetime('now')
+    },
+    args => [ 'session' ]
+  },
+  KILL_SESSION => {
+    sql => q{
+      delete
+      from %s 
+      where session = ?
+    },
+    args => [ 'session' ]
+  },
+  LOGIN => {
+    sql => q{
+      select username, firstname, lastname, email, prefs 
+      from %s 
+      where username = ? and 
+      (
+        password = encrypt(?)
+      )
+    },
+    args => [ qw{username password password} ]
+  },
+  LOGOUT_ANON => {
+    sql => q{
+      update %s
+      set expires = datetime('now')
+      where session = ?
+    },
+    args => [ 'session' ]
+  },
+  LOGOUT_USER => {
+    sql => q{
+      update %s
+      set expires = datetime('now')
+      where username = ? and session= ?
+    },
+    args => [ 'username', 'session' ]
+  },
+  LOOKUP_USER => {
+    sql => q{
+      select username
+      from %s
+      where username = ?
+    },
+    args => [ 'username' ]
+  },
+  REGISTER => {
+    sql => q{
+      insert into %s (username, password, firstname, lastname, email, added)
+      values (?, encrypt(?), ?, ?, ?, datetime('now'))
+    },
+    args => [ qw{username password firstname lastname email} ]
+  },
+  REMOVE_USER => {
+    sql => q{
+      delete from %s 
+      where username = ? and password = encrypt(?)
+    },
+    args => [ qw{username password} ]
+  },
+  SESSION_CLEANUP => {
+    sql => q{
+      delete from %s 
+      where expires < datetime('now') and 
+      (username = '' or username is null)
+    },
+    args => []
+  },
+  STORE_LOGIN_SESSION_BY_USERNAME => {
+    sql => q{
+      update %s set session = ?, prefs = ?,
+      expires = datetime('now', '+' || ? || ' second')
+      where username = ?
+    },
+    args => [ qw{session prefs expires username} ]
+  },
+  STORE_LOGIN_SESSION_BY_LOGIN_ID => {
+    sql => q{
+      update %s set session = ?, expires = datetime('now', '+' || ? || ' second')
+      where login_cookie = ?
+    },
+    args => [ qw{session expires login_id} ]
+  },
+  STORE_SESSION_INSERT => {
+    sql => q{
+      insert into %s (added, session, prefs) values (datetime('now'), ?, ?)
+    },
+    args => [ qw{session prefs} ]
+  },
+  STORE_SESSION_UPDATE => {
+    sql => q{
+      update %s set expires = datetime('now', '+' || ? || ' second'),
+      prefs = ?, firstname = ?, lastname = ?, email = ?
+      where session = ?
+    },
+    args => [ qw{expires prefs firstname lastname email session} ]
+  },
+  UPDATE_LOGIN_PASSWORD => {
+    sql => q{
+      update %s set password = encrypt(?)
+      where username = ? and password = encrypt(?)
+    },
+    args => [qw{password username }] # Shouldn't we use new_password???
+  },
+  UPDATE_SESSION => {
+    sql => q{
+      update %s set expires = datetime('now', '+' || ? || ' second')
+      where session = ?
+    },
+    args => [ qw{expires session} ]
+  },
+  UPDATE_LOGIN_SESSION => {
+    sql => q{
+      update %s set login_cookie = ?
+      where username = ?
+    },
+    args => [ qw{login_id username} ]
+  }
+);
+
+1;
+
