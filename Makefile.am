@@ -15,9 +15,24 @@ SUBDIRS = bin \
 # rebuild rule when they need to run 'aclocal'.
 ACLOCAL_AMFLAGS = -I autotools
 
+docdir = $(datadir)/doc/bedrock-$(VERSION)
+
+FILES = \
+    AUTHORS \
+    BUGS \
+    INSTALL \
+    NEWS \
+    README \
+    README.Apache \
+    COPYING \
+    ChangeLog \
+    TODO
+
+dist_doc_DATA = $(FILES)
 
 ## ensure that these files make it into the distribution tarball
-EXTRA_DIST = BUGS HACKING bedrock.spec.in bedrock.spec
+EXTRA_DIST = \
+    bedrock.spec
 
 MAINTAINERCLEANFILES = config.status \
                        config.log    \
