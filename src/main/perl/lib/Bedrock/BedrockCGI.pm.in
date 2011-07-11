@@ -1,0 +1,145 @@
+#!/usr/bin/perl
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package Bedrock::CGI;
+
+use File::Basename;
+
+use Bedrock;
+use Bedrock::Context;
+
+use Text::TagX;
+
+use Apache::Bedrock;
+use Apache::Request_cgi;
+
+use BLM::Startup::UserSession;
+
+
+sub new {
+  my $class = shift;
+  my %options = @_;
+
+  my $self = bless {}, $class;
+  
+  $self->handler->header_out('Content-type', 'text/html');
+
+  $self->config;
+  
+  # Bedrock logging
+  $options{LOGDIR} = $self->config->{LOGDIR} 
+    unless $options{LOGDIR};
+
+  unless ( $options{LOG_FILE} ) {
+    my ($name, $path, $ext) = fileparse($0, qr/\.(cgi|pl)/);
+    $options{LOG_FILE} = sprintf("%s/%s%s.log", $options{LOGDIR} , $name, $ext);
+  }
+  
+  TagX::Log::start_logger(LOG_FILE => $options{LOG_FILE});
+  
+  $self->context;
+  
+  $self->session;
+  
+  return $self;
+}
+
+
+sub handler {
+  return (exists $_[0]->{APACHE_HANDLER}) ? $_[0]->{APACHE_HANDLER} : ($_[0]->{APACHE_HANDLER} = new Apache::Request_cgi);
+}
+
+# returns the "context object"
+sub context {
+  my $self = shift;
+  return (exists $self->{ctx}) ? $self->{ctx} : ( $self->{ctx} = 
+						  Bedrock::Context->new( APACHE_HANDLER => $self->handler,
+									 CONFIG         => $self->config
+								       )
+						);
+}
+
+# initialize the session
+sub init_session {
+  my $self = shift;
+
+  return BLM::Startup::UserSession->new( $self->context,
+					 $self->config->get_module_config( 'UserSession' )
+				       ); 
+}
+
+# buffer output
+sub print {
+  my $self = shift;
+
+  $self->{DATA} .= shift;
+}
+
+sub log {
+  my $self = shift;
+
+  TagX::Log::log_message( undef, $_[0]);
+}
+
+# session - return session object
+# session( key ) return session value
+# session( key, value ) set session value
+sub session {
+  my $self = shift;
+
+  if ( @_ > 1 ) {
+    return $self->{SESSION}->{$_[0]} = $_[1];
+  }
+  elsif (@_ == 1) {
+    return $self->{SESSION}->{$_[0]};
+  }
+ else {
+    return ( exists $self->{SESSION} ) ? $self->{SESSION} : ($self->{SESSION} = $self->init_session);
+  }
+  
+}
+
+# config - return config object
+# config( key ) - return config key value
+sub config {
+  my ($self, $key) = @_;
+
+  my $config =  (exists $self->{CONFIG}) ? $self->{CONFIG} :  ($self->{CONFIG} = Apache::Bedrock::config( $self->handler  ));
+
+  return ( $key ? $config->{$key} : $config );
+}
+
+# flush output, close session
+sub DESTROY {
+  my $self = shift;
+
+  $self->session->closeBLM if $self->session;
+
+  $self->handler->send_http_header;
+
+  print "\n", $self->{DATA} if exists $self->{DATA};
+}
+
+1;
