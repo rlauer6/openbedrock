@@ -28,7 +28,7 @@ dist_perl5lib_DATA = Bedrock.pm
 
 dist_perl5bedrocklib_DATA = \
     Bedrock/Context.pm \
-    Bedrock/CGI.pm \
+    Bedrock/BedrockCGI.pm \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm \
     Bedrock/Array.pm \
