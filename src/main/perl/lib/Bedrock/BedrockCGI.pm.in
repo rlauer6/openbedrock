@@ -37,14 +37,20 @@ use Apache::Request_cgi;
 
 use BLM::Startup::UserSession;
 
-
+# new( CONTENT_TYPE => content-type,
+#      LOGDIR       => dir,
+#      LOG_FILE     => log-file
+#    )
+#     
+# all arguments are optional 
+#
 sub new {
   my $class = shift;
   my %options = @_;
 
   my $self = bless {}, $class;
   
-  $self->handler->header_out('Content-type', 'text/html');
+  $self->handler->header_out('Content-type', $options{CONTENT_TYPE} || 'text/html');
 
   $self->config;
   
@@ -67,13 +73,15 @@ sub new {
 }
 
 
+# returns an Apache request handler
 sub handler {
   return (exists $_[0]->{APACHE_HANDLER}) ? $_[0]->{APACHE_HANDLER} : ($_[0]->{APACHE_HANDLER} = new Apache::Request_cgi);
 }
 
-# returns the "context object"
+# returns the Bedrock "context object"
 sub context {
   my $self = shift;
+
   return (exists $self->{ctx}) ? $self->{ctx} : ( $self->{ctx} = 
 						  Bedrock::Context->new( APACHE_HANDLER => $self->handler,
 									 CONFIG         => $self->config
@@ -113,12 +121,16 @@ sub session {
     return $self->{SESSION}->{$_[0]} = $_[1];
   }
   elsif (@_ == 1) {
-    return $self->{SESSION}->{$_[0]};
+    if ( UNIVERSAL::isa($_[0], 'ARRAY') ) {
+      return @{$self->{SESSION}}{@{$_[0]}};
+    }
+    else {
+      return $self->{SESSION}->{$_[0]};
+    }
   }
  else {
     return ( exists $self->{SESSION} ) ? $self->{SESSION} : ($self->{SESSION} = $self->init_session);
   }
-  
 }
 
 # config - return config object
@@ -131,20 +143,182 @@ sub config {
   return ( $key ? $config->{$key} : $config );
 }
 
+# clear output buffer
+sub clear {
+  delete $_[0]->{DATA};
+}
+
+sub cgi {
+  return $_[0]->context->cgi;
+}
+
+# redirect
+sub redirect {
+  my $self = shift;
+
+  $self->clear;
+  $self->cgi->redirect( @_ );
+}
+
 # flush output, close session
 sub DESTROY {
   my $self = shift;
 
   $self->session->closeBLM if $self->session;
 
+  return unless exists $self->{DATA};
+
   $self->handler->send_http_header;
 
-  print "\n", $self->{DATA} if exists $self->{DATA};
+  print "\n", $self->{DATA};
 }
 
 1;
 
+=pod
+
+=head1 NAME
+
+ Bedrock::CGI
+
+=head1 SYNOPSIS
+
+ use Bedrock::BedrockCGI;
+
+ my $bedrock = new Bedrock::CGI;
+
+ $bedrock->print( $bedrock->cgi->start_html("Hello World") );
+ $bedrock->print( $bedrock->cgi->h1("Hello World") ) ;
+ $bedrock->print( $bedrock->cgi->end_html );
+
+ # access Bedrock configuration info
+ $bedrock->config("DBI_DSN");
+
+ # access session information
+ my $data = $bedrock->session("email");
+ 
+ # set session information (persistent)
+ $bedrock->session("email", "rlauer\@openbedrock.net");
+
+=head1 DESCRIPTION
+
+C<Bedrock::CGI> facilitates the writing of perl CGI programs that
+interact with the Bedrock environment.  Using C<Bedrock::CGI> the perl
+developer has access to Bedrock global and site level configuration
+data as well as the ability to access and persist data to a Bedrock
+session.
+
+HTML (or other data) is buffered when you use the C<print()> method.
+On exit, the class will flush the buffer and CGI headers to STDOUT.
+
+=head1 METHODS
+
+=head2 new( %options )
+
+ my $bedrock = new Bedrock::CGI;
+
+C<%options> include:
+
+=over 5
+
+=item CONTENT_TYPE
+
+default: 'text/html'
+
+=item LOGDIR
+
+default: C<$bedrock->config( 'LOGDIR' )>
+
+=item LOGFILE
+
+default: C<sprintf("%s/%s.log", $bedrock->config( 'LOGDIR' ), $0);>
+
+=back
+
+=head2 cgi
+
+Returns a CGI object.  See C<perldoc CGI>.
+
+=head2 clear
+
+Remove all data from the output buffer.  If the output buffer is
+empty, no headers will be printed on exit.  =head2 config
+
+=head2 config
+
+Access Bedrock configuration information.
+
+ $bedrock->config( $key );
+
+If you call C<config()> without an argument it will return a
+C<Bedrock::Config> object.
+
+ $bedrock->config->{ $key };
+
+ $bedrock->config->get_module_config( 'UserSession' );
+
+=head2 log
+
+Write a message to the script's log file.  See the C<new()> method.
+Typically the log file should be located in the virtual hosts log
+directory alongside other Bedrock and site logs.
+
+=head2 print
+
+Add data to the output buffer.  The buffer will be flushed to STDOUT
+when the program exits unless the buffer is cleared using the
+C<clear()> method.
+
+=head2 flush
+
+Flush the current contents of the buffer.  Don't use this unless you
+know what you are doing and why you are doing it.  In general, you
+should not need to write the output to STDOUT until you have completed
+generation of the content.
+
+=head2 redirect
+
+Redirect browser.  Clears the buffer and then redirects. See C<perldoc
+CGI>
+
+ $bedrock->redirect("http://www.google.com");
+
+=head2 session
+
+Set or access Bedrock session information.  Setting a session value
+persists the value in Bedrock's session so that you can access it in
+subsequent Bedrock pages using the C<$session> object.
+
+ # get a session value
+ $bedrock->session('foo');
+
+ # to get multiple values
+ my ($first, $last) = $bedrock->session(['firstname', 'lastname']);
+
+ my ($first, $last) = @{$bedrock->session}{qw/firstname lastname/};
+
+ # set a session value
+ $bedrock->session('site_prefs', $prefs);
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@signatureinfo.com>
+
+=head1 SEE ALSO
+
+C<CGI.pm>
+
+=cut
+
 # $Log$
+# Revision 1.3  2011/07/12 18:24:25  eutl420
+# - renamed the file from CGI.pm to BedrockCGI.pm to avoid name space collisions
+# - added pod, documented methods
+# - set the content-type from the options passed or to 'text/html' as default
+# - new methods clear(), cgi(), redirect()
+# - session() now accepts array ref to return multiple values
+# - in the destroy method, don't output anything if no data in buffer
+#
 # Revision 1.2  2011/07/11 22:04:37  eutl420
 # added log keyword
 #
