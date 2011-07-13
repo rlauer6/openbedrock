@@ -6,6 +6,7 @@ perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockinputsourcelibdir          	  = $(perl5libdir)/Bedrock/InputSource
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
+perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
@@ -40,7 +41,11 @@ dist_perl5bedrocklib_DATA = \
     Bedrock/InputSource.pm \
     Bedrock/JSON.pm \
     Bedrock/JSON_PP_Ix.pm \
-    Bedrock/Log.pm
+    Bedrock/Log.pm \
+    Bedrock/Plugin.pm
+
+dist_perl5bedrockapplicationlib_DATA = \
+    Bedrock/Application/Plugin.pm
 
 dist_perl5bedrockapachelib_DATA = \
     Bedrock/Apache/Bedrock.pm \
@@ -146,7 +151,6 @@ dist_perl5blmlib_DATA = \
     BLM/Number.pm \
     BLM/OrderedObject.pm \
     BLM/Perldoc.pm \
-    BLM/PLUGIN.pm \
     BLM/Recycle.pm \
     BLM/Series.pm \
     BLM/FTP.pm \
@@ -154,7 +158,6 @@ dist_perl5blmlib_DATA = \
     BLM/Stat.pm \
     BLM/Timenow.pm \
     BLM/SiteFactory.pm \
-    BLM/AppPLUGIN.pm \
     BLM/XML.pm
 
 dist_perl5blmstartuplib_DATA = \
