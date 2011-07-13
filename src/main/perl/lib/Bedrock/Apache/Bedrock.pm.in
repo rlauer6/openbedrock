@@ -63,6 +63,7 @@ use IO::Scalar;
 use IO::File;
 
 my $PWD;
+my @config_files_processed;
 
 sub build_body_tag {
   my $controller = shift;
@@ -226,19 +227,22 @@ sub config {
     $r && $r->log->warn( $@ );
     $r && $r->log->warn("Problem reading ". $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml");
   }
-  
+
+  push @config_files_processed, $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml";
+
   if (-r $ENV{CONFIG_PATH} . '/tagx.xml') {
     if ( ! $conf || $conf->{REPLACE_CONFIG} =~/^y/i )  {
 
       $r && $r->log->warn(sprintf("%s/tagx.xml replaces system %s/tagx.xml.", 
 			    $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH})
 		    );
-
       $conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+      push @config_files_processed, $ENV{CONFIG_PATH} . '/tagx.xml';
     }
     else {
-      my $local_conf =  Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+      my $local_conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
       $conf = ($local_conf->{REPLACE_CONFIG} =~/^y/i) ? $local_conf : merge_config($r, $conf, $local_conf);
+      push @config_files_processed, $ENV{CONFIG_PATH} . '/tagx.xml';
     }
   }
 
@@ -276,21 +280,30 @@ sub config {
       next unless $file=~/\.xml$/ && $file !~/^(tagx|tagx_apps)\.xml$/;
       $r && $r->log->info("Merging configuration file: $file");
       $conf = merge_config( $r, $conf, Bedrock::Config->newFromXML( $path . '/' . $file ) );
+      push @config_files_processed, $path . '/' . $file;
     }
     closedir CONFIG_FILES;
   }
   
   # look for module configs
-  if (-d $ENV{CONFIG_PATH} . ".d/startup") {
-    my $path = $ENV{CONFIG_PATH} . ".d/startup";
+  my @module_paths;
+  foreach ( qw/startup plugin/ ) {
+    push @module_paths, $ENV{CONFIG_PATH} . ".d/" . $_ 
+      if -d $ENV{CONFIG_PATH} . ".d/" . $_;
+  }
+
+  foreach my $path ( @module_paths ) {
     local( *CONFIG_FILES );
     opendir CONFIG_FILES, "$path";
+
     while (my $file = readdir CONFIG_FILES) {
       next unless $file=~/\.xml$/;
       $r && $r->log->warn("Loading configuration file: $file");
       merge_modules($r, $conf, { MODULES => [ Bedrock::Config->newFromXML( $path . '/' . $file )] } );
+      push @config_files_processed, $path . '/' . $file;
       $r && $r->log->debug(sprintf("[Apache::Bedrock] Directory requested: [%s]", $r->filename));
     }
+
     closedir CONFIG_FILES;
   }
 
@@ -299,6 +312,7 @@ sub config {
 
     # Load the config file
     my $dir_conf = Bedrock::Config->new( $dir_conffile );
+    push @config_files_processed, $dir_conffile;
     
     my $dir_path = '/';
 
@@ -558,8 +572,10 @@ sub handler {
   };
 
   if ( $@ ) {
-    &error($r, "[Apache Bedrock] Could not read config file.");
-print <<eot;
+    &error($r, "[Apache Bedrock] Could not read config file. $@");
+    my $config_files_listing = join("\n", @config_files_processed);
+    unless ( ref($r) =~/shell/i ) {
+      print <<eot;
 Content-type: text/html
 
 <html>
@@ -568,11 +584,40 @@ Content-type: text/html
 </head>
 <body>
 <div style="color:red;">An error was encountered while trying to read Bedrock's configuration file:</div>
-<pre>$@</pre>
+<pre>
+You most likely have a malformed .xml file somewhere in your configuration path.
+While reading the configuration directories, Bedrock has thrown the following exception:
+
+$@
+
+Bedrock has successfully processed the configuration files listed below:
+
+$config_files_listing
+
+Check the log file for more information.
+</pre>
 </body>
 </html>
 eot
-    return OK;
+      return OK;
+    }
+    else {
+      print <<eom;
+
+Bedrock shell could not process one or more of your configuration files.
+
+You most likely have a malformed .xml file somewhere in your configuration path.
+While reading the configuration directories, Bedrock has thrown the following exception:
+
+\t$@
+Bedrock has successfully processed the configuration files listed below:
+
+\t$config_files_listing
+
+Check the log file for more information.\n
+eom
+      return 0;
+    }
   }
 
   $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
@@ -1087,6 +1132,10 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.41  2011/07/13 18:07:52  eutl420
+# - collect a list of config files that are loaded so we can output the list if an error occurs
+# - output a better error message for shell and web when config files are malformed
+#
 # Revision 1.40  2011/07/12 18:21:53  eutl420
 # - report $@ in log file if an error occurs
 #
