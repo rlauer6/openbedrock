@@ -1,11 +1,14 @@
 SUBDIRS = .
 
+perl5_pkglibdir = @perl5_pkglibdir@
+
 PERL = @PERL@
 
 @do_subst_command@
 
 PERLSCRIPTS = \
-    bedrock.pl.in
+    bedrock.pl.in \
+    bedrock-plugin.pl.in
 
 GPERLSCRIPTS = $(PERLSCRIPTS:.pl.in=)
 
@@ -13,8 +16,9 @@ dist_noinst_DATA = $(PERLSCRIPTS)
 
 bin_SCRIPTS = $(GPERLSCRIPTS)
 
-$(GPERLSCRIPTS): $(PERLSCRIPTS)
+$(GPERLSCRIPTS): % : %.pl.in 
 	$(do_subst) $< > $@
+	perl -wc $@
 
 CLEANFILES = $(GPERLSCRIPTS)
 
