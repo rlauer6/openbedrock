@@ -1,4 +1,5 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
+PERL = @PERL@
 
 perl5libdir = @PERL_LIBDIR@
 
@@ -28,13 +29,13 @@ perl5blmstartupsessionlibdir  = $(perl5libdir)/BLM/Startup/Session
 dist_perl5lib_DATA = Bedrock.pm
 
 dist_perl5bedrocklib_DATA = \
+    Bedrock/BedrockConfig.pm \
     Bedrock/Context.pm \
     Bedrock/BedrockCGI.pm \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm \
     Bedrock/Array.pm \
     Bedrock/BufferStream.pm \
-    Bedrock/BedrockConfig.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
     Bedrock/Hash.pm \
@@ -184,15 +185,34 @@ dist_perl5blmstartupsessionlib_DATA = \
     BLM/Startup/Session/SDBM.pm
 
 dist_noinst_DATA = \
-    Bedrock/VERSION.pm.in \
-    Bedrock/Apache/Request_shell.pm.in
+    Bedrock/VERSION.pm \
+    Bedrock/Apache/Request_shell.pm
 
 @do_subst_command@
 
-Bedrock/VERSION.pm: % : %.in
-	$(do_subst) $< > $@
+# 
+# Module version numbers are set in the BEGIN block...to an
+# unnecessary execute of a regular expression we can just as easily
+# set the version number as a constant during the build of this .pm
+# after filtering through `sed'
+#
+# So instead of:
+#
+# BEGIN {
+#     $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+# }
+#
+# We'll evaluate the regexp and set $VERSION as a constant
+#
+##    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+#    $VERSION = 1.10;
+ 
+SUFFIXES = .pm .pm.in
 
-Bedrock/Apache/Request_shell.pm: % : %.in
+%.pm: %.pm.in
+	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
 	$(do_subst) $< > $@
+	$(PERL) -i -n -e '/^(.*?)\$$VERSION\s*=\s*do/ ? print "#$$_$$1\$$VERSION = " . (eval $$_ ) . ";\n" : print "$$_";' $@
 
-CLEANFILES = Bedrock/VERSION.pm Bedrock/Apache/Request_shell.pm
+clean-local:
+	find . -name '*.pm' -exec rm {} \;
