@@ -1,0 +1,275 @@
+#!@PERL@
+
+# $Id$
+
+BEGIN {
+  $bedrock_path = '@prefix@';
+  push @INC, "@perl5_pkglibdir@";
+  $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+
+}
+
+use strict;
+use vars qw/$bedrock_path $VERSION/;
+
+use Getopt::Long;
+use Cwd;
+
+sub version {
+  print <<eom;
+bedrock-plugin $VERSION
+eom
+  exit unless $_[0];
+}
+
+sub help {
+  print <<eom;
+Usage: bedrock-plugin [OPTION...]
+
+  -r, --replace       replace modules, files if they exist
+  -b, --binding=NAME  name of the variable to bind the Plugin to
+  -m, --module=NAME   name of perl module (ex: MyPlugin)
+  -d, --dir=DIR       root install path (defaults to: current directory)
+  -s, --system        install to Bedrock's path
+  -p, --plugin        create a simple Plugin instead of an Application Plugin
+
+Examples:
+
+  bedrock-plugin -r -m Foo
+
+  bedrock-plugin -r -b foo
+
+Creates the scaffolding for an Application or simple Plugin for Bedrock. The
+files are created in your current working directory unles the -i (install) option is
+specified.  Directories will be in created if they do not exist.
+
+Creates the files:
+
+  BLM/Startup/MODULE-NAME.pm        => perl module stub
+  config.d/plugin/BINDING-NAME.xml  => descriptor file
+  BINDING-NAME.roc                  => example test file
+eom
+  exit;
+}
+
+# +--------------------------+
+# | MAIN PROGRAM STARTS HERE |
+# +--------------------------+
+
+my %options;
+
+my $success = GetOptions( \%options, 
+			  "replace",
+			  "module=s",
+			  "binding=s",
+			  "dir=s",
+			  "plugin",
+			  "system",
+			  "version",
+			  "help",
+			);
+
+help() unless $success;
+
+version() if exists $options{version};
+help() if exists $options{help};
+
+unless ( defined $options{module} || defined $options{binding} ) {
+  print STDERR "You must specify one of --module or --binding.\n"; 
+  help();
+}
+
+if ( $options{binding} && $options{plugin} ) {
+  print "warning: no binding needed for Plugins.  Only useful for Application Plugins...ignoring $options{binding}.\n";
+  delete $options{binding};
+}
+
+if ( exists $options{plugin} )  {
+  unless ( $options{module} ) {
+    print STDERR "You must supply a module name for Plugins.\n";
+    help();
+  }
+}
+else {
+  $options{binding} = lc($options{module}) unless exists $options{binding} && ! exists $options{plugin};
+  $options{module} = ucfirst($options{binding}) unless defined $options{module};
+}
+
+
+my $default_path = ".";
+
+if ( $ENV{CONFIG_PATH} ) {
+   $default_path =~s!/config!! if $ENV{CONFIG_PATH} =~/\/config$/;
+}
+
+my $path = exists $options{dir} ? $options{dir} : $default_path;
+
+$path = exists $options{system} ? '@perl5_pkglibdir@' : $path;
+my $plugin_type = exists $options{plugin} ? 'Plugin' : 'Application Plugin';
+my $plugin_path = exists $options{plugin} ? "BLM" : "BLM/Startup";
+my $test_file = exists $options{plugin} ? lcfirst($options{module}) : $options{binding};
+
+version(1);
+print <<eom;
+Options:
+\tpath:    [$path]
+\tmodule:  [$options{module}]
+\tbinding: [$options{binding}]
+\ttype:    [$plugin_type]
+
+eom
+
+unless ( exists $options{replace} ) {
+  if (  -s "$path/$plugin_path/$options{module}.pm" ||
+	-s "$path/config.d/plugin/$options{binding}.xml" ) {
+   print STDERR  "error: $path/$plugin_path/$options{module}.pm already exists. Specify -r to replace.\n" if -s "$path/$plugin_path/$options{module}.pm";
+   print STDERR "error: $path/config.d/plugin/$options{binding}.xml already exists. Specify -r to replace.\n" if -s "$path/config.d/plugin/$options{binding}.xml";
+  help();
+ }
+}
+else {
+  print "warning: $path/$plugin_path/$options{module}.pm will be replaced.\n" if -s "$path/$plugin_path/$options{module}.pm";
+  print "warning: $path/config.d/plugin/$options{binding}.xml will be replaced.\n" if -s "$path/config.d/plugin/$options{binding}.xml";
+  print "warning: $options{binding}.roc will be replaced.\n" if -s "$path/$options{binding}.roc";
+}
+
+foreach ("$path/config.d", "$path/config.d/plugin", "$path/BLM", "$path/BLM/Startup") {
+  unless ( -d $_ ) {
+    unless ( mkdir "$_" ) {
+      print STDERR "Could not create directory $_.  Check permissions.\n";
+      exit;
+    };
+  }
+}
+
+
+open FILE, ">$path/$plugin_path/$options{module}.pm" or die "Could not open $path/$plugin_path/$options{module}.pm for writing.";
+print FILE sprintf(&create_plugin(), $options{module}, $options{module}, $options{module});
+close FILE;
+
+unless ( exists $options{plugin} ) {
+  open FILE, ">$path/config.d/plugin/$options{binding}.xml" or die "Could not open $path/config.d/plugin/$options{binding}.xml for writing.";
+  print FILE sprintf(&create_xml(), $options{binding}, $options{module});
+  close FILE;
+}
+
+open FILE, ">$path/$test_file.roc" or die "Could not open $path/$options{binding}.roc for writing.";
+if ( exists $options{plugin} ) {
+  print FILE <<eom;
+<plugin:$options{module}><var \$$options{module}.version()>
+eom
+  }
+else {
+  print FILE sprintf("<var \$%s.version()>\n", $options{binding});
+}
+close FILE;
+
+print "created: $path/$plugin_path/$options{module}.pm\n" if -s "$path/$plugin_path/$options{module}.pm";
+print "created: $path/config.d/plugin/$options{binding}.xml\n" if -s "$path/config.d/plugin/$options{binding}.xml" && ! exists $options{plugin};
+print "created: $options{binding}.roc\n" if -s "$options{binding}.roc";
+
+print <<eom;
+
+Try:
+\texport CONFIG_PATH=$path/config
+\tbedrock $path/$test_file.roc
+
+eom
+
+sub create_xml {
+  return <<eot;
+<object>
+  <scalar name="binding">%s</scalar>
+  <scalar name="module">BLM::Startup::%s</scalar>
+  <object name="config">
+  </object>
+</object>
+eot
+}
+
+sub create_plugin {
+  return &_create_plugin if $options{plugin};
+  return &_create_application_plugin;
+}
+
+sub _create_plugin {
+  return <<eom;
+package BLM::%s;
+
+use strict;
+use vars qw/\@ISA \$VERSION/;
+
+use Bedrock::Plugin;
+
+\@ISA = qw/Bedrock::Plugin/;
+
+\$VERSION = 1.0;
+
+sub init_plugin {
+  my \$self = shift;
+  my \@args = \@_;
+
+  return \$VERSION;
+}
+
+sub version {
+  my \$self = shift;
+
+  return \$VERSION;
+}
+
+1;
+
+eom
+
+}
+
+sub _create_application_plugin {
+
+  return <<eom;
+package BLM::Startup::%s;
+
+use strict;
+use vars qw/\@ISA \$VERSION/;
+
+use Bedrock::Application::Plugin;
+
+\@ISA = qw/Bedrock::Application::Plugin/;
+
+\$VERSION = 1.0;
+
+sub version {
+  my \$self = shift;
+
+  return \$VERSION;
+}
+
+
+\=pod
+
+=head1 PUBLIC
+
+BLM::Startup::%s
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+This is the %s Application Plugin.
+
+=head1 METHODS
+
+=head1 SEE ALSO
+
+=head1 AUTHOR
+
+=cut
+
+1;
+eom
+}
+
+# $Log$
+# Revision 1.1  2011/07/17 16:59:10  eutl420
+# first check-in
+#
