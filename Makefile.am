@@ -36,6 +36,7 @@ EXTRA_DIST = \
 
 MAINTAINERCLEANFILES = config.status \
                        config.log    \
+                       bedrock.spec  \
                        $(PACKAGE)-$(VERSION).tar.gz \
                        *~
 
