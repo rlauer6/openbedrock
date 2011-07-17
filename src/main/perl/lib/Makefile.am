@@ -199,12 +199,12 @@ dist_noinst_DATA = \
 # So instead of:
 #
 # BEGIN {
-#     $VERSION = do { my @r = (q\$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+#     $VERSION = do { ... };
 # }
 #
 # We'll evaluate the regexp and set $VERSION as a constant
 #
-##    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+##    $VERSION = do { ... };
 #    $VERSION = 1.10;
  
 SUFFIXES = .pm .pm.in
