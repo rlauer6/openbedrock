@@ -18,7 +18,7 @@ bin_SCRIPTS = $(GPERLSCRIPTS)
 
 $(GPERLSCRIPTS): % : %.pl.in 
 	$(do_subst) $< > $@
-	perl -wc $@
+	perl -wc -I $(builddir)/../lib $@
 
 CLEANFILES = $(GPERLSCRIPTS)
 
