@@ -6,7 +6,7 @@ dnl +-------------------------+
 
 dnl FIXME: Use 'bedrock-dev@signatureinfo.com' (or whatever) for
 dnl        the bug reporting address once the mailman server is set up.
-AC_INIT([bedrock], [2.1.4-snapshot], [rlauer@signatureinfo.com])
+AC_INIT([bedrock], [2.2.0-snapshot], [rlauer@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -168,7 +168,6 @@ ads_PERL_MODULE([IO::Handle], [REQUIRED])
 ads_PERL_MODULE([IO::Scalar], [REQUIRED])
 #
 ads_PERL_MODULE([JSON], [REQUIRED])
-ads_PERL_MODULE([JSON::PP], [REQUIRED])
 ads_PERL_MODULE([Net::FTP], [REQUIRED], [2.56])
 ads_PERL_MODULE([Net::SMTP], [REQUIRED], [2.15])
 ads_PERL_MODULE([Term::ReadKey],  [REQUIRED])
