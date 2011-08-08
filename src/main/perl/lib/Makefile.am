@@ -26,9 +26,9 @@ perl5blmstartuplibdir 	      = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir  = $(perl5libdir)/BLM/Startup/Session
 
 
-dist_perl5lib_DATA = Bedrock.pm
+perl5lib_DATA = Bedrock.pm
 
-dist_perl5bedrocklib_DATA = \
+perl5bedrocklib_DATA = \
     Bedrock/BedrockConfig.pm \
     Bedrock/Context.pm \
     Bedrock/BedrockCGI.pm \
@@ -44,31 +44,44 @@ dist_perl5bedrocklib_DATA = \
     Bedrock/Log.pm \
     Bedrock/Plugin.pm
 
-dist_perl5bedrockapplicationlib_DATA = \
+BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
+
+perl5bedrockapplicationlib_DATA = \
     Bedrock/Application/Plugin.pm
 
-dist_perl5bedrockapachelib_DATA = \
+BEDROCK_APPLICATION=$(perl5bedrockapplicationlib_DATA:.pm=.pm.in)
+
+perl5bedrockapachelib_DATA = \
     Bedrock/Apache/Bedrock.pm \
     Bedrock/Apache/bedrock.pl \
     Bedrock/Apache/bedrock_sh.pl \
     Bedrock/Apache/Request_cgi.pm \
     Bedrock/Apache/Request_shell.pm
 
-dist_perl5bedrockcontextlib_DATA = \
+BEDROCK_APACHE=$(perl5bedrockapachelib_DATA:.pm=.pm.in)
+
+perl5bedrockcontextlib_DATA = \
     Bedrock/Context/Shell.pm
 
+BEDROCK_CONTEXT=$(perl5bedrockcontextlib_DATA:.pm=.pm.in)
 
-dist_perl5bedrockhtmllib_DATA = \
+perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
 
-dist_perl5bedrockinputsourcelib_DATA = \
+BEDROCK_HTML=$(perl5bedrockhtmllib_DATA:.pm=.pm.in)
+
+perl5bedrockinputsourcelib_DATA = \
     Bedrock/InputSource/Term.pm
 
-dist_perl5bedrocktextlib_DATA = \
+BEDROCK_INPUTSOURCE=$(perl5bedrockinputsourcelib_DATA:.pm=.pm.in)
+
+perl5bedrocktextlib_DATA = \
     Bedrock/Text/TagX.pm \
     Bedrock/Text/URLEncode.pm
 
-dist_perl5bedrocktexttagxlib_DATA = \
+BEDROCK_TEXT=$(perl5bedrocktextlib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/Error.pm \
     Bedrock/Text/TagX/Expr.pm \
     Bedrock/Text/TagX/Func.pm \
@@ -80,11 +93,15 @@ dist_perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/TAG.pm \
     Bedrock/Text/TagX/Term.pm
 
-dist_perl5bedrocktexttagxtaglib_DATA = \
+BEDROCK_TEXT_TAGX=$(perl5bedrocktexttagxlib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtaglib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody.pm \
     Bedrock/Text/TagX/TAG/WithBody.pm
 
-dist_perl5bedrocktexttagxtagnobodylib_DATA = \
+BEDROCK_TEXT_TAGX_TAG=$(perl5bedrocktexttagxtaglib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Array.pm \
     Bedrock/Text/TagX/TAG/NoBody/Plugin.pm \
     Bedrock/Text/TagX/TAG/NoBody/Case.pm \
@@ -100,7 +117,9 @@ dist_perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Trace.pm \
     Bedrock/Text/TagX/TAG/NoBody/Var.pm
 
-dist_perl5bedrocktexttagxtagwithbodylib_DATA = \
+BEDROCK_TEXT_TAGX_TAG_NOBODY=$(perl5bedrocktexttagxtagnobodylib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtagwithbodylib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/Cache.pm \
     Bedrock/Text/TagX/TAG/WithBody/Catch.pm \
     Bedrock/Text/TagX/TAG/WithBody/If.pm \
@@ -109,34 +128,48 @@ dist_perl5bedrocktexttagxtagwithbodylib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/Snippet.pm \
     Bedrock/Text/TagX/TAG/WithBody/Try.pm
 
-dist_perl5bedrocktexttagxtagwithbodyiflib_DATA = \
+BEDROCK_TEXT_TAGX_TAG_WITHBODY=$(perl5bedrocktexttagxtagwithbodylib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtagwithbodyiflib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/If/Else.pm
 
-dist_perl5bedrocktexttagxtagwithbodylooplib_DATA = \
+BEDROCK_TEXT_TAGX_TAG_WITHBODY_IF=$(perl5bedrocktexttagxtagwithbodyiflib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtagwithbodylooplib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/Loop/Foreach.pm \
     Bedrock/Text/TagX/TAG/WithBody/Loop/SQLSelect.pm \
     Bedrock/Text/TagX/TAG/WithBody/Loop/While.pm
 
-dist_perl5bedrocktexttagxtermlib_DATA = \
+BEDROCK_TEXT_TAGX_TAG_WITHBODY_LOOP=$(perl5bedrocktexttagxtagwithbodylooplib_DATA:.pm=.pm.in)
+
+perl5bedrocktexttagxtermlib_DATA = \
     Bedrock/Text/TagX/Term/String.pm \
     Bedrock/Text/TagX/Term/Var.pm
 
-dist_perl5bedrockxmllib_DATA = \
+BEDROCK_TEXT_TAGX_TERM=$(perl5bedrocktexttagxtermlib_DATA:.pm=.pm.in)
+
+perl5bedrockxmllib_DATA = \
     Bedrock/XML/Container.pm
 
-dist_perl5bedrockxmlcontainerlib_DATA = \
+BEDROCK_XML=$(perl5bedrockxmllib_DATA:.pm=.pm.in)
+
+perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \
     Bedrock/XML/Container/Object.pm \
     Bedrock/XML/Container/Scalar.pm
 
+BEDROCK_XML_CONTAINER=$(perl5bedrockxmlcontainerlib_DATA:.pm=.pm.in)
+
 # Plugins
 # -------
 
-dist_perl5blmindexedtablehandlerlib_DATA = \
+perl5blmindexedtablehandlerlib_DATA = \
     BLM/IndexedTableHandler/RecordSet.pm \
     BLM/IndexedTableHandler/Common.pm
 
-dist_perl5blmlib_DATA = \
+BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
+
+perl5blmlib_DATA = \
     BLM/Awk.pm \
     BLM/Benchmark.pm \
     BLM/Date.pm \
@@ -160,7 +193,9 @@ dist_perl5blmlib_DATA = \
     BLM/SiteFactory.pm \
     BLM/XML.pm
 
-dist_perl5blmstartuplib_DATA = \
+BLM=$(perl5blmlib_DATA:.pm=.pm.in)
+
+perl5blmstartuplib_DATA = \
     BLM/Startup/Bedrock.pm \
     BLM/Startup/Config.pm \
     BLM/Startup/Cookie.pm \
@@ -179,13 +214,36 @@ dist_perl5blmstartuplib_DATA = \
     BLM/Startup/UserSession.pm \
     BLM/Startup/Tiles.pm
 
-dist_perl5blmstartupsessionlib_DATA = \
+BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
+
+perl5blmstartupsessionlib_DATA = \
     BLM/Startup/Session/GDBM.pm \
     BLM/Startup/Session/SDBM.pm
 
+BLM_STARTUP_SESSION=$(perl5blmstartupsessionlib_DATA:.pm=.pm.in)
+
 dist_noinst_DATA = \
-    Bedrock/VERSION.pm \
-    Bedrock/Apache/Request_shell.pm
+    Bedrock.pm.in \
+    $(BEDROCK) \
+    $(BEDROCK_APPLICATION) \
+    $(BEDROCK_APACHE) \
+    $(BEDROCK_CONTEXT) \
+    $(BEDROCK_HTML) \
+    $(BEDROCK_INPUTSOURCE) \
+    $(BEDROCK_TEXT) \
+    $(BEDROCK_TEXT_TAGX) \
+    $(BEDROCK_TEXT_TAGX_TAG) \
+    $(BEDROCK_TEXT_TAGX_TAG_NOBODY) \
+    $(BEDROCK_TEXT_TAGX_TAG_WITHBODY) \
+    $(BEDROCK_TEXT_TAGX_TAG_WITHBODY_IF) \
+    $(BEDROCK_TEXT_TAGX_TAG_WITHBODY_LOOP) \
+    $(BEDROCK_TEXT_TAGX_TERM) \
+    $(BEDROCK_XML) \
+    $(BEDROCK_XML_CONTAINER) \
+    $(BLM_INDEXEDTABLEHANDLER) \
+    $(BLM) \
+    $(BLM_STARTUP) \
+    $(BLM_STARTUP_SESSION)
 
 @do_subst_command@
 
