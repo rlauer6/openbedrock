@@ -29,6 +29,8 @@ use File::Basename;
 
 use Bedrock;
 use Bedrock::Context;
+use Text::URLEncode qw/Htmlencode/;
+
 
 use Text::TagX;
 
@@ -36,6 +38,7 @@ use Apache::Bedrock;
 use Apache::Request_cgi;
 
 use BLM::Startup::UserSession;
+use IO::Scalar;
 
 # new( CONTENT_TYPE => content-type,
 #      LOGDIR       => dir,
@@ -174,9 +177,43 @@ sub exec {
 
   map { $tx->param( $_ => $args{$_} ) } keys %args;
 
-  $tx->output;
+  eval {
+    $tx->output;
+  };
+
+  if ( $@ ) {
+    $self->clear;
+    
+    my $err = Htmlencode( $@ );
+    my $err_fd = IO::Scalar->new(\$err);
+    
+    # offending snippet line
+    my $line_no = $1 if  $err =~/line\s*(\d+)/;
+    
+    my @lines = <$err_fd>;
+    $err_fd->close;
+    my $line = 1;
+    my $fline;
+
+    for ( 1..$#lines-1 ) {
+      $fline = sprintf("%-3d", $line);
+      $lines[$line] =~s/^/\[$fline\] /;
+      $lines[$line] = '<span style="color:red;font-weight:800;">' . $lines[$line] . '</span>' if $line_no == $line;
+      $line++;
+    }
+
+    for (0, $#lines) {
+      $lines[$_] = '<div style="font-size:125%;margin:10px;color:purple;font-weight:800;">' . $lines[$_] . '</div>';
+    }
+    
+    $err = join('', @lines);
+    $@ = "<pre>$err</pre>";
+  }
+
   $tx->close;
   $output_fd->close;
+
+  die $@ if $@;
 
   return $output;
 }
@@ -292,6 +329,29 @@ C<Bedrock::Config> object.
 
  $bedrock->config->get_module_config( 'UserSession' );
 
+=head2 exec
+
+Use the Bedrock templating engine to create output from a Bedrock
+snippet and a hash of values.
+
+  my $snippet = '<var $foo>';
+  my $foo = "Hello World!";
+
+  $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
+
+C<exec()> will throw an exception which contains an HTML listing and
+diagnosis if the snippet cannot b interpretted.  It's up to you to
+catch this and do something interesting (like send it to the browser)
+with it.  Anything in the print buffer prior to the error is removed.
+
+  eval {
+    $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
+  };
+
+  if ( $@ ) {
+    $bedrock->print( $@ );
+  }
+
 =head2 log
 
 Write a message to the script's log file.  See the C<new()> method.
@@ -346,6 +406,10 @@ C<CGI.pm>
 =cut
 
 # $Log$
+# Revision 1.7  2011/08/13 16:07:31  eutl420
+# - create some pod for exec() method
+# - trap errors from Text::TagX and create a nice formatted snippet listing
+#
 # Revision 1.6  2011/08/13 14:53:21  eutl420
 # - new exec() method that implements Bedrock templating so you can pass a Bedrock snippet and
 #   a hash of objects
