@@ -376,7 +376,7 @@ AC_OUTPUT
 # ancient *nices, but at ChoicePoint/Signature Information Solutions,
 # LLC we can be confident that a non-total-suck shell is being
 # used. We may need to beef something up to /find/ it, but there
-# should definately be a shell installed that understands functions...
+# should definitely be a shell installed that understands functions...
 #
 # Prints on stdout the fully expanded path represented by the value in
 # the SHELL_VAR_NAME param. Does /not/ assign the expanded value to
