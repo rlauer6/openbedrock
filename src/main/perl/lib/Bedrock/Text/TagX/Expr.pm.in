@@ -37,6 +37,7 @@ BEGIN
 
 use UNIVERSAL;
 use TagX::Log;
+use Scalar::Util qw(looks_like_number);
 
 my $Verbose;
 
@@ -51,7 +52,7 @@ sub new
     if ( ref( $op_or_lhs ) ) {
 	my $op = shift @_;
 	die "Invalid operator in expression\n" if ref( $op );
-	if ( $op eq '+' ) {
+	if ( $op =~/[\+\-\.\*\/]/ ) {
 	    die "Insufficient number of arguments(", $nargs - 1, ") to operator `$op'\n"
 		unless $nargs > 2;
 	    @{$self} = ($op_or_lhs, $op);
@@ -63,7 +64,7 @@ sub new
 		if ( @_ > 1 ) {
 		    $op_or_lhs = shift @_;
 		    die "Operator `$op_or_lhs' is illegal here: must be `+' only.\n"
-			if ref( $op_or_lhs ) or $op_or_lhs ne '+';
+			if ref( $op_or_lhs ) or ( $op_or_lhs ne '+' && $op_or_lhs ne '.');
 		    push @{$self}, $op_or_lhs;
 		}
 	    }
@@ -115,10 +116,11 @@ sub eval
 	    # binary operators
 	    $op = shift @args;
 	    die "Invalid operator `$op'.\n"
-		unless $op =~ /^(--(eq|ne|gt|ge|lt|le|re|or|and|ref)|\+)$/i;
+		unless $op =~ /^(--(eq|ne|gt|ge|lt|le|re|or|and|ref)|[\+\.\-\*\/])$/i;
 	    $op = lc($1);
 	    &log_message( undef, "op is [$op]" ) if $Verbose;
-	    if ( $op eq '+' ) {
+
+	    if ( $op =~/[\+\-\.\*\/]/ ) {
 		$l->verbose(1) if $Verbose;
 		my $str = $l->eval( @_ );
 		$l->verbose(0) if $Verbose;
@@ -126,7 +128,60 @@ sub eval
 		do {
 		    $l = shift @args;
 		    $l->verbose(1) if $Verbose;
-		    $str .= $l->eval( @_ );
+		    my $str2 = $l->eval( @_ );
+
+		    for ( $op ) {
+		      # arithmetic addition or string catenation
+		      /\+/ && do {
+			if ( looks_like_number( $str ) && looks_like_number( $str2 ) ) {
+			  $str = $str + $str2;
+			}
+			else {
+			  $str .= $str2;
+			}
+			last;
+		      };
+
+		      # multiplication or string replication
+		      /\*/ && do {
+			if ( looks_like_number( $str ) && looks_like_number( $str2 ) ) {
+			  $str = $str * $str2;
+			}
+			elsif ( looks_like_number( $str2) ) {
+			  $str = $str x $str2;
+			}
+			next;
+		      };
+
+		      # division or string reduction?
+		      /\// && do {
+			if ( looks_like_number( $str ) && looks_like_number( $str2 ) ) {
+			  $str = $str / $str2 if $str2;
+			}
+			else {
+			  # not sure yet
+			}
+			last;
+		      };
+
+		      # subtraction or replacement with null
+		      /\-/ && do {
+			if ( looks_like_number( $str ) && looks_like_number( $str2 ) ) {
+			  $str = $str - $str2;
+			}
+			else {
+			  $str =~s/$str2//g;  # "foobar" - "bar" = "foo" ?
+			}
+			last;
+		      };
+
+		      # string catenation
+		      /\./ && do {
+			$str .= $str2;
+			last;
+		      };
+		    }
+		      
 		    $l->verbose(0) if $Verbose;
 		    $op = shift @args if @args > 1;
 		} while ( @args > 0 );
@@ -216,6 +271,9 @@ sub eval
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.21  2011/08/18 21:58:52  eutl420
+# - allow ./* and + to support arithmetic and overload string ops
+#
 # Revision 1.20  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #
