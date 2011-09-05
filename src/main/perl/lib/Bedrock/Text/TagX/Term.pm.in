@@ -1,4 +1,4 @@
-#!@PERL@ -w
+ #!@PERL@ -w
 
 # ident "@(#) $Header$"
 # ident "@(#)        $Name$"
@@ -44,6 +44,7 @@ my $Verbose = 0;
 sub new {
   my $class = shift;
   my $term = shift;
+  my $verbose = shift;
   bless \$term, $class;
 }
 
@@ -54,6 +55,24 @@ sub verbose
 	$Verbose = shift;
     }
     $Verbose;
+}
+
+sub _find_in_context {
+  my $self = shift;
+  my $name = shift;
+
+  my $found;
+
+  for my $context (@_) {
+    if ( exists $context->{$name} ) {
+      $found = $context->{$name};
+      &log_message( undef, "$self: [$name] found as [$found] in [$context]" )
+	if $Verbose > 1;
+      last;
+    }
+  }
+
+  return $found;
 }
 
 sub resolve_var
@@ -90,15 +109,7 @@ sub resolve_var
       }
     }
     
-    my $found;
-    for my $context (@_) {
-      if ( exists $context->{$first} ) {
-	$found = $context->{$first};
-	&log_message( undef, "$self: [$first] found as [$found] in [$context]" )
-	  if $Verbose > 1;
-	last;
-      }
-    }
+    my $found = $self->_find_in_context( $first, @_);
 
     &log_message( undef, "$self: Value of [$first] is [$found]" ) if $Verbose;
     return undef unless defined( $found );
@@ -116,6 +127,27 @@ sub resolve_var
 	    &log_message( undef, "$self: [$found] is an array" ) if $Verbose > 1;
 	    $found = $found->[$i];
 	    next;
+	}
+	# simple scalar variable indexing supported $foo.[$i]
+	elsif ( /^\Q[\E\$([a-z_]\w*)\Q]\E/oi ) {
+
+	  my $i = $self->_find_in_context( $1, @_);
+
+	  die "undefined index [\$" . "]\n"
+	    unless defined $i;
+
+	  die "invalid index value [", $i, "]\n"
+	    unless $i =~/^-?[\d]+$/;
+
+	  &log_message( undef, "$self: looking for array item with index [$i]" ) if $Verbose > 1;
+	  unless ( &UNIVERSAL::isa( $found, 'ARRAY') ) {
+	    &log_message( undef, "$self: [$found] is not an array." ) if $Verbose;
+	    return undef;
+	  }
+
+	  &log_message( undef, "$self: [$found] is an array" ) if $Verbose > 1;
+	  $found = $found->[$i];
+	  next;
 	}
 
 	if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
@@ -167,7 +199,6 @@ sub var_exists
 
     # Remove leading `$'
     $name =~ s/^\$//;
-    $Verbose = 3;
 
     # Split name into components
     my @components = split /\./oi, $name;
@@ -275,6 +306,9 @@ sub var_exists
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.22  2011/09/05 16:51:34  eutl420
+# - support for indexing arrays using simple scalar variables added ($foo.[$i])
+#
 # Revision 1.21  2011/08/31 02:52:12  eutl420
 # - fixed --exists, and added support for --defined
 #
