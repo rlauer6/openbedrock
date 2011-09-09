@@ -15,11 +15,12 @@ use strict;
 
 use Bedrock::Hash;
 use Bedrock::Array;
+
 use IO::File;
 use IO::Handle;
 use TagX::Scalar;
 
-@ISA = qw(Bedrock::Hash);
+@ISA = qw( Bedrock::Handle IO::File );
 
 =pod
 
@@ -41,7 +42,7 @@ C<BLM::FileIO> - An interface to IO::File
 
 
  <plugin:FileIO>
- <while "$FileIO.getline(1)"><var $_>
+ <while $FileIO.handle><var $_>
  </while>
 
 =head1 DESCRIPTION
@@ -80,15 +81,15 @@ If C<pathname> is not given, then STDIN is opened for reading.
 
 =cut
 
-sub TIEHASH
+sub TIEHANDLE
 {
     my $class = shift;
     my $file = shift;
     my $mode = shift || "r";
 
     my $self = bless {}, $class;
-    my $fh;
 
+    my $fh;
     if ( $file  ) { 
       $fh = IO::File->new($file, $mode);
     }
@@ -104,12 +105,122 @@ sub TIEHASH
     $self;
 }
 
-sub DESTROY
-{
-    my $self = shift;
 
-    $self->{'handle'}->close;
+sub _self {
+  my $self = shift;
+
+  $self = $self->isa('HASH') ? $self : tied(*{$self});
 }
+
+sub READ {
+  my $self = shift;
+
+  $self->{handle}->read(@_);
+}
+
+sub READLINE { 
+  my $self = shift;
+
+  return undef unless defined $self->{handle} && ! $self->{handle}->eof();
+
+  my $line = $self->{handle}->getline;
+  chomp $line if $self->{chomp_mode};
+
+  return $line;
+}
+
+sub EOF {
+  my $self = shift;
+
+  return $self->{handle}->eof;
+}
+
+sub BINMODE {
+  my $self = shift;
+
+  $self->{handle}->binmode(@_);
+}
+
+sub OPEN {
+  my $self = shift;
+
+  $self->{handle}->open(@_);
+}
+
+
+sub PRINT {
+  my $self = shift;
+
+  $self->{handle}->print(@_);
+}
+
+sub WRITE {
+  my $self = shift;
+
+  $self->{handle}->write(@_);
+}
+
+sub WRITE {
+  my $self = shift;
+
+  $self->{handle}->write(@_);
+}
+
+sub GETC {
+  my $self = shift;
+
+  $self->{handle}->getc(@_);
+}
+
+sub SEEK {
+  my $self = shift;
+
+  $self->{handle}->seek(@_);
+}
+
+sub TELL {
+  my $self = shift;
+
+  $self->{handle}->tell(@_);
+}
+
+
+sub PRINTF {
+  my $self = shift;
+
+  $self->{handle}->printf(@_);  
+}
+
+sub CLOSE
+{
+  $_[0]->close();
+}
+
+sub chomp_mode {
+  my $self = _self(shift);
+
+  return $self->{chomp_mode} = $_[0];
+}
+
+sub getlines { 
+  my $self = _self(shift);
+
+  my @lines = $self->{'handle'}->getlines;
+  return Bedrock::Array->new( @lines );
+}
+
+sub close
+{
+  my $self = _self(shift);
+  
+  $self->{'handle'}->close() 
+    if defined $self->{'handle'} && $self->{'handle'}->can('close');
+
+  $self->{handle} = undef;
+}
+
+# deprecated
+sub not_eof { return ! $_[0]->{'handle'}->eof; }
 
 =pod
 
@@ -117,32 +228,22 @@ sub DESTROY
 
 =head2 close
 
-=cut
+Close the file.
 
-# just over IO::Handle function calls
-sub close
-{
-    my $self = shift;
-
-    $self->{'handle'}->close;
-}
-
-=pod
-
-=head2 getlines chomp-mode
+=head2 getlines
 
 Return a Bedrock array containing all of the lines of the file.  If
 C<chomp-mode> is true, trailing new line characters will be removed.
 
  <plugin:FileIO "file.txt">
- <null:lines $FileIO.getlines(1)>
+ <null:lines $FileIO.getlines()>
 
-=head2 getline chomp-mode
+=head2 getline
 
 Return a line from the file. Optinally remove new line.
 
  <plugin:FileIO "file.txt">
- <null:lines $FileIO.getlines(1)>
+ <null:lines $FileIO.getline()>
 
 =head2 eof
 
@@ -162,116 +263,52 @@ Return a line from the file. Optinally remove new line.
 
 See C<IO::File> for a complete description of these methods.
 
-=cut
+=head2 chomp_mode
 
-sub getline { 
-  
-  my $handle = $_[0]->{'handle'};
-  return undef if $handle->eof;
+Set the chomp mode.  Lines read will have trailing new lines
+characters removed if set to true.
 
-  my $line = $handle->getline;
-  chomp $line if $_[1];
-
-  return $line;
-}
-
-sub getlines { 
-  my @lines = $_[0]->{'handle'}->getlines;
- 
-  @lines = map { s/[\n\r]//; $_; } @lines
-    if $_[1];
-
-  return Bedrock::Array->new( @lines );
-}
-
-sub eof { return $_[0]->{'handle'}->eof; }
-sub flush { return $_[0]->{'handle'}->flush; }
-sub read { my $self = shift; return $self->{'handle'}->read(@_); }
-sub write { my $self = shift; return $self->{'handle'}->write(@_); }
-sub sysread { my $self = shift; return $self->{'handle'}->sysread(@_); }
-sub syswrite { my $self = shift; return $self->{'handle'}->syswrite(@_); }
-sub truncate { my $self = shift; return $self->{'handle'}->truncate(@_); }
-sub getc { return $_[0]->{'handle'}->getc; }
-
-=pod
-
-=head2 not_eof
-
-Convenience routine for determining if you are NOT at the C<eof>
-condition for a file handle.  You need this to implement a loop across a
-file handle as show below.
-
-  <while "$FileIO.not_eof()">
-  ...
-  </while>
-
-I<Note that the construction:>
-
-  <while "--not $FileIO.eof()">
-  ...
-  </while>
-
-I<...will not work! Bedrock does not allow expressions as the while
-loop argument. Bedrock essentially evaluates the value of the term as
-a boolean.>
-
-=cut
-
-sub not_eof { return ! $_[0]->{'handle'}->eof; }
-
-=pod
+ <null $FileIO.chomp_mode(1)>
 
 =head2 printf(FMT, [ARGS])
 
 Formatted print, using 'C' style format string.
 
-=cut
-
-sub printf { my $self = shift; return $self->{'handle'}->printf(@_); }
-
-=pod
-
-=head2 print( data )
-
-Write C<data> to file.
-
-=cut
-
-sub print { my $self = shift; return $self->{'handle'}->printf(@_); }
-
-# see - man 'stat'
-
-=pod
-
 =head2 stat
 
-I<See C<perlfunc stat> for more details>
-
-As a convenience, the 8th, 9th, and 10th elements of the return array
-which represent the last access time, modify time, and create time
-respectively are returned as array objects since they are themselves
-Unix time values.
+I<See C<perlfunc -f stat> for more details>
 
 I<See also C<BLM::Stat>, C<BLM::Date>>
+
+=head2 localtime
+
+Convenience routine to return localtime, typically used against 8th,
+9th, 10th elements of the C<stat()> method return array.
+
+  <null:stat $FileIO.stat()>
+
+  <null:atime $FileIO.localtime($stat.[8])>
+  <null:mtime $FileIO.localtime($stat.[9])>
+  <null:ctime $FileIO.localtime($stat.[10])>
+
+  #  0    1    2     3     4    5     6     7     8
+    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)
 
 =cut
 
 sub stat
 {
-    my $self = shift;
+  my $self = _self(shift);
+  
+  my @info = $self->{'handle'}->stat;
 
-    my @info = $self->{'handle'}->stat;
-    my @tmp;
-    for (my $i=8; $i<11; $i++) {
-	# these elements are time doobies
-	@tmp = localtime($info[$i]);
-	# save the time doobie at the end of the array
-	push(@tmp, $info[$i]);
-	# co-erce them into a real array
-	$info[$i] = Bedrock::Array->new(@tmp);
-    }
+  return Bedrock::Array->new(@info);
+}
 
-    return Bedrock::Array->new(@info);
+sub localtime {
+  my $self = _self(shift);
+
+  return Bedrock::Array->new( CORE::localtime(shift) );
 }
 
 =head1 SEE ALSO
@@ -284,12 +321,24 @@ Rob Lauer - rlauer@signatureinfo.com
 
 =head1 CREDITS
 
-Just a wrapper on C<IO::File>.  Credit to that author.
+Just a wrapper on C<IO::File>.
 
 =cut
 
 1;                                                                                                                                                                                                         
 # $Log$
+# Revision 1.12  2011/09/09 17:40:16  eutl420
+# - BLM::FileIO has now been implemented as a handle.  This version essentially breaks compatibility with
+#   the previous version of the API in several significant ways.  Since this is probably going to be deployed
+#   as Bedrock 2.3.0, users should be wary of the upgrade anyway and carefully read the release notes.
+# - reverted the getline(), getlines() methods to their standard form, removing the chomp flag, instead
+#   implementing a chomp_mode() method that sets the chomp mode
+# - the stat() method previously tacked on 3 columns that contained Bedrock array references to
+#   the return value of localtime on the atime, mtime, and ctime elements of the stat array.  This version
+#   of FileIO removes those values and implements a localtime() convenience method that returns the localtime
+#   array given the time argument.  This was done to make the stat() method behave in a true fashion to the
+#   standard stat() implementation
+#
 # Revision 1.11  2011/08/31 02:43:42  eutl420
 # - getline() now accepts chomp-mode as well
 # - if no filename is given, then STDIN is opened, especially useful with bedrock shell
