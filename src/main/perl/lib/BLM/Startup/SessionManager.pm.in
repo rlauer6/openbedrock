@@ -37,7 +37,10 @@ BEGIN {
 use Carp;
 use Digest::MD5;
 use POSIX qw(strftime);
-  
+use File::Path;
+use File::Temp qw/tempfile/;
+use IO::Handle;
+
 use Bedrock::XML;
 use Bedrock::Hash;
 use TagX::Log;
@@ -870,12 +873,105 @@ sub remember_user
 			       );
 }
 
-
 sub encrypt {
   my $obj = shift;
   my $self = tied(%{$obj});
   
   return crypt($_[0], $_[1]);
+}
+
+sub create_session_dir {
+  my $obj = shift;
+  my $sub_dir = shift;
+
+  my $self = tied(%{$obj});
+
+  my $session_id = $self->{'session'};
+
+  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
+
+  die "No SESSION_DIR defined.\n"
+    unless $session_dir;
+
+  $session_dir .= "/$session_id";
+
+  unless ( -d "$session_dir/$sub_dir" ) {
+    &log_message(undef, "creating directory $session_dir/$sub_dir")
+      if $verbose;
+
+    eval {
+      mkpath( "$session_dir/$sub_dir" );
+    };
+
+    &log_message(undef, "Unable to create $session_dir/$sub_dir\n$@\n")
+      if $@;
+
+    die "Unable to create $session_dir/$sub_dir\n"
+      if $@;
+  }
+
+  return "$session_dir/$sub_dir";
+}
+
+sub cleanup_session_dir {
+  my $self = shift;
+
+  my @args = 'session_cleaup_dir';
+
+  if ( @_ > 0 ) {
+    push @args, $_[0] ? 'yes' : 'no';
+  }
+
+  return $self->config( @args );
+}
+
+sub create_session_tempfile {
+  my $obj = shift;
+  my $template = shift;
+  my %options = @_;
+
+  my $self = tied(%{$obj});
+  my $session_id = $self->{'session'};
+
+  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+
+  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
+
+  die "No SESSION_DIR defined.\n"
+    unless $session_dir;
+
+  $session_dir .= "/$session_id";
+
+  $obj->create_session_dir( $session_dir) 
+    unless -d $session_dir;
+
+  my %local_options;
+
+  if ( $options{DIR} ) {
+    $session_dir .= $options{DIR};
+  }
+
+  $local_options{DIR} = $session_dir;
+  $local_options{SUFFIX} = $options{SUFFIX} if exists $options{SUFFIX};
+
+  my ($fh, $filename) = tempfile($template, %local_options);
+
+  return Bedrock::Array->new($fh, $filename);
+}
+
+sub config {
+  my $obj = shift;
+  my $self = tied(%{$obj});
+
+  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
+
+  if ( @_ > 1 ) {
+    $config->{$_[0]} = $_[1];
+  }
+  else {
+    return $config->{$_[0]};
+  }
 }
 
 sub cookieless_session {
@@ -1299,6 +1395,13 @@ sub closeBLM
 1;
 
 # $Log$
+# Revision 1.8  2011/09/09 17:51:13  eutl420
+# - implemented several new methods to support the notion of specific session directories.  Since apps have been using the
+#   SESSION_DIR by adding per session directories, these need to be removed when sessions expire.
+#   * create_session_dir() - allows apps to create session directories
+#   * cleanup_session_dir() - sets a flag that indicates that session directories should be cleaned up
+#   * create_session_tempfile() - creates a temporary file in the current session directory
+#
 # Revision 1.7  2011/08/10 21:44:13  eutl420
 # pod tweaks
 #
