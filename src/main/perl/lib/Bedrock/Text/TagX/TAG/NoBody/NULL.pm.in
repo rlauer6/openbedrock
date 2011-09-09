@@ -27,17 +27,19 @@ package TagX::TAG::NoBody::NULL;
 
 use strict;
 
-BEGIN
-  {
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r if @r};
-  }
+BEGIN {
+  use Exporter ();
+  use vars	qw ($VERSION @ISA);
+  $VERSION    = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r if @r};
+}
 
 use Bedrock::Hash;
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
 use Bedrock::Dump;
+use Bedrock::XML;
+
+use Data::Dumper;
 
 use XML::Simple;
 use XML::Parser;
@@ -51,12 +53,18 @@ sub finalize
   {
     my ($self, $tx, @context) = @_;
 
-    my %options = ('define-var=s'	=> undef,
+    my %options = (
+		   'bedrock-xml'        => undef,
+		   'define-var=s'	=> undef,
 		   'define-array=s'	=> undef,
 		   'default=s'          => undef,
+		   'file'               => undef,
 		   'create-object=s'	=> undef,
 		   'define-object=s'    => undef,
 		   'expand-args'        => undef,
+		   'expand-all'         => undef,
+		   'expand'             => undef,
+                   'handle'             => undef,
 		   'json'               => undef,
 		   'xml'                => undef,
 		   'filter-hash=s'      => undef
@@ -71,6 +79,11 @@ sub finalize
     my $tag_opts = $self->parse_tag_name( $argv[0] );
     &log_message($self, sprintf("ARGV[0] => [%s], 1 =>  [%s], 2 => [%s]", $argv[0], @{$tag_opts}{qw(type name)} )) if $verbose;
 
+    # synonymous tags
+    if ( exists $options{'expand'} ) {
+      $options{'expand-args'} = 1;
+    }
+
     if ( $tag_opts->{type} ) {
       if ($tag_opts->{type} =~/(object|hash)/) {
 	$options{'create-object'} = $tag_opts->{name};
@@ -83,6 +96,13 @@ sub finalize
     } elsif ($tag_opts->{name}) {
       $options{'define-var'} = $tag_opts->{name};
       shift @argv;
+    }
+
+    if ( exists $options{'handle'} && ( @argv != 1 || ! (-r $argv[0] || $argv[0]->can('getline'))) ) {
+      die "Use only 1 argument with --handle option and must be a handle.\n";
+    }
+    elsif ( exists $options{'file'} && ( @argv != 1 || ref($argv[0])) ) {
+      die "Use only 1 argument with --file option and must be filename.\n";
     }
 
     if ( exists $options{'create-object'} ) {
@@ -116,7 +136,22 @@ sub finalize
 
     die "Use `--json only' only for `--define-var'.\n"
       if exists $options{'json'} and exists $options{'define-array'};
-    
+
+    # locally define $_
+    unless (exists $options{'define-var'} ||
+	    exists $options{'define-object'} || 
+	    exists $options{'define-array'} ) {
+
+      # see if current context has a default variable?
+      &log_message(undef, 
+		   "Warning! You are about to overwrite the default variable \$_ => (" . 
+		   $context[0]->{'_'} . ")!"
+		  ) 
+	if exists $context[0]->{'_'};
+
+      $options{'define-var'} = '_';
+    }
+
     if ( exists $options{'define-var'} ) {
       # Vanilla define-var does the following
       #  1. If there is a single argument, the argument is bound to the
@@ -131,20 +166,57 @@ sub finalize
 	# of quoting that resulted in the parser creating multiple
 	# arguments - q{{foo:1, bar:2}}
 
-	if ($options{'json'}) {
+	if ( exists $options{'json'} ) {
 	  my $json_string = join('', @argv);
 	  $json_string = $json_string || $options{'default'};
-	  $tx->param($options{'define-var'}, Bedrock::JSON::decode($json_string));
+	  $tx->param( $options{'define-var'} => Bedrock::JSON::decode($json_string));
 	} else {
-	  $tx->param( $options{'define-var'} => Bedrock::Array->new(@argv) );
+	  # arguments may be taken solely as list, first as expanded, or all as expanded...
+	  if ( exists $options{'expand-args'} && UNIVERSAL::isa($argv[0], 'ARRAY') ) {
+	    my $ref = shift @argv;
+	    $tx->param( $options{'define-var'} => Bedrock::Array->new(@{$ref}, @argv) );    
+	  }
+	  elsif ( exists $options{'expand-all'} ) {
+	    my @list;
+	    foreach ( @argv ) {
+	      (UNIVERSAL::isa($_, 'ARRAY')) ?  push @list, @{$_} : push @list, $_;
+	    }
+	    $tx->param( $options{'define-var'} => Bedrock::Array->new( @list ) );
+	  }
+	  else {
+	    $tx->param( $options{'define-var'} => Bedrock::Array->new( @argv ) );
+	  }
 	}
       } elsif ( @argv == 1 ) {
-	&log_message( $self, "Assigning $argv[0] to $options{'define-var'}" ) if $verbose;
-	if (defined $options{'json'}) {
+	&log_message( $self, "Assigning $argv[0] to $options{'define-var'}" ) 
+	  if $verbose;
+	
+	if ( defined $options{'file'} || defined $options{'handle'} ) {
+	  my $fh = ref($argv[0]) ? $argv[0] : IO::File->new($argv[0], "r");
+	  die "Could not open file ($argv[0]) for reading." 
+	    unless -r $fh || $fh->can('getline');
+
+	  local $/;
+	  $argv[0] = <$fh>;
+          close $fh;
+	}
+
+	if ( defined $options{'json'} ) {
 	  my $json = Bedrock::JSON->new($argv[0] || $options{'default'});
 	  &log_message($self, "in NULL " . Bedrock::Dump::compact($json->decode)) if $verbose;
 	  $tx->param($options{'define-var'} => $json->decode);
-	} elsif (defined $options{'xml'} ) {
+	}
+	elsif (defined $options{'bedrock-xml'}) {
+	  my $xml;
+
+	  if ( ref($argv[0]) && -r $argv[0] )  {
+	    $xml = Bedrock::XML->new( $argv[0] );
+	  }
+	  else {
+	    $xml = Bedrock::XML->newFromString( $argv[0] );
+	  }
+	  $tx->param($options{'define-var'} => $xml || $options{'default'});
+  	} elsif (defined $options{'xml'} ) {
 	  my $config = $tx->out_handle->{Handle}->{'CONFIG'};
 	  my $options = $config->{XML}->{in}->devolve;
 	  my $xml = XML::Simple->new(%{$options});
@@ -182,10 +254,15 @@ sub finalize
       # define-array explicitly specifies array creation with the arguments, if any
       &log_message( $self, "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
 	if $verbose;
-      if ( defined $options{'expand-args'} && UNIVERSAL::isa($argv[0], 'ARRAY') ) {
-	$tx->param( $options{'define-array'} => Bedrock::Array::Reference->new($argv[0]) );
+      if ( defined $options{'expand-args'} || defined $options{'expand-args'} ) { 
+	# 
+	my @list;
+	foreach ( @argv ) {
+	  (UNIVERSAL::isa($_, 'ARRAY')) ?  push @list, @$_ : push @list, $_;
+	}
+	$tx->param( $options{'define-array'} => Bedrock::Array->new( @list ) );
       } else {
-	$tx->param( $options{'define-array'} => Bedrock::Array->new(@argv) );
+	$tx->param( $options{'define-array'} => Bedrock::Array->new( @argv ) );
       }
     } elsif ( exists $options{'define-object'} ) {
       # define-object creates an object and does the following
@@ -314,6 +391,8 @@ objects when no output is desired.
 
 =head1 OPTIONS
 
+ --bedrock-xml
+ --expand-args
  --define-var    = "var-name"
  --define-array  = "var-name"
  --define-object = "var-name"
@@ -323,20 +402,47 @@ objects when no output is desired.
 
 =over 5
 
+=item --bedrock-xml
+
+Consider the input to be a scalar string (or an open filehandle) that
+represents a valid Bedrock XML object (or valid Bedrock XML file).
+This has the effect of essentially deserializing the string file into
+a Bedock object.
+
+ <plugin:FileIO ($env.BEDROCK_CONFIG_PATH + "/tagx.xml")>
+ <null:tagx --bedrock-xml $FileIO.handle>
+ <trace --output $tagx>
+
+
+ <null:foo a b c d>
+ <trace --output $foo>
+
+ <null:xml $foo.bedrock_xml()>
+
+ <null:foo --bedock-xml $xml>
+ <trace --output $foo>
+
+=item --expand-args
+
+Expand array objects into lists.  If the C<--define-var> option is
+used, this only applies to the first object in the list.  If the
+C<--define-array> option is used, then all array references are
+expaned into lists.
+
 =item --define-var
 
 Create a scalar, array or object (only if no content).
 
 =item --define-array
 
-Create an Bedrock array.
+Create a Bedrock array.
 
 =item --define-object
 
 Create a Bedrock hash. All Bedrock hashes are ordered, with the
 exception of those created using the C<--json> option.
 
- <null:foo --define-object red 1 green 2 blue 3>
+ <null --define-object="foo" red 1 green 2 blue 3>
 
 =item --create-object
 
@@ -352,7 +458,7 @@ For C<--define-var> consider the string to be a JSON string.
 
 =item --xml
 
-For C<--define-var> consider the string to be as XML string.  Consider using
+For C<--define-var> consider the string to be an XML string.  Consider using
 the C<< <sink> >> tag for this purpose.
 
  <null $config.XML('in', 'KeepRoot', 0)>
@@ -409,6 +515,14 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<Bedrock::Array>, C<Bedrock::Hash>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.36  2011/09/09 19:36:25  eutl420
+# - added options --bedrock-xml, --file, --handle, --expand, --expand-all
+#   --bedrock-xml argument can be a handle or a scalar
+#   --file argument can be a handle or a filename to slurp
+#   --expand <=> --expand-args
+#   --expand-args is equivalent to --expand-all if you say --define-array
+#   --expand-all will flatten all elements (1-level)
+#
 # Revision 1.35  2011/08/31 02:57:02  eutl420
 # - create an undefined scalar instead of a Bedrock::Hash in the case where someone creates a Bedrock object thusly:
 #   <null:foo>, previous version created a Bedrock::Hash which really makes no sense.
