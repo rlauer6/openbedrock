@@ -39,6 +39,7 @@ use UNIVERSAL qw (isa);
 
 use TagX::Log;
 use TagX::TAG::WithBody::Loop;
+use Data::Dumper;
 
 @ISA = qw (TagX::TAG::WithBody::Loop);
 
@@ -55,41 +56,49 @@ sub finalize
 		   'define-var=s'	=> '_',
 		   'start-index=i'	=> undef,
 		   'end-index=i'	=> undef,
-		   'max-items=i'	=> undef);
+		   'max-items=i'	=> undef,
+		  );
+
     my @argv = $self->parse_options (\%options, @context);
+
     my $verbose = $self->verbose;
     $self->dump_options( \%options ) if $verbose;
 
-
-    if ( @argv > 1 ) {
-	&log_message( $self, "Invalid number of argument(@{[scalar(@argv)]}):\n\t(@argv)");
-	return;
-    } elsif ( ref($argv[0]) ) {
-	&log_message( $self, "Invalid type of argument (must be a string):\n\t(@argv)");
-	return;
-    }
-
     # <while "expression"> : expression must be non-null
+    # <while ref --op term> 
+    # <while handle>       : valid
     # <while 0 >           : valid
     # <while "" >          : invalid
-    
-    unless ( exists $self->{'__term'} || ! @argv || ! length($argv[0]) ) {
-      local($_) = $argv[0];
-      $self->{'__term'} = &TagX::Parser::parse_stm;
-
-      if ( $self->{'__term'}->can('verbose') ) {
-	$self->{'__term'}->verbose( $verbose );
-      }
-
-      &log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
-	if $verbose;
+    if ( @argv > 1 ) {
+      $self->{'__term'} = TagX::Expr->new( @argv );
     }
     else {
-      &log_message($self, "term[?]: ". Bedrock::Dump::compact([$self->{'__term'}])) if $verbose;
+      if ( ref($argv[0]) =~/(string|var)/i) {
+	$argv[0] = $argv[0]->eval( @context );
+	&log_message(undef, "eval: $argv[0]");
+      }
+      # so we either parse the expression to get something that can be eval'd, say
+      # a TagX::Term or TagX::Expr or we have a (hopefully) a handle
+      unless ( ref($argv[0]) || exists $self->{'__term'} || ! @argv || ! length($argv[0]) ) {
+	# force the argument to <while> to be an expression
+	local($_) = ($argv[0]=~/^\s*\(/) ? $argv[0] : "(" . $argv[0] . ")";
+	
+	$self->{'__term'} = &TagX::Parser::parse_stm;
+	&log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
+	  if $verbose;
+      }
+      else {
+	$self->{'__term'} = $argv[0];
+	&log_message( $self, "__term set to [$argv[0]]" )
+	if $verbose;
+      }
     }
-    
+
     my $term = $self->{'__term'};
-    &log_message($self, "term: ". Bedrock::Dump::compact([$term])) if $verbose;
+    if ( $term && $term->can('verbose') ) {
+	$term->verbose( $verbose );
+      }
+
     my @children = @{$self->{'subobjs'}};
     
     my $start = defined( $options{'start-index'} ) ? $options{'start-index'} : 0;
@@ -106,23 +115,47 @@ sub finalize
     }
     my $define_index = $options{'define-index'} if exists $options{'define-index'};
     my $define_var = $options{'define-var'} if exists $options{'define-var'};
-    &log_message( $self, "begin loop with term = [$argv[0]], start = [$start], end = [$end], define-index = [$define_index], define-var = [$define_var]" ) if $verbose;
+
+    &log_message( $self, 
+		  "begin loop with term = [$argv[0]], " . 
+		  "start = [$start], " .
+		  "end = [$end], " .
+		  "define-index = [$define_index], " . 
+		  "define-var = [$define_var]" )
+      if $verbose;
 
     unless (defined $end || defined $term) {
-      die "usage: <while> requires either an expression to evaluate, --max-items, or --end-index\n";
+      die "usage: <while> requires either a handle, an expression to evaluate, --max-items, or --end-index\n";
     }
 
     for (my $i = 0 ;; $i++ ) {
       last if defined( $end ) and $i > $end;
       my $data;
 
-      &log_message($self, "term: ". Bedrock::Dump::compact([$term])) if $verbose;
+      &log_message($self, "term: ". Bedrock::Dump::compact([$term])) 
+	if $verbose;
 
       # if there is no term to evaluate then don't
       if ( $term ) {
-	$data = defined( $define_index ) ? $term->eval( {$define_index => $i}, @context ) : $term->eval( @context );
-	&log_message( $self, "Loop $i: Condition [$argv[0]] evaluated to [$data] ("
-		      . (defined( $data ) ? "defined" : "undefined") . ")" ) if $verbose;
+
+	if ( $term->can('eval') ) {
+	  $data = defined ( $define_index ) ? $term->eval( {$define_index => $i}, @context ) : $term->eval( @context );
+	}
+	elsif ( -r $term  || $term->can('getline')) {
+          &log_message(undef, "..reading from handle");
+	  $data = <$term>;
+	}
+
+	&log_message( $self, 
+		      sprintf("Loop %d : Condition [%s] evaluated to [%s] (%s)",
+			      $i, 
+			      $argv[0], 
+			      $data, 
+			      defined( $data ) ? "defined" : "undefined"
+			     )
+		    )
+	  if $verbose;
+
 	last unless defined( $data ) and $data;
       }
 
@@ -134,7 +167,8 @@ sub finalize
       $loop_data->{$define_var} = (defined $term) ? $data : $i;
 
       $loop_data->{$define_index} = $i if defined( $define_index );
-      
+
+      # verbose debugging
       if ( defined($verbose) and $verbose > 1 ) {
 	my $str = "Loop $i >>\n";
 	for my $key (sort keys %{$loop_data}) {
@@ -157,21 +191,14 @@ Iterate over a block while a condition is true.
 
 =head1 SYNTAX
 
-  <while [options] [expression]>
+  <while [options] [expression|handle]>
   </while>
 
 =head1 DESCRIPTION
 
-The C<E<lt>whileE<gt>> tags is one of those tags that we wish would
-die.  First of all, it's a programming construct that is designed to
-iterate until some condition becomes false.  In and of itself it is
-not a page construction tag, but rather a flow control tag.  We don't
-like that.
-
-You are encouraged to think hard about how to do something on your
-Bedrock page with a tag or method call rather than using the
-C<E<lt>whileE<gt>> tag.  Better to write a Plugin that simply provides
-some output or performs an atomic action.
+The C<E<lt>whileE<gt>> tag will iterate over an expression until it is
+evaluated to be false.  It can also iterate over a handle until
+end-of-file.
 
 =head1 OPTIONS
 
@@ -185,9 +212,9 @@ some output or performs an atomic action.
 
 =item --define-var
 
-Variable to hold the term value that is evaluated each time through
-the loop (default = "_").  Note that if no expression is given the
-loop variable will take on the value of the iterator.
+Variable to hold the expression's value that is evaluated each time
+through the loop (default = "_").  Note that if no expression is given
+the loop variable will take on the value of the iterator.
 
 =item --define-index
 
@@ -209,6 +236,14 @@ Maximum number of iterations
 
 A Bedrock expression that will be evaluated to a true or false value.
 
+=item handle
+
+A handle object that at least implements the C<eof()> and C<getline()>
+methods (for example the C<FileIO> plugin).
+
+ <plugin:FileIO "/usr/lib/bedrock/config/tagx.xml">
+ <while $FileIO.handle><var $_></while>
+
 =back
 
 =head1 EXAMPLE
@@ -217,10 +252,16 @@ A Bedrock expression that will be evaluated to a true or false value.
     <var $_>
   </while>
 
+  <while "$array.length() --gt 5">
+    <var $array.shift()>
+  </while>
+
 =head1 NOTE
 
-C<E<lt>whileE<gt>> may not be terribly useful in practice as there are
-usually much better and safer ways to iterate.
+The C<E<lt>whileE<gt>> tag straddles the line between page assembly
+and programming. Abuse of this tag will land you on the programming
+side.  There are usually better ways to accomplish the task than to
+resort to using this tag, however it may find some benign uses.
 
 =head1 SEE OTHER
 
@@ -232,6 +273,18 @@ C<E<lt>foreachE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.19  2011/09/09 19:58:13  eutl420
+# - the new while tag is here! it looks and smells like <if>, to get there we made a host of changes regarding
+#   the way the arguments are processed.  Now the tag arguments (options) are processed in a similar way as
+#   <if>, i.e. all options are arguments, except we modified TAG class so that the eval_args method would not
+#   evaluate arguments if the TAG isa while tag.
+#
+#   This means instead of seeing the evaluated arguments we see Bedrock classes like Terms and Vars.
+#   We then convert them to an expression since that's essentially what they should be. If there was only 1 argument,
+#   it could way we allow it to be a file handle or it may be an old school expression. If it's not a handle, then we
+#   put parens around the argument anyway to force the statement parser to create an expression.
+#   The expression is evaluated or we read from the handle, each time through the loop. It seems to work.
+#
 # Revision 1.18  2011/09/04 21:49:14  eutl420
 # - turn verbosity on for object if it can('verbose')
 #
