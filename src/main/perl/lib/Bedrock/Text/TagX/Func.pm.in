@@ -58,10 +58,10 @@ sub verbose
 }
 
 sub eval
-{
+  {
     my $self = shift;
     &log_message( undef, "$self: begin eval with @{[scalar(@{$self})]} items: (@{$self})" )
-	if $Verbose;
+      if $Verbose;
 
     my ($var, $func) = @{$self}[0,1];
     my $obj = $var->eval( @_ );
@@ -69,72 +69,137 @@ sub eval
 
     # Create a scalar object if we do have a scalar
     unless ( ref( $obj ) ) {
-	$obj = TagX::Scalar->new( $obj );
-	&log_message( undef, "$self: Created object with scalar: [$obj]" ) if $Verbose;
+      $obj = TagX::Scalar->new( $obj );
+      &log_message( undef, "$self: Created object with scalar: [$obj]" ) if $Verbose;
     }
     my $ref = ref( $obj );
 
-    if ( $ref eq 'HASH' ) {
-	&log_message( undef, "$self: unsupported function ($func)" );
-	return;
-    } elsif ( $ref eq 'ARRAY' ) {
-	&log_message( undef, "$self: unsupported function ($func)" );
-	return;
+    #
+    # What happens when the object being parsed in order to invoke a
+    # method is not an object that can invoke the method?  
+    #
+    # I think there are two choices here, either die or return
+    # undef...which is not what Jay's original code did.
+    #
+    # The code previously would return nothing, hence callers who
+    # invoked eval thusly:
+    #
+    # push @args, $term->eval( @_ );
+    #
+    # ...pushed nothing onto, @args, i.e. an empty array, which is to
+    # say @args may now be "unbalanced".  Turns out that will through
+    # Bedrock parsing out the window if, for example we were expected
+    # to get a value for the left hand side of an expression (the <if>
+    # or <while> tags come to mind...
+    #
+    # this may have been just a bug, OTOH, when the method is just not
+    # found it is still possible the class provides an implementation
+    # via AUTOLOAD
+    # 
+    # Bedrock 2.3.0 - being the compatibility busting version that it
+    # is, will fix this behavior once and for all.
+    #
+    # 1. If the object is a HASH or ARRAY, then clearly this is stupid:
+    #    $obj.func()
+    #
+    # 2. If the object is a class and it hasn't advertised that it
+    #    'can' invoke the method, then die.  Caveat, emptor. You have
+    #    now been warned that AUTOLOAD'd methods are deprecated.
+    #
+    # In case you want to second guess this decision, consider the
+    # alternative.  You'll never know that your Bedrock statement had
+    # a typo.
+    #
+    #   <null $foo.sav($this)>
+    #
+    # which should have been:
+    #
+    #   <null $foo.saved($this)>
+    #
+    # will merrily do nothing except perhaps log a message in a log
+    # you'll never look at.
+
+    if ( $ref =~/(array|hash)/i ) {
+      die "unsupported function ($func)\n";
     } elsif ( $ref ) {
-	my $funcref = $obj->can( $func );
-	unless ( $funcref ) {
-	    &log_message( undef, "$self: unsupported function ($func)" );
-	    return;
-	}
-	my @args = @{$self};
-	shift @args; shift @args;
-	&log_message( undef, "$self: Arguments to $func() are (@args)" ) if $Verbose;
-	for (@args) {
-	    if ( $Verbose ) {
-		$_->verbose($Verbose);
-		my $value = $_->eval( @_ );
-		$_->verbose(0);
-		$_ = $value;
-	    } else {
-		$_ = $_->eval( @_ );
-	    }
-	}
+      my $funcref; 
+      $funcref = $obj->can( $func );
+
+      unless ( $funcref ) {
+	&log_message( undef, "$self: unsupported function ($func)" );
+      }
+      
+      my @args = @{$self};
+      shift @args; shift @args;
+      &log_message( undef, "$self: Arguments to $func() are (@args)" ) 
+	if $Verbose;
+
+      for (@args) {
 	if ( $Verbose ) {
-	    local $" = ", ";
-	    &log_message( undef, "$self: Invoking $obj->$func(@args)" );
+	  $_->verbose($Verbose);
+	  my $value = $_->eval( @_ );
+	  $_->verbose(0);
+	  $_ = $value;
+	} else {
+	  $_ = $_->eval( @_ );
 	}
-#
-#
-# Rob's Bedrock hack...
-# Well, Jay was right...Bedrock is JUNK! Useful junk, but junk none-the-less...
-#
-# Okay, we're trying to execute a method on an object, but it doesn't like to be called in a scalar context...say
-# IO::File->getlines for example...
-#
-# The code below forces the function to return something in an array context...this could be dangerous as some clever
-# perl programmers create those polymorphic methods that return scalars or arrays depending on how (context) they are called.
-# My gut tells me that Bedrock, in general, is not going to suffer since function references being invoked here are typically
-# BLMs and they are usually far from clever.
-#
-	my @ref_v = $funcref->($obj, @args);
-	my $v;
-	if (@ref_v > 1) {
-	  $v = \@ref_v;
-	}
-	else {
-	  $v = $ref_v[0];
-	}
-#	my $v = $funcref->($obj, @args);
-	&log_message( undef, "$self: Function call returned [$v]" ) if $Verbose;
-	return $v;
+      }
+
+      if ( $Verbose ) {
+	local $" = ", ";
+	&log_message( undef, "$self: Invoking $obj->$func(@args)" );
+      }
+      #
+      #
+      # Rob's Bedrock hack...
+      # Well, Jay was right...Bedrock is JUNK! Useful junk, but junk none-the-less...
+      #
+      # Okay, we're trying to execute a method on an object, but it doesn't like to be called in a scalar context...say
+      # IO::File->getlines for example...
+      #
+      # The code below forces the function to return something in an array context...this could be dangerous as some clever
+      # perl programmers create those polymorphic methods that return scalars or arrays depending on how (context) they are called.
+      # My gut tells me that Bedrock, in general, is not going to suffer since function references being invoked here are typically
+      # BLMs and they are usually far from clever.
+      # 
+      # so instead of doing just...
+      #	my $v = $funcref->($obj, @args);
+      # we'll do...
+      #
+      my @ref_v;
+      my $v;
+
+      if ( $funcref ) {
+	@ref_v= $funcref->($obj, @args);
+      } else {
+	&log_message( undef, "$self: eval function in case implemented via AUTOLOAD\n\@ref_v = $obj->$func(\@args);");
+
+	eval '@ref_v = $obj->' . $func . '(@args);';
+	die "$@"
+	  if $@;
+      }
+
+      if ( @ref_v > 1) {
+	$v = Bedrock::Array->new( @ref_v );
+      } else {
+	$v = $ref_v[0];
+      }
+	
+      &log_message( undef, "$self: Function call returned [$v]" ) 
+	if $Verbose;
+      return $v;
     }
-}
+  }
 
 1;
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.13  2011/09/10 15:52:47  eutl420
+# - die on malformed method invocations. We now eval the method call as a last resort in the event the method call
+#   is being implemented in an AUTOLOAD function.
+#
 # Revision 1.12  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #
