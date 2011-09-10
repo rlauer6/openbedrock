@@ -174,25 +174,13 @@ perl5blmlib_DATA = \
     BLM/Awk.pm \
     BLM/Benchmark.pm \
     BLM/Date.pm \
-    BLM/DBHandler.pm \
-    BLM/File.pm \
-    BLM/Filter.pm \
     BLM/FileIO.pm \
-    BLM/Fortune.pm \
-    BLM/Include.pm \
-    BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
-    BLM/Number.pm \
-    BLM/OrderedObject.pm \
-    BLM/Perldoc.pm \
     BLM/Recycle.pm \
-    BLM/Series.pm \
     BLM/FTP.pm \
     BLM/SMTP.pm \
     BLM/Stat.pm \
-    BLM/Timenow.pm \
-    BLM/SiteFactory.pm \
-    BLM/XML.pm
+    BLM/Timenow.pm
 
 BLM=$(perl5blmlib_DATA:.pm=.pm.in)
 
