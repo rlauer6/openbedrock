@@ -76,15 +76,18 @@ sub content
 }
 
 # upload_file(form-var-name, options ... | {})
-#  options: path =>
+#  options: path         =>
 #           Content-Type => scalar | []
-#           filename => name of file 
+#           filename     => name of file 
+#           maxsize      => 0/undef, unlimited
+
 sub upload_file {
   my $self = shift;
   my $form_var = shift;
   my $options = {};
-
+  
   my $fh = $self->cgi->param($form_var);
+
   my $platform = $self->cgi->param( 'platform' );
 
   die "upload_file upload error: ", $self->cgi->cgi_error() unless $fh;
@@ -106,11 +109,18 @@ sub upload_file {
     my @content_types;
     push @content_types, (UNIVERSAL::isa($content_type, 'ARRAY')) ? @$content_type : $content_type;
 
-    &LOG_MESSAGE(MSG_DEBUG, sprintf("upload_file acceptable content-types: %s", join(",", @content_types)));
-    die sprintf("upload_file content_type error: uploading (%s), must be one of (%s)", $self->cgi->uploadInfo($fh)->{'Content-Type'}, join(",", @content_types)) unless
-      grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'}}  @content_types;
+    &LOG_MESSAGE(MSG_DEBUG, 
+		 sprintf("upload_file acceptable content-types: %s", 
+			 join(",", @content_types))
+		);
+
+    die sprintf("upload_file content_type error: uploading (%s), must be one of (%s)", 
+		$self->cgi->uploadInfo($fh)->{'Content-Type'}, 
+		join(",", @content_types)) unless
+		  grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'}} @content_types;
   }
 
+  # if the file came from a WinDoze machine...set the parsing appropriately
   if ( $platform =~/win/i || $self->cgi->param( $form_var ) =~/^[a-z]:.*$/i ) {
     fileparse_set_fstype('MSWin32');
   }
@@ -124,18 +134,34 @@ sub upload_file {
   $upload_filename = $options->{filename} || ($name . $ext);
 
   my $uploaded_file = sprintf("%s/%s", $upload_path, $upload_filename);
-  &LOG_MESSAGE(MSG_INFO, sprintf("upload_file processing: file => [%s], content-type => [%s]\n", $uploaded_file, $self->cgi->uploadInfo($fh)->{'Content-Type'}));
+  &LOG_MESSAGE(MSG_INFO, 
+	       sprintf("upload_file processing: file => [%s], content-type => [%s]\n", 
+		       $uploaded_file, 
+		       $self->cgi->uploadInfo($fh)->{'Content-Type'})
+	      );
 
   open TEMPFILE, ">$uploaded_file";
   my $buffer;
   my $bytesread;
+  my $size;
+  my $maxsize = $options->{maxsize};
+
+  # allow 1k, 1m, etc.
+  if ( $maxsize ) {
+    $maxsize = $1 * 1024 if $maxsize =~/^(\d+)k/i;
+    $maxsize = $1 * 1024 * 1024 if $maxsize =~/^(\d+)m/i;
+  }
 
   while ($bytesread = read($fh, $buffer, 4096)) {
+    $size += $bytesread;
+    die "File size limit reached.\n" 
+      if $maxsize && $size >= $maxsize;
     &LOG_MESSAGE(MSG_DEBUG, sprintf("upload_file bytes read: %d", $bytesread));
     print TEMPFILE $buffer;
   }
 
   close TEMPFILE;
+
   if (-s $uploaded_file) {
     my @l = stat($uploaded_file);
     my $stat = Bedrock::Hash->new;
@@ -374,6 +400,9 @@ sub input
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.20  2011/09/14 18:51:52  eutl420
+# - support added for maxsize option to upload_file() method that restricts the size of files that can be uploaded
+#
 # Revision 1.19  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #
