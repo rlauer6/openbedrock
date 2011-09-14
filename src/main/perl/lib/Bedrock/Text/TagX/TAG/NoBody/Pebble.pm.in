@@ -58,79 +58,82 @@ sub finalize
     my $verbose = $self->verbose;
 
     $self->dump_options( \%options ) if $verbose;
-
-    my $input;
-
+    
     my $pwd = fastcwd;
+    my $input;
+    my $pebble_text;
+    my $pebble_name = 'anonymous';
+;
+
     if ( exists $options{'file'} ) {
-	$input = $options{'file'};
-	die "No file to exec.\n" unless length($input);
-	$input =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
-	die "Cannot exec `$input': is a directory.\n" if -d $input;
-	&log_message( $self, "Preparing to exec file [$input]" ) if $verbose;
-    } elsif ( exists $options{'object'} ) {
-	$input = $options{'object'};
-	&log_message( $self, "Preparing to exec object [$input]" ) if $verbose;
+      $pebble_name = $options{'file'};
+      $pebble_text = $tx->pebble($pebble_name, '.peb', 
+				 $pwd, @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)});
     } elsif ( exists $options{'pebble'} ) {
-	$input = $options{'pebble'};
-	die "Specify name of the pebble to exec.\n" unless length($input);
-	my $dir;
-	die "PEBBLE_DIR not specified in config: cannot exec pebble `$input'\n"
-	    unless $dir = $tx->getoption('PEBBLE_DIR');
-	my $file = $dir . '/' . $input;
-	$file =~ s/$/.peb/ unless $file =~ /\.peb$/;
-	die "Cannot exec pebble `$input': not found.\n" unless -f $file;
-	$input = $file;
+      $pebble_name = $options{'pebble'};
+      $pebble_text = $tx->pebble($pebble_name, '.peb', 
+				 @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)});
     }
     elsif ($argv[0] =~/^:/) {
       my $tag_opts = $self->parse_tag_name( shift @argv );
-      $tag_opts->{name} =~s/^(.*?)(\.peb)?$/$1/;
-      $input =  $1 . '.peb';
 
-      foreach my $dir ($pwd, $tx->getoption("PEBBLE_DIR"), $tx->getoption("BEDROCK_PEBBLE_DIR")) {
-	if (-s $dir . "/" . $input) {
-	  $input = $dir . "/" . $input;
-	  last;
-	}
-      }
-      die "Cannot exec pebble `$input': not found.\n" unless -s $input;
+      $tag_opts->{name} =~s/^(.*?)(\.peb)?$/$1/;
+      $pebble_name = $1;
+      $pebble_text = $tx->pebble($pebble_name, '.peb', @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)});
+    } elsif ( exists $options{'object'} ) {
+      $pebble_text = $options{'object'};
+      &log_message( $self, "Preparing to exec object [$input]" ) if $verbose;
     } elsif ( @argv ) {
-      my $buf = shift @argv;
-      if ( $verbose > 1 ) {
-	&log_message( $self, "Preparing to exec the following buffer (" . length( $buf ) . " bytes)\n"
-			  . $buf);
-      } elsif ( $verbose ) {
-	&log_message( $self, "Preparing to exec the following buffer (" . length( $buf ) . " bytes)\n"
-		      . substr( $buf, 0, 200 ) . "...." ) if $verbose;
-      }
-      $input = Bedrock::BufferStream->new($buf);
-      &log_message( $self, "Created a buffer stream object [$input]" ) if $verbose;
-    } else {
-      die "Must specify file or buffer as argument to <exec>.\n";
+      $pebble_text = shift @argv;
+    }
+    else {
+      die "Must specify file or buffer as argument to <pebble>.\n";
+    }
+
+    if ( $verbose > 1 ) {
+      &log_message( $self, 
+		    "Preparing to exec the following buffer (" . 
+		    length( $pebble_text ) . 
+		    " bytes)\n"
+		    . $pebble_text);
+    } elsif ( $verbose ) {
+      &log_message( $self, "Preparing to exec the following buffer (" . 
+		    length( $pebble_text ) . 
+		    " bytes)\n"
+		    . substr( $pebble_text, 0, 200 ) . "...." ) if $verbose;
     }
     
+    $input = Bedrock::BufferStream->new( $pebble_text );
+    $tx->store_pebble($pebble_name, $input);
+
+    &log_message( $self, "Created a buffer stream object [$input]" ) 
+      if $verbose;
+
+    die "Unable to find specified pebble ([$pebble_name].\n"
+      unless $input;
+
     my $subform = $tx->new ( $input );
     $tx->{'VARS'}->new_frame;
     
     my @expanded;
     if ( $options{'expand-args'} ) {
-	my $str = "Expanding arguments for <pebble>\n" if $verbose;
-	my $i = 0;
-	for my $item ( @argv ) {
-	    if ( ref($item) && &UNIVERSAL::isa($item, 'ARRAY') ) {
-		$str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
-		push @expanded, @{$item};
-	    } else {
-		$str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
-		push @expanded, $item;
-	    }
-	    $i++;
+      my $str = "Expanding arguments for <pebble>\n" if $verbose;
+      my $i = 0;
+      for my $item ( @argv ) {
+	if ( ref($item) && &UNIVERSAL::isa($item, 'ARRAY') ) {
+	  $str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
+	  push @expanded, @{$item};
+	} else {
+	  $str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
+	  push @expanded, $item;
 	}
-	&log_message( $self, $str ) if $verbose;
+	$i++;
+      }
+      &log_message( $self, $str ) if $verbose;
     } else {
-	@expanded = @argv;
+      @expanded = @argv;
     }
-
+    
     $tx->param('ARGV' => Bedrock::Array->new( @expanded ));
 
     &log_message( $self, "Starting the exec with [$subform] .." ) if $verbose;
@@ -295,6 +298,9 @@ C<E<lt>includeE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.13  2011/09/14 19:13:03  eutl420
+# - pebbles are now stored in a cache, we look for the cached pebble first
+#
 # Revision 1.12  2011/07/17 16:56:09  eutl420
 # - build .pm from .pm.in, added @PERL@
 #
