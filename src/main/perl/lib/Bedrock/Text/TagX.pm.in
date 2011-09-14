@@ -29,6 +29,8 @@ use strict;
 use Carp;
 use UNIVERSAL qw (isa);
 use IO::Scalar;
+use File::Basename;
+use Data::Dumper;
 
 BEGIN
 {
@@ -71,6 +73,7 @@ use TagX::TAG::WithBody::Loop;
 use TagX::TAG::WithBody::Loop::Foreach;
 use TagX::TAG::WithBody::Loop::SQLSelect;
 use TagX::TAG::WithBody::Loop::While;
+use TagX::TAG::WithBody::PebbleDef;
 use TagX::TAG::WithBody::Sink;
 use TagX::TAG::WithBody::Snippet;
 use TagX::TAG::WithBody::Try;
@@ -78,8 +81,8 @@ use TagX::Term;
 use TagX::Term::String;
 use TagX::Term::Var;
 
-$Text::TagX::Opentag_expr	= '^(array|case|pebble|blm|plugin|var|hash|include|sink|snippet|sql|sqlconnect|trace|foreach|sqlselect|while|if|unless|else?if|try|catch|raise|else|null|exec|open)(?=\W)';
-$Text::TagX::Closetag_expr	= '^(/sink|/snippet|/sqlselect|/foreach|/while|/if|/unless|/try)>';
+$Text::TagX::Opentag_expr	= '^(array|case|pebble|blm|plugin|var|hash|include|sink|snippet|sql|sqlconnect|trace|foreach|sqlselect|while|if|unless|else?if|try|catch|raise|else|null|exec|open|pebbledef)(?=\W)';
+$Text::TagX::Closetag_expr	= '^(/sink|/snippet|/sqlselect|/pebbledef|/foreach|/while|/if|/unless|/try)>';
 $Text::TagX::Options_expr	= '^\s*(([^>\\\\]|\\\\.)*)>';
 
 sub parse
@@ -96,6 +99,8 @@ sub parse
     my $file = $self->{'error'}->file;
 
     local($_);
+    my $raw;
+
   INPUT:
     while (<$input>) {
       # bedrock shell shebang
@@ -141,8 +146,8 @@ sub parse
 	  # New scan from here -- scan afresh for tags.
 	  # if no '<' found in line, skip line
 	  unless ( s/^(.*?)<//oi ) {
-	      $text .= $_ if length;
-	      next INPUT;
+	    $text .= $_ if length;
+	    next INPUT;
 	  }
 
 	  $text .= $1 if length($1);
@@ -151,7 +156,7 @@ sub parse
 	  # Check if we have a supported tag
 	  my $tag = $_;
 
-	  if (s/$Text::TagX::Opentag_expr//oi) {
+	  if ( ! $raw && s/$Text::TagX::Opentag_expr//oi) {
 
 	      # Yes we do
 	      # The text before the '<' needs to be processed.
@@ -282,12 +287,18 @@ sub parse
 		  };
 
 		  /^exec$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Exec->new );
+		      $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
 		      last;
 		  };
 
 		  /^pebble$/oi		and do {
 		      $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
+		      last;
+		    };
+
+		  /^pebbledef$/oi	and do {
+		      $obj = $obj->new_child( TagX::TAG::WithBody::PebbleDef->new );
+		      $raw = 1;
 		      last;
 		    };
 
@@ -335,27 +346,40 @@ sub parse
 	      }
 
 	  } elsif ( s/$Text::TagX::Closetag_expr//oi ) {
-
+              
 	      my $end = lc($1);
-	      die "Illegal tag-end encountered.\n" unless $obj->parent;
-	      $end = '/if' if $end eq '/unless';
+              if ( $raw ) {
+		if ( $end eq '/pebbledef' ) {
+		  $obj->text( $text );
+		  $obj = $obj->end_child;
+		  $raw = 0;
+		}
+		else {
+		  $text .= '<' . $1 . '>';
+		}
+		redo MAIN;
+	      }
+	      else {
+		die "Illegal tag-end encountered.\n" unless $obj->parent;
+		$end = '/if' if $end eq '/unless';
+		
+		$self->improper_end( $obj, $end ) 
+		  unless $obj->closure eq $end;
 
-	      $self->improper_end( $obj, $end ) 
-		unless $obj->closure eq $end;
-
-	      # A tag has ended. The text before the '<' needs to be processed.
-	      if ( length($text) ) {
+		# A tag has ended. The text before the '<' needs to be processed.
+		if ( length($text) ) {
 		  $obj->text ( $text );
 		  $text = '';
+		}
+		
+		# Check whether we have hit a tag-body-ending tag
+		# and if so, end the current object
+		$obj = $obj->end_child;
+		
+		# And rescan string for more tags
+		redo MAIN;
 	      }
-
-	      # Check whether we have hit a tag-body-ending tag
-	      # and if so, end the current object
-	      $obj = $obj->end_child;
-
-	      # And rescan string for more tags
-	      redo MAIN;
-	  } else {
+	    } else {
 
 	      # Unsupported tag hit -- output the '<' since we don't consume it
 	      $text .= '<';
@@ -368,8 +392,7 @@ sub parse
 
     if ( $obj->parent ) {
 	my ($file, $line) = $obj->start_location;
-	$self->{'error'}->line($line);
-	die "Tag on line $line, file $file not closed properly.\n";
+	die "Tag on line $line not closed properly.\n";
     }
 
     if ( length($text) ) {
@@ -519,6 +542,118 @@ sub define_name
     $found = $value;
 }
 
+sub define_pebble {
+  my $self = shift;
+  my %args = @_;
+  my ($name, $value );
+  
+  while ( ( $name, $value) = each %args ) {
+    if ( exists $self->pebble_cache->{ $name } ) {
+      &log_message(undef, "redefining pebble: [$name]");
+    }
+    if ( $value ) {
+      $self->store_pebble( $name, $value );
+    }
+    else {
+      &log_message(undef, "WARNING: undefined pebble: [$name]");
+    }
+  }
+}
+
+# return the pebble text or the pebble name from cache or file
+sub pebble {
+  my $self = shift;
+
+  my $pebble;
+  if (ref($_[0])) {
+    foreach $pebble (keys %{$self->pebble_cache} ) {
+      return $pebble if  $_[0] == $self->pebble_cache->{$pebble}->{handle};
+    }
+    return 'anonymous';
+  }
+  else {
+    $pebble = $self->fetch_pebble( $_[0] ); # look in cache, first
+    
+    unless ( $pebble ) {
+      my $file = $self->find_file( @_ );
+      $pebble = $self->fetch_pebble( $_[0], $file);
+    }
+  }
+
+  return $pebble;
+}
+
+# return a value from Bedrock's config or the config object
+sub config {
+  my $config = $_[0]->out_handle->{Handle}->{'CONFIG'};
+  return $_[1] ? $config->{$_[1]} : $config;
+}
+
+sub store_pebble {
+  my $self = shift;
+  my ($name, $value) = @_;
+
+  $self->pebble_cache->{ $name } = {} unless $self->pebble_cache->{ $name };
+  $self->pebble_cache->{ $name }->{name} = $name;
+  $self->pebble_cache->{ $name }->{ ref($value) ? 'handle' : 'value'} = $value;
+}
+
+sub pebble_cache { 
+   $_[0]->{PEBBLE_CACHE} || do {$_[0]->{PEBBLE_CACHE} = {}};
+}
+
+sub fetch_pebble {
+  my $self = shift;
+  my $pebble = shift;
+  my $pebble_file = shift;
+
+  # see if pebble is in cache
+  return $self->pebble_cache->{$pebble}->{value}
+    if exists $self->pebble_cache->{$pebble};
+  
+  return undef unless 
+    "$pebble_file" && -s $pebble_file;
+
+  open PEBBLE, "<$pebble_file";
+  my $pebble_text =  do { local $/; <PEBBLE> };
+  close PEBBLE;
+
+  # save in cache
+  $self->store_pebble( $pebble, $pebble_text);
+
+  $pebble_text;
+}
+
+# find a file using a progression locations to search
+# returns the fqp or undef
+sub find_file {
+  my $self = shift;
+  my $file = shift;
+  my $ext = shift;
+
+  # ~ (tilde) means DOCUMENT_ROOT
+
+  $file =~s/^\~/$ENV{'DOCUMENT_ROOT'}\//;
+
+  # if given an extension, then if the name does not have that
+  # extension, add it
+  if ( defined $ext && $file !~/\.(.*?)$/ ) {
+    $file .= $ext;
+  }
+
+  # @dirs is a list of directories to search
+  my @dirs = @_;
+  
+  return -e $file ? $file : undef if $file =~/^\//;
+  my @all_dirs = map { split /:/ } @dirs;
+
+  foreach ( map {  $_ . '/' . $file } @all_dirs ) {
+    return $_ if -e $_ ;
+  }
+
+  return undef;
+}
+
 sub param
 {
     my $self = shift;
@@ -650,8 +785,14 @@ sub close
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.64  2011/09/14 19:00:33  eutl420
+# - parse method can now parse a tag a "raw" text - as in PebbleDef
+# - <pebbledef> now added as a valid tag
+# - added some functions to support pebble cacheing
+# - find_file can be used to find a file given a path progression
+#
 # Revision 1.63  2011/09/09 18:35:11  eutl420
-# - slightly faster to check line first.
+# *** empty log message ***
 #
 # Revision 1.62  2011/08/18 21:59:25  eutl420
 # - added support for <unless> tag
