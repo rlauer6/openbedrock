@@ -27,12 +27,11 @@ package TagX::TAG::NoBody::SQL;
 
 use strict;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
 }
 
 use DBI;
@@ -42,192 +41,213 @@ use TagX::TAG::NoBody;
 
 @ISA = qw (TagX::TAG::NoBody);
 
-sub ANONYMOUS
-{
-    '*anonymous*';
+sub ANONYMOUS {
+  '*anonymous*';
 }
 
+sub finalize {
+  my ( $self, $tx, @context ) = @_;
 
-sub finalize
-{
-    my ($self, $tx, @context) = @_;
+  my %options = ( 'dbname=s'        => undef,
+                  'db=s',           => undef,
+                  'statement=s'     => undef,
+                  'bind=s'          => undef,
+                  'arg=s'           => undef,
+                  'define-var=s'    => '_',
+                  'define-handle=s' => undef
+                );
 
-    my %options = ('dbname=s'		=> undef,
-		   'db=s',		=> undef,
-		   'statement=s'	=> undef,
-		   'bind=s'		=> undef,
-		   'arg=s'		=> undef,
-		   'define-var=s'       => '_',
-		   'define-handle=s'    => undef
-		  );
+  my @argv = $self->parse_options( \%options, @context );
+  my $verbose = $self->verbose;
 
-    my @argv = $self->parse_options (\%options, @context);
-    my $verbose = $self->verbose;
+  $self->dump_options( \%options ) if $verbose;
 
-    $self->dump_options( \%options ) if $verbose;
+  @argv = $self->get_name( \%options, @argv );
 
-    @argv = $self->get_name(\%options, @argv);
+  my $name = $options{'dbname'};
+  &log_message( $self,
+                "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
+  if $name && $verbose;
 
-    my $name = $options{'dbname'};
-    &log_message( $self, "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
-	if $name && $verbose;
+  my $dbh;
+  if ( $options{'db'} ) {
+    $dbh = $options{'db'};
+  }
+  elsif ($name) {
+    $dbh = $tx->{'DB'}->{$name};
+    die "Unknown database connection named `$name'.\n" unless $dbh;
+  }
+  else {
+    $dbh = $tx->{'DB'}->{&ANONYMOUS};
+  }
 
-    my $dbh;
-    if ( $options{'db'} ) {
-      $dbh = $options{'db'};
-    } elsif ( $name ) {
-      $dbh = $tx->{'DB'}->{$name};
-      die "Unknown database connection named `$name'.\n" unless $dbh;
-    } else {
-      $dbh = $tx->{'DB'}->{&ANONYMOUS};
+  unless ( defined($dbh) and ref($dbh) ) {
+    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+    my $dsn;
+    if ( length( $ENV{'DBI_DSN'} ) ) {
+      $dsn = $ENV{'DBI_DSN'};
+      $options{username} = $options{username} || $ENV{DBI_USER};
+      $options{password} = $options{password} || $ENV{DBI_PASS};
+    }
+    elsif ( $config->{DBI_DSN} ) {
+      &log_message( $self, "DSN will be taken from configuration..." )
+      if $verbose;
+      $dsn = $config->{DBI_DSN};
+      $options{username} = $options{username} || $config->{DBI_USER};
+      $options{password} = $options{password} || $config->{DBI_PASS};
+      &log_message( $self,
+                    "DSN: $dsn username: "
+                    . $options{username}
+                    . " password: "
+                    . $options{password}
+                  ) if $verbose;
+    }
+    else {
+      die "No database connection to execute SQL statement."
+      . Dumper( [$config] ) . "\n"
+      if $verbose;
+      die "No database connection to execute SQL statement.\n";
     }
 
-    unless ( defined($dbh) and ref($dbh) )  {
-      my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-      my $dsn;
-      if ( length($ENV{'DBI_DSN'}) ) {
-	$dsn = $ENV{'DBI_DSN'};
-	$options{username} = $options{username} || $ENV{DBI_USER};
-	$options{password} = $options{password} || $ENV{DBI_PASS};
-      }
-      elsif ( $config->{DBI_DSN} ) {
-	&log_message($self, "DSN will be taken from configuration...") if $verbose;
-	$dsn = $config->{DBI_DSN};
-	$options{username} = $options{username} || $config->{DBI_USER};
-	$options{password} = $options{password} || $config->{DBI_PASS};
-	&log_message($self, "DSN: $dsn username: " . $options{username} . " password: ". $options{password}) if $verbose;
-      }
-      else {
-	die "No database connection to execute SQL statement." . Dumper([$config]) . "\n" 
-	  if $verbose;
-	die "No database connection to execute SQL statement.\n";
-      }
+    my $name = &ANONYMOUS;
 
-      my $name = &ANONYMOUS;
-    
-      $dbh = DBI->connect ( $dsn, @options{qw(username password)},
-			    {
-			      'AutoCommit' => 1,
-			      'PrintError' => 1,
-			      'RaiseError' => 1,
-			      'ChopBlanks' => 1
-			     } 
-			   );
-      die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+    $dbh = DBI->connect( $dsn,
+                         @options{qw(username password)},
+                         { 'AutoCommit' => 1,
+                           'PrintError' => 1,
+                           'RaiseError' => 1,
+                           'ChopBlanks' => 1
+                         }
+                       );
+    die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
 
-      &log_message( $self, "Connected to database, handle = <$dbh>\n" ) 
-	if $verbose;
-    
-      $tx->{'DB'}->{$name} = $dbh;
+    &log_message( $self, "Connected to database, handle = <$dbh>\n" )
+    if $verbose;
+
+    $tx->{'DB'}->{$name} = $dbh;
+  }
+
+  &log_message( $self, "Using database handle ($dbh)" )
+  if $verbose;
+
+  die "Specify SQL statement using --statement or as argument, not both.\n"
+  if exists $options{'statement'} and @argv > 0;
+
+  my $statement;
+  my $sth;
+
+  if ( exists $options{'statement'} ) {
+    $statement = delete $options{'statement'};
+  }
+  else {
+
+    if ( @argv == 1 && ref( $argv[0] ) ) {
+      $sth = shift @argv;
     }
+    else {
+      $statement = "@argv";
+    }
+  }
 
-    &log_message ( $self, "Using database handle ($dbh)")
+  unless ($sth) {
+    die "<sql>: no statement specified.\n"
+    unless length($statement);
+
+    if ( exists $options{'arg'} ) {
+      my @args =
+      &UNIVERSAL::isa( $options{'arg'}, 'ARRAY' )
+      ? @{ $options{'arg'} }
+      : ( $options{'arg'} );
+      &log_message( $self,
+                    "Substituting following args into statement:\n@args" )
       if $verbose;
 
-    die "Specify SQL statement using --statement or as argument, not both.\n"
-      if exists $options{'statement'} and @argv > 0;
-
-    my $statement;
-    my $sth;
-
-    if ( exists $options{'statement'} ) {
-      $statement = delete $options{'statement'};
-    } else {
-
-      if ( @argv == 1  && ref($argv[0]) ) { 
-	$sth = shift @argv;
-      }
-      else {
-	$statement = "@argv";
-      }
-    }
-
-    unless ( $sth ) {
-      die "<sql>: no statement specified.\n" 
-	unless length($statement);
-
-      if ( exists $options{'arg'} ) {
-	my @args = &UNIVERSAL::isa( $options{'arg'}, 'ARRAY')  ? @{$options{'arg'}} : ($options{'arg'});
-	&log_message( $self, "Substituting following args into statement:\n@args" ) 
-	  if $verbose;
-      
-	$statement = sprintf ($statement, @args);
-	&log_message( $self, "Statement after arg-substitution\n$statement" ) 
-	  if $verbose;
-      }
-      
-      $sth = $dbh->prepare ( $statement );
-      die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n" 
-	unless $sth;
-
-      if ( exists $options{'define-handle'} ) {
-	# future maintainers, note that the fact that we are storing
-	# the reference in Bedrock's "symbol table", means $sth will
-	# not be DESTROY'd when we leave this method.  Unlike the
-	# old-school use of the <sql> tag which did not allow for
-	# reusing the statement handle, and just let it go out of
-	# scope (without so much as a a $sth->finish).
-	$tx->param($options{'define-handle'} => $sth);
-
-	return;
-      }
-    } 
-    
-    my $nParams = $sth->{NUM_OF_PARAMS};
-
-    my @bind;
-    if ( exists $options{'bind'} ) {
-      die "Extra bind variables specified.\n" unless $nParams;
-      my $bind = $options{'bind'};
-      if ( ref( $bind ) and &UNIVERSAL::isa($bind, 'ARRAY') ) {
-	for my $item (@{$bind}) {
-	  if ( ref( $item ) and &UNIVERSAL::isa($item, 'ARRAY') ) {
-	    push @bind, @{$item};
-	  } else {
-	    push @bind, $item;
-	  }
-	}
-      } else {
-	@bind = ($bind);
-      }
-      
-      if ( $nParams < @bind ) {
-	die @bind - $nParams, " extra bind variable(s) specified.\n";
-      } elsif ( $nParams > @bind ) {
-	die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
-      }
-    } elsif ( $nParams ) {
-      die "SQL statement needs $nParams bind variable(s).\n";
-    }
-    
-    my $i = 1;
-    for my $bindval (@bind) {
-      my $type = $1 if defined($bindval) and $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
-      
-	if ( defined( $type ) ) {
-	  $sth->bind_param ( $i, $bindval, {TYPE => $type}) ||
-	    die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
-	} else {
-	  $sth->bind_param ( $i, $bindval ) ||
-	    die "Failure binding param $i: `", $sth->errstr, "'\n";
-	}
-      
-      &log_message( $self, "Bound ($i, $type, $bindval)" ) 
-	if $verbose;
-    } continue {
-      $i++;
-    }
-    
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
-      unless defined( $rows );
-
-    &log_message( $self, "Number of rows affected by statement is <$rows>" ) 
+      $statement = sprintf( $statement, @args );
+      &log_message( $self, "Statement after arg-substitution\n$statement" )
       if $verbose;
-    
-    $tx->param($options{'define-var'} => $rows);
+    }
 
-    $rows;
+    $sth = $dbh->prepare($statement);
+    die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n"
+    unless $sth;
+
+    if ( exists $options{'define-handle'} ) {
+
+      # future maintainers, note that the fact that we are storing
+      # the reference in Bedrock's "symbol table", means $sth will
+      # not be DESTROY'd when we leave this method.  Unlike the
+      # old-school use of the <sql> tag which did not allow for
+      # reusing the statement handle, and just let it go out of
+      # scope (without so much as a a $sth->finish).
+      $tx->param( $options{'define-handle'} => $sth );
+
+      return;
+    }
+  }
+
+  my $nParams = $sth->{NUM_OF_PARAMS};
+
+  my @bind;
+  if ( exists $options{'bind'} ) {
+    die "Extra bind variables specified.\n" unless $nParams;
+    my $bind = $options{'bind'};
+    if ( ref($bind) and &UNIVERSAL::isa( $bind, 'ARRAY' ) ) {
+      for my $item ( @{$bind} ) {
+        if ( ref($item) and &UNIVERSAL::isa( $item, 'ARRAY' ) ) {
+          push @bind, @{$item};
+        }
+        else {
+          push @bind, $item;
+        }
+      }
+    }
+    else {
+      @bind = ($bind);
+    }
+
+    if ( $nParams < @bind ) {
+      die @bind - $nParams, " extra bind variable(s) specified.\n";
+    }
+    elsif ( $nParams > @bind ) {
+      die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
+    }
+  }
+  elsif ($nParams) {
+    die "SQL statement needs $nParams bind variable(s).\n";
+  }
+
+  my $i = 1;
+  for my $bindval (@bind) {
+    my $type = $1
+    if defined($bindval)
+      and $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
+
+    if ( defined($type) ) {
+      $sth->bind_param( $i, $bindval, { TYPE => $type } )
+      || die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
+    }
+    else {
+      $sth->bind_param( $i, $bindval )
+      || die "Failure binding param $i: `", $sth->errstr, "'\n";
+    }
+
+    &log_message( $self, "Bound ($i, $type, $bindval)" )
+    if $verbose;
+  }
+  continue {
+    $i++;
+  }
+
+  my $rows = $sth->execute;
+  die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
+  unless defined($rows);
+
+  &log_message( $self, "Number of rows affected by statement is <$rows>" )
+  if $verbose;
+
+  $tx->param( $options{'define-var'} => $rows );
+
+  $rows;
 }
 
 =head1 TAG - C<E<lt>sqlE<gt>>
@@ -325,6 +345,9 @@ C<E<lt>sqlselectE<gt>>, C<E<lt>sqlconnectE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.23  2011/09/15 16:05:33  eutl420
+# - use methods from Text::TagX::TAG::SQLHandler, get_db_handle(), etc
+#
 # Revision 1.22  2011/09/14 19:16:40  eutl420
 # - allow statement handle re-use by adding the option --define-var. alternately, the $_ var
 #   is set to the statement handle.  Now if the argument to the tag is statement handle then
