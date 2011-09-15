@@ -254,12 +254,21 @@ dist_noinst_DATA = \
 ##    $VERSION = do { ... };
 #    $VERSION = 1.10;
  
-SUFFIXES = .pm .pm.in
+SUFFIXES = .tdy .in .pm .pm.in
 
 %.pm: %.pm.in
 	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
 	$(do_subst) $< > $@
 	$(PERL) -i -n -e '/^(.*?)\$$VERSION\s*=\s*do/ ? print "#$$_$$1\$$VERSION = " . (eval $$_ ) . ";\n" : print "$$_";' $@
 
+TIDY = $(dist_noinst_DATA:.pm.in=.pm.in.tdy)
+
+tidy: $(TIDY)
+
+$(TIDY): %.in.tdy : %
+	test -e $<.in && perltidy -vt=2 -pt=1 -dws -i=2 -lp -ci=0 -cti=1 $<.in || true
+	test -e $@ && cp $@ $<.in && touch $@ || true
+
 clean-local:
 	find . -name '*.pm' -exec rm {} \;
+	rm -rf *.tdy
