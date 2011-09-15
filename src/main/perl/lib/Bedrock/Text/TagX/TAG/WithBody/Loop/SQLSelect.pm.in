@@ -27,12 +27,11 @@ package TagX::TAG::WithBody::Loop::SQLSelect;
 
 use strict;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
 }
 
 use DBI;
@@ -45,271 +44,308 @@ use Bedrock::Array;
 
 @ISA = qw (TagX::TAG::WithBody::Loop);
 
-sub ANONYMOUS
-{
-    '*anonymous*';
+sub ANONYMOUS {
+  '*anonymous*';
 }
 
-sub closure
-{
-    '/sqlselect';
+sub closure {
+  '/sqlselect';
 }
 
-sub finalize
-{
-    my ($self, $tx, @context) = @_;
+sub finalize {
+  my ( $self, $tx, @context ) = @_;
 
-    my %options = ('dbname=s'		=> undef,
-		   'db=s',		=> undef,
-		   'statement=s'	=> undef,
-		   'bind=s'		=> undef,
-		   'arg=s'		=> undef,
-		   'define-var=s'	=> undef,
-		   'need-rows=s'	=> undef,
-		   'raise=s'		=> undef,
-		   'meta-info=s'	=> undef);
-    my @argv = $self->parse_options (\%options, @context);
-    my $verbose = $self->verbose;
+  my %options = ( 'dbname=s'     => undef,
+                  'db=s',        => undef,
+                  'statement=s'  => undef,
+                  'bind=s'       => undef,
+                  'arg=s'        => undef,
+                  'define-var=s' => undef,
+                  'need-rows=s'  => undef,
+                  'raise=s'      => undef,
+                  'meta-info=s'  => undef
+                );
+  my @argv = $self->parse_options( \%options, @context );
+  my $verbose = $self->verbose;
 
-    $self->dump_options( \%options ) if $verbose;
-    
-    my $tag_opts = $self->parse_tag_name( $argv[0] );
+  $self->dump_options( \%options ) if $verbose;
 
-    if ( $tag_opts->{name} ) {
-      $options{'define-var'} = $tag_opts->{name};
-      shift @argv;
+  my $tag_opts = $self->parse_tag_name( $argv[0] );
+
+  if ( $tag_opts->{name} ) {
+    $options{'define-var'} = $tag_opts->{name};
+    shift @argv;
+  }
+
+  my $name = $options{'dbname'};
+  &log_message( undef,
+                "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
+  if $name;
+
+  my $dbh;
+  if ( $options{'db'} ) {
+    $dbh = $options{'db'};
+  }
+  elsif ($name) {
+    $dbh = $tx->{'DB'}->{$name};
+    die "Unknown database connection named `$name'.\n" unless $dbh;
+  }
+  else {
+    $dbh = $tx->{'DB'}->{&ANONYMOUS};
+  }
+
+  unless ( defined($dbh) and ref($dbh) ) {
+    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+    my $dsn;
+    if ( length( $ENV{'DBI_DSN'} ) ) {
+      $dsn = $ENV{'DBI_DSN'};
+      $options{username} = $options{username} || $ENV{DBI_USER};
+      $options{password} = $options{password} || $ENV{DBI_PASS};
     }
-
-    my $name = $options{'dbname'};
-    &log_message( undef, "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
-	if $name;
-
-    my $dbh;
-    if ( $options{'db'} ) {
-      $dbh = $options{'db'};
-    } elsif ( $name ) {
-      $dbh = $tx->{'DB'}->{$name};
-      die "Unknown database connection named `$name'.\n" unless $dbh;
-    } else {
-      $dbh = $tx->{'DB'}->{&ANONYMOUS};
-    }
-
-    unless ( defined($dbh) and ref($dbh) )  {
-      my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-      my $dsn;
-      if ( length($ENV{'DBI_DSN'}) ) {
-	$dsn = $ENV{'DBI_DSN'};
-	$options{username} = $options{username} || $ENV{DBI_USER};
-	$options{password} = $options{password} || $ENV{DBI_PASS};
-      }
-      elsif ( $config->{DBI_DSN} ) {
-	&log_message($self, "DSN will be taken from configuration...") if $verbose;
-	$dsn = $config->{DBI_DSN};
-	$options{username} = $options{username} || $config->{DBI_USER};
-	$options{password} = $options{password} || $config->{DBI_PASS};
-	&log_message($self, "DSN: $dsn username: " . $options{username} . " password: ". $options{password}) if $verbose;
-      }
-      else {
-	die "No database connection to execute SQL statement.\n";
-      }
-
-      my $name = &ANONYMOUS;
-    
-      $dbh = DBI->connect ( $dsn, @options{qw(username password)},
-			    {
-			      'AutoCommit' => 1,
-			      'PrintError' => 1,
-			      'RaiseError' => 1,
-			      'ChopBlanks' => 1
-			     } 
-			   );
-      die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
-
-      &log_message( $self, "Connected to database, handle = <$dbh>\n" ) if $verbose;
-    
-      $tx->{'DB'}->{$name} = $dbh;
-    }
-
-    &log_message ( $self, "Using database handle ($dbh)")
+    elsif ( $config->{DBI_DSN} ) {
+      &log_message( $self, "DSN will be taken from configuration..." )
       if $verbose;
-
-    die "Specify SQL statement using --statement or as argument, not both.\n"
-	if exists $options{'statement'} and @argv > 0;
-
-    my $statement;
-    if ( exists $options{'statement'} ) {
-	$statement = delete $options{'statement'};
-    } else {
-	$statement = "@argv";
+      $dsn = $config->{DBI_DSN};
+      $options{username} = $options{username} || $config->{DBI_USER};
+      $options{password} = $options{password} || $config->{DBI_PASS};
+      &log_message( $self,
+                    "DSN: $dsn username: "
+                    . $options{username}
+                    . " password: "
+                    . $options{password}
+                  ) if $verbose;
+    }
+    else {
+      die "No database connection to execute SQL statement.\n";
     }
 
-    die "<sqlselect>: no statement specified.\n" unless length($statement);
+    my $name = &ANONYMOUS;
 
-    if ( exists $options{'arg'} ) {
-	my @args = &UNIVERSAL::isa( $options{'arg'} ,'ARRAY') ? @{$options{'arg'}} : ($options{'arg'});
-	&log_message( $self, "Substituting following args into statement:\n@args" )
-	    if $verbose;
-	$statement = sprintf ($statement, @args);
-	&log_message( $self, "Statement after arg-substitution\n$statement" )
-	    if $verbose;
+    $dbh = DBI->connect( $dsn,
+                         @options{qw(username password)},
+                         { 'AutoCommit' => 1,
+                           'PrintError' => 1,
+                           'RaiseError' => 1,
+                           'ChopBlanks' => 1
+                         }
+                       );
+    die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+
+    &log_message( $self, "Connected to database, handle = <$dbh>\n" )
+    if $verbose;
+
+    $tx->{'DB'}->{$name} = $dbh;
+  }
+
+  &log_message( $self, "Using database handle ($dbh)" )
+  if $verbose;
+
+  die "Specify SQL statement using --statement or as argument, not both.\n"
+  if exists $options{'statement'} and @argv > 0;
+
+  my $statement;
+  if ( exists $options{'statement'} ) {
+    $statement = delete $options{'statement'};
+  }
+  else {
+    $statement = "@argv";
+  }
+
+  die "<sqlselect>: no statement specified.\n" unless length($statement);
+
+  if ( exists $options{'arg'} ) {
+    my @args =
+    &UNIVERSAL::isa( $options{'arg'}, 'ARRAY' )
+    ? @{ $options{'arg'} }
+    : ( $options{'arg'} );
+    &log_message( $self, "Substituting following args into statement:\n@args" )
+    if $verbose;
+    $statement = sprintf( $statement, @args );
+    &log_message( $self, "Statement after arg-substitution\n$statement" )
+    if $verbose;
+  }
+
+  my $sth = $dbh->prepare($statement);
+  die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n" unless $sth;
+
+  my $nParams = $sth->{NUM_OF_PARAMS};
+
+  my @bind;
+  if ( exists $options{'bind'} ) {
+    my $bind = $options{'bind'};
+    if ( ref($bind) and &UNIVERSAL::isa( $bind, 'ARRAY' ) ) {
+      for my $item ( @{$bind} ) {
+        if ( ref($item) and &UNIVERSAL::isa( $item, 'ARRAY' ) ) {
+          push @bind, @{$item};
+        }
+        else {
+          push @bind, $item;
+        }
+      }
+    }
+    else {
+      @bind = ($bind);
     }
 
-    my $sth = $dbh->prepare ( $statement );
-    die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n" unless $sth;
+    if ( $nParams < @bind ) {
+      die @bind - $nParams, " extra bind variable(s) specified.\n";
+    }
+    elsif ( $nParams > @bind ) {
+      die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
+    }
+  }
+  elsif ($nParams) {
+    die "SQL statement needs $nParams bind variable(s).\n";
+  }
 
-    my $nParams = $sth->{NUM_OF_PARAMS};
+  my $i = 1;
+  my $str = "Bind variables:\n" if $verbose;
+  for my $bindval (@bind) {
+    my $type = $1 if $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
 
-    my @bind;
-    if ( exists $options{'bind'} ) {
-	my $bind = $options{'bind'};
-	if ( ref( $bind ) and &UNIVERSAL::isa($bind, 'ARRAY') ) {
-	    for my $item (@{$bind}) {
-		if ( ref( $item ) and &UNIVERSAL::isa($item, 'ARRAY') ) {
-		    push @bind, @{$item};
-		} else {
-		    push @bind, $item;
-		}
-	    }
-	} else {
-	    @bind = ($bind);
-	}
-
-	if ( $nParams < @bind ) {
-	    die @bind - $nParams, " extra bind variable(s) specified.\n";
-	} elsif ( $nParams > @bind ) {
-	    die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
-	}
-    } elsif ( $nParams ) {
-	die "SQL statement needs $nParams bind variable(s).\n";
+    if ( defined($type) ) {
+      $sth->bind_param( $i, $bindval, { TYPE => $type } )
+      || die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
+    }
+    else {
+      $sth->bind_param( $i, $bindval )
+      || die "Failure binding param $i: `", $sth->errstr, "'\n";
     }
 
-    my $i = 1;
-    my $str = "Bind variables:\n" if $verbose;
-    for my $bindval (@bind) {
-	my $type = $1 if $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
-
-	if ( defined( $type ) ) {
-	    $sth->bind_param ( $i, $bindval, {TYPE => $type}) ||
-		die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
-	} else {
-	    $sth->bind_param ( $i, $bindval ) ||
-		die "Failure binding param $i: `", $sth->errstr, "'\n";
-	}
-
-	if ( $verbose ) {
-	    $str .= "Bound ($i";
-	    $str .= ", $type" if defined( $type );
-	    $str .= ", $bindval" if defined( $bindval );
-	    $str .= ")";
-	}
-    } continue {
-	$i++;
+    if ($verbose) {
+      $str .= "Bound ($i";
+      $str .= ", $type" if defined($type);
+      $str .= ", $bindval" if defined($bindval);
+      $str .= ")";
     }
-    &log_message( $self, $str ) if $verbose;
+  }
+  continue {
+    $i++;
+  }
+  &log_message( $self, $str ) if $verbose;
 
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
-	unless defined( $rows );
+  my $rows = $sth->execute;
+  die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
+  unless defined($rows);
 
-    my $meta_info;
-    if ( $options{'meta-info'} ) {
-	&log_message( $self, "Need to define meta information variable $options{'meta-info'}" )
-	    if $verbose;
-	$meta_info = {'NUM_OF_FIELDS'	=> $sth->{NUM_OF_FIELDS},
-		      'NUM_OF_PARAMS'	=> $sth->{NUM_OF_PARAMS},
-		      'STATEMENT'	=> $sth->{Statement}};
-	my @names = @{$sth->{NAME_uc}};
-	for ( my $i = 0 ; $i < @names ; $i++ ) {
-	    $meta_info->{FIELDS}->[$i] = {
-		'NAME'		=> $names[$i],
-		'TYPE'		=> $sth->{TYPE}->[$i],
-		'PRECISION'	=> $sth->{PRECISION}->[$i],
-		'SCALE'		=> $sth->{SCALE}->[$i],
-		'NULLABLE'	=> $sth->{NULLABLE}->[$i]
-		};
-	}
+  my $meta_info;
+  if ( $options{'meta-info'} ) {
+    &log_message( $self,
+              "Need to define meta information variable $options{'meta-info'}" )
+    if $verbose;
+    $meta_info = { 'NUM_OF_FIELDS' => $sth->{NUM_OF_FIELDS},
+                   'NUM_OF_PARAMS' => $sth->{NUM_OF_PARAMS},
+                   'STATEMENT'     => $sth->{Statement}
+                 };
+    my @names = @{ $sth->{NAME_uc} };
+    for ( my $i = 0 ; $i < @names ; $i++ ) {
+      $meta_info->{FIELDS}->[$i] = { 'NAME'      => $names[$i],
+                                     'TYPE'      => $sth->{TYPE}->[$i],
+                                     'PRECISION' => $sth->{PRECISION}->[$i],
+                                     'SCALE'     => $sth->{SCALE}->[$i],
+                                     'NULLABLE'  => $sth->{NULLABLE}->[$i]
+                                   };
     }
+  }
 
-    my ($href, @rows, $defined);
+  my ( $href, @rows, $defined );
 
-    if ( exists $options{'define-var'} ) {
-	$defined = $options{'define-var'};
-	&log_message( $self, "Need to define <$defined>" ) if $verbose;
+  if ( exists $options{'define-var'} ) {
+    $defined = $options{'define-var'};
+    &log_message( $self, "Need to define <$defined>" ) if $verbose;
+  }
+
+  $i = 0;
+  &log_message( $self, "we have [", scalar( @{ $self->{'subobjs'} } ),
+                "] children" )
+  if $verbose;
+
+  while ( defined( $href = $sth->fetchrow_hashref ) ) {
+
+    my $href = Bedrock::Hash->new( %{$href} );
+    if ( defined($defined) ) {
+      push @rows, $href;
     }
-
-    $i = 0;
-    &log_message( $self, "we have [", scalar(@{$self->{'subobjs'}}), "] children" )
-	if $verbose;
-    while ( defined ($href = $sth->fetchrow_hashref) ) {
-
-	if ( defined ( $defined ) ) {
-	    my $href = Bedrock::Hash->new(%{$href});
-	    push @rows, $href;
-	}
-
-	if ( $verbose ) {
-	    my ($key, $value);
-	    my $str = '';
-	    while (($key, $value) = each %{$href}) {
-		$str .= "\t$key = (";
-		$str .= $value if defined( $value );
-		$str .= "\n";
-	    }
-	    &log_message ( $self, "Row .. $i\n$str");
-	}
-
-	$self->{'finalize_children'}->($self->{'subobjs'}, $tx, $href, @context );
-	$i++;
-    }
-    &log_message( $self, "Found <$i> row(s)." ) if $verbose;
-    &log_message( $self, "we have [", scalar(@{$self->{'subobjs'}}), "] children" )
-	if $verbose;
-
-    if ( $options{'meta-info'} ) {
-	$meta_info->{'COUNT'} = $i;
-	$tx->param ( $options{'meta-info'} => $meta_info );
+    
+    if ($verbose) {
+      my ( $key, $value );
+      my $str = '';
+      while ( ( $key, $value ) = each %{$href} ) {
+        $str .= "\t$key = (";
+        $str .= $value if defined($value);
+        $str .= "\n";
+      }
+      &log_message( $self, "Row .. $i\n$str" );
     }
 
-    if ( $options{'need-rows'} ) {
-	if ( $options{'need-rows'} =~ /^([\+\-]?)(\d+)$/oi ) {
-	    my ($sgn, $num) = ($1, $2);
-	    if ( $sgn eq '+' ) {
-		# need at least $num rows
-		if ( $i < $num ) {
-		    if ( $options{'raise'} ) {
-			die "$options{'raise'}\n";
-		    } else {
-			die "Insufficient number of rows found($i) (at least $num needed)\n";
-		    }
-		}
-	    } elsif ( $sgn eq '-' ) {
-		# need max of $num rows
-		if ( $i > $num ) {
-		    $tx->error->location( $self->start_location );
-		    if ( $options{'raise'} ) {
-			die "$options{'raise'}\n";
-		    } else {
-			die "Too many rows found($i) (max of $num exceeded)\n";
-		    }
-		}
-	    } elsif ( $i != $num ) {
-		# need exactly $num rows
-		$tx->error->location( $self->start_location );
-		if ( $options{'raise'} ) {
-		    die "$options{'raise'}\n";
-		} else {
-		    die "Invalid number of rows found($i) (need exactly $num rows)\n";
-		}
-	    }
-	} else {
-	    $tx->error->location( $self->start_location );
-	    die "Invalid integer `$options{'need-rows'}' specified as argument to --need-rows.\n";
-	}
-    }
+    # note we add '_' and 'rownum' and $hashref to local context
+    $self->{'finalize_children'}->( $self->{'subobjs'}, $tx, 
+				    $href, {'_' => $href, 'rownum' => $i+1 }, 
+				    @context
+				  );
+    $i++;
+  }
+  &log_message( $self, "Found <$i> row(s)." ) if $verbose;
+  &log_message( $self, "we have [", scalar( @{ $self->{'subobjs'} } ),
+                "] children" )
+  if $verbose;
 
-    $tx->param ( $defined => Bedrock::Array::Reference->new( \@rows ) ) if $defined;
+  if ( $options{'meta-info'} ) {
+    $meta_info->{'COUNT'} = $i;
+    $tx->param( $options{'meta-info'} => $meta_info );
+  }
+
+  if ( $options{'need-rows'} ) {
+    if ( $options{'need-rows'} =~ /^([\+\-]?)(\d+)$/oi ) {
+      my ( $sgn, $num ) = ( $1, $2 );
+      if ( $sgn eq '+' ) {
+
+        # need at least $num rows
+        if ( $i < $num ) {
+          if ( $options{'raise'} ) {
+            die "$options{'raise'}\n";
+          }
+          else {
+            die
+            "Insufficient number of rows found($i) (at least $num needed)\n";
+          }
+        }
+      }
+      elsif ( $sgn eq '-' ) {
+
+        # need max of $num rows
+        if ( $i > $num ) {
+          $tx->error->location( $self->start_location );
+          if ( $options{'raise'} ) {
+            die "$options{'raise'}\n";
+          }
+          else {
+            die "Too many rows found($i) (max of $num exceeded)\n";
+          }
+        }
+      }
+      elsif ( $i != $num ) {
+
+        # need exactly $num rows
+        $tx->error->location( $self->start_location );
+        if ( $options{'raise'} ) {
+          die "$options{'raise'}\n";
+        }
+        else {
+          die "Invalid number of rows found($i) (need exactly $num rows)\n";
+        }
+      }
+    }
+    else {
+      $tx->error->location( $self->start_location );
+      die
+"Invalid integer `$options{'need-rows'}' specified as argument to --need-rows.\n";
+    }
+  }
+
+  $tx->param( $defined => Bedrock::Array::Reference->new( \@rows ) )
+  if $defined;
 }
-
 
 =pod
 
@@ -423,7 +459,15 @@ elements depending upon the DBI implementation:
 
 =head1 NOTES
 
-Bedrock's database layer is implemented using the perl C<DBI> module.  For more information about database behavior see C<perldoc DBI>.
+Bedrock's database layer is implemented using the perl C<DBI> module.
+For more information about database behavior see C<perldoc DBI>.
+
+I<The default variable C<$_> will hold a Bedrock hash object which
+represents the curren row of data from the query in the body of the tag>
+
+I<C<$rownum> (lower case) will have the value of the curren row being processed.
+If you happened to have used that name in one of the columns of your
+query, then that value will take precedence.>
 
 I<Note that Oracle returns column names in upper case.>
 
@@ -448,6 +492,10 @@ C<E<lt>sqlE<gt>>, C<E<lt>sqlconnectE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.32  2011/09/15 14:53:19  eutl420
+# - perltidy
+# - expose rownum, $_ inside <sqlselect> scope
+#
 # Revision 1.31  2011/09/14 18:39:11  eutl420
 # minor pod tweak
 #
