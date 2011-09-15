@@ -32,11 +32,10 @@ use IO::Scalar;
 use File::Basename;
 use Data::Dumper;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  @ISA = qw (Exporter);
 }
 
 use TagX::Error;
@@ -81,374 +80,371 @@ use TagX::Term;
 use TagX::Term::String;
 use TagX::Term::Var;
 
-$Text::TagX::Opentag_expr	= '^(array|case|pebble|blm|plugin|var|hash|include|sink|snippet|sql|sqlconnect|trace|foreach|sqlselect|while|if|unless|else?if|try|catch|raise|else|null|exec|open|pebbledef)(?=\W)';
-$Text::TagX::Closetag_expr	= '^(/sink|/snippet|/sqlselect|/pebbledef|/foreach|/while|/if|/unless|/try)>';
-$Text::TagX::Options_expr	= '^\s*(([^>\\\\]|\\\\.)*)>';
+$Text::TagX::Opentag_expr =
+'^(array|case|pebble|plugin|var|hash|include|sink|snippet|sql|sqlconnect|trace|foreach|sqlselect|while|if|unless|else?if|try|catch|raise|else|null|exec|open|pebbledef)(?=\W)';
+$Text::TagX::Closetag_expr =
+'^(/sink|/snippet|/sqlselect|/pebbledef|/foreach|/while|/if|/unless|/try)>';
+$Text::TagX::Options_expr = '^\s*(([^>\\\\]|\\\\.)*)>';
 
-sub parse
-{
-    my $self = shift;
-    my $newscan = 1;
+sub parse {
+  my $self    = shift;
+  my $newscan = 1;
 
-    my $obj = TagX::TAG::WithBody::Cache->new( $self );
-    my $input = $self->{'input'};
-    my $optstring = '';
+  my $obj       = TagX::TAG::WithBody::Cache->new($self);
+  my $input     = $self->{'input'};
+  my $optstring = '';
 
-    my $text = '';
-    my $line = 0;
-    my $file = $self->{'error'}->file;
+  my $text = '';
+  my $line = 0;
+  my $file = $self->{'error'}->file;
 
-    local($_);
-    my $raw;
+  local ($_);
+  my $raw;
 
   INPUT:
-    while (<$input>) {
-      # bedrock shell shebang
-      next if  $line == 0 && /^#!/;
+  while (<$input>) {
 
-      $self->{'error'}->line(++$line);
-      MAIN: {
+    # bedrock shell shebang
+    next if $line == 0 && /^#!/;
 
-	  #
-	  # Check whether we are into a new scan or collecting options
-	  # for a matched tag
-	  #
-	  unless ( $newscan ) {
+    $self->{'error'}->line( ++$line );
+    MAIN: {
 
-	      # Collecting options for a matched tag -- Look for tag end which is
-	      # an un-escaped '>'
-	      if ( s/$Text::TagX::Options_expr//o ) {
+      #
+      # Check whether we are into a new scan or collecting options
+      # for a matched tag
+      #
+      unless ($newscan) {
 
-		  # Found an un-escaped '>', which terminates the current tag and its options
-		  # $optstring contains the options collected so far
-		  $optstring .= $1;
+        # Collecting options for a matched tag -- Look for tag end which is
+        # an un-escaped '>'
+        if (s/$Text::TagX::Options_expr//o) {
 
-		  # Remove escapes from the option string
-		  $optstring =~ s/\\([^\\])/$1/g;
-		  $optstring =~ s/\\\\/\\/g;
+     # Found an un-escaped '>', which terminates the current tag and its options
+     # $optstring contains the options collected so far
+          $optstring .= $1;
 
-		  # And set the current object options
-		  $obj = $obj->options ( $optstring );
+          # Remove escapes from the option string
+          $optstring =~ s/\\([^\\])/$1/g;
+          $optstring =~ s/\\\\/\\/g;
 
-		  # Start a new scan after this
-		  $newscan = 1;
+          # And set the current object options
+          $obj = $obj->options($optstring);
 
-		  # Handle possible left over stuff after the '>'
-		  redo MAIN;
-	      } else {
+          # Start a new scan after this
+          $newscan = 1;
 
-		  # No terminating '>' in entire line -- start by reading input again
-		  $optstring .= $_;
-		  next INPUT;
-	      }
-	  }
+          # Handle possible left over stuff after the '>'
+          redo MAIN;
+        }
+        else {
 
-	  # New scan from here -- scan afresh for tags.
-	  # if no '<' found in line, skip line
-	  unless ( s/^(.*?)<//oi ) {
-	    $text .= $_ if length;
-	    next INPUT;
-	  }
+          # No terminating '>' in entire line -- start by reading input again
+          $optstring .= $_;
+          next INPUT;
+        }
+      }
 
-	  $text .= $1 if length($1);
+      # New scan from here -- scan afresh for tags.
+      # if no '<' found in line, skip line
+      unless (s/^(.*?)<//oi) {
+        $text .= $_ if length;
+        next INPUT;
+      }
 
-	  # We did find a '<' -- could be we have a possible supported tag next
-	  # Check if we have a supported tag
-	  my $tag = $_;
+      $text .= $1 if length($1);
 
-	  if ( ! $raw && s/$Text::TagX::Opentag_expr//oi) {
+      # We did find a '<' -- could be we have a possible supported tag next
+      # Check if we have a supported tag
+      my $tag = $_;
 
-	      # Yes we do
-	      # The text before the '<' needs to be processed.
-	      if ( length($text) ) {
-		  $obj->text ( $text );
-		  $text = '';
-	      }
+      if ( !$raw && s/$Text::TagX::Opentag_expr//oi ) {
 
-	      for ($1) {
-		  /^var$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
-		      last;
-		  };
+        # Yes we do
+        # The text before the '<' needs to be processed.
+        if ( length($text) ) {
+          $obj->text($text);
+          $text = '';
+        }
 
-		  /^blm$/oi		and do {
-		    &log_message(undef, "$self: This was experimental...use <plugin:>!");
-		    $tag =~/blm:(.*?)\s+/i;
-		    $obj = $obj->new_child( TagX::TAG::NoBody::Plugin->new );
-		    last;
-		  };
+        for ($1) {
+          /^var$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
+            last;
+          };
 
-		  /^case$/oi		and do {
-		    $tag =~/case:(.*?)\s+/i;
-		    $obj = $obj->new_child( TagX::TAG::NoBody::Case->new );
-		    last;
-		  };
+          /^case$/oi and do {
+            $tag =~ /case:(.*?)\s+/i;
+            $obj = $obj->new_child( TagX::TAG::NoBody::Case->new );
+            last;
+          };
 
-		  /^plugin$/oi		and do {
-		    $tag =~/plugin:(.*?)\s+/i;
-		    $obj = $obj->new_child( TagX::TAG::NoBody::Plugin->new );
-		    last;
-		  };
+          /^plugin$/oi and do {
+            $tag =~ /plugin:(.*?)\s+/i;
+            $obj = $obj->new_child( TagX::TAG::NoBody::Plugin->new );
+            last;
+          };
 
-		  /^sqlconnect$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
-		      last;
-		  };
+          /^sqlconnect$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
+            last;
+          };
 
-		  /^open$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Open->new );
-		      last;
-		  };
+          /^open$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Open->new );
+            last;
+          };
 
-		  /^sql$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
-		      last;
-		  };
+          /^sql$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
+            last;
+          };
 
-		  /^include$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
-		      last;
-		  };
+          /^include$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
+            last;
+          };
 
-		  /^foreach$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Loop::Foreach->new );
-		      last;
-		  };
+          /^foreach$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::Foreach->new );
+            last;
+          };
 
-		  /^sink$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Sink->new );
-		      last;
-		  };
+          /^sink$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Sink->new );
+            last;
+          };
 
-		  /^snippet$/oi	and do {
-		    die "<snippet> is not enabled on your server. Set <scalar name='ALLOW_SNIPPET_TAG'>yes</scalar> in your tagx.xml file."
-		      unless $self->getoption('ALLOW_SNIPPET_TAG') =~/^(yes|y|1)$/i;
-		    $obj = $obj->new_child( TagX::TAG::WithBody::Snippet->new );
-		    last;
-		  };
+          /^snippet$/oi and do {
+            die
+"<snippet> is not enabled on your server. Set <scalar name='ALLOW_SNIPPET_TAG'>yes</scalar> in your tagx.xml file."
+            unless $self->getoption('ALLOW_SNIPPET_TAG') =~ /^(yes|y|1)$/i;
+            $obj = $obj->new_child( TagX::TAG::WithBody::Snippet->new );
+            last;
+          };
 
-		  /^sqlselect$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Loop::SQLSelect->new );
-		      last;
-		  };
+          /^sqlselect$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::SQLSelect->new );
+            last;
+          };
 
-		  /^while$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Loop::While->new );
-		      last;
-		  };
+          /^while$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::While->new );
+            last;
+          };
 
-		  /^if$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
-		      last;
-		  };
-		  /^unless$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Unless->new );
-		      last;
-		  };
+          /^if$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
+            last;
+          };
+          /^unless$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Unless->new );
+            last;
+          };
 
-		  /^else?if$/oi		and do {
-		      warn ref($obj);
-		      die "Tag is not valid here.\n" unless ref($obj) =~/::(If|Unless)/;
-		      $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-		      last;
-		  };
+          /^else?if$/oi and do {
+            warn ref($obj);
+            die "Tag is not valid here.\n" unless ref($obj) =~ /::(If|Unless)/;
+            $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+            last;
+          };
 
-		  /^else/oi		and do {
-		      warn ref($obj);
-		      die "Tag is not valid here.\n" unless ref($obj) =~/::(If|Unless)/;
-		      $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-		      last;
-		  };
+          /^else/oi and do {
+            warn ref($obj);
+            die "Tag is not valid here.\n" unless ref($obj) =~ /::(If|Unless)/;
+            $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
+            last;
+          };
 
-		  /^trace$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Trace->new );
-		      last;
-		  };
+          /^trace$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Trace->new );
+            last;
+          };
 
-		  /^raise$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Raise->new );
-		      last;
-		  };
+          /^raise$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Raise->new );
+            last;
+          };
 
-		  /^try$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::Try->new );
-		      last;
-		  };
+          /^try$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::Try->new );
+            last;
+          };
 
-		  /^catch$/oi		and do {
-		      die "Tag is not valid here.\n" unless ref($obj) =~ /TagX::TAG::WithBody::(Try|Catch)/;
-		      $obj = $obj->catch( TagX::TAG::WithBody::Catch->new );
-		      last;
-		  };
+          /^catch$/oi and do {
+            die "Tag is not valid here.\n"
+            unless ref($obj) =~ /TagX::TAG::WithBody::(Try|Catch)/;
+            $obj = $obj->catch( TagX::TAG::WithBody::Catch->new );
+            last;
+          };
 
-		  /^null$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::NULL->new );
-		      last;
-		  };
+          /^null$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::NULL->new );
+            last;
+          };
 
-		  /^exec$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
-		      last;
-		  };
+          /^exec$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
+            last;
+          };
 
-		  /^pebble$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
-		      last;
-		    };
+          /^pebble$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
+            last;
+          };
 
-		  /^pebbledef$/oi	and do {
-		      $obj = $obj->new_child( TagX::TAG::WithBody::PebbleDef->new );
-		      $raw = 1;
-		      last;
-		    };
+          /^pebbledef$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::WithBody::PebbleDef->new );
+            $raw = 1;
+            last;
+          };
 
-		  /^hash$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Hash->new );
-		      last;
-		  };
+          /^hash$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Hash->new );
+            last;
+          };
 
-		  /^array$/oi		and do {
-		      $obj = $obj->new_child( TagX::TAG::NoBody::Array->new );
-		      last;
-		  };
+          /^array$/oi and do {
+            $obj = $obj->new_child( TagX::TAG::NoBody::Array->new );
+            last;
+          };
 
-		  die "Tag <$_> NYI";
-	      }
+          die "Tag <$_> NYI";
+        }
 
-	      $obj->start_location( $file, $line );
+        $obj->start_location( $file, $line );
 
-	      # After creating object of suitable type depending on the tag, check
-	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-	      if ( s/$Text::TagX::Options_expr//oi ) {
+        # After creating object of suitable type depending on the tag, check
+        # if the tag ends on the same line. Tag ending is an un-escaped '>'.
+        if (s/$Text::TagX::Options_expr//oi) {
 
-		  # The tag definition ended on same line -- all options specified on
-		  # one line
-		  my $options = $1;
+          # The tag definition ended on same line -- all options specified on
+          # one line
+          my $options = $1;
 
-		  # Unescape the options
-		  $options =~ s/\\([^\\])/$1/g;
-		  $options =~ s/\\\\/\\/g;
+          # Unescape the options
+          $options =~ s/\\([^\\])/$1/g;
+          $options =~ s/\\\\/\\/g;
 
-		  # And set the current object options
-		  $obj = $obj->options ( $options );
+          # And set the current object options
+          $obj = $obj->options($options);
 
-		  # And rescan the string for more tags -- Note that $newscan is unchanged
-		  # from its value of 1, so we don't need to set it here
-		  redo MAIN;
-	      } else {
+        # And rescan the string for more tags -- Note that $newscan is unchanged
+        # from its value of 1, so we don't need to set it here
+          redo MAIN;
+        }
+        else {
 
-		  # Tag definition did not end on one line -- Further input is consumed for
-		  # looking for the tag ending
-		  $newscan = 0;
+       # Tag definition did not end on one line -- Further input is consumed for
+       # looking for the tag ending
+          $newscan = 0;
 
-		  # Start collection of the options string
-		  $optstring = $_;
-	      }
+          # Start collection of the options string
+          $optstring = $_;
+        }
 
-	  } elsif ( s/$Text::TagX::Closetag_expr//oi ) {
-              
-	      my $end = lc($1);
-              if ( $raw ) {
-		if ( $end eq '/pebbledef' ) {
-		  $obj->text( $text );
-		  $obj = $obj->end_child;
-		  $raw = 0;
-		}
-		else {
-		  $text .= '<' . $1 . '>';
-		}
-		redo MAIN;
-	      }
-	      else {
-		die "Illegal tag-end encountered.\n" unless $obj->parent;
-		$end = '/if' if $end eq '/unless';
-		
-		$self->improper_end( $obj, $end ) 
-		  unless $obj->closure eq $end;
+      }
+      elsif (s/$Text::TagX::Closetag_expr//oi) {
 
-		# A tag has ended. The text before the '<' needs to be processed.
-		if ( length($text) ) {
-		  $obj->text ( $text );
-		  $text = '';
-		}
-		
-		# Check whether we have hit a tag-body-ending tag
-		# and if so, end the current object
-		$obj = $obj->end_child;
-		
-		# And rescan string for more tags
-		redo MAIN;
-	      }
-	    } else {
+        my $end = lc($1);
+        if ($raw) {
+          if ( $end eq '/pebbledef' ) {
+            $obj->text($text);
+            $obj = $obj->end_child;
+            $raw = 0;
+          }
+          else {
+            $text .= '<' . $1 . '>';
+          }
+          redo MAIN;
+        }
+        else {
+          die "Illegal tag-end encountered.\n" unless $obj->parent;
+          $end = '/if' if $end eq '/unless';
 
-	      # Unsupported tag hit -- output the '<' since we don't consume it
-	      $text .= '<';
+          $self->improper_end( $obj, $end )
+	    unless $obj->closure eq $end;
 
-	      # And rescan for more tags
-	      redo MAIN;
-	  }
+          # A tag has ended. The text before the '<' needs to be processed.
+          if ( length($text) ) {
+            $obj->text($text);
+            $text = '';
+          }
+
+          # Check whether we have hit a tag-body-ending tag
+          # and if so, end the current object
+          $obj = $obj->end_child;
+
+          # And rescan string for more tags
+          redo MAIN;
+        }
+      }
+      else {
+
+        # Unsupported tag hit -- output the '<' since we don't consume it
+        $text .= '<';
+
+        # And rescan for more tags
+        redo MAIN;
       }
     }
+  }
 
-    if ( $obj->parent ) {
-	my ($file, $line) = $obj->start_location;
-	die "Tag on line $line not closed properly.\n";
-    }
+  if ( $obj->parent ) {
+    my ( $file, $line ) = $obj->start_location;
+    die "Tag on line $line not closed properly.\n";
+  }
 
-    if ( length($text) ) {
-	$obj->text ( $text );
-	$text = '';
-    }
+  if ( length($text) ) {
+    $obj->text($text);
+    $text = '';
+  }
 
-    $obj->finalize;
+  $obj->finalize;
 }
 
-sub improper_end
-{
-    my $self = shift;
-    my $obj = shift;
-    my $endexpr = shift;
+sub improper_end {
+  my $self    = shift;
+  my $obj     = shift;
+  my $endexpr = shift;
 
-    my $iObj = $obj;
-    while ( $iObj->parent ) {
-	my $closure = $iObj->closure;
-	if ( $endexpr eq $closure ) {
-	    my ($file, $line) = $obj->start_location;
-	    # my $curline = $self->{'error'}->line;
-	    # $self->{'error'}->line($line);
-	    die "Tag on line $line should be closed here.\n";
-	}
-	$iObj = $iObj->parent;
+  my $iObj = $obj;
+  while ( $iObj->parent ) {
+    my $closure = $iObj->closure;
+    if ( $endexpr eq $closure ) {
+      my ( $file, $line ) = $obj->start_location;
+      die "Tag on line $line should be closed here.\n";
     }
+    $iObj = $iObj->parent;
+  }
 
-    die "Illegal tag-end encountered.\n";
+  die "Illegal tag-end encountered.\n";
 }
 
-sub output
-{
-    my $self = shift;
-    eval { $self->parse };
-    $self->{'__input_opened'}->close if $self->{'__input_opened'};
-    if ( $@ ) {
-	chomp $@;
-	$self->error->mesg($@);
-	die "$@\n";
-    } else {
-	$self->error->endLevel;
-    }
+sub output {
+  my $self = shift;
+  eval { $self->parse };
+  $self->{'__input_opened'}->close if $self->{'__input_opened'};
+  if ($@) {
+    chomp $@;
+    $self->error->mesg($@);
+    die "$@\n";
+  }
+  else {
+    $self->error->endLevel;
+  }
 }
 
-sub show_error
-{
-    my $self = shift;
-    my $errfile = shift;
+sub show_error {
+  my $self    = shift;
+  my $errfile = shift;
 
-    local(*FILE);
+  local (*FILE);
 
-    unless (open( FILE, $errfile )) {
-      warn "Unable to open $errfile: $!\n";
-      my $err = $self->{error}->mesg;
-      my $html_error_message =<<eot;
+  unless ( open( FILE, $errfile ) ) {
+    warn "Unable to open $errfile: $!\n";
+    my $err                = $self->{error}->mesg;
+    my $html_error_message = <<eot;
 <html>
 <head>
 <title>Bedrock Error</title>
@@ -472,90 +468,97 @@ Please check your <b><i>tagx.xml</i></b>.
 </body>
 </html>
 eot
-      my $fh = IO::Scalar->new( \$html_error_message );
-      $self->{'input'} = $fh;
+    my $fh = IO::Scalar->new( \$html_error_message );
+    $self->{'input'} = $fh;
+    $self->output;
+    $fh->close;
+  }
+  else {
+    eval {
+      $self->{'input'} = *FILE;
+      my $error = $self->{'error'};
+      $self->{'error'} = TagX::Error->new($errfile);
+      $self->param( 'ERROR' => $error );
       $self->output;
-      $fh->close; 
+      close FILE;
+    };
+    if ($@) {
+      warn "Error in error handler: $@";
     }
-    else {
-      eval {
-	$self->{'input'} = *FILE;
-	my $error = $self->{'error'};
-	$self->{'error'} = TagX::Error->new($errfile);
-	$self->param('ERROR' => $error);
-	$self->output;
-	close FILE;
-      };
-      if ( $@) {
-	warn "Error in error handler: $@";
+  }
+}
+
+sub error {
+  $_[0]->{'error'};
+}
+
+sub define_name {
+  my ( $self, $name, $value ) = @_;
+  my @components = split /\./oi, $name;
+  return unless @components;
+
+  &log_message( undef, "$self: components are (@components)" );
+  my $found = $self->{'VARS'};
+  for (@components) {
+    if (/^\Q[\E(\d+)\Q]\E/) {
+
+      # array element
+      if ( &isa( $found, 'ARRAY' ) ) {
+        $found = $found->[$1];
+        next;
+      }
+      else {
+        &log_message( undef,
+              "Cannot define [$_] component in $name: $found is not an array" );
+        return;
       }
     }
-}
 
-sub error
-{
-    $_[0]->{'error'};
-}
+    if (/^(\w+)/) {
 
-sub define_name
-{
-    my ($self, $name, $value) = @_;
-    my @components = split /\./oi, $name;
-    return unless @components;
+      # hash element
+      my $key = $1;
+      if ( &isa( $found, 'HASH' ) ) {
+        $found = $found->{$key};
+      }
+      else {
 
-    &log_message( undef, "$self: components are (@components)" );
-    my $found = $self->{'VARS'};
-    for (@components) {
-	if ( /^\Q[\E(\d+)\Q]\E/ ) {
-	    # array element
-	    if ( &isa( $found, 'ARRAY' ) ) {
-		$found = $found->[$1];
-		next;
-	    } else {
-		&log_message ( undef, "Cannot define [$_] component in $name: $found is not an array" );
-		return;
-	    }
-	}
-
-	if ( /^(\w+)/ ) {
-	    # hash element
-	    my $key = $1;
-	    if ( &isa( $found, 'HASH' ) ) {
-		$found = $found->{$key};
-	    } else {
-		# Support syntax for accessing hash contained in an array
-		# if the array contains only one element
-		unless ( &isa( $found, 'ARRAY' ) and @{$found} == 1 ) {
-		    &log_message( undef, "Cannot define [$_] component in [$name]: $found is an array\n"
-				  . "containing more than one element .. cannot access it as a hash" );
-		    return undef;
-		}
-		$found = $found->[0]->{$key};
-	    }
-	    next;
-	}
-
-	# illegal
-	return;
+        # Support syntax for accessing hash contained in an array
+        # if the array contains only one element
+        unless ( &isa( $found, 'ARRAY' ) and @{$found} == 1 ) {
+          &log_message(
+              undef,
+              "Cannot define [$_] component in [$name]: $found is an array\n"
+              . "containing more than one element .. cannot access it as a hash"
+          );
+          return undef;
+        }
+        $found = $found->[0]->{$key};
+      }
+      next;
     }
-    &log_message( undef, "$self: finally found [$found]" );
-    $found = $value;
+
+    # illegal
+    return;
+  }
+  &log_message( undef, "$self: finally found [$found]" );
+  $found = $value;
 }
 
 sub define_pebble {
   my $self = shift;
   my %args = @_;
-  my ($name, $value );
-  
-  while ( ( $name, $value) = each %args ) {
-    if ( exists $self->pebble_cache->{ $name } ) {
-      &log_message(undef, "redefining pebble: [$name]");
+  my ( $name, $value );
+
+  while ( ( $name, $value ) = each %args ) {
+    if ( exists $self->pebble_cache->{$name} ) {
+      &log_message( undef, "redefining pebble: [$name]" );
     }
-    if ( $value ) {
+    if ($value) {
       $self->store_pebble( $name, $value );
     }
     else {
-      &log_message(undef, "WARNING: undefined pebble: [$name]");
+      &log_message( undef, "WARNING: undefined pebble: [$name]" );
     }
   }
 }
@@ -565,18 +568,18 @@ sub pebble {
   my $self = shift;
 
   my $pebble;
-  if (ref($_[0])) {
-    foreach $pebble (keys %{$self->pebble_cache} ) {
-      return $pebble if  $_[0] == $self->pebble_cache->{$pebble}->{handle};
+  if ( ref( $_[0] ) ) {
+    foreach $pebble ( keys %{ $self->pebble_cache } ) {
+      return $pebble if $_[0] == $self->pebble_cache->{$pebble}->{handle};
     }
     return 'anonymous';
   }
   else {
-    $pebble = $self->fetch_pebble( $_[0] ); # look in cache, first
-    
-    unless ( $pebble ) {
-      my $file = $self->find_file( @_ );
-      $pebble = $self->fetch_pebble( $_[0], $file);
+    $pebble = $self->fetch_pebble( $_[0] );    # look in cache, first
+
+    unless ($pebble) {
+      my $file = $self->find_file(@_);
+      $pebble = $self->fetch_pebble( $_[0], $file );
     }
   }
 
@@ -586,40 +589,40 @@ sub pebble {
 # return a value from Bedrock's config or the config object
 sub config {
   my $config = $_[0]->out_handle->{Handle}->{'CONFIG'};
-  return $_[1] ? $config->{$_[1]} : $config;
+  return $_[1] ? $config->{ $_[1] } : $config;
 }
 
 sub store_pebble {
   my $self = shift;
-  my ($name, $value) = @_;
+  my ( $name, $value ) = @_;
 
-  $self->pebble_cache->{ $name } = {} unless $self->pebble_cache->{ $name };
-  $self->pebble_cache->{ $name }->{name} = $name;
-  $self->pebble_cache->{ $name }->{ ref($value) ? 'handle' : 'value'} = $value;
+  $self->pebble_cache->{$name} = {} unless $self->pebble_cache->{$name};
+  $self->pebble_cache->{$name}->{name} = $name;
+  $self->pebble_cache->{$name}->{ ref($value) ? 'handle' : 'value' } = $value;
 }
 
-sub pebble_cache { 
-   $_[0]->{PEBBLE_CACHE} || do {$_[0]->{PEBBLE_CACHE} = {}};
+sub pebble_cache {
+  $_[0]->{PEBBLE_CACHE} || do { $_[0]->{PEBBLE_CACHE} = {} };
 }
 
 sub fetch_pebble {
-  my $self = shift;
-  my $pebble = shift;
+  my $self        = shift;
+  my $pebble      = shift;
   my $pebble_file = shift;
 
   # see if pebble is in cache
   return $self->pebble_cache->{$pebble}->{value}
-    if exists $self->pebble_cache->{$pebble};
-  
-  return undef unless 
-    "$pebble_file" && -s $pebble_file;
+  if exists $self->pebble_cache->{$pebble};
+
+  return undef
+  unless "$pebble_file" && -s $pebble_file;
 
   open PEBBLE, "<$pebble_file";
-  my $pebble_text =  do { local $/; <PEBBLE> };
+  my $pebble_text = do { local $/; <PEBBLE> };
   close PEBBLE;
 
   # save in cache
-  $self->store_pebble( $pebble, $pebble_text);
+  $self->store_pebble( $pebble, $pebble_text );
 
   $pebble_text;
 }
@@ -629,51 +632,51 @@ sub fetch_pebble {
 sub find_file {
   my $self = shift;
   my $file = shift;
-  my $ext = shift;
+  my $ext  = shift;
 
   # ~ (tilde) means DOCUMENT_ROOT
 
-  $file =~s/^\~/$ENV{'DOCUMENT_ROOT'}\//;
+  $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}\//;
 
   # if given an extension, then if the name does not have that
   # extension, add it
-  if ( defined $ext && $file !~/\.(.*?)$/ ) {
+  if ( defined $ext && $file !~ /\.(.*?)$/ ) {
     $file .= $ext;
   }
 
   # @dirs is a list of directories to search
   my @dirs = @_;
-  
-  return -e $file ? $file : undef if $file =~/^\//;
+
+  return -e $file ? $file : undef if $file =~ /^\//;
   my @all_dirs = map { split /:/ } @dirs;
 
-  foreach ( map {  $_ . '/' . $file } @all_dirs ) {
-    return $_ if -e $_ ;
+  foreach ( map { $_ . '/' . $file } @all_dirs ) {
+    return $_ if -e $_;
   }
 
   return undef;
 }
 
-sub param
-{
-    my $self = shift;
-    my %args = @_;
-    my ( $name, $value );
-    while ( ( $name, $value) = each %args ) {
-	if ( $name =~ /\./oi ) {
-	    # more expensive resolve operation
-	    $self->define_name ( $name, $value );
-	} else {
-	    $self->{'VARS'}->{$name} = $value;
-	}
+sub param {
+  my $self = shift;
+  my %args = @_;
+  my ( $name, $value );
+  while ( ( $name, $value ) = each %args ) {
+    if ( $name =~ /\./oi ) {
+
+      # more expensive resolve operation
+      $self->define_name( $name, $value );
     }
+    else {
+      $self->{'VARS'}->{$name} = $value;
+    }
+  }
 }
 
-sub out_handle
-{
-    my $self = shift;
-    $self->{'out_handle'} = shift if @_ == 1;
-    $self->{'out_handle'};
+sub out_handle {
+  my $self = shift;
+  $self->{'out_handle'} = shift if @_ == 1;
+  $self->{'out_handle'};
 }
 
 #
@@ -681,45 +684,48 @@ sub out_handle
 #    $Class_or_Object->new( $Input_Handle [, $Output_Handle [, $Error_Handler ] ] )
 # Return the constructed object
 #
-sub new
-{
-    my $proto = shift;
-    my $input = shift;
-    my $output = shift;
-    my $error_handler = shift;
-    my %args = @_;
+sub new {
+  my $proto         = shift;
+  my $input         = shift;
+  my $output        = shift;
+  my $error_handler = shift;
+  my %args          = @_;
 
-    my ($class, $self);
-    if ( $class = ref( $proto ) ) {
-	$self = bless {'error' => {}}, $class;
-	if ( $output ) { $self->out_handle( TagX::Output->new( $output ) ) }
-	else { $self->out_handle( $proto->out_handle ) }
-	$self->{'VARS'} = $proto->{'VARS'};
-	$self->{'error'} = $proto->{'error'}->newLevel($input);
-	$self->{'DB'} = $proto->{'DB'} if exists $proto->{'DB'};
-	$self->{'options'} = $proto->{'options'} if exists $proto->{'options'};
-    } else {
-	$self = bless {}, $proto;
-	$self->out_handle( TagX::Output->new( $output ) );
-	$self->{'VARS'} = TagX::Symtab->new;
-	$self->{'error'} = TagX::Error->new($input);
-	$self->{'DB'} = {};
-    }
+  my ( $class, $self );
+  if ( $class = ref($proto) ) {
+    $self = bless { 'error' => {} }, $class;
+    if   ($output) { $self->out_handle( TagX::Output->new($output) ) }
+    else           { $self->out_handle( $proto->out_handle ) }
+    $self->{'VARS'}    = $proto->{'VARS'};
+    $self->{'error'}   = $proto->{'error'}->newLevel($input);
+    $self->{'DB'}      = $proto->{'DB'} if exists $proto->{'DB'};
+    $self->{'options'} = $proto->{'options'} if exists $proto->{'options'};
+  }
+  else {
+    $self = bless {}, $proto;
+    $self->out_handle( TagX::Output->new($output) );
+    $self->{'VARS'}  = TagX::Symtab->new;
+    $self->{'error'} = TagX::Error->new($input);
+    $self->{'DB'}    = {};
+  }
 
-    unless ( ref ($input) ) {
-	my $file_or_fd = $input;
-	$input = ref( $file_or_fd ) ? IO::Handle->new_from_fd( $file_or_fd ) : IO::File->new ( $file_or_fd );
-	$self->{'__input_opened'} = $input;
-	die "Unable to open [$file_or_fd] for input: $!\n" unless $input;
-    }
+  unless ( ref($input) ) {
+    my $file_or_fd = $input;
+    $input =
+    ref($file_or_fd)
+    ? IO::Handle->new_from_fd($file_or_fd)
+    : IO::File->new($file_or_fd);
+    $self->{'__input_opened'} = $input;
+    die "Unable to open [$file_or_fd] for input: $!\n" unless $input;
+  }
 
-    $self->{'input'} = $input;
+  $self->{'input'} = $input;
 
-    for (keys %args) {
-	$self->{'VARS'}->{$_} = $args{$_};
-    }
+  for ( keys %args ) {
+    $self->{'VARS'}->{$_} = $args{$_};
+  }
 
-    $self;
+  $self;
 }
 
 #
@@ -731,60 +737,62 @@ sub new
 #   LOG_MAXSIZE         Maximum size of log file in bytes. If file is larger than
 #                       this, it is truncated.
 #   HEADER		Object for outputting headers.
-# Returns: Nothing. 
-sub options
-{
-    my $self = shift;
+# Returns: Nothing.
+sub options {
+  my $self = shift;
 
-    # Setting options
-    my %args = @_;
-    if ( exists $args{'LOG_PREFIX'} ) {
-	my $pre = delete $args{'LOG_PREFIX'};
-	my $max = delete $args{'LOG_MAXSIZE'};
-	$max = 100000 unless defined ($max);
-	&TagX::Log::start_logger (LOG_FILE	=> $pre . '.log',
-				  LOG_MAXSIZE	=> $max);
-    }
+  # Setting options
+  my %args = @_;
+  if ( exists $args{'LOG_PREFIX'} ) {
+    my $pre = delete $args{'LOG_PREFIX'};
+    my $max = delete $args{'LOG_MAXSIZE'};
+    $max = 100000 unless defined($max);
+    &TagX::Log::start_logger( LOG_FILE    => $pre . '.log',
+                              LOG_MAXSIZE => $max );
+  }
 
-    if ( exists $args{'HEADER'} ) {
-	$self->out_handle->header( delete $args{'HEADER'} );
-    }
+  if ( exists $args{'HEADER'} ) {
+    $self->out_handle->header( delete $args{'HEADER'} );
+  }
 
-    $self->{'options'} = \%args if keys %args > 0;
+  $self->{'options'} = \%args if keys %args > 0;
 }
 
-sub getoption
-{
-    my $self = shift;
-    return unless exists $self->{'options'};
+sub getoption {
+  my $self = shift;
+  return unless exists $self->{'options'};
 
-    # Getting options
-    my $name = shift;
-    return $self->{'options'}->{$name};
+  # Getting options
+  my $name = shift;
+  return $self->{'options'}->{$name};
 }
 
-sub close
-{
-    my $self = shift;
-    
-    # Close any database handles left behind
-    my @keys = keys %{$self->{'DB'}};
-    for my $name (@keys) {
-	my $dbh = $self->{'DB'}->{$name};
-	my $rc = $dbh->disconnect;
-	&log_message( undef, "Error shutting down db connection [$name]\n\t[" . $dbh->errstr . "]" )
-	    unless $rc;
-	delete $self->{'DB'}->{$name};
-    }
+sub close {
+  my $self = shift;
 
-    # Clean up symbol table.
-    $self->{'VARS'}->close;
-    delete $self->{'VARS'};
+  # Close any database handles left behind
+  my @keys = keys %{ $self->{'DB'} };
+  for my $name (@keys) {
+    my $dbh = $self->{'DB'}->{$name};
+    my $rc  = $dbh->disconnect;
+    &log_message( undef,
+         "Error shutting down db connection [$name]\n\t[" . $dbh->errstr . "]" )
+    unless $rc;
+    delete $self->{'DB'}->{$name};
+  }
+
+  # Clean up symbol table.
+  $self->{'VARS'}->close;
+  delete $self->{'VARS'};
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.65  2011/09/15 15:43:41  eutl420
+# - perltidy
+# - remove tag <blm>
+#
 # Revision 1.64  2011/09/14 19:00:33  eutl420
 # - parse method can now parse a tag a "raw" text - as in PebbleDef
 # - <pebbledef> now added as a valid tag
