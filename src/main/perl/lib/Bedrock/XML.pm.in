@@ -33,310 +33,313 @@ use Bedrock::XML::Container::Scalar;
 use Bedrock::XML::Container::Object;
 use Bedrock::XML::Container::Array;
 
-sub start_handler
-{
-    my $self = shift;
-    my $p = shift;
-    my $e = shift;
-    my $obj = $self->{'obj'};
-    if (lc($e) eq 'object') {
-	my $newObj = Bedrock::XML::Container::Object->new( $p, @_);
-	$obj = $obj ? $obj->new_object( $p, $e, $newObj ) : $newObj;
-    } elsif ( lc($e) eq 'array' ) {
-	my $newArray = Bedrock::XML::Container::Array->new( $p, @_);
-	$obj = $obj ? $obj->new_array( $p, $e, $newArray ) : $newArray;
-    } elsif ( lc($e) eq 'scalar' ) {
-	$p->xpcroak( "<scalar> must be contained in <object> or <array>" ) unless $obj;
-	my $newScalar = Bedrock::XML::Container::Scalar->new( $p, @_);
-	$obj = $obj->new_scalar( $p, $e, $newScalar );
-    } else {
-	$p->xpcroak( "unsupported tag <$e> encountered" );
+sub start_handler {
+  my $self = shift;
+  my $p    = shift;
+  my $e    = shift;
+  my $obj  = $self->{'obj'};
+  if ( lc($e) eq 'object' ) {
+    my $newObj = Bedrock::XML::Container::Object->new( $p, @_ );
+    $obj = $obj ? $obj->new_object( $p, $e, $newObj ) : $newObj;
+  }
+  elsif ( lc($e) eq 'array' ) {
+    my $newArray = Bedrock::XML::Container::Array->new( $p, @_ );
+    $obj = $obj ? $obj->new_array( $p, $e, $newArray ) : $newArray;
+  }
+  elsif ( lc($e) eq 'scalar' ) {
+    $p->xpcroak("<scalar> must be contained in <object> or <array>")
+    unless $obj;
+    my $newScalar = Bedrock::XML::Container::Scalar->new( $p, @_ );
+    $obj = $obj->new_scalar( $p, $e, $newScalar );
+  }
+  else {
+    $p->xpcroak("unsupported tag <$e> encountered");
+  }
+  $self->{'obj'} = $obj;
+}
+
+sub end_handler {
+  my $self   = shift;
+  my $obj    = $self->{'obj'};
+  my $parent = $obj->end_body(@_);
+  $self->{'obj'} = $parent if defined($parent);
+}
+
+sub char_handler {
+  my $self = shift;
+  $self->{'obj'}->text(@_);
+}
+
+sub final_handler {
+  my $self = shift;
+  $self->{'obj'}->finalize;
+}
+
+sub unquote_xml {
+  $_[0] =~ s/&lt;/</g;
+  $_[0] =~ s/&gt;/>/g;
+  $_[0] =~ s/&apos;/\'/g;
+  $_[0] =~ s/&quot;/\"/g;
+  $_[0] =~ s/&amp;/\&/g;
+  $_[0];
+}
+
+sub quote_xml {
+  $_[0] =~ s/&/&amp;/g;
+  $_[0] =~ s/</&lt;/g;
+  $_[0] =~ s/>/&gt;/g;
+  $_[0] =~ s/\'/&apos;/g;
+  $_[0] =~ s/\"/&quot;/g;
+  $_[0];
+}
+
+sub split_opts {
+  my $str = shift;
+  return unless length($str) > 0;
+  local ($_);
+  $_ = $str;
+  my @options;
+  while (length) {
+    s/^\s+// and next;
+
+    unless (s/^([\w-]+)\s*=\s*//) {
+      die "Invalid option name at: [$_]";
     }
-    $self->{'obj'} = $obj;
-}
+    push @options, $1;
 
-sub end_handler
-{
-    my $self = shift;
-    my $obj = $self->{'obj'};
-    my $parent = $obj->end_body(@_);
-    $self->{'obj'} = $parent if defined($parent);
-}
-
-sub char_handler
-{
-    my $self = shift;
-    $self->{'obj'}->text( @_ );
-}
-
-sub final_handler
-{
-    my $self = shift;
-    $self->{'obj'}->finalize;
-}
-
-sub unquote_xml
-{
-    $_[0] =~ s/&lt;/</g;
-    $_[0] =~ s/&gt;/>/g;
-    $_[0] =~ s/&apos;/\'/g;
-    $_[0] =~ s/&quot;/\"/g;
-    $_[0] =~ s/&amp;/\&/g;
-    $_[0];
-}
-
-sub quote_xml
-{
-    $_[0] =~ s/&/&amp;/g;
-    $_[0] =~ s/</&lt;/g;
-    $_[0] =~ s/>/&gt;/g;
-    $_[0] =~ s/\'/&apos;/g;
-    $_[0] =~ s/\"/&quot;/g;
-    $_[0];
-}
-
-sub split_opts
-{
-    my $str = shift;
-    return unless length($str) > 0;
-    local($_);
-    $_ = $str;
-    my @options;
-    while ( length ) {
-	s/^\s+// and next;
-
-	unless ( s/^([\w-]+)\s*=\s*// ) {
-	    die "Invalid option name at: [$_]";
-	}
-	push @options, $1;
-
-	unless ( s/^(\x22([^\x22]*)\x22|\x27([^\x27]*)\x27)// ) {
-	    die "Invalid option value at: [$_]";
-	}
-	my $value = $2 || $3;
-	push @options, &unquote_xml($value);
+    unless (s/^(\x22([^\x22]*)\x22|\x27([^\x27]*)\x27)//) {
+      die "Invalid option value at: [$_]";
     }
-    @options;
+    my $value = $2 || $3;
+    push @options, &unquote_xml($value);
+  }
+  @options;
 }
 
-sub parse
-{
-    my $self = shift;
-    my $newscan = 1;
+sub parse {
+  my $self    = shift;
+  my $newscan = 1;
 
-    my $input = $self->{'input'};
+  my $input = $self->{'input'};
 
-    my $optstring = '';
-    my $text = '';
-    my ($element);
+  my $optstring = '';
+  my $text      = '';
+  my ($element);
 
-    my $tag_start = '^(scalar|object|array)(?=\W)';
-    my $tag_end   = '^(/scalar|/object|/array)>';
-    my $opt_esc   = '^([^>]*)>';
+  my $tag_start = '^(scalar|object|array)(?=\W)';
+  my $tag_end   = '^(/scalar|/object|/array)>';
+  my $opt_esc   = '^([^>]*)>';
 
   INPUT:
-    while ( <$input> ) {
-      MAIN: {
+  while (<$input>) {
+    MAIN: {
 
-	  #
-	  # Check whether we are into a new scan or collecting options
-	  # for a matched tag
-	  #
-	  unless ( $newscan ) {
+      #
+      # Check whether we are into a new scan or collecting options
+      # for a matched tag
+      #
+      unless ($newscan) {
 
-	      # Collecting options for a matched tag -- Look for tag end which is
-	      # an un-escaped '>'
-	      if ( s/$opt_esc//o ) {
+        # Collecting options for a matched tag -- Look for tag end which is
+        # an un-escaped '>'
+        if (s/$opt_esc//o) {
 
-		  # Found an un-escaped '>', which terminates the current tag and its options
-		  # $optstring contains the options collected so far
-		  $optstring .= $1;
-		  $self->start_handler($self, $element, &split_opts($optstring));
-		  $element = $optstring = '';
+     # Found an un-escaped '>', which terminates the current tag and its options
+     # $optstring contains the options collected so far
+          $optstring .= $1;
+          $self->start_handler( $self, $element, &split_opts($optstring) );
+          $element = $optstring = '';
 
-		  # Start a new scan after this
-		  $newscan = 1;
+          # Start a new scan after this
+          $newscan = 1;
 
-		  # Handle possible left over stuff after the '>'
-		  redo MAIN;
-	      } else {
+          # Handle possible left over stuff after the '>'
+          redo MAIN;
+        }
+        else {
 
-		  # No terminating '>' in entire line -- start by reading input again
-		  $optstring .= $_;
-		  next INPUT;
-	      }
-	  }
+          # No terminating '>' in entire line -- start by reading input again
+          $optstring .= $_;
+          next INPUT;
+        }
+      }
 
-	  # New scan from here -- scan afresh for tags.
-	  # if no '<' found in line, skip line
-	  unless ( s/^(.*?)<//oi ) {
-	      $text .= $_;
-	      next INPUT;
-	  }
+      # New scan from here -- scan afresh for tags.
+      # if no '<' found in line, skip line
+      unless (s/^(.*?)<//oi) {
+        $text .= $_;
+        next INPUT;
+      }
 
-	  # We did find a '<' -- could be we have a possible supported tag next
-	  # The text before the '<' needs to be processed.
-	  $text .= $1;
+      # We did find a '<' -- could be we have a possible supported tag next
+      # The text before the '<' needs to be processed.
+      $text .= $1;
 
-	  $self->char_handler( $self, $text ) if length($text);
-	  $text = '';
+      $self->char_handler( $self, $text ) if length($text);
+      $text = '';
 
-	  # Check if we have a supported tag
-	  if ( s/$tag_start//oi ) {
-	      $element = $1;
+      # Check if we have a supported tag
+      if (s/$tag_start//oi) {
+        $element = $1;
 
-	      # After creating object of suitable type depending on the tag, check
-	      # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-	      if ( s/$opt_esc//oi ) {
+        # After creating object of suitable type depending on the tag, check
+        # if the tag ends on the same line. Tag ending is an un-escaped '>'.
+        if (s/$opt_esc//oi) {
 
-		  # The tag definition ended on same line -- all options specified on
-		  # one line
-		  $optstring = $1;
-		  $self->start_handler($self, $element, &split_opts($optstring));
-		  $element = $optstring = '';
+          # The tag definition ended on same line -- all options specified on
+          # one line
+          $optstring = $1;
+          $self->start_handler( $self, $element, &split_opts($optstring) );
+          $element = $optstring = '';
 
-		  # And rescan the string for more tags -- Note that $newscan is unchanged
-		  # from its value of 1, so we don't need to set it here
-		  redo MAIN;
-	      } else {
+        # And rescan the string for more tags -- Note that $newscan is unchanged
+        # from its value of 1, so we don't need to set it here
+          redo MAIN;
+        }
+        else {
 
-		  # Tag definition did not end on one line -- Further input is consumed for
-		  # looking for the tag ending
-		  $newscan = 0;
+       # Tag definition did not end on one line -- Further input is consumed for
+       # looking for the tag ending
+          $newscan = 0;
 
-		  # Start collection of the options string
-		  $optstring = $_;
-	      }
+          # Start collection of the options string
+          $optstring = $_;
+        }
 
-	  } elsif ( s/$tag_end//oi ) {
+      }
+      elsif (s/$tag_end//oi) {
 
-	      # Check whether we have hit a tag-body-ending tag
-	      # and if so, end the current object
-	      $self->end_handler( $self );
+        # Check whether we have hit a tag-body-ending tag
+        # and if so, end the current object
+        $self->end_handler($self);
 
-	      # And rescan string for more tags
-	      redo MAIN;
-	  } elsif ( s/^!--// ) {
-	      # Consume comments
-	      do {
-		  last if ( s/.*?-->// );
-	      } while ( <$input> );
-	      redo MAIN;
-	  } else {
+        # And rescan string for more tags
+        redo MAIN;
+      }
+      elsif (s/^!--//) {
 
-	      # Unsupported tag hit -- croak hard
-	      die "What is this: <$_>\n";
-	  }
+        # Consume comments
+        do {
+          last if (s/.*?-->//);
+        } while (<$input>);
+        redo MAIN;
+      }
+      else {
+
+        # Unsupported tag hit -- croak hard
+        die "What is this: <$_>\n";
       }
     }
-    $self->final_handler($self);
+  }
+  $self->final_handler($self);
 }
 
-sub new
-{
-    my $class = shift;
-    my $file = shift;
-    my $self = bless {}, $class;
+sub new {
+  my $class = shift;
+  my $file  = shift;
+  my $self  = bless {}, $class;
 
-    if ( ref($file) && (-r $file || $file->can('getline')) ) {
-      $self->{'input'} = $file;
+  if ( ref($file) && ( -r $file || $file->can('getline') ) ) {
+    $self->{'input'} = $file;
+  }
+  else {
+    local (*FILE);
+    open( FILE, $file ) or die "Unable to open $file: $!\n";
+    $self->{'input'} = *FILE;
+  }
+
+  my $ref = $self->parse;
+
+  $self->{'input'}->close;
+  $ref;
+}
+
+sub newFromString {
+  my $class  = shift;
+  my $string = shift;
+  my $self   = bless {}, $class;
+  my $fd     = gensym;
+  tie *{$fd}, 'IO::Scalar', \$string;
+  $self->{'input'} = $fd;
+  my $ref = $self->parse;
+  $ref;
+}
+
+sub printxml {
+  my ( $fd, $id, $ref, $nspaces ) = @_;
+  $nspaces = 0 unless defined($nspaces);
+  my $spaces = ' ' x $nspaces;
+  if ( &UNIVERSAL::isa( $ref, 'HASH' ) ) {
+    print $fd $spaces, qq(<object $id>\n);
+    for my $key ( sort keys %{$ref} ) {
+      my $value = $ref->{$key};
+      &quote_xml($key);
+      if ( ref($value) ) {
+        &printxml( $fd, qq(name="$key"), $value, $nspaces + 1 );
+      }
+      else {
+        &quote_xml($value);
+        print $fd $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
+      }
+    }
+    print $fd $spaces, "</object>\n";
+  }
+  elsif ( &UNIVERSAL::isa( $ref, 'ARRAY' ) ) {
+    print $fd $spaces, qq(<array $id>\n);
+    for my $value ( @{$ref} ) {
+      if ( ref($value) ) {
+        &printxml( $fd, '', $value, $nspaces + 2 );
+      }
+      else {
+        &quote_xml($value);
+        print $fd $spaces, " <scalar>", $value, "</scalar>\n";
+      }
+    }
+    print $fd $spaces, "</array>\n";
+  }
+  elsif ( ref($ref) ) {
+    die "Invalid reference type encountered: <$ref>";
+  }
+  else {
+    print $fd '';
+  }
+}
+
+sub writeXML {
+  my $ref = shift;
+
+  if ( @_ == 1 ) {
+    if ( ref( $_[0] ) ) {
+      &printxml( $_[0], '', $ref );
     }
     else {
-      local(*FILE);
-      open(FILE, $file) or die "Unable to open $file: $!\n";
-      $self->{'input'} = *FILE;
+      my $file = shift;
+      open( FILE, ">$file" ) or die "Unable to open $file: $!\n";
+      &printxml( *FILE, '', $ref );
+      close FILE;
     }
-
-    my $ref = $self->parse;
-
-    $self->{'input'}->close;
-    $ref;
-}
-
-sub newFromString
-{
-    my $class = shift;
-    my $string = shift;
-    my $self = bless {}, $class;
-    my $fd = gensym;
-    tie *{$fd}, 'IO::Scalar', \$string;
-    $self->{'input'} = $fd;
-    my $ref = $self->parse;
-    $ref;
-}
-
-sub printxml
-{
-    my ($fd, $id, $ref, $nspaces) = @_;
-    $nspaces = 0 unless defined($nspaces);
-    my $spaces = ' ' x $nspaces;
-    if ( &UNIVERSAL::isa($ref, 'HASH') ) {
-	print $fd $spaces, qq(<object $id>\n);
-	for my $key (sort keys %{$ref}) {
-	    my $value = $ref->{$key};
-	    &quote_xml($key);
-	    if ( ref($value) ) {
-		&printxml($fd, qq(name="$key"), $value, $nspaces + 1);
-	    } else {
-		&quote_xml($value);
-		print $fd $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
-	    }
-	}
-	print $fd $spaces, "</object>\n";
-    } elsif ( &UNIVERSAL::isa($ref, 'ARRAY') ) {
-	print $fd $spaces, qq(<array $id>\n);
-	for my $value (@{$ref}) {
-	    if ( ref($value) ) {
-		&printxml($fd, '', $value, $nspaces + 2);
-	    } else {
-		&quote_xml($value);
-		print $fd $spaces, " <scalar>", $value, "</scalar>\n";
-	    }
-	}
-	print $fd $spaces, "</array>\n";
-    } elsif ( ref($ref) ) {
-	die "Invalid reference type encountered: <$ref>";
-    } else {
-	print $fd '';
-    }
-}
-
-sub writeXML
-{
-    my $ref = shift;
-
-    if ( @_ == 1 ) {
-	if ( ref($_[0]) ) {
-	    &printxml( $_[0], '', $ref);
-	} else {
-	    my $file = shift;
-	    open( FILE, ">$file" ) or die "Unable to open $file: $!\n";
-	    &printxml( *FILE, '', $ref);
-	    close FILE;
-	}
-    } else {
-	my $string;
-	my $fd = gensym;
-	tie *{$fd}, 'IO::Scalar', \$string;
-	&printxml( $fd, '', $ref);
-	return $string;
-    }
-}
-
-sub writeXMLString
-{
-    my $ref = shift;
+  }
+  else {
     my $string;
     my $fd = gensym;
     tie *{$fd}, 'IO::Scalar', \$string;
     &printxml( $fd, '', $ref );
-    $string;
+    return $string;
+  }
 }
 
-sub xpcroak
-{
-    my $self = shift;
-    die "Error encountered: @_";
+sub writeXMLString {
+  my $ref = shift;
+  my $string;
+  my $fd = gensym;
+  tie *{$fd}, 'IO::Scalar', \$string;
+  &printxml( $fd, '', $ref );
+  $string;
+}
+
+sub xpcroak {
+  my $self = shift;
+  die "Error encountered: @_";
 }
 
 1;
@@ -344,6 +347,9 @@ sub xpcroak
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.11  2011/09/15 16:05:32  eutl420
+# - perl tidy
+#
 # Revision 1.10  2011/09/09 18:29:42  eutl420
 # - allow the new constructor to accept a file handle
 #

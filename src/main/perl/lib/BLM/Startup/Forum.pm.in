@@ -30,191 +30,201 @@ use Carp;
 use DBI;
 use Text::Wrap ();
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
 }
 
 use TagX::Log;
 use Bedrock::Hash;
 @ISA = qw(Bedrock::Hash);
 
-sub sql_query
-{
-    my $self = shift;
-    my $stm = shift;
+sub sql_query {
+  my $self = shift;
+  my $stm  = shift;
 
-    my $dbh = $self->{'dbh'};
-    my $verbose = $self->{'config'}->{'verbose'};
-    my $sth = $dbh->prepare($stm);
-    die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
-    &log_message( undef, "Prepared SQL query\n$stm" ) if $verbose;
+  my $dbh     = $self->{'dbh'};
+  my $verbose = $self->{'config'}->{'verbose'};
+  my $sth     = $dbh->prepare($stm);
+  die "SQL query failed: $stm\n", $dbh->errstr, "\n" unless $sth;
+  &log_message( undef, "Prepared SQL query\n$stm" ) if $verbose;
 
-    for ( my $i = 1 ; $i <= @_ ; $i++ ) {
-	$sth->bind_param ( $i, $_[$i-1] ) || die "Could not bind param $i=`", $_[$i-1], "': ", $sth->errstr, "\n";
-	&log_message( undef, "Bound variable $i=[" . $_[$i-1] . "]" ) if $verbose;
+  for ( my $i = 1 ; $i <= @_ ; $i++ ) {
+    $sth->bind_param( $i, $_[ $i - 1 ] ) || die "Could not bind param $i=`",
+    $_[ $i - 1 ], "': ", $sth->errstr, "\n";
+    &log_message( undef, "Bound variable $i=[" . $_[ $i - 1 ] . "]" )
+    if $verbose;
+  }
+
+  my $rows = $sth->execute;
+  die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+  unless defined $rows;
+
+  my ( $href, @rows );
+  while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
+    my %hash = %{$href};
+    push @rows, \%hash;
+  }
+
+  if ( $verbose > 1 ) {
+    my ( $key, $value, $str, $i );
+    for ( $i = 0 ; $i < @rows ; $i++ ) {
+      $str .= "Row $i>\n";
+      while ( ( $key, $value ) = each %{ $rows[$i] } ) {
+        $str .= "  $key => [$value]\n";
+      }
     }
+    &log_message( undef, "Found the following $i row(s)\n" . $str )
+    if $verbose > 1;
+  }
 
-    my $rows = $sth->execute;
-    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
-	unless defined $rows;
-
-    my ($href, @rows);
-    while ( $href = $sth->fetchrow_hashref('NAME_lc') ) {
-	my %hash = %{$href};
-	push @rows, \%hash;
-    }
-
-    if ( $verbose > 1 ) {
-	my ($key, $value, $str, $i);
-	for ( $i = 0 ; $i < @rows ; $i++ ) {
-	    $str .= "Row $i>\n";
-	    while (($key, $value) = each %{$rows[$i]}) {
-		$str .= "  $key => [$value]\n";
-	    }
-	}
-	&log_message( undef, "Found the following $i row(s)\n" . $str ) if $verbose > 1;
-    }
-
-    die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
-    return @rows;
+  die "Error extracting data from SQL query: ", $sth->errstr, "\n" if $sth->err;
+  return @rows;
 }
 
-sub update_count
-{
-    my $self = shift;
-    my $parent_id = shift;
+sub update_count {
+  my $self      = shift;
+  my $parent_id = shift;
 
-    my $dbh = $self->{'dbh'};
-    my $table = $self->{'config'}->{'table_name'};
+  my $dbh   = $self->{'dbh'};
+  my $table = $self->{'config'}->{'table_name'};
 
-    $dbh->do(qq{update $table set nreplies = nreplies + 1,
+  $dbh->do(
+    qq{update $table set nreplies = nreplies + 1,
 		nmesg = nmesg + 1, updated = null where id = ?},
-	     undef, $parent_id)
-	or die "Unable to update message count in row id=`$parent_id': ", $dbh->errstr, "\n";
+    undef, $parent_id
+          )
+  or die "Unable to update message count in row id=`$parent_id': ",
+  $dbh->errstr, "\n";
 
-    # Updating the `nmesg' field of the parent hierarchy
-    my $selstm = "select parent_id from $table where id = ?";
-    my $selsth = $dbh->prepare( $selstm );
-    die "SQL query failed: $selstm\n", $dbh->errstr, "\n" unless $selsth;
+  # Updating the `nmesg' field of the parent hierarchy
+  my $selstm = "select parent_id from $table where id = ?";
+  my $selsth = $dbh->prepare($selstm);
+  die "SQL query failed: $selstm\n", $dbh->errstr, "\n" unless $selsth;
 
-    my $updstm = qq{update $table set nmesg = nmesg + 1, updated = null where id = ?};
-    my $updsth = $dbh->prepare( $updstm );
-    die "SQL query failed: $updstm\n", $dbh->errstr, "\n" unless $updsth;
+  my $updstm =
+  qq{update $table set nmesg = nmesg + 1, updated = null where id = ?};
+  my $updsth = $dbh->prepare($updstm);
+  die "SQL query failed: $updstm\n", $dbh->errstr, "\n" unless $updsth;
 
-    do {
-	$selsth->bind_param ( 1, $parent_id ) || die "Could not bind id=`$parent_id': ", $selsth->errstr, "\n";
-	my $rows = $selsth->execute;
-	die "Error executing SQL statement: ", $selsth->errstr, "\n$selstm\n" unless defined $rows;
-	my $aref = $selsth->fetch;
-	die "Error extraacting data from SQL query: ", $selsth->errstr, "\n" if $selsth->err;
-	die "Unable to locate row with id=`$parent_id'.\n" unless $aref;
-	$parent_id = $aref->[0];
+  do {
+    $selsth->bind_param( 1, $parent_id )
+    || die "Could not bind id=`$parent_id': ", $selsth->errstr, "\n";
+    my $rows = $selsth->execute;
+    die "Error executing SQL statement: ", $selsth->errstr, "\n$selstm\n"
+    unless defined $rows;
+    my $aref = $selsth->fetch;
+    die "Error extraacting data from SQL query: ", $selsth->errstr, "\n"
+    if $selsth->err;
+    die "Unable to locate row with id=`$parent_id'.\n" unless $aref;
+    $parent_id = $aref->[0];
 
-	return unless $parent_id;
+    return unless $parent_id;
 
-	$updsth->bind_param( 1, $parent_id ) || die "Could not bind id=`$parent_id': ", $updsth->errstr, "\n";
-	$rows = $updsth->execute;
-	die "Error executing SQL statement: ", $updsth->errstr, "\n$updstm\n" unless defined $rows;
-    } while ( $parent_id );
+    $updsth->bind_param( 1, $parent_id )
+    || die "Could not bind id=`$parent_id': ", $updsth->errstr, "\n";
+    $rows = $updsth->execute;
+    die "Error executing SQL statement: ", $updsth->errstr, "\n$updstm\n"
+    unless defined $rows;
+  } while ($parent_id);
 }
 
-sub TIEHASH
-{
-    my ($class, $ctx, $config) = @_;
+sub TIEHASH {
+  my ( $class, $ctx, $config ) = @_;
 
-    # Create Forum object
-    my $self = bless {}, $class;
-    $self->{'ctx'} = $ctx;
-    $self->{'config'} = $config;
-    my $verbose = $self->{'verbose'} = $config->{'verbose'};
-    $self->{'moderated'} = exists $config->{'moderated'} and $config->{'moderated'} ? 1 : 0;
+  # Create Forum object
+  my $self = bless {}, $class;
+  $self->{'ctx'}    = $ctx;
+  $self->{'config'} = $config;
+  my $verbose = $self->{'verbose'} = $config->{'verbose'};
+  $self->{'moderated'} = exists $config->{'moderated'}
+  and $config->{'moderated'} ? 1 : 0;
 
-    # Get the required database params
-    my $dsn = $config->{'data_source'};
-    die "$class: param `data_source' must be specified in config\n" unless $dsn;
+  # Get the required database params
+  my $dsn = $config->{'data_source'};
+  die "$class: param `data_source' must be specified in config\n" unless $dsn;
 
-    my $table = $config->{'table_name'};
-    die "$class: param `table_name' must be specified in config\n" unless $table;
+  my $table = $config->{'table_name'};
+  die "$class: param `table_name' must be specified in config\n" unless $table;
 
-    my $u = $config->{'username'};
-    my $p = $config->{'password'};
+  my $u = $config->{'username'};
+  my $p = $config->{'password'};
 
-    # And do the connect
-    my $dbh = DBI->connect ( $dsn, $u, $p );
-    die "$class: could not connect to database `$dsn': ", $DBI::errstr, "\n" unless $dbh;
-    $self->{'dbh'} = $dbh;
+  # And do the connect
+  my $dbh = DBI->connect( $dsn, $u, $p );
+  die "$class: could not connect to database `$dsn': ", $DBI::errstr, "\n"
+  unless $dbh;
+  $self->{'dbh'} = $dbh;
 
-    # And return the session object
-    $self;
+  # And return the session object
+  $self;
 }
 
-sub FETCH
-{
-    my ($self, $id) = @_;
+sub FETCH {
+  my ( $self, $id ) = @_;
 
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
 
-    my $stm;
-    if ( $config->{'moderated'} ) {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  my $stm;
+  if ( $config->{'moderated'} ) {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
 		  unix_timestamp(updated) as 'updated',
 		  body, moderator from $table
 		  where id = ? and moderator is not null);
-    } else {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  }
+  else {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
 		  unix_timestamp(updated) as 'updated',
 		  body from $table where id = ?);
-    }
+  }
 
-    my @rows = $self->sql_query( $stm, $id );
-    die "SQL query error: more than one row(", scalar(@rows), " returned for id=`$id'.\n"
-	if @rows > 1;
-    return $rows[0];
+  my @rows = $self->sql_query( $stm, $id );
+  die "SQL query error: more than one row(", scalar(@rows),
+  " returned for id=`$id'.\n"
+  if @rows > 1;
+  return $rows[0];
 }
 
-sub is_moderated
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    $self->{'config'}->{'moderated'};
+sub is_moderated {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  $self->{'config'}->{'moderated'};
 }
 
-sub threads
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my %args = @_;
+sub threads {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  my %args = @_;
 
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
 
-    my $order_by = $args{'order_by'} || 'added';
-    die "Invalid value of order_by: `$order_by'.\n" unless $order_by =~ /^(added|updated)$/i;
+  my $order_by = $args{'order_by'} || 'added';
+  die "Invalid value of order_by: `$order_by'.\n"
+  unless $order_by =~ /^(added|updated)$/i;
 
-    my $order = $args{'order'} || 'asc';
-    die "Invalid value of order: `$order_by'.\nMust be `ASC' or `DESC' only.\n"
-	unless $order =~ /^(asc|desc)$/i;
+  my $order = $args{'order'} || 'asc';
+  die "Invalid value of order: `$order_by'.\nMust be `ASC' or `DESC' only.\n"
+  unless $order =~ /^(asc|desc)$/i;
 
-    my $limit_clause;
-    if ( exists $args{'row_offset'} or exists $args{'row_count'} ) {
-	$limit_clause = 'limit ';
-	$limit_clause .= $args{'row_offset'} . ', ' if exists $args{'row_offset'};
-	$limit_clause .= $args{'row_count'} || 10;
-    }
+  my $limit_clause;
+  if ( exists $args{'row_offset'} or exists $args{'row_count'} ) {
+    $limit_clause = 'limit ';
+    $limit_clause .= $args{'row_offset'} . ', ' if exists $args{'row_offset'};
+    $limit_clause .= $args{'row_count'} || 10;
+  }
 
-    my $stm;
-    if ( $config->{'moderated'} ) {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  my $stm;
+  if ( $config->{'moderated'} ) {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
@@ -223,8 +233,9 @@ sub threads
 		  where parent_id is null and moderator is not null
 		  order by $order_by $order
 		  $limit_clause);
-    } else {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  }
+  else {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
@@ -232,203 +243,213 @@ sub threads
 		  from $table where parent_id is null
 		  order by $order_by $order
 		  $limit_clause);
-    }
+  }
 
-    my $aref = Bedrock::Array->new($self->sql_query( $stm ));
-    return $aref;
+  my $aref = Bedrock::Array->new( $self->sql_query($stm) );
+  return $aref;
 }
 
-sub unpublished
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
+sub unpublished {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
 
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
 
-    my $stm = qq(select id, parent_id, title, posted_by, nreplies,
+  my $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		 nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		 date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		 unix_timestamp(added) as 'added',
 		 unix_timestamp(updated) as 'updated'
 		 from $table where moderator is null order by added);
 
-    my $aref = Bedrock::Array->new($self->sql_query( $stm ));
-    return $aref;
+  my $aref = Bedrock::Array->new( $self->sql_query($stm) );
+  return $aref;
 }
 
-sub get_raw
-{
-    my $obj = shift;
-    my $id = shift;
-    my $self = tied(%{$obj});
+sub get_raw {
+  my $obj  = shift;
+  my $id   = shift;
+  my $self = tied( %{$obj} );
 
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
 
-    my $stm = qq(select id, parent_id, title, posted_by, nreplies,
+  my $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		 nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		 date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		 unix_timestamp(added) as 'added',
 		 unix_timestamp(updated) as 'updated',
 		 body, moderator from $table where id = ?);
 
-    my @rows = $self->sql_query( $stm, $id );
-    die "SQL query error: more than one row(", scalar(@rows), " returned for id=`$id'.\n"
-	if @rows > 1;
-    return $rows[0];
+  my @rows = $self->sql_query( $stm, $id );
+  die "SQL query error: more than one row(", scalar(@rows),
+  " returned for id=`$id'.\n"
+  if @rows > 1;
+  return $rows[0];
 }
 
-sub responses
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my ($id, $start, $max) = @_;
-    
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+sub responses {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  my ( $id, $start, $max ) = @_;
 
-    my $stm;
-    if ( $config->{'moderated'} ) {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
+
+  my $stm;
+  if ( $config->{'moderated'} ) {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
 		  unix_timestamp(updated) as 'updated',
 		  moderator from $table
 		  where parent_id = ? and moderator is not null order by added);
-    } else {
-	$stm = qq(select id, parent_id, title, posted_by, nreplies,
+  }
+  else {
+    $stm = qq(select id, parent_id, title, posted_by, nreplies,
 		  nmesg, date_format(added, '%a %b %d %Y, %T') as 'date_added',
 		  date_format(updated, '%a %b %d %Y, %T') as 'date_updated',
 		  unix_timestamp(added) as 'added',
 		  unix_timestamp(updated) as 'updated'
 		  from $table where parent_id = ? order by added);
-    }
+  }
 
-    my $aref = Bedrock::Array->new($self->sql_query( $stm, $id ));
-    return $aref;
+  my $aref = Bedrock::Array->new( $self->sql_query( $stm, $id ) );
+  return $aref;
 }
 
-sub wrap
-{
-    my $obj = shift;
-    my $text = shift;
-    $Text::Wrap::columns = shift || 80;
-    my $output;
-    for my $line (split(/\n/, $text)) {
-	if ( $line =~ /^>>/ ) {
-	    $output .= $line;
-	} else {
-	    my $wrapped = &Text::Wrap::wrap("", "", $line);
-	    $output .= $wrapped;
-	}
+sub wrap {
+  my $obj  = shift;
+  my $text = shift;
+  $Text::Wrap::columns = shift || 80;
+  my $output;
+  for my $line ( split( /\n/, $text ) ) {
+    if ( $line =~ /^>>/ ) {
+      $output .= $line;
     }
-    $output;
+    else {
+      my $wrapped = &Text::Wrap::wrap( "", "", $line );
+      $output .= $wrapped;
+    }
+  }
+  $output;
 }
 
-sub post
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    my $parent_id = shift;
+sub post {
+  my $obj       = shift;
+  my $self      = tied( %{$obj} );
+  my $parent_id = shift;
 
-    my ($title, $body, $email) = @_;
-    return unless length($body) or length($title);
+  my ( $title, $body, $email ) = @_;
+  return unless length($body) or length($title);
 
-    my $dbh = $self->{'dbh'};
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
+  my $dbh    = $self->{'dbh'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
 
-    if ( $parent_id ) {
-	my $stm = qq(insert into $table(parent_id, title, body, posted_by,
+  if ($parent_id) {
+    my $stm = qq(insert into $table(parent_id, title, body, posted_by,
 					nmesg, updated, added)
 		     values(?, ?, ?, ?, 1, null, null));
-	my $sth = $dbh->prepare($stm);
-	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
-	$sth->bind_param ( 1, $parent_id ) || die "Could not bind parent_id=`$parent_id': ", $sth->errstr, "\n";
-	$sth->bind_param ( 2, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
-	$sth->bind_param ( 3, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
-	$sth->bind_param ( 4, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
-	my $rows = $sth->execute;
-	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
-    } else {
-	my $stm = qq(insert into $table(title, body, posted_by,
+    my $sth = $dbh->prepare($stm);
+    die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n"
+    unless $sth;
+    $sth->bind_param( 1, $parent_id )
+    || die "Could not bind parent_id=`$parent_id': ", $sth->errstr, "\n";
+    $sth->bind_param( 2, $title ) || die "Could not bind title=`$title': ",
+    $sth->errstr, "\n";
+    $sth->bind_param( 3, $body ) || die "Could not bind body=`$body': ",
+    $sth->errstr, "\n";
+    $sth->bind_param( 4, $email ) || die "Could not bind posted_by=`$email': ",
+    $sth->errstr, "\n";
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+    unless $rows == 1;
+  }
+  else {
+    my $stm = qq(insert into $table(title, body, posted_by,
 					nmesg, updated, added)
 		     values(?, ?, ?, 1, null, null));
-	my $sth = $dbh->prepare($stm);
-	die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n" unless $sth;
-	$sth->bind_param ( 1, $title ) || die "Could not bind title=`$title': ", $sth->errstr, "\n";
-	$sth->bind_param ( 2, $body ) || die "Could not bind body=`$body': ", $sth->errstr, "\n";
-	$sth->bind_param ( 3, $email ) || die "Could not bind posted_by=`$email': ", $sth->errstr, "\n";
-	my $rows = $sth->execute;
-	die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n" unless $rows == 1;
-	return;
-    }
+    my $sth = $dbh->prepare($stm);
+    die "Could not prepare SQL statement: $stm\n", $dbh->errstr, "\n"
+    unless $sth;
+    $sth->bind_param( 1, $title ) || die "Could not bind title=`$title': ",
+    $sth->errstr, "\n";
+    $sth->bind_param( 2, $body ) || die "Could not bind body=`$body': ",
+    $sth->errstr, "\n";
+    $sth->bind_param( 3, $email ) || die "Could not bind posted_by=`$email': ",
+    $sth->errstr, "\n";
+    my $rows = $sth->execute;
+    die "Error executing SQL statement: ", $sth->errstr, "\n$stm\n"
+    unless $rows == 1;
+    return;
+  }
 
-    $self->update_count( $parent_id ) unless $config->{'moderated'};
+  $self->update_count($parent_id) unless $config->{'moderated'};
 }
 
-sub publish
-{
-    my $obj = shift;
-    my $id = shift;
-    my $title = shift;
-    my $body = shift;
-    my $moderator = shift || 'unknown';
+sub publish {
+  my $obj       = shift;
+  my $id        = shift;
+  my $title     = shift;
+  my $body      = shift;
+  my $moderator = shift || 'unknown';
 
-    my $self = tied(%{$obj});
-    my $verbose = $self->{'config'}->{'verbose'};
+  my $self    = tied( %{$obj} );
+  my $verbose = $self->{'config'}->{'verbose'};
 
-    my $dbh = $self->{'dbh'};
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
-    my $stm = qq(update $table set moderator = ?, title = ?, body = ?, added = null
+  my $dbh    = $self->{'dbh'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
+  my $stm =
+  qq(update $table set moderator = ?, title = ?, body = ?, added = null
 		 where id = ?);
-    $dbh->do($stm, undef, $moderator, $title, $body, $id)
-	or die "Unable to publish message id = `$id': ", $dbh->errstr, "\n";
+  $dbh->do( $stm, undef, $moderator, $title, $body, $id )
+  or die "Unable to publish message id = `$id': ", $dbh->errstr, "\n";
 
-    &log_message(undef, "Updating moderator: statement is\n$stm" ) if $verbose;
+  &log_message( undef, "Updating moderator: statement is\n$stm" ) if $verbose;
 
-    my @rows = $self->sql_query( "select parent_id from $table where id = ?", $id );
-    return unless $rows[0]->{'parent_id'};
-    $self->update_count( $rows[0]->{'parent_id'} );
+  my @rows =
+  $self->sql_query( "select parent_id from $table where id = ?", $id );
+  return unless $rows[0]->{'parent_id'};
+  $self->update_count( $rows[0]->{'parent_id'} );
 }
 
-sub mkResponse
-{
-    my ($obj, $title, $body) = @_;
-    $title =~ s/^\s+//;
-    $title =~ s/^/Re: / unless $title =~ /^Re:/i;
-    $body =~ s/^/>> /gm;
-    my $href = {'title' => $title, 'body' => $body};
-    return $href;
+sub mkResponse {
+  my ( $obj, $title, $body ) = @_;
+  $title =~ s/^\s+//;
+  $title =~ s/^/Re: / unless $title =~ /^Re:/i;
+  $body  =~ s/^/>> /gm;
+  my $href = { 'title' => $title, 'body' => $body };
+  return $href;
 }
 
-sub delete
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    die "No id specified.\n" unless @_ > 0;
-    my $id = shift;
+sub delete {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  die "No id specified.\n" unless @_ > 0;
+  my $id = shift;
 
-    my $verbose = $self->{'config'}->{'verbose'};
+  my $verbose = $self->{'config'}->{'verbose'};
 
-    my $dbh = $self->{'dbh'};
-    my $config = $self->{'config'};
-    my $table = $config->{'table_name'};
-    my $stm = qq(delete from $table where moderator is null and id = ?);
-    my $rows = $dbh->do($stm, undef, $id);
-    die "Unable to delete message id = `$id': ", $dbh->errstr, "\n" unless defined($rows);
-    die "Unable to delete message id = `$id': message does not exist or has been published.\n"
-	unless $rows > 0;
+  my $dbh    = $self->{'dbh'};
+  my $config = $self->{'config'};
+  my $table  = $config->{'table_name'};
+  my $stm    = qq(delete from $table where moderator is null and id = ?);
+  my $rows   = $dbh->do( $stm, undef, $id );
+  die "Unable to delete message id = `$id': ", $dbh->errstr, "\n"
+  unless defined($rows);
+  die
+"Unable to delete message id = `$id': message does not exist or has been published.\n"
+  unless $rows > 0;
 }
 
-sub closeBLM
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    $self->{'dbh'}->disconnect;
+sub closeBLM {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  $self->{'dbh'}->disconnect;
 }
 
 1;
@@ -436,6 +457,9 @@ sub closeBLM
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.10  2011/09/15 16:05:31  eutl420
+# - perl tidy
+#
 # Revision 1.9  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #

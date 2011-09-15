@@ -27,129 +27,131 @@ package BLM::SMTP;
 
 use strict;
 
-BEGIN
-  {
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-  }
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+}
 
 use Net::SMTP;
 use Bedrock::Handle;
 
 @ISA = qw( Bedrock::Handle );
 
-sub TIEHANDLE
-  {
-    my $class = shift;
-    die "Usage: $class->new( SMTP_Server, Sender_Addr [, To_Addr1 .. ] )\n" unless @_ > 1;
-    my $server = shift;
-    my $sender = shift;
-    my $self = bless {}, $class;
-    $self->{'sender'} = $sender;
-    $self->{'server'} = Net::SMTP->new( $server );
-    die "$class->new(): unable to connect to $server.\n" unless $self->{'server'};
-    $self->{'server'}->mail( $sender );
-    $self->{'to'} = [@_] if @_ > 0;
-    $self;
-  }
+sub TIEHANDLE {
+  my $class = shift;
+  die "Usage: $class->new( SMTP_Server, Sender_Addr [, To_Addr1 .. ] )\n"
+  unless @_ > 1;
+  my $server = shift;
+  my $sender = shift;
+  my $self   = bless {}, $class;
+  $self->{'sender'} = $sender;
+  $self->{'server'} = Net::SMTP->new($server);
+  die "$class->new(): unable to connect to $server.\n" unless $self->{'server'};
+  $self->{'server'}->mail($sender);
+  $self->{'to'} = [@_] if @_ > 0;
+  $self;
+}
 
-sub WRITE
-  {
-    my $self = shift;
-    my ($buf, $len, $offset) = @_;
+sub WRITE {
+  my $self = shift;
+  my ( $buf, $len, $offset ) = @_;
 
-    my $server = $self->{'server'};
+  my $server = $self->{'server'};
 
-    # If writing for first time, need to do some things
-    unless ( exists $self->{'start_send'} ) {
-      # croak if some required stuff not specified
-      die ref($self), "->WRITE(): `to' address not specified.\n" unless $self->{'to'};
+  # If writing for first time, need to do some things
+  unless ( exists $self->{'start_send'} ) {
 
-      # mark to indicate we are sending and no more headers accepted
-      $self->{'start_send'} = 1;
+    # croak if some required stuff not specified
+    die ref($self), "->WRITE(): `to' address not specified.\n"
+    unless $self->{'to'};
 
-      # Set the to address -- this is the only header really required.
-      $server->to( @{$self->{'to'}} );
+    # mark to indicate we are sending and no more headers accepted
+    $self->{'start_send'} = 1;
 
-      # Start sending the data.
-      $server->data;
+    # Set the to address -- this is the only header really required.
+    $server->to( @{ $self->{'to'} } );
 
-      # Need to write subject and cc headers now
-      $server->datasend("To: " . join(",", @{$self->{to}}) . "\n");
-      $server->datasend("From: " . $self->{sender} . "\n");
-      $server->datasend("Subject: $self->{'subject'}\n") if exists $self->{'subject'};
-      if ( exists $self->{'cc'} ) {
-	local $" = ", ";
-	$server->datasend("CC: @{$self->{'cc'}}\n");
-      }
+    # Start sending the data.
+    $server->data;
 
-      # Write the rest of the headers now
-      if ( exists $self->{'header'} ) {
-	my ($key, $value);
-	while (($key, $value) = each %{$self->{'header'}}) {
-	  $server->datasend("$key: $value\n");
-	}
-      }
-
-      # End of all headers
-      $server->datasend("\n");
+    # Need to write subject and cc headers now
+    $server->datasend( "To: " . join( ",", @{ $self->{to} } ) . "\n" );
+    $server->datasend( "From: " . $self->{sender} . "\n" );
+    $server->datasend("Subject: $self->{'subject'}\n")
+    if exists $self->{'subject'};
+    if ( exists $self->{'cc'} ) {
+      local $" = ", ";
+      $server->datasend("CC: @{$self->{'cc'}}\n");
     }
 
-    $server->datasend($buf);
+    # Write the rest of the headers now
+    if ( exists $self->{'header'} ) {
+      my ( $key, $value );
+      while ( ( $key, $value ) = each %{ $self->{'header'} } ) {
+        $server->datasend("$key: $value\n");
+      }
+    }
+
+    # End of all headers
+    $server->datasend("\n");
   }
 
-sub CLOSE
-  {
-    my $self = shift;
-    $self->{'server'}->dataend;
-    $self->{'server'} = undef;
-  }
+  $server->datasend($buf);
+}
 
-sub to
-  {
-    my $fd = shift;
-    my $self = tied(*{$fd});
-    die ref($fd), "->to(): cannot specify `to' address once message send has been started.\n"
-      if exists $self->{'start_send'};
-    $self->{'to'} = [] unless exists $self->{'to'};
-    push @{$self->{'to'}}, @_;
-  }
-  
+sub CLOSE {
+  my $self = shift;
+  $self->{'server'}->dataend;
+  $self->{'server'} = undef;
+}
+
+sub to {
+  my $fd   = shift;
+  my $self = tied( *{$fd} );
+  die ref($fd),
+  "->to(): cannot specify `to' address once message send has been started.\n"
+  if exists $self->{'start_send'};
+  $self->{'to'} = [] unless exists $self->{'to'};
+  push @{ $self->{'to'} }, @_;
+}
+
 sub recipient {
   $_[0]->to(@_);
 }
 
-sub cc
-  {
-    my $fd = shift;
-    my $self = tied(*{$fd});
-    die ref($fd), "->cc(): cannot specify `CC' address once message send has been started.\n"
-      if exists $self->{'start_send'};
-    $self->{'cc'} = [] unless exists $self->{'cc'};
-    push @{$self->{'cc'}}, @_;
-  }
+sub cc {
+  my $fd   = shift;
+  my $self = tied( *{$fd} );
+  die ref($fd),
+  "->cc(): cannot specify `CC' address once message send has been started.\n"
+  if exists $self->{'start_send'};
+  $self->{'cc'} = [] unless exists $self->{'cc'};
+  push @{ $self->{'cc'} }, @_;
+}
 
 sub subject {
-  
-  my $fd = shift;
-  my $self = tied(*{$fd});
-  die ref($fd), "->subject(): cannot specify `Subject' once message send has been started.\n"
-    if exists $self->{'start_send'};
+
+  my $fd   = shift;
+  my $self = tied( *{$fd} );
+  die ref($fd),
+  "->subject(): cannot specify `Subject' once message send has been started.\n"
+  if exists $self->{'start_send'};
   $self->{'subject'} = "@_";
 }
 
 sub header {
-  my $fd = shift;
-  my $self = tied(*{$fd});
-  die ref($fd), "->header(): cannot specify any header(s) once message send has been started.\n"
-    if exists $self->{'start_send'};
+  my $fd   = shift;
+  my $self = tied( *{$fd} );
+  die ref($fd),
+"->header(): cannot specify any header(s) once message send has been started.\n"
+  if exists $self->{'start_send'};
   my %args = @_;
-  my ($key, $value);
+  my ( $key, $value );
   $self->{'header'} = {} unless exists $self->{'header'};
-  while (($key, $value) = each %args) {
+  while ( ( $key, $value ) = each %args ) {
     next if $key =~ /^(cc|to|from|subject)$/i;
-    $self->{'header'}->{ucfirst($key)} = $value;
+    $self->{'header'}->{ ucfirst($key) } = $value;
   }
 }
 
@@ -165,6 +167,9 @@ sub DESTROY {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.13  2011/09/15 16:05:31  eutl420
+# - perl tidy
+#
 # Revision 1.12  2011/09/10 19:14:36  eutl420
 # - added DESTROY method to make sure ->dataend() method called
 #

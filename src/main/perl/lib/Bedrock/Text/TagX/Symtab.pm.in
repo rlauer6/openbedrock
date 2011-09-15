@@ -29,174 +29,174 @@ use strict;
 use Tie::Hash;
 @TagX::Symtab::ISA = qw ( Tie::StdHash );
 
-sub TIEHANDLE
-{
-    my $class = shift;
-    my $self = bless {}, $class;
-    $self->{'data'} = {};
-    $self->{'code'} = {};
-    $self;
+sub TIEHANDLE {
+  my $class = shift;
+  my $self = bless {}, $class;
+  $self->{'data'} = {};
+  $self->{'code'} = {};
+  $self;
 }
 
-sub FETCH
-{
-    my ($self, $key) = @_;
+sub FETCH {
+  my ( $self, $key ) = @_;
 
-    # Check to see if frames exist and requested key has an entry in
-    # the topmost frame, and return that if available
-    if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
-	return $self->{'frames'}->[0]->{$key};
+  # Check to see if frames exist and requested key has an entry in
+  # the topmost frame, and return that if available
+  if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
+    return $self->{'frames'}->[0]->{$key};
+  }
+
+  # Else check in the actual symbol table for the value
+  if ( exists $self->{'data'}->{$key} ) {
+    return $self->{'data'}->{$key};
+  }
+  elsif ( exists $self->{'code'}->{$key} ) {
+
+    # Else do the code ref symbol table
+    my $code = delete $self->{'code'}->{$key};
+    return $self->{'data'}->{$key} = $code->();
+  }
+  else {
+
+    # failure everywhere
+    return undef;
+  }
+}
+
+sub STORE {
+  my ( $self, $key, $value ) = @_;
+
+  # If frames exists, store in topmost frame -- presumes no values are code refs
+  if ( exists $self->{'frames'} ) {
+    $self->{'frames'}->[0]->{$key} = $value;
+    return $value;
+  }
+
+  # If value is a code-ref, store in code ref symbol table,
+  # else store in the actual symbol table
+  if ( &UNIVERSAL::isa( $value, 'CODE' ) ) {
+    $self->{'code'}->{$key} = $value;
+  }
+  else {
+    $self->{'data'}->{$key} = $value;
+  }
+  $value;
+}
+
+sub DELETE {
+  my ( $self, $key ) = @_;
+
+  # Delete from frame if frames exist
+  if ( exists $self->{'frames'} ) {
+    return delete $self->{'frames'}->[0]->{$key};
+  }
+
+  # delete from symbol table or code-ref table
+  if ( exists $self->{'data'}->{$key} ) {
+    return delete $self->{'data'}->{$key};
+  }
+  elsif ( exists $self->{'code'}->{$key} ) {
+    return delete $self->{'data'}->{$key};
+  }
+  else {
+    return undef;
+  }
+}
+
+sub CLEAR {
+  my $self = shift;
+
+  # Clear frame if frames exist
+  if ( exists $self->{'frames'} ) {
+    %{ $self->{'frames'}->[0] } = ();
+    return;
+  }
+
+  %{ $self->{'data'} } = ();
+  %{ $self->{'code'} } = ();
+}
+
+sub EXISTS {
+  my ( $self, $key ) = @_;
+  if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
+    return 1;
+  }
+  elsif ( exists $self->{'data'}->{$key} ) {
+    return 1;
+  }
+  elsif ( exists $self->{'code'}->{$key} ) {
+    return 1;
+  }
+  else {
+    return 0;
+  }
+}
+
+sub FIRSTKEY {
+  my $self = shift;
+  delete $self->{'keys'};
+
+  if ( exists $self->{'frames'} ) {
+    my $k = {};
+    %{$k} = ( %{ $self->{'frames'}->[0] } );
+    for my $name ( keys %{ $self->{'data'} } ) {
+      next if exists $k->{$name};
+      $k->{$name} = $self->{'data'}->{$name};
     }
+    $self->{'keys'} = $k;
+  }
+  else {
+    $self->{'keys'} = $self->{'data'};
+  }
 
-    # Else check in the actual symbol table for the value
-    if ( exists $self->{'data'}->{$key} ) {
-	return $self->{'data'}->{$key};
-    } elsif ( exists $self->{'code'}->{$key} ) {
-	# Else do the code ref symbol table
-	my $code = delete $self->{'code'}->{$key};
-	return $self->{'data'}->{$key} = $code->();
-    } else {
-	# failure everywhere
-	return undef;
-    }
+  my $a = keys %{ $self->{'keys'} };
+  each %{ $self->{'keys'} };
 }
 
-sub STORE
-{
-    my ($self, $key, $value) = @_;
-
-    # If frames exists, store in topmost frame -- presumes no values are code refs
-    if ( exists $self->{'frames'} ) {
-	$self->{'frames'}->[0]->{$key} = $value;
-	return $value;
-    }
-
-    # If value is a code-ref, store in code ref symbol table,
-    # else store in the actual symbol table
-    if ( &UNIVERSAL::isa($value, 'CODE') ) {
-	$self->{'code'}->{$key} = $value;
-    } else {
-	$self->{'data'}->{$key} = $value;
-    }
-    $value;
+sub NEXTKEY {
+  each %{ $_[0]->{'keys'} };
 }
 
-sub DELETE
-{
-    my ($self, $key) = @_;
-
-    # Delete from frame if frames exist
-    if ( exists $self->{'frames'} ) {
-	return delete $self->{'frames'}->[0]->{$key};
-    }
-
-    # delete from symbol table or code-ref table
-    if ( exists $self->{'data'}->{$key} ) {
-	return delete $self->{'data'}->{$key};
-    } elsif ( exists $self->{'code'}->{$key} ) {
-	return delete $self->{'data'}->{$key};
-    } else {
-	return undef;
-    }
+sub new {
+  my $class = shift;
+  my $self = bless {}, $class;
+  tie %{$self}, $class;
+  $self;
 }
 
-sub CLEAR
-{
-    my $self = shift;
+sub close {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  delete $self->{'keys'};
+  for my $name ( keys %{ $self->{'data'} } ) {
+    my $value = $self->{'data'}->{$name};
 
-    # Clear frame if frames exist
-    if ( exists $self->{'frames'} ) {
-	%{$self->{'frames'}->[0]} = ();
-	return;
-    }
+    # No destruction if value is not an object
+    next unless ref($value);
 
-    %{$self->{'data'}} = ();
-    %{$self->{'code'}} = ();
+    # No destruction unless the object has a `closeBLM()' method
+    next unless &UNIVERSAL::can( $value, 'closeBLM' );
+
+    # Close it
+    $value->closeBLM;
+  }
+  continue {
+    delete $self->{'data'}->{$name};
+  }
 }
 
-sub EXISTS
-{
-    my ($self, $key) = @_;
-    if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
-	return 1;
-    } elsif ( exists $self->{'data'}->{$key} ) {
-	return 1;
-    } elsif ( exists $self->{'code'}->{$key} ) {
-	return 1;
-    } else {
-	return 0;
-    }
+sub new_frame {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  $self->{'frames'} = [] unless exists $self->{'frames'};
+  unshift @{ $self->{'frames'} }, {};
 }
 
-sub FIRSTKEY
-{
-    my $self = shift;
-    delete $self->{'keys'};
-
-    if ( exists $self->{'frames'} ) {
-	my $k = {};
-	%{$k} = (%{$self->{'frames'}->[0]});
-	for my $name (keys %{$self->{'data'}}) {
-	    next if exists $k->{$name};
-	    $k->{$name} = $self->{'data'}->{$name};
-	}
-	$self->{'keys'} = $k;
-    } else {
-	$self->{'keys'} = $self->{'data'};
-    }
-
-    my $a = keys %{$self->{'keys'}};
-    each %{$self->{'keys'}};
-}
-
-sub NEXTKEY
-{
-    each %{$_[0]->{'keys'}};
-}
-
-sub new
-{
-    my $class = shift;
-    my $self = bless {}, $class;
-    tie %{$self}, $class;
-    $self;
-}
-
-sub close
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    delete $self->{'keys'};
-    for my $name (keys %{$self->{'data'}}) {
-	my $value = $self->{'data'}->{$name};
-
-	# No destruction if value is not an object
-	next unless ref($value);
-
-	# No destruction unless the object has a `closeBLM()' method
-	next unless &UNIVERSAL::can($value, 'closeBLM');
-
-	# Close it
-	$value->closeBLM;
-    } continue {
-	delete $self->{'data'}->{$name};
-    }
-}
-
-sub new_frame
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    $self->{'frames'} = [] unless exists $self->{'frames'};
-    unshift @{$self->{'frames'}}, {};
-}
-
-sub end_frame
-{
-    my $obj = shift;
-    my $self = tied(%{$obj});
-    shift @{$self->{'frames'}} if exists $self->{'frames'};
-    delete $self->{'frames'} if @{$self->{'frames'}} == 0;
+sub end_frame {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+  shift @{ $self->{'frames'} } if exists $self->{'frames'};
+  delete $self->{'frames'} if @{ $self->{'frames'} } == 0;
 }
 
 1;
@@ -204,6 +204,9 @@ sub end_frame
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.7  2011/09/15 16:05:32  eutl420
+# - perl tidy
+#
 # Revision 1.6  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #

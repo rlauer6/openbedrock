@@ -31,169 +31,178 @@ use IO::Handle;
 use IO::File;
 use Cwd;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA @EXPORT @EXPORT_OK);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA @EXPORT @EXPORT_OK);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
 }
 
 @EXPORT = qw (LOG_MESSAGE
-	      MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
-	      MSG_SYSERROR MSG_FATAL MSG_QUIT);
+MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
+MSG_SYSERROR MSG_FATAL MSG_QUIT);
 
 @EXPORT_OK = qw (StartLogger);
 
-
-use constant MSG_ABORT		=> 1 << 0;
-use constant MSG_DEBUG		=> 1 << 1;
-use constant MSG_INFO		=> 1 << 2;
-use constant MSG_STATUS		=> 1 << 3;
-use constant MSG_WARNING	=> 1 << 4;
-use constant MSG_ERROR		=> 1 << 5;
-use constant MSG_SYSERROR	=> 1 << 6;
-use constant MSG_FATAL		=> 1 << 7;
+use constant MSG_ABORT    => 1 << 0;
+use constant MSG_DEBUG    => 1 << 1;
+use constant MSG_INFO     => 1 << 2;
+use constant MSG_STATUS   => 1 << 3;
+use constant MSG_WARNING  => 1 << 4;
+use constant MSG_ERROR    => 1 << 5;
+use constant MSG_SYSERROR => 1 << 6;
+use constant MSG_FATAL    => 1 << 7;
 
 # Set abort flag on a loglevel
-sub MSG_QUIT		{ $_[0] | MSG_ABORT }
+sub MSG_QUIT { $_[0] | MSG_ABORT }
 
 # Extract level
-sub GET_LEVEL		{ $_[0] & (~MSG_ABORT) }
+sub GET_LEVEL { $_[0] & ( ~MSG_ABORT ) }
 
 # Check whether abort set
-sub GET_ABORT		{ $_[0] & MSG_ABORT }
+sub GET_ABORT { $_[0] & MSG_ABORT }
 
 my $CutoffLevel = MSG_DEBUG;
 my $Log_File;
 my $MailLevels;
-my %LevelStrings = (&MSG_DEBUG		=> q(MSG_DEBUG),
-		    &MSG_INFO		=> q(MSG_INFO),
-		    &MSG_STATUS		=> q(MSG_STATUS),
-		    &MSG_WARNING	=> q(MSG_WARNING),
-		    &MSG_ERROR		=> q(MSG_ERROR),
-		    &MSG_SYSERROR	=> q(MSG_SYSERROR),
-		    &MSG_FATAL		=> q(MSG_FATAL));
+my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
+                     &MSG_INFO     => q(MSG_INFO),
+                     &MSG_STATUS   => q(MSG_STATUS),
+                     &MSG_WARNING  => q(MSG_WARNING),
+                     &MSG_ERROR    => q(MSG_ERROR),
+                     &MSG_SYSERROR => q(MSG_SYSERROR),
+                     &MSG_FATAL    => q(MSG_FATAL)
+                   );
 
-sub StartLogger
-{
-    my %args = @_;
+sub StartLogger {
+  my %args = @_;
 
-    # Pick a directory to write the log file from, depending on where the file
-    # can be written: 1. User preference 2. Current dir 3. /tmp
+  # Pick a directory to write the log file from, depending on where the file
+  # can be written: 1. User preference 2. Current dir 3. /tmp
 
-    my $dir = undef;
-    for ($args{'LOGDIR'}, getcwd(), '/tmp') {
-	next unless $_;
-	warn "Warning! [$_] is not a directory!" unless -d  $_;
-	warn "Warning! [$_] is not writable!" unless -w $_;
-	if (-d $_ && -w $_ ) {
-	  $dir = $_;
-	  last;
-	}
+  my $dir = undef;
+  for ( $args{'LOGDIR'}, getcwd(), '/tmp' ) {
+    next                                     unless $_;
+    warn "Warning! [$_] is not a directory!" unless -d $_;
+    warn "Warning! [$_] is not writable!"    unless -w $_;
+    if ( -d $_ && -w $_ ) {
+      $dir = $_;
+      last;
     }
+  }
 
-    # return undef if cannot open logfile
-    return undef unless $dir;
+  # return undef if cannot open logfile
+  return undef unless $dir;
 
-    $CutoffLevel = do {
-	if	( $args{'LOGLEVEL'} and $LevelStrings{$args{'LOGLEVEL'}} )	{ $args{'LOGLEVEL'} }
-	elsif	( $args{'LOGLEVEL'} and defined &{$args{'LOGLEVEL'}} )	{ &{$args{'LOGLEVEL'}} }
-	else	{ MSG_INFO }
-    };
-
-    # Copy maillevels
-    $MailLevels = $args{'MAILLEVEL'} if defined( $args{'MAILLEVEL'} )
-	and ref( $args{'MAILLEVEL'} ) eq 'HASH';
-
-    # Make the logfile name
-    if ( $args{'LOGFILE'} ) {
-	$Log_File = $dir . q(/) . $args{'LOGFILE'};
-    } else {
-	$Log_File = $dir . q(/) . basename ($0, '.pl', '.cgi') . q(.log);
+  $CutoffLevel = do {
+    if ( $args{'LOGLEVEL'} and $LevelStrings{ $args{'LOGLEVEL'} } ) {
+      $args{'LOGLEVEL'};
     }
-
-    # Maxsize manipulation
-    my $maxsize = defined( $args{'MAXSIZE'} ) ? $args{'MAXSIZE'} : 200000;
-    if ( $maxsize == 0 or (stat($Log_File))[7] > $maxsize ) {
-	open ( FILE, ">$Log_File");
-	close FILE;
+    elsif ( $args{'LOGLEVEL'} and defined &{ $args{'LOGLEVEL'} } ) {
+      &{ $args{'LOGLEVEL'} };
     }
+    else { MSG_INFO }
+  };
 
-    warn sprintf("Bedrock::Log is logging to: [%s]",$Log_File);
+  # Copy maillevels
+  $MailLevels = $args{'MAILLEVEL'}
+  if defined( $args{'MAILLEVEL'} )
+    and ref( $args{'MAILLEVEL'} ) eq 'HASH';
 
-    # Redirect STDERR too to append to logfile
-    unless ( open( STDERR, ">> $Log_File" ) ) {
-	warn "Unable to append to log file $Log_File: $!\n";
-	return;
-    }
+  # Make the logfile name
+  if ( $args{'LOGFILE'} ) {
+    $Log_File = $dir . q(/) . $args{'LOGFILE'};
+  }
+  else {
+    $Log_File = $dir . q(/) . basename( $0, '.pl', '.cgi' ) . q(.log);
+  }
 
-    my $fd = new_from_fd IO::Handle ( 'STDERR', "a");
-    $fd->autoflush ( 1 );
-    $fd->close;
+  # Maxsize manipulation
+  my $maxsize = defined( $args{'MAXSIZE'} ) ? $args{'MAXSIZE'} : 200000;
+  if ( $maxsize == 0 or ( stat($Log_File) )[7] > $maxsize ) {
+    open( FILE, ">$Log_File" );
+    close FILE;
+  }
 
-    # And log a sample message
-    LOG_MESSAGE ( MSG_INFO, "=" x 80 . "\n$0: Starting now");
+  warn sprintf( "Bedrock::Log is logging to: [%s]", $Log_File );
 
-    warn "STDERR now is appended to $Log_File...";
+  # Redirect STDERR too to append to logfile
+  unless ( open( STDERR, ">> $Log_File" ) ) {
+    warn "Unable to append to log file $Log_File: $!\n";
+    return;
+  }
 
-    # Log die and warn errors too if not redirected
-    unless ( $SIG{__WARN__} ) {
-	$SIG{__WARN__} = sub { unshift @_, MSG_WARNING; goto &LOG_MESSAGE };
-    }
-    unless ( $SIG{__DIE__} ) {
-	$SIG{__DIE__} = sub { unshift @_, MSG_FATAL; goto &LOG_MESSAGE };
-    }
+  my $fd = new_from_fd IO::Handle( 'STDERR', "a" );
+  $fd->autoflush(1);
+  $fd->close;
 
-    # To indicate success to those who might want it
-    1;
+  # And log a sample message
+  LOG_MESSAGE( MSG_INFO, "=" x 80 . "\n$0: Starting now" );
+
+  warn "STDERR now is appended to $Log_File...";
+
+  # Log die and warn errors too if not redirected
+  unless ( $SIG{__WARN__} ) {
+    $SIG{__WARN__} = sub { unshift @_, MSG_WARNING; goto &LOG_MESSAGE };
+  }
+  unless ( $SIG{__DIE__} ) {
+    $SIG{__DIE__} = sub { unshift @_, MSG_FATAL; goto &LOG_MESSAGE };
+  }
+
+  # To indicate success to those who might want it
+  1;
 }
 
-sub LOG_MESSAGE
-{
-    my $arg_level = shift;
-    my $level = &GET_LEVEL ( $arg_level );
-    my $abort = &GET_ABORT ( $arg_level );
+sub LOG_MESSAGE {
+  my $arg_level = shift;
+  my $level     = &GET_LEVEL($arg_level);
+  my $abort     = &GET_ABORT($arg_level);
 
-    # Check that level is valid and return if below cut off level
-    $level = MSG_INFO unless defined($level) and $LevelStrings{$level};
-    if ( $level >= $CutoffLevel ) {
-	# Convert level to string
-	my $level_string = $LevelStrings{$level};
+  # Check that level is valid and return if below cut off level
+  $level = MSG_INFO unless defined($level) and $LevelStrings{$level};
+  if ( $level >= $CutoffLevel ) {
 
-	# Return undef if cannot write to file
-	my $fd;
+    # Convert level to string
+    my $level_string = $LevelStrings{$level};
 
-	if ($Log_File) {
-	    $fd = new IO::File ( $Log_File, "a");
-	    return undef unless $fd;
-	}
-	else {
-	    $fd = IO::Handle->new_from_fd(\*STDERR, "a");
-	    return undef unless $fd;
-	}
+    # Return undef if cannot write to file
+    my $fd;
 
-	$fd->autoflush ( 1 );
-
-	# Make time
-	my @t = localtime;
-	my $time = sprintf "%02d/%02d/%4d %02d:%02d:%02d", $t[4]+1, $t[3], 1900+$t[5], $t[2], $t[1], $t[0];
-
-	# Make caller
-	my ($pack, $filename, $line) = caller;
-
-	# And print message
-	$fd->print( "\n$time \[$$\]\t$level_string\t$pack\:\:$filename($line)\n@_\n" );
-	$fd->print( "\t$!\n" ) if $level == &MSG_SYSERROR;
+    if ($Log_File) {
+      $fd = new IO::File( $Log_File, "a" );
+      return undef unless $fd;
+    }
+    else {
+      $fd = IO::Handle->new_from_fd( \*STDERR, "a" );
+      return undef unless $fd;
     }
 
-    confess qq(Program aborted.\n) if $abort;
-    1;
+    $fd->autoflush(1);
+
+    # Make time
+    my @t = localtime;
+    my $time = sprintf "%02d/%02d/%4d %02d:%02d:%02d", $t[4] + 1, $t[3],
+    1900 + $t[5], $t[2], $t[1], $t[0];
+
+    # Make caller
+    my ( $pack, $filename, $line ) = caller;
+
+    # And print message
+    $fd->print(
+              "\n$time \[$$\]\t$level_string\t$pack\:\:$filename($line)\n@_\n");
+    $fd->print("\t$!\n") if $level == &MSG_SYSERROR;
+  }
+
+  confess qq(Program aborted.\n) if $abort;
+  1;
 }
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.6  2011/09/15 16:05:32  eutl420
+# - perl tidy
+#
 # Revision 1.5  2011/07/17 16:56:08  eutl420
 # - build .pm from .pm.in, added @PERL@
 #

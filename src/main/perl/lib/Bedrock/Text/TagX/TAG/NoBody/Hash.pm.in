@@ -27,12 +27,11 @@ package TagX::TAG::NoBody::Hash;
 
 use strict;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA @INC);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA @INC);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
 }
 
 use TagX::Log;
@@ -46,98 +45,110 @@ use Bedrock::BedrockJSON;
 sub decode_json_string {
   my $json_string = shift;
   my $obj;
-  
+
   eval {
-    $obj = Bedrock::JSON::decode( $json_string );
+    $obj = Bedrock::JSON::decode($json_string);
     die "Not a hash definition ($json_string)!"
-      unless ( UNIVERSAL::isa($obj, 'HASH') ) ;
+    unless ( UNIVERSAL::isa( $obj, 'HASH' ) );
   };
-  
+
   die "possibly invalid JSON string: $@\n"
-    if $@;
-  
+  if $@;
+
   return $obj;
 }
 
+sub finalize {
+  my ( $self, $tx, @context ) = @_;
 
-sub finalize
-{
-    my ($self, $tx, @context) = @_;
+  my %options = ( 'json'       => undef,
+                  'define-var' => undef );
 
-    my %options = ('json'       => undef,
-		   'define-var' => undef
-		  );
+  my @argv = $self->parse_options( \%options, @context );
+  my $verbose = $self->verbose;
+  $self->dump_options( \%options ) if $verbose;
 
-    my @argv = $self->parse_options (\%options, @context);
-    my $verbose = $self->verbose;
-    $self->dump_options( \%options ) if $verbose;
+  my $name = $options{'define-var'} || '_';
 
-    my $name = $options{'define-var'} || '_';
+  my $tag_opts = $self->parse_tag_name( $argv[0] );
+  if ( $tag_opts->{name} ) {
+    shift @argv;
+    $name = $tag_opts->{name};
+  }
 
-    my $tag_opts = $self->parse_tag_name( $argv[0] );
-    if ( $tag_opts->{name} ) {
+  my $obj;
+
+  if ( exists $options{'json'} ) {
+    $obj = decode_json_string( join( '', @argv ) );
+  }
+  elsif ( @argv == 1 && !ref( $argv[0] ) ) {
+    $obj = decode_json_string( $argv[0] );
+  }
+
+  # see if odd number of elements
+  elsif ( @argv % 2 ) {
+    &log_message( $self,
+         "Odd number of elements in object creation list, merging in $argv[0]" )
+    if $verbose;
+    my $aref = $argv[0];
+
+    if ( &UNIVERSAL::isa( $aref, 'ARRAY' ) || &UNIVERSAL::isa( $aref, 'HASH' ) )
+    {
+
       shift @argv;
-      $name = $tag_opts->{name};
-    }
 
-    my $obj;
-
-    if ( exists $options{'json'} ) {
-      $obj = decode_json_string( join('', @argv) );
-    }
-    elsif ( @argv == 1 && ! ref( $argv[0] )) {
-      $obj = decode_json_string( $argv[0] );
-    } 
-    # see if odd number of elements
-    elsif ( @argv % 2 ) {
-      &log_message( $self, "Odd number of elements in object creation list, merging in $argv[0]" ) if $verbose;
-      my $aref = $argv[0];
-      
-      if ( &UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH') )  {
-	
-	shift @argv;
-	
-	if (&UNIVERSAL::isa($aref, 'ARRAY')) {
-	  &log_message( $self, "Prepending the following array to (@argv)\n(@{$aref})" ) if $verbose;
-	  unshift @argv, @{$aref};
-	}
-	  else {
-	    &log_message( $self, "Prepending the following array to (@argv)\n(%{$aref})" ) if $verbose;
-	    unshift @argv, %$aref;
-	  }
-      }
-      elsif ( defined($aref = $argv[-1]) and (&UNIVERSAL::isa($aref, 'ARRAY') || &UNIVERSAL::isa($aref, 'HASH')) ) {
-	
-	pop @argv;
-	
-	if (&UNIVERSAL::isa($aref, 'ARRAY')) {
-	    &log_message( $self, "Appending the following array to (@argv)\n(@{$aref})" ) if $verbose;
-	    push @argv, @{$aref};
-	  }
-	else {
-	  &log_message( $self, "Appending the following array to (@argv)\n(%{$aref})" ) if $verbose;
-	  push @argv, %$aref;
-	}
-      }
-    }
-
-    $obj = Bedrock::Hash->new;
-    
-    while ( my $key = shift @argv ) {
-      if ( &UNIVERSAL::isa($key, 'HASH') ) {
-        map { $obj->{$_} = $key->{$_} } keys %$key;
+      if ( &UNIVERSAL::isa( $aref, 'ARRAY' ) ) {
+        &log_message( $self,
+                      "Prepending the following array to (@argv)\n(@{$aref})" )
+        if $verbose;
+        unshift @argv, @{$aref};
       }
       else {
-	$obj->{$key} = shift @argv;
+        &log_message( $self,
+                      "Prepending the following array to (@argv)\n(%{$aref})" )
+        if $verbose;
+        unshift @argv, %$aref;
       }
     }
-    
-    $obj = Bedrock::Hash->new( %$obj );
-    $tx->{'VARS'}->{$name} = $obj;
+    elsif ( defined( $aref = $argv[-1] )
+       and
+       ( &UNIVERSAL::isa( $aref, 'ARRAY' ) || &UNIVERSAL::isa( $aref, 'HASH' ) )
+    )
+    {
 
-    return $obj;
+      pop @argv;
+
+      if ( &UNIVERSAL::isa( $aref, 'ARRAY' ) ) {
+        &log_message( $self,
+                      "Appending the following array to (@argv)\n(@{$aref})" )
+        if $verbose;
+        push @argv, @{$aref};
+      }
+      else {
+        &log_message( $self,
+                      "Appending the following array to (@argv)\n(%{$aref})" )
+        if $verbose;
+        push @argv, %$aref;
+      }
+    }
+  }
+
+  $obj = Bedrock::Hash->new;
+
+  while ( my $key = shift @argv ) {
+    if ( &UNIVERSAL::isa( $key, 'HASH' ) ) {
+      map { $obj->{$_} = $key->{$_} } keys %$key;
+    }
+    else {
+      $obj->{$key} = shift @argv;
+    }
+  }
+
+  $obj = Bedrock::Hash->new(%$obj);
+  $tx->{'VARS'}->{$name} = $obj;
+
+  return $obj;
 }
-
 
 =head1 TAG - C<E<lt>hashE<gt>>
 
@@ -342,6 +353,9 @@ C<E<lt>nullE<gt>>, C<E<lt>arrayE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.20  2011/09/15 16:05:33  eutl420
+# - perl tidy
+#
 # Revision 1.19  2011/09/09 19:26:41  eutl420
 # - document bedrock_xml() method
 #

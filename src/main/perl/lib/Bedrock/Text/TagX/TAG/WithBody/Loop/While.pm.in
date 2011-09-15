@@ -27,12 +27,11 @@ package TagX::TAG::WithBody::Loop::While;
 
 use strict;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw ($VERSION @ISA);
-    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
-    @ISA	= qw (Exporter);
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
 }
 
 use UNIVERSAL qw (isa);
@@ -43,143 +42,151 @@ use Data::Dumper;
 
 @ISA = qw (TagX::TAG::WithBody::Loop);
 
-sub closure
-{
-    '/while';
+sub closure {
+  '/while';
 }
 
-sub finalize
-{
-    my ($self, $tx, @context) = @_;
+sub finalize {
+  my ( $self, $tx, @context ) = @_;
 
-    my %options = ('define-index=s'	=> undef,
-		   'define-var=s'	=> '_',
-		   'start-index=i'	=> undef,
-		   'end-index=i'	=> undef,
-		   'max-items=i'	=> undef,
-		  );
+  my %options = ( 'define-index=s' => undef,
+                  'define-var=s'   => '_',
+                  'start-index=i'  => undef,
+                  'end-index=i'    => undef,
+                  'max-items=i'    => undef,
+                );
 
-    my @argv = $self->parse_options (\%options, @context);
+  my @argv = $self->parse_options( \%options, @context );
 
-    my $verbose = $self->verbose;
-    $self->dump_options( \%options ) if $verbose;
+  my $verbose = $self->verbose;
+  $self->dump_options( \%options ) if $verbose;
 
-    # <while "expression"> : expression must be non-null
-    # <while ref --op term> 
-    # <while handle>       : valid
-    # <while 0 >           : valid
-    # <while "" >          : invalid
-    if ( @argv > 1 ) {
-      $self->{'__term'} = TagX::Expr->new( @argv );
+  # <while "expression"> : expression must be non-null
+  # <while ref --op term>
+  # <while handle>       : valid
+  # <while 0 >           : valid
+  # <while "" >          : invalid
+  if ( @argv > 1 ) {
+    $self->{'__term'} = TagX::Expr->new(@argv);
+  }
+  else {
+    if ( ref( $argv[0] ) =~ /(string|var)/i ) {
+      $argv[0] = $argv[0]->eval(@context);
+      &log_message( undef, "eval: $argv[0]" );
+    }
+
+    # so we either parse the expression to get something that can be eval'd, say
+    # a TagX::Term or TagX::Expr or we have a (hopefully) a handle
+    unless (    ref( $argv[0] )
+             || exists $self->{'__term'}
+             || !@argv
+             || !length( $argv[0] ) )
+    {
+
+      # force the argument to <while> to be an expression
+      local ($_) = ( $argv[0] =~ /^\s*\(/ ) ? $argv[0] : "(" . $argv[0] . ")";
+
+      $self->{'__term'} = &TagX::Parser::parse_stm;
+      &log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
+      if $verbose;
     }
     else {
-      if ( ref($argv[0]) =~/(string|var)/i) {
-	$argv[0] = $argv[0]->eval( @context );
-	&log_message(undef, "eval: $argv[0]");
-      }
-      # so we either parse the expression to get something that can be eval'd, say
-      # a TagX::Term or TagX::Expr or we have a (hopefully) a handle
-      unless ( ref($argv[0]) || exists $self->{'__term'} || ! @argv || ! length($argv[0]) ) {
-	# force the argument to <while> to be an expression
-	local($_) = ($argv[0]=~/^\s*\(/) ? $argv[0] : "(" . $argv[0] . ")";
-	
-	$self->{'__term'} = &TagX::Parser::parse_stm;
-	&log_message( $self, "[$argv[0]] parsed to $self->{'__term'}" )
-	  if $verbose;
-      }
-      else {
-	$self->{'__term'} = $argv[0];
-	&log_message( $self, "__term set to [$argv[0]]" )
-	if $verbose;
-      }
-    }
-
-    my $term = $self->{'__term'};
-    if ( $term && $term->can('verbose') ) {
-	$term->verbose( $verbose );
-      }
-
-    my @children = @{$self->{'subobjs'}};
-    
-    my $start = defined( $options{'start-index'} ) ? $options{'start-index'} : 0;
-    
-    #
-    # Defining these things as options override defaults
-    #
-    my $end;
-    if ( defined( $options{'end-index'} ) ) {
-      $end = $options{'end-index'};
-    } elsif ( defined( $options{'max-items'} ) ) {
-      my $nItems = $options{'max-items'};
-	$end = $start + $nItems - 1;
-    }
-    my $define_index = $options{'define-index'} if exists $options{'define-index'};
-    my $define_var = $options{'define-var'} if exists $options{'define-var'};
-
-    &log_message( $self, 
-		  "begin loop with term = [$argv[0]], " . 
-		  "start = [$start], " .
-		  "end = [$end], " .
-		  "define-index = [$define_index], " . 
-		  "define-var = [$define_var]" )
+      $self->{'__term'} = $argv[0];
+      &log_message( $self, "__term set to [$argv[0]]" )
       if $verbose;
-
-    unless (defined $end || defined $term) {
-      die "usage: <while> requires either a handle, an expression to evaluate, --max-items, or --end-index\n";
     }
+  }
 
-    for (my $i = 0 ;; $i++ ) {
-      last if defined( $end ) and $i > $end;
-      my $data;
+  my $term = $self->{'__term'};
+  if ( $term && $term->can('verbose') ) {
+    $term->verbose($verbose);
+  }
 
-      &log_message($self, "term: ". Bedrock::Dump::compact([$term])) 
-	if $verbose;
+  my @children = @{ $self->{'subobjs'} };
 
-      # if there is no term to evaluate then don't
-      if ( $term ) {
+  my $start = defined( $options{'start-index'} ) ? $options{'start-index'} : 0;
 
-	if ( $term->can('eval') ) {
-	  $data = defined ( $define_index ) ? $term->eval( {$define_index => $i}, @context ) : $term->eval( @context );
-	}
-	elsif ( -r $term || $term->can('getline') ) {
-          &log_message(undef, "..reading from handle")
-	    if $verbose;
-	  $data = <$term>;
-	}
+  #
+  # Defining these things as options override defaults
+  #
+  my $end;
+  if ( defined( $options{'end-index'} ) ) {
+    $end = $options{'end-index'};
+  }
+  elsif ( defined( $options{'max-items'} ) ) {
+    my $nItems = $options{'max-items'};
+    $end = $start + $nItems - 1;
+  }
+  my $define_index = $options{'define-index'}
+  if exists $options{'define-index'};
+  my $define_var = $options{'define-var'} if exists $options{'define-var'};
 
-	&log_message( $self, 
-		      sprintf("Loop %d : Condition [%s] evaluated to [%s] (%s)",
-			      $i, 
-			      $argv[0], 
-			      $data, 
-			      defined( $data ) ? "defined" : "undefined"
-			     )
-		    )
-	  if $verbose;
+  &log_message( $self,
+                "begin loop with term = [$argv[0]], "
+                . "start = [$start], "
+                . "end = [$end], "
+                . "define-index = [$define_index], "
+                . "define-var = [$define_var]"
+              ) if $verbose;
 
-	last unless defined( $data ) and $data;
+  unless ( defined $end || defined $term ) {
+    die
+"usage: <while> requires either a handle, an expression to evaluate, --max-items, or --end-index\n";
+  }
+
+  for ( my $i = 0 ; ; $i++ ) {
+    last if defined($end) and $i > $end;
+    my $data;
+
+    &log_message( $self, "term: " . Bedrock::Dump::compact( [$term] ) )
+    if $verbose;
+
+    # if there is no term to evaluate then don't
+    if ($term) {
+
+      if ( $term->can('eval') ) {
+        $data =
+        defined($define_index)
+        ? $term->eval( { $define_index => $i }, @context )
+        : $term->eval(@context);
+      }
+      elsif ( -r $term || $term->can('getline') ) {
+        &log_message( undef, "..reading from handle" )
+        if $verbose;
+        $data = <$term>;
       }
 
-      next if $i < $start;
-      
-      my $loop_data = {};
+      &log_message( $self,
+                    sprintf( "Loop %d : Condition [%s] evaluated to [%s] (%s)",
+                             $i,    $argv[0],
+                             $data, defined($data) ? "defined" : "undefined"
+                           )
+                  ) if $verbose;
 
-      # make the while var the value of the expression or the value of the iterator
-      $loop_data->{$define_var} = (defined $term) ? $data : $i;
-
-      $loop_data->{$define_index} = $i if defined( $define_index );
-
-      # verbose debugging
-      if ( defined($verbose) and $verbose > 1 ) {
-	my $str = "Loop $i >>\n";
-	for my $key (sort keys %{$loop_data}) {
-	  $str .= "    $key => $loop_data->{$key}\n";
-	}
-	&log_message( $self, $str );
-      }
-      
-      $self->{'finalize_children'}->($self->{'subobjs'}, $tx, $loop_data, @context );
+      last unless defined($data) and $data;
     }
+
+    next if $i < $start;
+
+    my $loop_data = {};
+
+   # make the while var the value of the expression or the value of the iterator
+    $loop_data->{$define_var} = ( defined $term ) ? $data : $i;
+
+    $loop_data->{$define_index} = $i if defined($define_index);
+
+    # verbose debugging
+    if ( defined($verbose) and $verbose > 1 ) {
+      my $str = "Loop $i >>\n";
+      for my $key ( sort keys %{$loop_data} ) {
+        $str .= "    $key => $loop_data->{$key}\n";
+      }
+      &log_message( $self, $str );
+    }
+
+    $self->{'finalize_children'}
+    ->( $self->{'subobjs'}, $tx, $loop_data, @context );
+  }
 }
 
 =pod
@@ -270,10 +277,12 @@ C<E<lt>foreachE<gt>>
 
 =cut
 
-
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.21  2011/09/15 16:05:33  eutl420
+# - perl tidy
+#
 # Revision 1.20  2011/09/09 20:11:25  eutl420
 # - log message if verbose only
 #
