@@ -1,0 +1,364 @@
+# $Id$
+
+package BLM::DBHandler;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use DBI;
+use Bedrock::Hash;
+use Bedrock::Array;
+
+@ISA = qw(Bedrock::Hash);
+
+sub new {
+    die ref($_[0])."->new([db handle])!" unless UNIVERSAL::isa($_[1], "DBI::db");
+
+    return bless $_[0]->SUPER::new(db => $_[1], dbi => $_[1], max_rows => 100), $_[0];
+}
+
+sub max_rows {
+    my $self = shift;
+
+    $self->{max_rows} = $_[0] if $_[0];
+
+    return $self->{max_rows};
+}
+
+sub setErr {
+    my $self = shift;
+
+    if (UNIVERSAL::isa($self, 'HASH')) {
+	$self->{err} = shift;
+    }
+
+    $self->{err};
+}
+
+sub errstr {
+    my $self = shift;
+
+    return $self->{err};
+}
+
+sub setBindVars {
+    my $self = shift;
+
+    if (UNIVERSAL::isa($self, 'HASH')) {
+	$self->{args} = @_;
+	$self->{'arg_list'} = join("|", @_);
+    }
+}
+
+sub setQuery {
+    my $self = shift;
+
+    if (UNIVERSAL::isa($self, 'HASH')) {
+	$self->{query} = shift;
+    }
+}
+    
+# --- Common functions that may be used by all packages
+sub _dbDo
+{
+    my $self = shift;
+    my $db = shift;
+    my $query = shift;
+
+    $self->setBindVars(@_);
+ 
+    my $sth = $self->_dbPrepare($db, $query);
+    my $rv = $sth->err();
+    $self->setErr($sth->errstr());
+
+    unless ($sth->err()) {
+	$sth->execute(@_);
+	$rv = $sth->err();
+	$self->{rows} = $sth->rows();
+	$self->setErr($sth->errstr());
+    }
+
+    $self->{mysql_insertid} = $sth->{mysql_insertid};
+
+    $sth->finish;
+
+    return $rv;
+}
+
+sub Do {
+    my $self = shift;
+    return $self->_dbDo($self->{dbi}, @_);
+}
+
+sub _dbPrepare {
+    my $self = shift;
+    my $db = shift;
+    my $stmt = shift;
+
+    $self->setQuery($stmt);
+
+    my $sth;
+    die "no database handle for: [$stmt]:[" . ref($db) . "]" unless UNIVERSAL::isa($db, "DBI::db");
+ 
+    $sth = $db->prepare($stmt);
+
+    return $sth;
+}
+
+sub Prepare {
+    my $self = shift;
+    return $self->_dbPrepare($self->{dbi}, @_);
+}
+
+sub _dbSelect
+{
+    my $self = shift;
+    my $db = shift;
+    my $query = shift;
+    my $arg1 = $_[0];
+
+    $self->setBindVars(@_);
+
+    my $sth = $self->_dbPrepare($db, $query);
+    $sth->execute(@_);
+
+# - probably bad design to throw an error here...since the caller should probably indicate how
+#   errors should be handled using RaiseError when connecting...
+    if ($db->{mysql_errno}) {
+      die "$query - [$arg1] - [".$_[0]."] ".$self->{args};
+    }
+
+    my $ref = $sth->fetchrow_hashref;
+    $sth->finish;
+
+    return $ref;
+}
+
+sub Select {
+    my $self = shift;
+
+    $self->_dbSelect($self->{dbi}, @_);
+}
+
+sub _dbSelectList {
+    my $self = shift;
+    my $db = shift;
+    my $query = shift;
+
+    $self->setBindVars(@_);
+    my $sth = $self->_dbPrepare($db, $query);
+    $sth->execute(@_);
+
+    my @list;
+    my $ref;
+    my $nrows = 0 ;
+
+    while ($ref = $sth->fetchrow_hashref) {
+	push @list, Bedrock::Hash->new(%$ref);
+	last if $self->{max_rows} && $nrows++ >= $self->{max_rows};
+    }
+    
+    $sth->finish;
+
+    return Bedrock::Array->new(@list);
+}
+
+sub SelectList {
+    my $self = shift;
+
+    $self->_dbSelectList($self->{dbi}, @_);
+}
+
+sub _dbGetQuery { return $_[0]->{query}; }
+sub _dbGetBindVars { return $_[0]->{args}; }
+
+=pod
+
+=head1 NAME
+
+C<BLM::DBHandler> - Provides support for MySQL database operations.  Typically used as the base class for some package of yours.
+
+=head1 SYNOPSIS
+
+ package BLM:MyJunk;
+
+ use BLM::DBHandler;
+
+ @ISA = qw(BLM::DBHandler);
+
+ 1;
+
+..and voila your C<MyJunk> now has some nifty data access methods
+
+or in a standalone situation...
+
+ $dbi = DBI->connect(...);
+ my $dbhandler = BLM::DBHandler->new($dbi);
+ my $results = $dbhandler->SelectList("select * from custmr where name acct = ?", $acct);
+
+=head1 METHODS
+
+=head2 new([dbi])
+
+Create a new C<DBHandler object>.
+
+  my $dbhandler = BLM::DBHandler->new($dbi);
+
+B<dbi> is a C<DBI> handle to an open MySQL database.
+
+=head2 Select( [query], [args] )
+
+Select a record from a database. Returns a C<Bedrock::Hash> containing the fields of the record.
+
+Example:
+
+  my $rec = $dbhandler->Select("select * from custmr where acct = ?", 1);
+
+  printf "%s\n", $rec->{'NAME'};
+
+B<query> is the query to execute.
+
+B<args> are the bind variables to use in the query.
+
+=head2 SelectList([query], [args] )
+
+Selects multiple records from a database.  Returns a C<Bedrock::Array> of C<Bedrock::Hash> objects.
+
+  my $list = $dbhandler->Select("select * from custmr where name like 'TEST%'");
+
+  foreach $rec (@$list) {
+    printf "%s\n", $rec->{'NAME'};
+  }
+
+B<query> is the query to execute.
+
+B<args> are the bind variables to use in the query.
+
+=head2 Do([query], [args])
+
+Execute a query statement.
+
+  $dbhandler->Do("update results set status='1' where order_num = ?", $order_num);
+
+B<query> is the query to execute.
+
+B<args> are the bind variables to use in the query.
+
+=head2 errstr()
+
+Return the error message from last executed statement.
+
+=head2 max_rows([n])
+
+Set or retrieve the maximum number of rows to return in a C<SelectList> call.  The default is 100.
+
+=head2 MISCELLANEOUS METHODS
+
+These methods are generally not to be used publicly, but circumstances
+may dictate their use so here they are.
+
+=head3 _dbPrepare([dbhandle], [query])
+
+Prepare a statement for execution. Returns a statement handle.
+
+B<dbi> is a handle to an open database obtain via C<DBI> 
+
+B<query> is the query to execute.
+
+Example:
+
+ my $sth = $dbhandler->_dbPrepare($dbi, "select * from my_table where ...");
+ $sth->execute;
+
+Why would you do this instead of:
+
+   my $sth = $dbi->prepare("select * from my_table where ....");
+   $sth->execute;
+
+...well because this class handles errors, saves querys, etc. (see below).
+
+
+=head3 _dbGetQuery()
+
+Return the last query executed. Helpful in debugging.
+
+=head3 _dbGetBindVars()
+
+Return an array containing the last bind variables used.  Helpful in debugging.
+
+=head2 ATTRIBUTES
+
+Several attributes are stored within class that you might find useful.
+
+=head3 err
+
+Last error message returned by an executed statement. Can be retrieved with the C<errstr()> method.
+
+=head3 max_rows
+
+Maximum number of rows to return on a C<SelectList> call.  Can be set or retrieved via the C<max_rows()> method.
+
+=head3 mysql_insertid
+
+Updated after a C<Do> just in case you were doing an insert on a table with an C<auto_increment> field.
+
+=head3 rows
+
+Number of rows affected by the last execute statement.
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer@signatureinfo.com
+
+=cut
+
+# $Log$
+# Revision 1.10  2011/11/13 16:13:16  eutl420
+# adding back to project
+#
+# Revision 1.8  2011/07/17 16:56:08  eutl420
+# - build .pm from .pm.in, added @PERL@
+#
+# Revision 1.7  2011/07/12 19:10:35  eutl420
+# set VERSION from cvs Revision keyword
+#
+# Revision 1.6  2010/11/15 02:26:51  rlauer
+# - minor documentation tweaks
+#
+# Revision 1.5  2009/12/28 20:32:32  rlauer
+# move SIS:: up to Bedrock::
+#
+# Revision 1.4  2009/01/13 20:00:19  rlauer
+# - added dbi hash member
+#
+# Revision 1.3  2008/12/03 14:01:18  alans
+# We now use a hard-coded value for module $VERSION rather than a munged
+# version of the expansion of the CVS 'Revision' keyword; the module API
+# version number is orthogonal to the identifyer in the source control
+# system.
+#
+# This change makes it safe to import the Bedrock codebase into another
+# source repository (even CVS!) without breaking the code. We hit this
+# issue when we first released the libbedrock-perl .deb package, for which
+# we imported the release tarball sources into the 'bedrock-deb' CVS project.
+#
+# Revision 1.2  2008/11/25 14:35:55  rlauer
+# add arg list to object for debugging
+#
+# Revision 1.1  2008/11/12 12:45:24  rlauer
+# added to bedrock project
+#
+# Revision 1.1.1.1  2008/07/03 19:38:50  rlauer
+# imported sources
+#
+# Revision 1.1.1.1  2007/06/07 13:30:42  rlauer
+# Imported sources
+#
+
+1;
