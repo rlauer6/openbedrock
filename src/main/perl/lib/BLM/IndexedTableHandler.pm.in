@@ -1,0 +1,1819 @@
+#!@PERL@
+
+# $Id$
+
+package BLM::IndexedTableHandler;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    $Exporter::Verbose = 1;
+    use vars	qw($VERSION @ISA @ENV @EXPORT_OK @EXPORT);
+    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use BLM::DBHandler;
+use Bedrock::Array;
+
+use Bedrock::HTML::Helper qw(
+			     create_html_element
+			     create_label_name
+			     create_xhtml_element
+			     create_radio_buttons
+			     create_select_list
+			   );
+
+use BLM::IndexedTableHandler::RecordSet;
+
+@ISA = qw(BLM::DBHandler);
+
+=pod
+
+=head1 NAME
+
+C<BLM::IndexedTableHandler> -- Base class for a MySQL table handler
+
+=head1 SYNOPSIS
+
+Create a perl module to handle the MySQL table named F<foo>...
+
+  package BLM::Foo;
+
+  use strict;
+  use vars qw(@ISA);
+
+  use BLM::IndexedTableHandler;
+
+  @ISA = qw(BLM::IndexedTableHandler);
+
+  1;
+
+  my $foo_handler = BLM::Foo->new($dbi);
+
+=head1 DESCRIPTION
+
+C<BLM::IndexedTableHandler> is a base class used to construct a package
+for updating, deleting, and searching a MySQL table.  The class
+handles the relatively mundane tasks associated with managing a table.
+These include for example, inserts, deletes, and updates.
+
+It is also a class designed to aid in the contruction of a web
+application by providing a host of methods that help construct HTML
+forms typically used in support of table maintenance and other aspects of web
+application development.
+
+Essentially, C<BLM::IndexedTableHandler> through it's super-class
+represents a MySQL table and thus is named according to the table's
+name.  In the synopsis above the super-class C<BLM::Foo> represents
+the MySQL table C<foo>.
+
+Primarily designed to be a base class to allow you to override some of
+the methods in order to provide your own table handling behaviors,
+C<BLM::IndexedTableHandler> can certainly be used "naked" with no
+overridden methods as in the synopsis above.
+
+Methods you might want to consider overriding include:
+
+  set
+  search 
+  find
+
+...and especially the methods that provide some HTML snippets for
+constructing the HTML form for editing your table.
+
+B<Example of overriding one of the HTML construction methods...>
+
+  package BLM::Birds;
+
+  use strict;
+  use vars qw(@ISA);
+
+  use BLM::IndexedTableHandler;
+
+  @ISA = qw(BLM::IndexedTableHandler);
+
+  sub create_timestamp_field {
+      my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+      return $self->SUPER::create_timestamp_field($field_name, $attributes, $labels, $lists) unless $field_name =~/last_spotted/;
+
+      return &calendar("birds", "last_spotted", $self->{last_spotted});
+}
+
+  sub calendar {
+    my ($form_name, $field_name, $value) = @_;
+
+    my $html =<<eot;
+  <table cellpadding="0" border="1" cellspacing="0">
+    <tr>
+      <td valign="center"><input name="$field_name" type="text" size="19" value="$value" maxlength="19"></td>
+      <td valign="center"><input type="image" onClick='javascript:popUpCalendar(document.$form_name.$field_name, document.$form_name.$field_name, "m/d/yyyy"); return false' src="/img/calendar.gif"></td>
+    </tr>
+  </table>
+  eot
+
+    return $html;
+  } 
+
+These HTML construction methods are described in more detail later in
+this documentation.
+
+The MySQL table should conform to certain conventions.  It is assumed
+to have an indexed (unique) field named C<id> which is defined as an
+C<auto_increment field>.
+
+Your class which sub classes C<BLM::IndexedTableHandler> should be named such that the suffix is the table name.
+The program assumes the actual MySQL table name is lower cased.  So, in the C<SYNOPSIS> above, assuming we have an example table named
+C<foo> that looks something like:
+
+  create table foo (
+   id int auto_increment primary key,
+   lname varchar(32),
+   fname varchar(32),
+   email varchar(64)
+  );
+
+...and assuming I pass a handle to an open database to the Foo
+constructor, I would get a whole lot of stuff necessary for building a
+typical Bedrock application for free!
+
+  <sqlconnect --data-source="dbi:mysql:bedrock_site" --username="fred" --password="flintstone" --dbname="dbi">
+
+  <null --define-var="foo" $Bedrock.new("BLM::Foo", $dbi)>
+  <null $foo.set('lname', 'Lollabrickada', 'fname', 'Gina', 'email', 'gina@bedrock.com')>
+  <null $foo.save()>
+
+Update the record...
+
+  <null $foo.set('fname', 'Geena')>
+  <null $foo.save()>
+
+Return a list of all records in table C<foo>...
+
+  <null --define-var="foo_list" $foo.find()> 
+
+Find a record in table C<foo> where the C<lname> field start with 'Lolla'...
+
+  <null --define-var="foo" $foo.find('lname', 'Lolla')>
+
+=head1 DOCUMENTATION
+
+=head2 Getting Started
+
+Using the template from the C<SYNOPSIS> above, create your
+C<BLM::table_name> package in the C<BLM> directory within the Bedrock perl
+path. Typically this might be somewhere like:
+
+  /var/www/mysite/Perl/BLM
+
+You'll then want to create your MySQL table.  You can then instantiate
+these C<IndexedTableHandler> objects either directly from your Bedrock
+page :-( or you can do this from your site's C<BLM::Startup::site>
+object which might typically provide a factory method for
+instantiating objects to handle your table.  This is the preferred
+method and the details below will guide you in creating a "Startup
+BLM" that creates your database handling object.
+
+=head2 The Gory Details
+
+First you should create an application plugin by editing the 
+F<tagx.xml> and adding something like this...
+
+   <object> 
+    <scalar name="binding">example</scalar> 
+    <scalar name="module">BLM::Startup::Example</scalar> 
+    <object name="config"> 
+     <scalar name="data_source">dbi:mysql:bedrock_site</scalar>
+     <scalar name="username">fred</scalar>
+     <scalar name="password">flintstone</scalar>
+    </object> 
+   </object> 
+
+...to the C<MODULES> section of F<tagx.xml>.  Note the binding name
+for this object is I<example> and will be referenced in the Bedrock
+example below.
+
+Create your C<Startup> BLM in a perl accessible (i.e. it's somewhere
+in perl's path) BLM/Startup directory.  C<Startup> BLMs typically look
+something like this...
+
+  package BLM::Foo;
+
+  use strict;
+  use vars qw(@ISA);
+
+  use BLM::IndexedTableHandler;
+
+  @ISA = qw(BLM::IndexedTableHandler);
+
+  1;
+
+  package BLM::Startup::Example;
+  
+  use vars qw(@ISA);
+  use strict;
+  use BLM::SiteFactory;
+  
+  # - My example BLM::IndexedTableHandler for handling the 'foo' table
+  use BLM::Foo;
+  
+  @ISA = qw(BLM::SiteFactory);
+  
+  # - factory method for creating Foo handlers
+  sub foo {
+      my $self = shift;
+  
+      return BLM::Foo->new($self->{dbi}, @_);
+  }
+  
+  1;
+
+Your application plugin named C<Example> connects to the database (via C<BLM::SiteFactory>)
+using the specs in your C<config> object defined in F<tagx.xml>.  As you can see, the
+application plugin provides a factory method named C<foo> that simply
+returns a C<foo> object.  The C<foo> object is a C<BLM::IndexedTableHandler>.
+
+=head2 Bedrock Web Development with C<BLM::IndexedTableHandler>
+
+Now create a sample Bedrock page to test your object.
+
+       <null --define-var="fred" $example.foo()>
+       <null --define-var="wilma" $example.foo()>
+       
+       <html>
+       <body>
+       <pre>
+       <trace --output $fred>
+       </pre>
+       <null $fred.set('lname', 'Flintstone', 'fname', 'Fred', 'email', 'fflintstone@bedrock.com')>
+       <null $fred.save()>
+       
+       <null $wilma.set('lname', 'Flintstone', 'fname', 'Wilma', 'email', 'wflintstone@bedrock.com')>
+       <null $wilma.save()>
+       <null --define-var="flintstones" $wilma.find('lname', 'Flintstone')>
+       
+       <pre>
+       <hr>
+       <trace --output $flintstones>
+       </pre>
+       <table>
+         <tr>
+           <th>First</th>
+           <th>Last</th>
+           <th>E-Mail</th>
+         </tr>
+         <foreach $flintstones>
+         <tr>
+           <td><var $_.fname></td>
+           <td><var $_.lname></td>
+           <td><var $_.email></td>
+         </tr>
+         </foreach>
+         </table>
+       </body>
+       </html>
+
+=head2 Constructing HTML Forms
+
+If the the C<BLM::IndexedTableHandler> did nothing more than handle
+the insert/update/delete drudgery for MySQL records and provide some
+query tools that would probably be enough.  Probably, but there is
+still much tedium and re-hashed HTML snippets that we all use in every
+Bedrock application we write that makes developing HTML apps a chore.
+
+By standardizing on how we might want to handle specific MySQL field
+types within applications it is possible to provide a template of an
+HTML form that might help us create database applications with Bedrock
+and MySQL. Enter the C<html_form()> method.
+
+The C<html_form()> method will create a template for a completely
+usable HTML form for editing your MySQL table.  This form interprets
+the various field types within a MySQL table and creates appropriate
+form objects.  It will also properly set the data values within the
+form for the current object.  
+
+The rendered inside a 2-column table where the first column contains
+the field names and the second column contains the HTML input element
+that allows entry or editing of the data values.  A row in the table
+is written for each field in the table.  Field names are converted to a
+more readable from from the column names in the MySQL table using the
+following conventions:
+
+=over 4
+
+=item * underscores ('_') are converted to blanks
+
+=item * the first letter of each word in the resulting string is converted to upper case
+
+=back
+
+Examples:
+
+ first_name       => First Name
+ last_name        => Last Name
+ primary_position => Primary Position
+ e_mail_address   => E Mail Address
+
+The HTML form is rendered in three parts, a head, a body and a footer.
+
+You can probably reduce most Bedrock applications that handle a MySQL
+table to something like the Bedrock snippet below:
+
+
+ <html>
+ <head>
+ <body>
+  
+ <null --define-var="foo" $example.foo($input.id)>
+
+ <if $input.action --eq "save">
+   <null $foo.set($input)>
+   <null $foo.save()>
+ <elseif $input.action --eq "find">
+  <null --define-var="foo_find_list" $foo.search($input)>
+  <if $foo_find_list.length() --eq "1">
+     <null --define-var="foo" $foo_find_list.get(0)>
+  <elseif $foo_find_list.length()>
+ <foreach $foo_find_list>
+ <a href="?id=<var $_.id>"><var $_.id></a><br>
+ </foreach>
+        <null --define-var="foo" $example.foo()>
+        <null $foo.set($search_field, $input.get($search_field))>
+  </if>
+ </if>
+
+
+ <var $foo.html_form_header()>
+ <var $foo.html_form_body()>
+ <var $foo.html_form_footer()>
+
+ <input type="button" value="Save" onClick='document.foo.action.value="save"; document.foo.submit();'>
+ &nbsp;
+ <input type="button" value="Delete" onClick='document.foo.action.value="delete"; document.foo.submit();'>
+ &nbsp;
+ <input type="button" value="Find" onClick='document.foo.action.value="find"; document.foo.submit();'>
+ &nbsp;
+ <input type="button" value="New" onClick='document.foo.id.value="0"; document.foo.action.value="new"; document.foo.submit();'>
+ &nbsp;
+ <input type="hidden" name="action" value="">
+ </form>
+ </body>
+ </html>
+
+The C<html_form_body> method currently has support for the following MySQL field types:
+
+=over 4 
+
+=item int
+
+An C<int> field will be converted to an HTML <input> object with a size of 5.
+
+=item char
+
+A C<char(n)> field will be converted to an HTML <input> object with a size of n.
+
+=item varchar
+
+A C<varchar(n)> field will be converted to an HTML <input> object with a size of n.
+
+=item enum
+
+An C<enum> field will be converted into a <select> or <input (radio)>
+object where the options and values are equal to the specification
+within the definition of the C<enum> field.
+
+If the number of elements in the enumeration is 4 or less, then the
+C<html_form()> method will produce a set of radio buttons.  If the
+list is greater than 3, the method will produce a <select> object.
+This behavior can be overridden as described in the overloaded version
+of the C<html_form()> method (see the full documentation on
+C<html_form()>) for details.
+
+For example if your field is defined as below:
+
+ | pant_size | enum('S','M','L','XL','XXL','XXXL') | YES  |     | NULL    |                |
+
+The C<html_form()> method would create a select box as follows:
+
+ <select name="pant_size">
+   <option value="S">S</option>
+   <option value="M">M</option>
+   <option value="L" selected>L</option>
+   <option value="XL">XL</option>
+   <option value="XXL">XXL</option>
+   <option value="XXXL">XXXL</option>
+ </select>
+
+=item set
+
+A set field is converted to either a <select> element that allows
+mulitple selections or a series of checkboxes.  If the number of
+elements in the set is 4 or less then the set is represented by a
+series of check boxes, otherwise it is represented as a multi-select
+list.
+
+=item tinyint
+
+A C<tinyint> or C<boolean> field is converted into a check box object.
+
+=item date
+
+A C<date> field is converted to an <input> object with a length of 10.
+Upon display, this field is shown as a standard MySQL date field of
+the form YYYY-MM-DD.  Before being saved to a table, this field will
+be converted to the YYYY-MM-DD format if the format is MM/DD/YYYY or
+MM/DD/YY.  See C<set> for more details on how form fields are
+converted to MySQL data types before being saved.
+
+=item timestamp
+
+C<timestamp> fields are treated in a similar fashion to C<date> fields
+except they are 19 characters in length and support a suffix of HH:MM
+PM.
+
+=item text
+
+C<text> fields are converted into a <textarea> object with 40 columns
+and 5 rows.  These attributes can be overridden (see the full
+documentation for C<html_method()>.
+
+=back
+
+=head1 METHODS
+
+=cut
+
+sub new {
+    my $this = shift;
+    my $class = ref($this) || $this;
+    my ($dbi, $id, $config, $table_name) = @_;
+    
+    my $self = {};
+
+    $class =~/^(.*)::(.*?)(=.*)?$/;
+
+    $table_name = $table_name || lc($2) or die "Unable to determine table name.";
+
+    $self->{config} = $config;
+
+# - avoid redundant creation of data structure for each row in a list
+#   i.e. if this object is being constructed thusly:
+#
+#   $another = $me->new($dbi, $id);
+#
+#   which is done from find() for example, then we really don't want to 
+#   create whole bunch of arrays that hold the table directory, one will do nicely thanks
+#
+    unless (ref($this)) {
+	my $sth = $dbi->prepare("show fields from $table_name");
+	$sth->execute;
+	my $fields = {};
+	my $id_found;
+	my $idx = 0;
+	while(my $ref = $sth->fetchrow_hashref) {
+	    $ref->{idx} = ++$idx;
+	    $fields->{$ref->{Field}} = $ref;
+	    if (($ref->{Field} eq 'id') && 
+		($ref->{Key} eq 'PRI') && 
+		($ref->{Extra} eq 'auto_increment')) {
+		$id_found = $ref;
+	    }
+	}
+
+	die "Table must have an indexed field named [id] and it must be auto_increment!" unless $id_found;
+	$sth->finish;
+
+	$self->{_table_dir} = $fields;
+	$self->{_field_list} = [sort {$fields->{$a}->{idx} <=> $fields->{$b}->{idx}} keys %$fields];
+
+	if ($self->{config}->{tables}->{$table_name}->{labels}) {
+	    $self->{_labels} = $self->{config}->{tables}->{$table_name}->{labels};
+	}
+
+	if ($self->{config}->{tables}->{$table_name}->{lists}) {
+	    $self->{_lists} = $self->{config}->{tables}->{$table_name}->{lists};
+	}
+
+	if ($self->{config}->{tables}->{$table_name}->{attributes}) {
+	    $self->{_attributes} = $self->{config}->{tables}->{$table_name}->{attributes};
+	}
+
+	if ($self->{config}->{tables}->{$table_name}->{search_fields}) {
+	    $self->{_search_fields} = [];
+	    foreach (@{$self->{config}->{tables}->{$table_name}->{search_fields}}) {
+		push @{$self->{_search_fields}}, $_->{exact};
+		push @{$self->{_search_fields}}, $_->{field};
+	    }
+	}
+    }
+    else {
+	@{$self}{keys %$this} = values %$this if $this;
+	foreach (@{$self->{_field_list}}) {
+	    $self->{$_} = undef;
+	}
+	die unless $self->{config};
+    }
+
+    $self->{_table} = $table_name;
+
+    bless $self, $class;
+    $self->{dbi} = $self->{db} = $dbi;
+
+    if ($id) {
+	my $ref = $self->Select("select * from $table_name where id = ?", $id);
+	foreach (keys %$ref) {
+	    $self->set($_, $ref->{$_});
+	}
+    }
+
+    $self->{max_rows} = 50;
+    $self;
+}
+
+=head2 delete
+
+Deletes the currently defined row from the database.
+
+  <null --define-var="foo" $factory.foo($input.id)>
+
+  <if $input.action --eq "delete">
+     <null $foo.delete()>
+     <null --define-var="foo" $factory.foo()>
+  </if>
+
+=cut
+
+sub delete {
+    my $self = shift;
+
+    $self->Do("delete from ".$self->{_table}." where id = ?", $self->{id});
+
+    foreach (@{$self->{_field_list}}) {
+	$self->{$_} = undef;
+    }
+}
+
+sub init_config {
+    my $self = shift;
+    my $table = $self->{_table};
+
+    my $config = $self->{config}->{tables} || {};
+
+    my $table_config = $config->{$table} || {};
+    my %default = (set => '', get => '', attributes => {}, labels => '');
+
+    foreach my $type ('set', 'get', 'attributes', 'labels') {
+	my $config = $table_config->{$type} || {};
+	foreach (@{$self->{_field_list}}) {
+	    $config->{$_} = $default{$type} unless exists $config->{$_};
+	}
+	$table_config->{$type} = $config;
+    }
+
+    $self->{config}->{tables}->{$table} = $table_config;
+
+    return $self->{config};
+}
+
+=pod
+
+=head2 dbi
+
+Returns the handle the DBI object representing the open database connection.
+
+=cut
+
+sub dbi {
+    return $_[0]->{dbi};
+}
+
+=pod
+
+=head2 get
+
+=cut
+
+# - Default getter method checks to see whether there is method override specified
+#   in tagx.xml
+sub get {
+    my ($self, $key) = @_;
+    
+    my $getters = $self->{config}->{tables}->{$self->{_table}}->{get};
+
+    if (my $method = $getters->{$key}) {
+	if ($self->can($method)) {
+	    return $self->can($method)->($self, $key);
+	}
+	else {
+	    die "You've specified a field formatter, but there is no method \'$method\'";
+	}
+    }
+    else {
+	return $self->{$key};
+    }
+}
+
+sub _set {
+  my $self = shift;
+  my $key;
+  my $value;
+
+  my $setters = $self->{config}->{tables}->{$self->{_table}}->{set};
+
+  my $dir = $self->{_table_dir};
+
+  while (@_) {
+    $key = shift;
+    $value = shift;
+
+    if (my $method = $setters->{$key}) {
+	if ($self->can($method)) {
+	    $self->{$key} = $self->can($method)->($self, $key, $value);
+	}
+	else {
+	    die "You've specified a field formatter, but there is no method \'$method\'";
+	}
+    }
+    elsif ($dir->{$key}->{Type} eq 'date') {
+	if ($value =~/\d{1,2}\/\d{1,2}\/\d{4}/) {
+	    $value = sprintf("%04d-%02d-%02d", (split "/", $value)[2, 0, 1]);
+	}
+	elsif ($value =~/\d{1,2}\/\d{1,2}\/\d{2}/) {
+	    my @date = split "/", $value;
+	    $date[2] += 2000 if $date[2] < 20;
+	    $date[2] += 1900 if $date[2] > 20;
+	    $value = sprintf("%04d-%02d-%02d", $date[2, 0, 1]);
+	}
+	$self->{$key} = $value;
+    }
+    elsif ($dir->{$key}->{Type} =~/set/) {
+	if (ref($value)) {
+	    $self->{$key} = join(",",@$value);
+	}
+	else {
+	    $self->{$key} = $value;
+	}
+    }
+    else {
+	$self->{$key} = $value;
+    }
+  }
+}
+
+=pod
+
+=head2 set
+
+  set(field name, value, ...)
+
+Sets the field name(s) to the specified value(s).
+
+  set($input)
+
+Calling C<set> with the C<$input> object as the parameter (or in general a hash) will
+result in the field names for your table being set from the hash.  That is to say...
+
+  <null $player.set($input)>
+
+is equivalent too...
+
+   <foreach keys $input>
+     <null $player.set($_, $input.get($_))>
+   </foreach>
+
+or more correctly...
+
+  <foreach $player.fields()>
+     <null $player.set($_, $input.get($_))>
+  </foreach>
+
+Additionally, the C<set()> method will do some basic manipulation of
+input data in order to support MySQL datatypes.
+
+=cut
+
+sub set {
+    my $self = shift;
+
+# - if there is only one argument to set then assume
+#   the argument is an object (typicaly $input) and we're 
+#   setting the field values from that object...
+    if (@_ == 1) {
+	my $dir = $self->{_table_dir};
+	my $ref = shift;
+
+	foreach (@{$self->{_field_list}}) {
+	    if (exists $ref->{$_}) {
+		$self->_set($_, $ref->{$_});
+	    }
+# - drudge! if the field type is a 'tinyint', i.e. boolean, then this was 
+#   rendered as a checkbox.  Unfortunately, an HTML checkbox that is not checked
+#   does not manifest itself in the QUERY_STRING.  Therefore, we're going out a bit 
+#   on a limb here, but if you've asked this method to use an object to set the 
+#   field values, then most likely this is the $input object AND we'll attempt to 
+#   handle the checkbox problem for you...so if the field value is NOT in the input
+#   object AND the field type is tinyint...set the value to '0'
+	    elsif ($dir->{$_}->{Type} =~/(tinyint|set|enum)/) {
+		$self->_set($_, 0);
+	    }
+	}
+    }
+    else {
+	$self->_set(@_);
+    }
+}
+
+
+=pod
+
+=head2 save
+
+This method will C<update> a record or C<insert> a new record into the
+database.  If the C<id> field is null or "0" it will assume a new
+record is to be added to the table, otherwise the record with
+corresponding C<id> will be updated.
+
+  <null --define-var="foo" $factory.foo($input.id)>
+
+  <if $input.action --eq "save">
+    <null $foo.set($input)>
+    <null $foo.save()>
+  </if>
+
+=cut
+
+sub save {
+  my $self = shift;
+
+  if ($self->{id}) {
+    $self->_update;
+  }
+  else {
+    $self->_insert;
+  }
+}
+
+sub _format_fields_for_insert {
+  my $self = shift;
+
+  my $dir = $self->{_table_dir};
+
+  foreach my $field (@{$self->{_field_list}}) {
+    
+    if ($dir->{$field}->{Type} =~/(timestamp|date)/) {
+      next if $self->{$field} =~/^\s*$/;
+
+# rules of engagement:
+# - if the date is of the form mm/dd/yy[yy] then we 
+#   we need to reformat the field to yyyy-mm-dd in order
+#   to insert this successfully into a MySQL database date field
+#   * if the year portion is yy (2-digit), we'll assume it is in this
+#     century if the value is < 20, i.e. 08 = 2008
+#   * if the year portion is > 20 and < 100 then we will assume
+#     the year is in the 20th century, i.e. 1900+yy
+# - if the date is of the form yyyy-mm-dd then we will leave it alone
+# - if the field is a timestamp and there is a date, but no time...
+#   * if the date is the current date, we will add the current time
+#   * if the date is not today, then the time added will bee 00:00:00
+# - if the field is null, let it be
+# - if the field is not of a recognized format, let it be
+
+      my $date;
+      my ($mm, $dd, $year);
+      
+      if ($self->{$field} =~/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/ ) {
+	($mm, $dd, $year) = ($1,$2,$3);
+	if ($year < 20) {
+	  $year += 2000;
+	}
+	elsif ($year < 100) {
+	  $year += 1900;
+	}
+	$date = sprintf("%04d-%02d-%02d", $year, $1, $2);
+      }
+      elsif ($self->{$field} =~/^\s*(\d{4}-\d{2}-\d{2})/) {
+	$date = $1;
+      }
+      else {
+	$date = $self->{$field};
+      }
+
+      if ($dir->{$field}->{Type} =~/timestamp/) {
+	if ($self->{$field} =~/(\d{1,2}):(\d{1,2})(:\d{1,2})*\s*(AM|PM)*$/i) {
+	  my ($hh, $mi, $sec, $ampm) = ($1, $2, $3, $4);
+	  $sec =~s/://;
+
+	  $date .= sprintf(" %02d:%02d:%02d", ((uc($ampm) eq "PM") ? $hh + 12 : $hh), $mi, $sec);
+	}
+	else {
+	  my ($cday, $cmon, $cyear) = (localtime)[(3,4,5)];
+	  if ($cday == $dd && $cmon == $mm-1 && $year == 1900+$cyear) {
+	    $date .= sprintf(" %02d:%02d:%02d", (localtime)[(2,1,0)]);
+	  }
+	  else {
+	    $date .= " 00:00:00";
+	  }
+	}
+      }
+
+      $self->{$field} = $date;
+    }
+  }
+}
+
+sub _insert {
+  my $self = shift;
+
+  $self->_format_fields_for_insert;
+
+  my $query = "insert into %s (%s) values (%s)";
+  $self->{id} = 0;
+  $query = sprintf($query,
+		   $self->{_table}, 
+		   join(",", @{$self->{_field_list}}),
+		   join(",", split "", "?" x scalar(@{$self->{_field_list}}))
+      );
+
+
+  $self->Do($query, @{$self}{@{$self->{_field_list}}});
+
+  $self->{id} = $self->{dbi}->{mysql_insertid};
+}
+
+sub _update {
+  my $self = shift;
+
+  $self->_format_fields_for_insert;
+
+  my @fields = grep { !/^id$/ } @{$self->{_field_list}};
+
+  my $query = sprintf("update %s set %s where id = ?",
+		      $self->{_table},
+		      join(",", map { "$_ = ?" } @fields)
+      );
+
+  $self->Do($query, @{$self}{@fields}, $self->{'id'});
+
+  return $self->{rows};
+}
+
+
+sub _find {
+    my $self = shift;
+    my $sql = sprintf("select id from %s ", $self->{_table});
+
+    if (@_) {
+	$sql .= "where ";
+    }
+
+    my @args = ();
+    my @where_clause;
+
+    while (@_) {
+	my $exact_flag = shift;
+	my $field = shift;
+	my $value = shift;
+
+	push @where_clause, sprintf(" %s %s ?", $field,  $exact_flag ? "=" : "like");
+	push @args, $exact_flag ? $value : $value."%";
+    }
+
+    if (@where_clause) {
+	$sql .= join(" and ", @where_clause);
+    }
+
+    my @list;
+
+    my $ref = $self->SelectList($sql, @args);
+
+    my $idx = 0;
+    if (@$ref) {
+      foreach (@$ref) {
+	my $obj = $self->new($self->{dbi}, $_->{id}, $self->{config}, $self->{_table});
+	$obj->{idx} = ++$idx;
+	push @list, $obj;
+      }
+      return BLM::IndexedTableHandler::RecordSet->new(@list);
+    }
+    else {
+      return BLM::IndexedTableHandler::RecordSet->new($self->new($self->new($self->{dbi}, 0, $self->{config}, $self->{_table})));
+    }
+}
+
+# - an intelligent 'find'
+sub key_fields {
+    my $self = shift;
+    my @fields = @{$self->{_field_list}};
+
+    my $dir = $self->{_table_dir};
+    my @keys;
+
+    foreach (@fields) {
+	push @keys, $_ if $dir->{$_}->{Key} eq 'UNI';
+    }
+
+    foreach (@fields) {
+	push @keys, $_ if $dir->{$_}->{Key} eq 'MUL';
+    }
+    
+    return Bedrock::Array->new(@keys);
+}
+
+sub set_search_field {
+    my $self = shift;
+    my ($exact_flag, $field) = @_;
+
+    $self->{_search_fields} = [] unless $self->{_search_fields};
+
+    push @{$self->{_search_fields}}, $exact_flag, $field;
+}
+
+sub set_key_fields {
+    my $self = shift;
+
+    my @unique;
+    my @mul;
+
+    my $dir = $self->{_table_dir};
+    my %fields;
+
+    foreach (keys %{$dir}) {
+	$fields{$dir->{$_}->{idx}} = $_;
+	push @unique, $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'UNI';
+	push @mul,  $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'MUL';
+    }
+
+    foreach (sort @unique) {
+	$self->set_search_field(0, $fields{$_});
+    }
+
+    foreach (sort @mul) {
+	$self->set_search_field(1, $fields{$_});
+    }
+}
+
+=head2 search
+
+  search($input) 
+
+This is essentially the same as C<find> except it attempts to
+intelligently figure out what you want to search by looking at the
+fields in the object you pass and matching these up with the potential
+indexes in the table.
+
+Suppose you have a form that represents the table and each field in
+the form corresponds to a field in the database. Potentially you could
+search by any of the fields in the database using the C<find> method.
+
+For example:
+
+  <if $input.lname>
+    <null --define-var="foo_list" $foo.find('lname', $input.lname)>
+  <elsif $input.fname>
+    <null --define-var="foo_list" $foo.find('fname', $input.fname)>
+  <elsif $input.email>
+    <null --define-var ="foo" $foo.find_unique('email', $input.email)>   
+  </if>
+
+This begs the question of what to do when multiple fields are
+populated and what order should the search be done in?
+
+C<search> tries to guess all of this for you by looking at the indexes
+you have created for the table and the order you have defined the
+fields.
+
+The search will proceed by looking at C<UNIQUE> index fields first
+then fields indexed as C<MUL> (i.e. the index allows duplicate keys).
+Within each index it will use the order in which the fields have been
+defined in the table to see if the field is defined in the form.  If
+it is, then it will use that field as the search key, otherwise it
+will go to the next index field.  If there are no index fields it will
+simply follow the order of the fields as defined in the table.
+
+Give the table F<foo> defined below:
+
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+ | Field     | Type                                | Null | Key | Default | Extra          |
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+ | id        | int(11)                             | NO   | PRI | NULL    | auto_increment |
+ | lname     | varchar(32)                         | YES  | MUL | NULL    |                |
+ | fname     | varchar(32)                         | YES  |     | NULL    |                |
+ | email     | varchar(64)                         | YES  | UNI | NULL    |                |
+ | comments  | text                                | YES  |     | NULL    |                |
+ | hat_size  | char(1)                             | YES  |     | NULL    |                |
+ | pant_size | enum('S','M','L','XL','XXL','XXXL') | YES  |     | NULL    |                |
+ | active    | tinyint(1)                          | YES  |     | NULL    |                |
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+
+
+The statement:
+
+ <null --define-var="foo_list" $foo.search($input)>
+
+...would look to see if C<$input.email> had a value first, if so it would conduct a search equivalent to:
+
+ <null --define-var="foo_list" $foo.find('email', $input.email)>
+
+if C<$input.email> was not defined, it would then look at C<$inpt.lname> and if that were defined would conduct a search equivalent to:
+
+ <null --define-var="foo_list" $foo.find('lname', $input.lname)>
+
+C<search> would then proceed similarly through the non-indexed fields
+(C<fname>, C<comments>, C<hat_size>, C<pant_size>, and C<active>).
+
+=cut
+
+sub search {
+    my $self = shift;
+    my $input = shift;
+
+    $self->set($input);
+    $self->set_key_fields() unless $self->{_search_fields};
+    
+    my @search_args;
+    
+    if ($self->{_search_fields} && @{$self->{_search_fields}}) {
+      my @search_fields = @{$self->{_search_fields}};
+      while (@search_fields) {
+	my $exact_flag = shift @search_fields;
+	my $field_name = shift @search_fields;
+	
+	if ($self->{$field_name}) {
+	  push @search_args, $exact_flag, $field_name, $input->{$field_name};
+	}
+	  }
+    }
+    
+# still uncomfortable with assuming certain wildcard/non-wildcard searching
+    unless (@search_args) {
+      foreach (@{$self->{_field_list}}) {
+	if ($input->{$_}) {
+	  push @search_args, 0, $_, $input->{$_};
+	}
+      }
+    }
+
+    return $self->_find(@search_args);
+}
+
+=pod
+
+=head2 find
+
+  find(id)
+
+Returns the row in the table with an C<id> = to the specified id.
+
+  find (field, value)
+
+Returns an array of hash references to row objects that match the field and 
+value passed.
+
+  find()
+
+Return all rows (up to C<max_rows>) in table.
+
+=over 5
+
+=item id
+
+MySQL id of the row to return.
+
+=item field
+
+name of a column in a MySQL table
+
+=item value
+
+value of the column specifed in C<field> to search for
+
+=back
+
+=head3 Example
+
+  <null --define-var="players" $player.find()>
+
+Returns all rows in table.  Typically this is used for relatively
+small tables, hence, a maximum value of 50 is used to limit the number
+of elements returned.
+
+If you B<really> want to return more rows, then set C<max_rows>.
+
+  <null $player.max_rows(100)>
+
+For an unlimited number...
+
+  <null $player.max_rows()>   
+
+=head3 Example
+
+ <null --define-var="player" $player.find($input.id)>
+
+=head3 Example
+
+ <null --define-var="players" $player.find('fname', 'Jo')>
+
+Would return all an array of player objects where the field F<fname> is like Jo%
+
+I<Note:> This method will always return an array even if there is only 1 row that matches
+the criteria.
+
+=cut
+
+sub find {
+    my $self = shift;
+
+    if (@_ == 1) {
+	my $ref = $self->_find(1, 'id', @_);
+	return $ref ? $ref->[0] : undef;
+    }
+    elsif (@_) {
+	return $self->_find(0, @_);
+    }
+    else {
+	return $self->_find;
+    }
+
+}
+
+=pod
+
+=head2 find_unique
+
+  find_unique(find, value)
+
+Returns an single object where C<field> is like C<value>.
+
+  <null --define-var="fields" $player.find_unique('lname', 'Pujols')>
+
+=cut
+
+
+sub find_unique {
+    my $self = shift;
+    my $ref = $self->_find(1, @_);
+
+    return $ref ? $ref->[0] : undef;
+}
+
+
+sub fields {
+    my $self = shift;
+
+    return Bedrock::Array->new(@{$self->{_field_list}});
+}
+
+
+sub get_field_length {
+    my ($self, $field_name) = @_;
+
+    my $type = $self->{_table_dir}->{$field_name}->{Type};
+
+    if ($type =~/\((\d+)\,?.*\)/) {
+	return $1;
+    }
+    else {
+	return undef;
+    }
+}
+
+sub _get_options {
+    my $self = shift;
+
+    my ($option_type, $field_type) = @_;
+    my $options = {};
+
+    my ($table_name, $type) = split ":", $option_type;
+    $options->{type} = $type || 'select';
+
+    if ($table_name) {
+	if ($table_name =~/\,/) {
+	    $options->{list} = [map { {id=>$_, item => $_}} split ",", $table_name];
+	}
+	else {
+	    $options->{list} = $self->SelectList(sprintf("select * from %s order by id", $table_name));
+	}
+    }
+    else {
+	$field_type =~/(enum|set)(\(.*?\))/;
+	$options->{list} = [map { {id => $_, item => $_} } eval $2];
+	if ($field_type =~/enum/  &&  @{$options->{list}} > 4) {
+	  unshift @{$options->{list}}, {id => undef, item => "None"};
+	}
+    }
+
+    return $options;
+}
+
+sub create_date_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    return create_html_element('input', 
+				(type=>'text', name=>$field_name, value=>$self->get($field_name), maxlength=>10, size=>10), 
+				%{$attributes->{input}});
+
+}
+
+sub create_char_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+    my $length = $self->get_field_length($field_name);
+
+    return create_html_element('input', 
+				(type=>'text', name=>$_, value=>$self->{$_}, maxlength=>$length, size=>$length), 
+				%{$attributes->{input}})
+}
+
+sub create_select_field {
+    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+    my $value;
+
+    if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
+	$value = [split ",", $self->{$field_name}];
+    }
+    else {
+	$value = $self->{$field_name};
+    }
+
+    return create_select_list($field_name, $value, $attributes, $options->{list});
+}
+
+sub create_radio_field {
+    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+
+    return create_radio_buttons($field_name, $self->{$field_name}, $attributes, $options->{list});
+}
+
+sub create_varchar_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    my $length = $self->get_field_length($field_name);
+    my $size = $length;
+    if ($length > 32) {
+	$size = 32;
+    }
+
+    return create_html_element('input', 
+				(type=>'text', name=> $field_name, value=>$self->get($field_name), maxlength=>$length, size=>$size), 
+				$attributes ? %{$attributes->{input}} : ());
+}
+
+sub create_tinyint_field {
+    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+    
+    return $self->create_checkbox_field($field_name, $attributes, $labels, $lists);
+
+    return create_html_element('input', 
+				(type=>"checkbox", name=>$field_name, value=> 1), 
+				$attributes ? %{$attributes->{input}} : (), 
+				$self->{$field_name} ? ("checked" => undef) : ());
+}
+
+
+sub create_checkbox_field {
+    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+
+    $options = $options || { list => [  {id=>1, item=>""} ] };
+
+    my $value;
+
+    if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
+	$value = [split ",", $self->{$field_name}];
+    }
+    else {
+	$value = $self->{$field_name};
+    }
+
+    my @values = ref($value) ? @$value : ($value);
+
+    my @items = map {$_->{item}} @{$options->{list}};
+
+    my $html;
+
+    foreach my $ref (@{$options->{list}}) {
+	$html .= sprintf("%s&nbsp;<b>%s</b>&nbsp;&nbsp;&nbsp;",
+			 create_html_element('input',
+					      (type=>"checkbox", name=>$field_name, value=> $ref->{id}), 
+					      $attributes ? %{$attributes->{input}} : (), 
+					      scalar(grep { $ref->{id} eq $_ } @values) ? ("checked" => undef) : ()
+			    ),
+			 $ref->{item});
+    }
+
+    return $html;
+}
+
+sub create_int_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+    
+    return create_html_element('input', 
+				(type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>5, size=>5), 
+				$attributes ? %{$attributes->{input}} : ());
+}
+
+sub create_decimal_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    return create_html_element('input', 
+				(type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>10, size=>10), 
+				$attributes ? %{$attributes->{input}} : () );
+}
+
+sub create_timestamp_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    return create_html_element('input', 
+				(type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>10, size=>10), 
+				$attributes ? %{$attributes->{input}} : () );
+}
+
+sub create_decimal_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    return create_html_element('input', 
+				(type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>10, size=>10), 
+				$attributes ? %{$attributes->{input}} : ());
+}
+
+sub create_text_field {
+    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+    return sprintf("%s%s</textarea>", 
+		   create_html_element('textarea', 
+					(name=>$field_name, rows=>5, cols=>40), 
+					$attributes ? %{$attributes->{textarea}} : ()),
+		   $self->{$_});
+}
+
+=pod
+
+=head2 html_form_header
+
+ html_form_header(attributes)
+
+=cut
+
+sub html_form_header {
+    my $self = shift;
+    my $attributes = shift || {};
+
+    return create_html_element('form', (name=>$self->{_table}, method=>"post", action => $ENV{PATH_INFO}), %$attributes);
+}
+
+=pod
+
+=head2 html_form_footer
+
+ html_form_footer(attributes)
+
+=cut
+
+sub html_form_footer {
+    my $self = shift;
+    my $attributes = shift || $self->{_attributes} || {};
+    
+    my @html;
+    my $form_name = $self->{_table};
+
+    my $form_element = sprintf("document.%s", $form_name);
+
+    my $onclick = qq{%s%s.action.value='%s'; %s.submit();};
+    my @buttons = ("find", "save", "delete", "new");
+    foreach (@buttons) {
+	$attributes->{$_} = {} unless exists $attributes->{$_};
+    }
+
+    $attributes->{delete}->{disabled} = undef unless $self->{id};
+    $attributes->{new}->{disabled} = undef unless $self->{id};
+
+    foreach ("save","delete","find", "new") {
+	push @html, create_html_element('input', 
+					 (type => "Button", value => ucfirst($_), 
+					  onClick => sprintf($onclick, $_ eq "new" ? qq{$form_element.id.value='0';}: "", $form_element, $_, $form_element)), %{$attributes->{$_}})
+    }
+    
+    push @html, create_html_element('input', (type => "hidden", name=>"action", value=>""));
+    push @html, create_html_element('input', (type => "hidden", name=>"table", value=>$self->{_table}));
+
+    return sprintf("%s\n%s\n", join("&nbsp;\n", @html), "</form>\n");
+}
+
+=pod
+
+=head2 html_form_body
+
+ html_form_body(attributes, labels, lists)
+
+=cut
+
+sub html_form_body {
+    my $self = shift;
+    my $attributes = shift || $self->{_attributes} || {};
+    my $labels = shift || $self->{_labels} || {};
+    my $lists = shift || $self->{_lists} || {};
+
+    my $dir = $self->{_table_dir};
+
+    my $html = create_html_element("table", %{$attributes->{table}})."\n";
+
+    foreach (@{$self->{_field_list}}) {
+
+# if no "maxlength" is given for an input field and a "size" is given, then use that as maxlength
+	if ($attributes->{$_} && $attributes->{$_}->{input}->{size}) {
+	    $attributes->{$_}->{input}->{maxlength} = $attributes->{$_}->{input}->{size} unless $attributes->{$_}->{input}->{maxlength};
+	}
+
+# - first check to see if this is a pick list
+	my $options;
+	$options = $self->_get_options($lists->{$_}, $dir->{$_}->{Type}) if $lists->{$_} || $dir->{$_}->{Type} =~/(enum|set)/;
+
+	if ($lists->{$_}) {
+	    if ($options->{type} =~/(select|radio|checkbox)/) {
+		my $input_element;
+		if ($options->{type} eq 'select' ) {
+		    $input_element = $self->create_select_field($_, $attributes->{$_}, $labels, $lists, $options);
+		}
+		elsif ($options->{type} eq 'radio') {
+		    $input_element = $self->create_radio_field($_, $attributes->{$_}, $labels, $lists, $options)
+		}
+		elsif ($options->{type} eq 'checkbox') {
+		    $input_element = $self->create_checkbox_field($_, $attributes->{$_}, $labels, $lists, $options)
+		}
+
+		$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+				 create_html_element('tr', %{$attributes->{tr}}),
+				 create_html_element('th', %{$attributes->{th}}),
+				 $labels->{$_} || create_label_name($_), 
+				 create_html_element('td', %{$attributes->{td}}),
+				 $input_element
+		    );
+	    }
+	}
+	elsif ($dir->{$_}->{Type} =~/(enum|set)/) {
+	    if  ($options && @{$options->{list}} > 4) {
+		$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+				 create_html_element('tr', %{$attributes->{tr}}),
+				 create_html_element('th', %{$attributes->{th}}),
+				 $labels->{$_} || create_label_name($_), 
+				 create_html_element('td', %{$attributes->{td}}),
+				 $self->create_select_field($_, $attributes->{$_}, $labels, $lists, $options)
+		    );
+	    }
+	    else {
+		my $input_element;
+		if ($dir->{$_}->{Type} =~/enum/) {
+		    $input_element = $self->create_radio_field($_, $attributes->{$_}, $labels, $lists, $options)
+		}
+		else {
+		    $input_element = $self->create_checkbox_field($_, $attributes->{$_}, $labels, $lists, $options)
+		}
+
+		$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+				 create_html_element('tr', %{$attributes->{tr}}),
+				 create_html_element('th', %{$attributes->{th}}),
+				 $labels->{$_} || create_label_name($_), 
+				 create_html_element('td', %{$attributes->{td}}),
+				 $input_element
+		    );
+	    }
+	}
+	elsif ($dir->{$_}->{Type} =~/tinyint/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_tinyint_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	    
+	}
+	elsif ($dir->{$_}->{Type} =~/varchar/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_varchar_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+	elsif ($dir->{$_}->{Type} =~/int/) {
+	    next if $_ =~/^id$/;
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_int_field($_, $attributes->{$_}, $labels, $lists)
+		);
+
+	}
+	elsif ($dir->{$_}->{Type} =~/^char/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_char_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+	elsif ($dir->{$_}->{Type} =~/date/) {
+
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_date_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+	elsif ($dir->{$_}->{Type} =~/timestamp/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_timestamp_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+	elsif ($dir->{$_}->{Type} =~/text/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_text_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+	elsif ($dir->{$_}->{Type} =~/decimal/) {
+	    $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			     create_html_element('tr', %{$attributes->{tr}}),
+			     create_html_element('th', %{$attributes->{th}}),
+			     $labels->{$_} || create_label_name($_), 
+			     create_html_element('td', %{$attributes->{td}}),
+			     $self->create_decimal_field($_, $attributes->{$_}, $labels, $lists)
+		);
+	}
+    }
+
+    $html .= "</table>\n";
+    $html .= create_html_element('input', (type=>"hidden", value=>$self->{id}, name=>"id"));
+
+    return $html;
+}
+
+
+=pod
+
+=head2 handler
+
+  handler($input)
+
+Method that invokes various methods of your table handler object
+depending upon the value of the C<action> CGI variable.
+
+The values of the C<action> CGI variable support are:
+
+=over 5
+
+=item save
+
+Saves the field values in the C<$input> object to the MySQL table.
+Supports both updates and inserts depending on whether the C<id> field
+is set to 0 (insert) or a non-zero (update) value.
+
+Returns the table handler object.
+
+=item delete
+
+Deletes the row in the MySQL table indicated by the value of C<id>.
+
+Return the table handler object.
+
+=item new
+
+Creates a new table handler object.
+
+Returns a new table handler object.
+
+=item find
+
+Performs a query against the MySQL table depending upon the fields
+(CGI variables) that are set in the C<$input> object.
+
+If 1 or more rows found after executing the query, the method will
+returns either C<BLM::IndexedTableHandler::RecordSet> object.
+
+If no rows are found after executing the query, the method will return
+a table handler object.
+
+=back
+
+=cut
+
+sub handler {
+    my $self = shift;
+    my $input = shift;
+
+    if ($input->{action} eq 'save') {
+	$self->set($input);
+	$self->save();
+
+	return $self;
+    }
+    elsif ($input->{action} eq 'delete') {
+	$self->delete();
+	$self->{id} = 0;
+	foreach (@$self->{_field_list}) {
+	    $self->set($_, undef);
+	}
+	return $self;
+    }
+    elsif ($input->{action} eq 'new') {
+	return $self;
+    }
+    elsif ($input->{action} eq 'find') {
+	my $list = $self->search($input);
+	if ($list && @$list >= 1) {
+	  return $list;
+	}
+	else {
+	  return $self;
+	}
+    }
+    else {
+      return $self;
+    }
+}
+
+# - Some default pseudo field type handlers
+
+# +---------------+
+# | PHONE NUMBERS |
+# +---------------+
+
+=pod
+
+=head2 set_phone_field
+
+=cut
+
+sub set_phone_field {
+    my ($self, $key, $value) = @_;
+
+    if ($value) {
+        $value =~s/[^\d]//g;
+        $value =~/^(\d{7}|\d{10})$/;
+	$value = ($1 ? $1 : "");
+    }
+
+    return $value;
+}
+
+=pod
+
+=head2 get_phone_field
+
+=cut
+
+sub get_phone_field {
+    my ($self, $key) = @_;
+
+    if ($self->{$key}) {
+	my $str = $self->{$key};
+
+	if (length($str) == 7) {
+	    return sprintf("%s-%s", unpack "a3a4", $str);
+	}
+	elsif (length($str) == 10) {
+	    return sprintf("(%s) %s-%s", unpack "a3a3a4", $str);
+	}
+	else {
+	    return $self->{$key}; # I have no idea what you're up to here dude!
+	}
+    }
+    else {
+	return $self->{$key};
+    }
+}
+
+=pod
+
+=head2 set_date_field
+
+=cut
+
+
+sub set_date_field {
+    my ($self, $key, $value) = @_;
+
+    if ($value) {
+     my @date = split /[\/-]/, $value;
+
+     if (3 == scalar(@date) )   {
+       if ($value =~/-/) {
+         $value = sprintf("%4d-%02d-%02d", @date);
+       }
+       else {
+         $date[2] += 2000 if $date[2] < 30;
+         $value = sprintf("%4d-%02d-%02d", @date[(2,0,1)]);
+       }
+     }
+    }
+
+    return $value;
+}
+
+
+=pod
+
+=head2 get_date_field
+
+=cut
+
+
+sub get_date_field {
+    my ($self, $key) = @_;
+
+    return undef unless $self->{$key};
+
+    my @date = split("-", $self->{$key});
+
+    return sprintf("%02d/%02d/%04d", @date[(1,2,0)]);
+}
+
+
+=head1 CAVEATS
+
+=head2 checkbox fields
+
+Because checkbox fields are not manifested in the CGI C<QUERY_STRING>
+when form data is submitted and the checkbox is not checked, you may
+find that using a simplistic approach to updating the fields in your
+object may result in checkbox fields being ignored.  For example, the
+Bedrock code:
+
+  <foreach $input.keys()>
+     <null $player.set($_, $input.get($_)>
+  </foreach>
+
+would never actually update a checkbox field that was unchecked.
+Therefore, as shown above as the "more correct" approach to setting
+the values of your object from your HTML form:
+
+  <foreach $player.fields()>
+     <null $player.set($_, $input.get($_))>
+  </foreach>
+
+...guarantees that each field in the table will be set, even if it is
+set to a null value.
+
+If you rely on the single argument version of the C<set> method you're
+in luck (at least if you're database field being rendered as a
+checkbox is a boolean).  Since C<html_form()> renders C<tinyint> or
+C<boolean> fields as checkboxes, C<set> will make sure that any
+C<tinyint> field in the record is set, regardless of whether it exists
+in the C<$input> object.
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer@signatureinfo.com
+
+=head1 SEE ALSO
+
+DBHandler
+
+=cut
+
+# $Log$
+# Revision 1.8  2011/11/13 16:08:28  eutl420
+# - adding back to project
+#
+# Revision 1.6  2011/07/17 16:56:08  eutl420
+# - build .pm from .pm.in, added @PERL@
+#
+# Revision 1.5  2011/07/12 19:10:35  eutl420
+# set VERSION from cvs Revision keyword
+#
+# Revision 1.4  2009/12/31 00:04:41  rlauer
+# docs need work - wip
+#
+# Revision 1.3  2009/12/28 20:32:33  rlauer
+# move SIS:: up to Bedrock::
+#
+# Revision 1.2  2008/12/03 14:01:18  alans
+# We now use a hard-coded value for module $VERSION rather than a munged
+# version of the expansion of the CVS 'Revision' keyword; the module API
+# version number is orthogonal to the identifyer in the source control
+# system.
+#
+# This change makes it safe to import the Bedrock codebase into another
+# source repository (even CVS!) without breaking the code. We hit this
+# issue when we first released the libbedrock-perl .deb package, for which
+# we imported the release tarball sources into the 'bedrock-deb' CVS project.
+#
+# Revision 1.1  2008/11/25 14:32:27  rlauer
+# added as part of Bedrock 2.0.0 reorg
+#
+
+1;
