@@ -175,7 +175,9 @@ perl5blmlib_DATA = \
     BLM/Awk.pm \
     BLM/Benchmark.pm \
     BLM/Date.pm \
+    BLM/DBHandler.pm \
     BLM/FileIO.pm \
+    BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
     BLM/Recycle.pm \
     BLM/FTP.pm \
@@ -201,8 +203,7 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \
     BLM/Startup/SQLSession.pm \
-    BLM/Startup/UserSession.pm \
-    BLM/Startup/Tiles.pm
+    BLM/Startup/UserSession.pm 
 
 BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
 
