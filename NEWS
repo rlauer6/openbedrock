@@ -11,6 +11,77 @@ bedrock 2.3.0 (2011-??-??)
 
     Enhancements:
 
+    - The Context object now exposes the $header object via the
+      `header()' method to ensure that application plugins have access
+      to the header object in order to set headers.  This is necessary
+      so that all headers are filtered through Bedrock's handler prior
+      to ANY content being passed to the browser.
+
+      Recall the Context object is passed to Application Plugins (nee:
+      Startup BLM's) when the object is tied.
+
+        sub TIEHASH {
+          my ($class, $ctx, $config) = @_;
+          my $self = bless {}, $class;
+        
+          ...
+
+          $self;
+        }
+
+      Bedrock, just prior to outputting content by the TagX object,
+      determines if the application has set a redirect header and will
+      avoid sending any content other than the headers.
+
+      8<--- TagX::Output::print --------------------
+        sub print {
+          my $self = shift;
+          return unless @_;
+        
+          my $output;
+        
+          if ( $self->{'buffers'} ) {
+            $self->{'buffers'}->[-1] .= "@_";
+          }
+          else {
+            my $header = $self->{'__header'};
+        
+            if ($header) {
+              my $obj = tied( %{$header} );
+              $output = $obj->{'output'};
+        
+              $self->print_header;
+            }
+        
+      |     # don't bother writing output if we're just redirecting!
+      |     unless ( $output && $output->{location} || $output->{Location} ) {
+      |       $self->{'Handle'}->print(@_);
+      |     }
+          }
+        }
+      8<--------------------------------------------
+
+      Also, in Bedrock's handler, we need to set the proper status for
+      Apache using mod_perl.
+
+        # Apache 2 hack for redirection (mod_perl?)
+        if ( $ENV{SERVER_SIGNATURE} =~ /apache/i ) {
+          $r->status(Apache2::Const::REDIRECT)
+          if $ENV{MOD_PERL} && exists ${ $r->err_headers_out }{Location}
+            || exists ${ $r->err_headers_out }{location};
+        }
+
+      In any event, it's necessary for Bedrock to see that the
+      `Location' header has been set.  Application plugins and Bedrock
+      pages should *ALWAYS* use the $header object to set headers to
+      ensure Bedrock is aware of the redirect.
+
+      The header() method of the Context object will expose the header
+      object to you so you can use its methods for redirection.
+
+        $ctx->header->location(...);
+        $ctx->header->see_other(...);
+
     - <if> tag now takes a quoted reqular expression as well as a
       simple regular expression.
 
@@ -494,6 +565,10 @@ bedrock 2.3.0 (2011-??-??)
       works now in the perlish way
 
     - <var --default> was not working as advertised
+
+    - Cookie.pm now uses the Context object's `header()' method to set
+      the cookie instead of using cgi_header_out().  This is done to
+      make sure that Bedrock see's all header directives.
 
 -----------------------------------------------------------------------
 bedrock 2.2.1 (2011-08-18)
