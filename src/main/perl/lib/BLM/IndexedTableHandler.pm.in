@@ -5,6 +5,7 @@
 package BLM::IndexedTableHandler;
 
 use strict;
+use Data::Dumper;
 
 BEGIN
 {
@@ -697,7 +698,7 @@ sub _set {
 	    my @date = split "/", $value;
 	    $date[2] += 2000 if $date[2] < 20;
 	    $date[2] += 1900 if $date[2] > 20;
-	    $value = sprintf("%04d-%02d-%02d", $date[2, 0, 1]);
+	    $value = sprintf("%04d-%02d-%02d", $date[(2, 0, 1)]);
 	}
 	$self->{$key} = $value;
     }
@@ -914,97 +915,107 @@ sub _update {
 
 
 sub _find {
-    my $self = shift;
-    my $sql = sprintf("select id from %s ", $self->{_table});
+  my $self = shift;
+  
+  my $sql = sprintf("select id from %s ", $self->{_table});
+  
+  if (@_) {
+    $sql .= "where ";
+  }
+  
+  my @args = ();
+  my @where_clause;
+  
+  while ( @_ ) {
+    my $exact_flag = shift;
+    my $field = shift;
+    my $value = shift;
+    
+    push @where_clause, sprintf(" %s %s ?", $field,  $exact_flag ? "=" : "like");
+    push @args, $exact_flag ? $value : $value."%";
+  }
+  
+  if ( @where_clause ) {
+    $sql .= join(" and ", @where_clause);
+  }
+  
+  my @list;
+ 
+  my $ref;
 
-    if (@_) {
-	$sql .= "where ";
+  eval {
+    $ref = $self->SelectList($sql, @args);
+  };
+
+  die "Could not execute query:\n$sql\n$@"
+    if $@;
+
+  my $idx = 0;
+
+  if ( @$ref ) {
+    foreach ( @{$ref} ) {
+      my $obj = $self->new($self->{dbi}, $_->{id}, $self->{config}, $self->{_table});
+      $obj->{idx} = ++$idx;
+      push @list, $obj;
     }
 
-    my @args = ();
-    my @where_clause;
-
-    while (@_) {
-	my $exact_flag = shift;
-	my $field = shift;
-	my $value = shift;
-
-	push @where_clause, sprintf(" %s %s ?", $field,  $exact_flag ? "=" : "like");
-	push @args, $exact_flag ? $value : $value."%";
-    }
-
-    if (@where_clause) {
-	$sql .= join(" and ", @where_clause);
-    }
-
-    my @list;
-
-    my $ref = $self->SelectList($sql, @args);
-
-    my $idx = 0;
-    if (@$ref) {
-      foreach (@$ref) {
-	my $obj = $self->new($self->{dbi}, $_->{id}, $self->{config}, $self->{_table});
-	$obj->{idx} = ++$idx;
-	push @list, $obj;
-      }
-      return BLM::IndexedTableHandler::RecordSet->new(@list);
-    }
-    else {
-      return BLM::IndexedTableHandler::RecordSet->new($self->new($self->new($self->{dbi}, 0, $self->{config}, $self->{_table})));
-    }
+    return BLM::IndexedTableHandler::RecordSet->new( @list );
+  }
+  else {
+    return Bedrock::Array->new();
+  }
 }
 
 # - an intelligent 'find'
 sub key_fields {
-    my $self = shift;
-    my @fields = @{$self->{_field_list}};
+  my $self = shift;
+  my @fields = @{$self->{_field_list}};
+  
+  my $dir = $self->{_table_dir};
+  my @keys;
+  
+  foreach (@fields) {
+    push @keys, $_ if $dir->{$_}->{Key} eq 'UNI';
+  }
 
-    my $dir = $self->{_table_dir};
-    my @keys;
-
-    foreach (@fields) {
-	push @keys, $_ if $dir->{$_}->{Key} eq 'UNI';
-    }
-
-    foreach (@fields) {
-	push @keys, $_ if $dir->{$_}->{Key} eq 'MUL';
-    }
+  foreach (@fields) {
+    push @keys, $_ if $dir->{$_}->{Key} eq 'MUL';
+  }
     
-    return Bedrock::Array->new(@keys);
+  return Bedrock::Array->new(@keys);
 }
 
 sub set_search_field {
-    my $self = shift;
-    my ($exact_flag, $field) = @_;
+  my $self = shift;
+  my ($exact_flag, $field) = @_;
 
-    $self->{_search_fields} = [] unless $self->{_search_fields};
+  $self->{_search_fields} = [] unless $self->{_search_fields};
 
-    push @{$self->{_search_fields}}, $exact_flag, $field;
+  push @{$self->{_search_fields}}, $exact_flag, $field;
 }
 
 sub set_key_fields {
-    my $self = shift;
+  my $self = shift;
 
-    my @unique;
-    my @mul;
+  my @unique;
+  my @mul;
 
-    my $dir = $self->{_table_dir};
-    my %fields;
+  my $dir = $self->{_table_dir};
+  my %fields;
 
-    foreach (keys %{$dir}) {
-	$fields{$dir->{$_}->{idx}} = $_;
-	push @unique, $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'UNI';
-	push @mul,  $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'MUL';
-    }
+  foreach (keys %{$dir}) {
+    $fields{$dir->{$_}->{idx}} = $_;
+    push @unique, $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'UNI';
+    push @mul,  $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'MUL';
+  }
 
-    foreach (sort @unique) {
-	$self->set_search_field(0, $fields{$_});
-    }
+  foreach (sort @unique) {
+    $self->set_search_field(0, $fields{$_});
+  }
 
-    foreach (sort @mul) {
-	$self->set_search_field(1, $fields{$_});
-    }
+  foreach (sort @mul) {
+    $self->set_search_field(1, $fields{$_});
+  }
 }
 
 =head2 search
@@ -1147,7 +1158,7 @@ value of the column specifed in C<field> to search for
 
 =back
 
-=head3 Example
+=head3 Example - Return all rows.
 
   <null --define-var="players" $player.find()>
 
@@ -1163,11 +1174,11 @@ For an unlimited number...
 
   <null $player.max_rows()>   
 
-=head3 Example
+=head3 Example - Return a specific record based on the primary key
 
  <null --define-var="player" $player.find($input.id)>
 
-=head3 Example
+=head3 Example - Return a list by searching a field.
 
  <null --define-var="players" $player.find('fname', 'Jo')>
 
@@ -1179,38 +1190,40 @@ the criteria.
 =cut
 
 sub find {
-    my $self = shift;
+  my $self = shift;
+  
+  if (@_ == 1) {
+    die "usage: find(n), where n > 0\n"
+      unless $_[0] =~/^\d+$/ && $_[0];
 
-    if (@_ == 1) {
-	my $ref = $self->_find(1, 'id', @_);
-	return $ref ? $ref->[0] : undef;
+    my $ref = $self->_find(1, 'id', @_);
+    return $ref ? $ref->[0] : undef;
+  }
+  elsif ( @_ ) {
+      return $self->_find(0, @_);
     }
-    elsif (@_) {
-	return $self->_find(0, @_);
-    }
-    else {
-	return $self->_find;
-    }
-
+  else {
+    return $self->_find;
+  }
 }
 
 =pod
 
 =head2 find_unique
 
-  find_unique(find, value)
+  find_unique(field, value)
 
 Returns an single object where C<field> is like C<value>.
 
-  <null --define-var="fields" $player.find_unique('lname', 'Pujols')>
+  <null --define-var="pujols" $player.find_unique('lname', 'Pujols')>
 
 =cut
 
 sub find_unique {
-    my $self = shift;
-    my $ref = $self->_find(1, @_);
+  my $self = shift;
+  my $ref = $self->_find(1, @_);
 
-    return $ref ? $ref->[0] : undef;
+  return $ref ? $ref->[0] : undef;
 }
 
 
@@ -1225,9 +1238,9 @@ Returns an array containg the field names.
 =cut
 
 sub fields {
-    my $self = shift;
+  my $self = shift;
 
-    return Bedrock::Array->new(@{$self->{_field_list}});
+  return Bedrock::Array->new(@{$self->{_field_list}});
 }
 
 
@@ -1239,7 +1252,9 @@ sub fields {
 
 Returns a hash object containing just the fields and their values.
 This is not a particular useful object as it is not endowed with the
-magic of the C<BLM::IndexedTableHandler> class.
+magic of the C<BLM::IndexedTableHandler> class, however some may find
+it more satisfying than seeing all of the internal guts of the class'
+object hierarchy.
 
 =cut
 
@@ -1264,144 +1279,192 @@ Returns the length of a field.
 =cut
 
 sub get_field_length {
-    my ($self, $field_name) = @_;
-
-    my $type = $self->{_table_dir}->{$field_name}->{Type};
-
-    if ($type =~/\((\d+)\,?.*\)/) {
-	return $1;
-    }
-    else {
-	return undef;
-    }
+  my ($self, $field_name) = @_;
+  
+  my $type = $self->{_table_dir}->{$field_name}->{Type};
+  
+  if ($type =~/\((\d+)\,?.*\)/) {
+    return $1;
+  }
+  else {
+    return undef;
+  }
 }
 
 sub _get_options {
-    my $self = shift;
-
-    my ($option_type, $field_type) = @_;
-    my $options = {};
-
-    my ($table_name, $type) = split ":", $option_type;
-    $options->{type} = $type || 'select';
-
-    if ($table_name) {
-	if ($table_name =~/\,/) {
-	    $options->{list} = [map { {id=>$_, item => $_}} split ",", $table_name];
-	}
-	else {
-	    $options->{list} = $self->SelectList(sprintf("select * from %s order by id", $table_name));
-	}
+  my $self = shift;
+  
+  my ($option_type, $field_type) = @_;
+  my $options = {};
+  
+  my ($table_name, $type) = split ":", $option_type;
+  $options->{type} = $type || 'select';
+  
+  if ($table_name) {
+    if ($table_name =~/\,/) {
+      $options->{list} = [map { {id=>$_, item => $_}} split ",", $table_name];
     }
     else {
-	$field_type =~/(enum|set)(\(.*?\))/;
-	$options->{list} = [map { {id => $_, item => $_} } eval $2];
-	if ($field_type =~/enum/  &&  @{$options->{list}} > 4) {
-	  unshift @{$options->{list}}, {id => undef, item => "None"};
-	}
+      $options->{list} = $self->SelectList(sprintf("select * from %s order by id", $table_name));
     }
-
+  }
+  else {
+    $field_type =~/(enum|set)(\(.*?\))/;
+    $options->{list} = [map { {id => $_, item => $_} } eval $2];
+    if ($field_type =~/enum/  &&  @{$options->{list}} > 4) {
+      unshift @{$options->{list}}, {id => undef, item => "None"};
+    }
+  }
+  
     return $options;
 }
 
+=pod
+
+=head2 get_enum_values
+
+ get_enum_values( column-name )
+
+Return an array of possible values for a C<set> or C<enum> field type.
+
+Given a table with an enum column `doc_type':
+
+  +----------+-------------------+------+-----+---------+----------------+
+  | Field    | Type              | Null | Key | Default | Extra          |
+  +----------+-------------------+------+-----+---------+----------------+
+  | id       | int(11)           | NO   | PRI | NULL    | auto_increment |
+  | doc_type | enum('a','b','c') | YES  |     | NULL    |                |
+  +----------+-------------------+------+-----+---------+----------------+
+
+
+  <null:list $document.get_enum_values('doc_type')>
+  <trace --output $list>
+
+  [
+  [0] .. (a)
+  [1] .. (b)
+  [2] .. (c)
+  ]
+
+=cut
+
+sub get_enum_values {
+  my $self = shift;
+  my $column = shift;
+
+  my $dir = $self->{_table_dir};
+
+  die "usage: get_enum_value( column-name )\n" 
+    unless $column && $dir->{$column};
+
+  my @list; 
+
+  if ( $dir->{$column}->{Type} =~/(enum|set)(\(.*?\))/) { 
+    @list = eval $2;
+  }
+  else {
+    die "column: [$column] is not an enum or set field type\n";
+  }
+  
+  return Bedrock::Array->new( @list );
+}
+
 sub create_date_field {
-    my ($self, $field_name, $attributes, $labels, $lists) = @_;
+  my ($self, $field_name, $attributes, $labels, $lists) = @_;
 
-    return create_html_element('input', 
-				(type=>'text', name=>$field_name, value=>$self->get($field_name), maxlength=>10, size=>10), 
+  return create_html_element('input', 
+			     (type=>'text', name=>$field_name, value=>$self->get($field_name), maxlength=>10, size=>10), 
 				%{$attributes->{input}});
-
+  
 }
 
 sub create_char_field {
-    my ($self, $field_name, $attributes, $labels, $lists) = @_;
-    my $length = $self->get_field_length($field_name);
-
-    return create_html_element('input', 
-				(type=>'text', name=>$_, value=>$self->{$_}, maxlength=>$length, size=>$length), 
-				%{$attributes->{input}})
+  my ($self, $field_name, $attributes, $labels, $lists) = @_;
+  my $length = $self->get_field_length($field_name);
+  
+  return create_html_element('input', 
+			     (type=>'text', name=>$_, value=>$self->{$_}, maxlength=>$length, size=>$length), 
+			     %{$attributes->{input}})
 }
 
 
 sub create_select_field {
     my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
     my $value;
-
+    
     if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
-	$value = [split ",", $self->{$field_name}];
+      $value = [split ",", $self->{$field_name}];
     }
     else {
-	$value = $self->{$field_name};
+      $value = $self->{$field_name};
     }
-
+    
     return create_select_list($field_name, $value, $attributes, $options->{list});
-}
+  }
 
 sub create_radio_field {
-    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
-
-    return create_radio_buttons($field_name, $self->{$field_name}, $attributes, $options->{list});
+  my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+  
+  return create_radio_buttons($field_name, $self->{$field_name}, $attributes, $options->{list});
 }
 
 sub create_varchar_field {
-    my ($self, $field_name, $attributes, $labels, $lists) = @_;
-
-    my $length = $self->get_field_length($field_name);
-    my $size = $length;
-    if ($length > 32) {
-	$size = 32;
-    }
-
-    return create_html_element('input', 
-				(type=>'text', name=> $field_name, value=>$self->get($field_name), maxlength=>$length, size=>$size), 
-				$attributes ? %{$attributes->{input}} : ());
+  my ($self, $field_name, $attributes, $labels, $lists) = @_;
+  
+  my $length = $self->get_field_length($field_name);
+  my $size = $length;
+  if ($length > 32) {
+    $size = 32;
+  }
+  
+  return create_html_element('input', 
+			     (type=>'text', name=> $field_name, value=>$self->get($field_name), maxlength=>$length, size=>$size), 
+			     $attributes ? %{$attributes->{input}} : ());
 }
 
 
 sub create_tinyint_field {
-    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
-    
-    return $self->create_checkbox_field($field_name, $attributes, $labels, $lists);
-
-    return create_html_element('input', 
-				(type=>"checkbox", name=>$field_name, value=> 1), 
-				$attributes ? %{$attributes->{input}} : (), 
-				$self->{$field_name} ? ("checked" => undef) : ());
+  my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+  
+  return $self->create_checkbox_field($field_name, $attributes, $labels, $lists);
+  
+  return create_html_element('input', 
+			     (type=>"checkbox", name=>$field_name, value=> 1), 
+			     $attributes ? %{$attributes->{input}} : (), 
+			     $self->{$field_name} ? ("checked" => undef) : ());
 }
 
 
-
 sub create_checkbox_field {
-    my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+  my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
+  
+  $options = $options || { list => [  {id=>1, item=>""} ] };
+  
+  my $value;
 
-    $options = $options || { list => [  {id=>1, item=>""} ] };
+  if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
+    $value = [split ",", $self->{$field_name}];
+  } else {
+    $value = $self->{$field_name};
+  }
 
-    my $value;
+  my @values = ref($value) ? @$value : ($value);
 
-    if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
-	$value = [split ",", $self->{$field_name}];
-    }
-    else {
-	$value = $self->{$field_name};
-    }
+  my @items = map {$_->{item}} @{$options->{list}};
 
-    my @values = ref($value) ? @$value : ($value);
+  my $html;
 
-    my @items = map {$_->{item}} @{$options->{list}};
+  foreach my $ref (@{$options->{list}}) {
+    $html .= sprintf("%s&nbsp;<b>%s</b>&nbsp;&nbsp;&nbsp;",
+		     create_html_element('input',
+					 (type=>"checkbox", name=>$field_name, value=> $ref->{id}), 
+					 $attributes ? %{$attributes->{input}} : (), 
+					 scalar(grep { $ref->{id} eq $_ } @values) ? ("checked" => undef) : ()
+					),
+		     $ref->{item});
+  }
 
-    my $html;
-
-    foreach my $ref (@{$options->{list}}) {
-      $html .= sprintf("%s&nbsp;<b>%s</b>&nbsp;&nbsp;&nbsp;",
-		       create_html_element('input',
-					   (type=>"checkbox", name=>$field_name, value=> $ref->{id}), 
-					   $attributes ? %{$attributes->{input}} : (), 
-					   scalar(grep { $ref->{id} eq $_ } @values) ? ("checked" => undef) : ()
-					  ),
-		       $ref->{item});
-    }
-
-    return $html;
+  return $html;
 }
 
 
@@ -1411,14 +1474,6 @@ sub create_int_field {
   return create_html_element('input', 
 			     (type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>5, size=>5), 
 			     $attributes ? %{$attributes->{input}} : ());
-}
-
-sub create_decimal_field {
-  my ($self, $field_name, $attributes, $labels, $lists) = @_;
-  
-  return create_html_element('input', 
-			     (type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>10, size=>10), 
-			     $attributes ? %{$attributes->{input}} : () );
 }
 
 sub create_timestamp_field {
@@ -1432,7 +1487,7 @@ sub create_timestamp_field {
 			       maxlength =>10, 
 			       size => 10
 			      ), 
-			     $attributes ? %{$attributes->{input}} : ()
+			      $attributes ? %{$attributes->{input}} : ()
 			    );
 }
 
@@ -1518,18 +1573,18 @@ sub html_form_footer {
   $attributes->{delete}->{disabled} = undef unless $self->{id};
   $attributes->{new}->{disabled} = undef unless $self->{id};
   
-    foreach ("save","delete","find", "new") {
-      push @html, create_html_element( 'input', 
-				       (
-					type => "Button", 
-					value => ucfirst($_), 
-					onClick => sprintf( $onclick, 
-							    $_ eq "new" ? qq{$form_element.id.value='0';}: "",
-							    $form_element, $_, $form_element
-							  )
-				       ), 
-				       %{$attributes->{$_}})
-    }
+  foreach ("save","delete","find", "new") {
+    push @html, create_html_element( 'input', 
+				     (
+				      type => "Button", 
+				      value => ucfirst($_), 
+				      onClick => sprintf( $onclick, 
+							  $_ eq "new" ? qq{$form_element.id.value='0';}: "",
+							  $form_element, $_, $form_element
+							)
+				     ), 
+				     %{$attributes->{$_}})
+  }
   
   push @html, create_html_element('input', (type => "hidden", name=>"action", value=>""));
   push @html, create_html_element('input', (type => "hidden", name=>"table", value=>$self->{_table}));
@@ -1579,11 +1634,9 @@ sub html_form_body {
 						       $lists, 
 						       $options
 						     );
-	}
-	elsif ($options->{type} eq 'radio') {
+	} elsif ($options->{type} eq 'radio') {
 	  $input_element = $self->create_radio_field($_, $attributes->{$_}, $labels, $lists, $options)
-	}
-	elsif ($options->{type} eq 'checkbox') {
+	} elsif ($options->{type} eq 'checkbox') {
 	  $input_element = $self->create_checkbox_field($_, $attributes->{$_}, $labels, $lists, $options)
 	}
 	
@@ -1595,9 +1648,8 @@ sub html_form_body {
 			 $input_element
 			);
       }
-    }
-    elsif ($dir->{$_}->{Type} =~/(enum|set)/) {
-      if  ($options && @{$options->{list}} > 4) {
+    } elsif ($dir->{$_}->{Type} =~/(enum|set)/) {
+      if ($options && @{$options->{list}} > 4) {
 	$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 			 create_html_element('tr', %{$attributes->{tr}}),
 			 create_html_element('th', %{$attributes->{th}}),
@@ -1605,26 +1657,23 @@ sub html_form_body {
 			 create_html_element('td', %{$attributes->{td}}),
 			 $self->create_select_field($_, $attributes->{$_}, $labels, $lists, $options)
 			);
-	    }
-      else {
+      } else {
 	my $input_element;
 	if ($dir->{$_}->{Type} =~/enum/) {
 	  $input_element = $self->create_radio_field($_, $attributes->{$_}, $labels, $lists, $options)
-	      }
-	else {
+	} else {
 	  $input_element = $self->create_checkbox_field($_, $attributes->{$_}, $labels, $lists, $options)
 	}
 	
-	      $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
-			       create_html_element('tr', %{$attributes->{tr}}),
-			       create_html_element('th', %{$attributes->{th}}),
-			       $labels->{$_} || create_label_name($_), 
-			       create_html_element('td', %{$attributes->{td}}),
-			       $input_element
-			      );
+	$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
+			 create_html_element('tr', %{$attributes->{tr}}),
+			 create_html_element('th', %{$attributes->{th}}),
+			 $labels->{$_} || create_label_name($_), 
+			 create_html_element('td', %{$attributes->{td}}),
+			 $input_element
+			);
       }
-    }
-    elsif ($dir->{$_}->{Type} =~/tinyint/) {
+    } elsif ($dir->{$_}->{Type} =~/tinyint/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
 		       create_html_element('th', %{$attributes->{th}}),
@@ -1633,8 +1682,7 @@ sub html_form_body {
 		       $self->create_tinyint_field($_, $attributes->{$_}, $labels, $lists)
 		      );
       
-    }
-    elsif ($dir->{$_}->{Type} =~/varchar/) {
+    } elsif ($dir->{$_}->{Type} =~/varchar/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
 		       create_html_element('th', %{$attributes->{th}}),
@@ -1642,8 +1690,7 @@ sub html_form_body {
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_varchar_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    }
-    elsif ($dir->{$_}->{Type} =~/int/) {
+    } elsif ($dir->{$_}->{Type} =~/int/) {
       next if $_ =~/^id$/;
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
@@ -1653,8 +1700,7 @@ sub html_form_body {
 		       $self->create_int_field($_, $attributes->{$_}, $labels, $lists)
 		      );
       
-    }
-    elsif ($dir->{$_}->{Type} =~/^char/) {
+    } elsif ($dir->{$_}->{Type} =~/^char/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
 		       create_html_element('th', %{$attributes->{th}}),
@@ -1662,8 +1708,7 @@ sub html_form_body {
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_char_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    }
-    elsif ($dir->{$_}->{Type} =~/date/) {
+    } elsif ($dir->{$_}->{Type} =~/date/) {
       
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
@@ -1672,8 +1717,7 @@ sub html_form_body {
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_date_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    }
-    elsif ($dir->{$_}->{Type} =~/timestamp/) {
+    } elsif ($dir->{$_}->{Type} =~/timestamp/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
 		       create_html_element('th', %{$attributes->{th}}),
@@ -1681,8 +1725,7 @@ sub html_form_body {
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_timestamp_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    }
-    elsif ($dir->{$_}->{Type} =~/text/) {
+    } elsif ($dir->{$_}->{Type} =~/text/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
 		       create_html_element('th', %{$attributes->{th}}),
@@ -1690,11 +1733,10 @@ sub html_form_body {
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_text_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    }
-    elsif ($dir->{$_}->{Type} =~/decimal/) {
+    } elsif ($dir->{$_}->{Type} =~/decimal/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$attributes->{tr}}),
-			     create_html_element('th', %{$attributes->{th}}),
+		       create_html_element('th', %{$attributes->{th}}),
 		       $labels->{$_} || create_label_name($_), 
 		       create_html_element('td', %{$attributes->{td}}),
 		       $self->create_decimal_field($_, $attributes->{$_}, $labels, $lists)
@@ -1758,39 +1800,34 @@ a table handler object.
 =cut
 
 sub handler {
-    my $self = shift;
-    my $input = shift;
+  my $self = shift;
+  my $input = shift;
 
-    if ($input->{action} eq 'save') {
-	$self->set($input);
-	$self->save();
+  if ($input->{action} eq 'save') {
+    $self->set($input);
+    $self->save();
 
-	return $self;
+    return $self;
+  } elsif ($input->{action} eq 'delete') {
+    $self->delete();
+    $self->{id} = 0;
+    foreach (@$self->{_field_list}) {
+      $self->set($_, undef);
     }
-    elsif ($input->{action} eq 'delete') {
-	$self->delete();
-	$self->{id} = 0;
-	foreach (@$self->{_field_list}) {
-	    $self->set($_, undef);
-	}
-	return $self;
-    }
-    elsif ($input->{action} eq 'new') {
+    return $self;
+  } elsif ($input->{action} eq 'new') {
+    return $self;
+  } elsif ($input->{action} eq 'find') {
+    my $list = $self->search($input);
+    if ($list && @$list >= 1) {
+      return $list;
+    } else {
       return $self;
     }
-    elsif ($input->{action} eq 'find') {
-      my $list = $self->search($input);
-      if ($list && @$list >= 1) {
-	return $list;
-      }
-      else {
-	return $self;
-      }
-    }
-    else {
-      return $self;
-    }
+  } else {
+    return $self;
   }
+}
 
 # - Some default pseudo field type handlers
 
@@ -1802,18 +1839,44 @@ sub handler {
 
 =head2 set_phone_field
 
+  set_phone_field(field, value)
+
+Removes extraneous data from a phone number field and returns and/or
+sets the column valued to just the digits of the phone number.  If the
+resulting length of the object is 10 or 7 then the column is set to
+just the digits, otherwise it is set to undef.
+
+If only the column value is passed and not the column name, then
+nothing is set, the digits are just returned to the caller.
+
+Example:
+
+  <null $customer.set_phone_number('work_phone', $input.work_phone)>
+  <var $customer.set_phone_number($input.work_phone)>
+
 =cut
 
 sub set_phone_field {
-    my ($self, $key, $value) = @_;
+  my $self = shift;
+  my $key;
+  my $value;
 
-    if ($value) {
-        $value =~s/[^\d]//g;
-        $value =~/^(\d{7}|\d{10})$/;
-	$value = ($1 ? $1 : "");
-    }
+  if ( @_ == 2) {
+    ($key, $value) = @_;
+  } else {
+    $value = $_[0];
+  }
 
-    return $value;
+  if ( $value ) {
+    $value =~s/[^\d]//g;
+    $value =~/^(\d{7}|\d{10})$/;
+    $value = ($1 ? $1 : undef);
+
+  }
+
+  $self->{$key} = $value if @_ == 2;
+
+  return $value;
 }
 
 =pod
@@ -1822,7 +1885,13 @@ sub set_phone_field {
 
  get_phone_field( field-name )
 
- Returns a formatted phone number.
+Returns a formatted phone number.  If the phone number length is 7 digits:
+
+ 555-1212
+
+If the phone number legnth is 10 digits:
+
+ (888) 555-1212 
 
 Example:
 
@@ -1838,15 +1907,12 @@ sub get_phone_field {
     
     if (length($str) == 7) {
       return sprintf("%s-%s", unpack "a3a4", $str);
-      }
-    elsif (length($str) == 10) {
+    } elsif (length($str) == 10) {
       return sprintf("(%s) %s-%s", unpack "a3a3a4", $str);
-    }
-    else {
+    } else {
       return $self->{$key}; # I have no idea what you're up to here dude!
     }
-  }
-  else {
+  } else {
     return $self->{$key};
   }
 }
@@ -1875,14 +1941,13 @@ sub set_date_field {
   if ($value) {
     my @date = split /[\/-]/, $value;
     
-    if (3 == scalar(@date) )   {
+    if (3 == scalar(@date) ) {
       if ($value =~/-/) {
 	$value = sprintf("%4d-%02d-%02d", @date);
+      } else {
+	$date[2] += 2000 if $date[2] < 30;
+	$value = sprintf("%4d-%02d-%02d", @date[(2,0,1)]);
       }
-       else {
-         $date[2] += 2000 if $date[2] < 30;
-         $value = sprintf("%4d-%02d-%02d", @date[(2,0,1)]);
-       }
     }
   }
   
@@ -1896,6 +1961,8 @@ sub set_date_field {
 =head2 now
 
 Return the current date and time YYYY-MM-DD HH24:MI:SS format.
+
+ <var $customer.now()>
 
 =cut
 
@@ -1911,6 +1978,8 @@ sub now {
 
 Return the current date in YYYY-MM-DD format.
 
+ <var $customer.curdate()>
+
 =cut
 
 sub curdate {
@@ -1924,6 +1993,8 @@ sub curdate {
 =head2 curtime
 
 Return the current time in HH24:MI:SS format.
+
+ <var $customer.curtime()>
 
 =cut
 
@@ -1948,15 +2019,74 @@ Example:
 =cut
 
 sub get_date_field {
-    my ($self, $key) = @_;
+  my ($self, $key) = @_;
 
-    return undef unless $self->{$key};
+  return undef unless $self->{$key};
 
-    my @date = split("-", $self->{$key});
+  my @date = split("-", $self->{$key});
 
-    return sprintf("%02d/%02d/%04d", @date[(1,2,0)]);
+  return sprintf("%02d/%02d/%04d", @date[(1,2,0)]);
 }
 
+=pod
+
+=head2 set_email_field
+
+ set_email_field(field, value)
+
+Validates and returns and/or sets the column valued to an email
+address. If the email is valid, then the column is set to the value,
+otherwise it is set to undef.
+
+If only the column value is passed and not the column name, then
+nothing is set, the email address is just returned to the caller if valid.
+
+Example:
+
+  <null $customer.set_phone_number('work_phone', $input.work_phone)>
+  <var $customer.set_phone_number($input.work_phone)>
+
+=cut
+
+sub set_email_field {
+  my $self = shift;
+  my $key;
+  my $value;
+
+  if ( @_ == 2) {
+    ($key, $value) = @_;
+  } else {
+    $value = $_[0];
+  }
+
+  if ( $value ) {
+    $value = $self->validate_email( $value ) ? $value : undef;
+  }
+
+  $self->{$key} = $value if @_ == 2;
+
+  return $value;
+}
+
+
+=pod
+
+=head2 validate_email
+
+ validate_email( email )
+
+Returns true or false depending on validity of email address.  This
+doesn't mean this address is associated with a real email account,
+just that it might. ;-)
+
+=cut
+
+sub validate_email {
+  my $self = shift;
+  my $email = shift;
+
+  return $email =~/^([0-9a-zA-Z]([-.\w]*[0-9a-zA-Z])*@([0-9a-zA-Z][-\w]*[0-9a-zA-Z]\.)+[a-zA-Z]{2,9})$/;
+}
 
 =head1 CAVEATS
 
@@ -2001,6 +2131,17 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.12  2011/11/21 14:08:10  eutl420
+# - incrementally improving pod
+# - in the _find() method we now eval the call to SelectList so that we can display the query in the error, also
+#   return an empty array when no rows are found
+# - in the one argument form of find(), check to make sure the argument is a valid id (i.e. int > 0)
+# - the set_phone_field() method did not actually set the field as advertised
+# - new methods:
+#   + get_enum_values() which returns an array of possible values for an field type of `enum'
+#   + set_email_field() which validates and sets an email field
+#   + validate_emai() uses a regexp to validate a supposed email address
+#
 # Revision 1.11  2011/11/16 14:37:50  eutl420
 # pod
 #
