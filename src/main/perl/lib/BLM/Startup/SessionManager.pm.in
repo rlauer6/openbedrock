@@ -73,7 +73,7 @@ useful, you more or less need to do something and return something.
 Only death and taxes are actually required. 
 
 All of the methods take a hash as an argument.  The hash members
-passed are described in general and each method's documentation will
+passed are described in general and each methodE<039>s documentation will
 then indicate which of these is passed to you for this call.
 
 Your implementation may or may not require these arguments to
@@ -81,11 +81,11 @@ implement the functionality you are providing.
 
 =head2 Writing Your Implementation
 
-The purpose of your implementation is to store a user's data to a
+The purpose of your implementation is to store a userE<039>s data to a
 permanent data store.  Permanence is defined based on the type of
 session that is being created by the calls to your handlers.  Login
-sessions should save a user's data for access any time the user I<logs
-in> using the session object's C<login()> method.
+sessions should save a userE<039>s data for access any time the user I<logs
+in> using the session objectE<039>s C<login()> method.
 
 Anonymous sessions on the other hand tend to expire based on some
 setting in your configuration file.  That expiration is translated
@@ -113,7 +113,7 @@ Typically this means a database table and a unique key.
 Requests to store and retrieve session data will occur across
 different client requests implying a different Apache process will
 service different requests.  That means you must have a way to persist
-the data across these requests, i.e. you can't simply store things in
+the data across these requests, i.e. you canE<039>t simply store things in
 a hash for the current request for example.
 
 Sessions are generally not meant to last forever and are not usually
@@ -122,12 +122,12 @@ large. Your application needs will dictate much of that.
 If you decide to implement sessions using a database table, the
 reference implemenation documented in C<BLM::Startup::MySQLSession>
 should give you some clues as to what a table might look like and one
-way to provide persistence.  It's not the only way, and probably not
+way to provide persistence.  ItE<039>s not the only way, and probably not
 the most efficient way one could construct.  Again, YMMV.
 
 =head3 Storing and Retrieving the Session Data
 
-You'll be implementing a set of methods for storing and retrieving
+YouE<039>ll be implementing a set of methods for storing and retrieving
 session data.
 
   ->FETCH_SESSION( )
@@ -140,7 +140,7 @@ hash object that minimally contains a member named C<prefs>.  The
 C<prefs> object is a text blob that was sent to you to save via one of
 the C<STORE_*> methods.
 
-Technically speaking you don't need to know too much more than that,
+Technically speaking you donE<039>t need to know too much more than that,
 however the object that you stored is a Bedrock XML object.  It will
 be converted to its internal representation (a hash reference) by the
 calling functions and eventually will be accessible to the Bedrock
@@ -164,7 +164,7 @@ method being invoked.
 =item config
 
 This is a hash reference to the configuration information you defined
-in your F<tagx.xml> entry for this Application Plugin. Here's what he
+in your F<tagx.xml> entry for this Application Plugin. HereE<039>s what he
 configuration object looks like for the reference implementation.
 
       <object name="config">
@@ -178,7 +178,7 @@ configuration object looks like for the reference implementation.
         <scalar name="password">flintstone</scalar>
         <scalar name="table_name">session</scalar>
         <scalar name="purge_user_after">30</scalar>
-        <scalar name="cookieless_sessions></scalar>
+        <scalar name="cookieless_sessions"></scalar>
 
         <object name="cookie">
           <scalar name="path">/</scalar>
@@ -208,7 +208,7 @@ elements at a minimum to provide for cookie based sessions.
 =item data
 
 A reference to a hash that possibly contains various members including
-C<prefs> which is a text represenation of the user's session data.
+C<prefs> which is a text represenation of the userE<039>s session data.
 You should save that data so you can return it via one of the
 C<FETCH_*> methods for the given session or login identifier.
 
@@ -813,6 +813,7 @@ sub logout {
   }
 }
 
+
 sub change_passwd {
   my $obj  = shift;
   my $self = tied( %{$obj} );
@@ -831,7 +832,8 @@ sub change_passwd {
 
   $self->UPDATE_LOGIN_PASSWORD( table    => $config->{table_name},
                                 username => $username,
-                                password => [ $npasswd, $opasswd ]
+                                password => [ $npasswd, $opasswd ],
+				session  => $self->{session}
                               );
 }
 
@@ -877,6 +879,74 @@ sub encrypt {
 
   return crypt( $_[0], $_[1] );
 }
+
+sub create_temp_login_session {
+  my $obj = shift;
+  my $self = tied( %{$obj} );
+
+  my $username = shift;
+  my $minutes = shift;
+
+  my ($verbose) = @{$self}{qw(verbose)};
+  &log_message( undef, "Attempting to create temporary log-ing session for user: $username" )
+    if $verbose;
+
+  # Create a new session id for the user
+  my $session = $self->newSessionID;
+
+  # Delete the `new_session' flag
+  delete $self->{'new_session'};
+
+  my $default_expiry = $self->{config}->{cookie}->{expiry_secs};
+  $self->{config}->{cookie}->{expiry_secs} = $minutes || 900;
+
+  $self->UPDATE_LOGIN_SESSION(
+			      config   => $self->{config},
+			      username => $username,
+			      login_id => $session
+			     );
+
+  my $data = $self->FETCH_LOGIN_SESSION(
+					config   => $self->{config},
+					login_id => $session
+
+				       );
+
+  $self->init_session( $data );
+
+#  $self->{data} = {};
+#  $self->{data}->{'username'}  = $data->[0];
+#  $self->{data}->{'firstname'} = $data->[1];
+#  $self->{data}->{'lastname'}  = $data->[2];
+#  $self->{data}->{'email'}     = $data->[3];
+#  $self->{data}->{'prefs'}     = $data->[4];
+#  $self->{data}->{'prefs'}     = $data->[4] ? Bedrock::XML->newFromString( $data->[4] ) : undef;
+
+  $self->STORE_LOGIN_SESSION(
+			     session  => $session,
+			     expires  => $minutes,
+			     data     => $data,
+			     username => $username,
+			     config   => $self->{config},
+			    );
+
+  $self->UPDATE_LOGIN_SESSION(
+			      config   => $self->{config},
+			      username => $username,
+			      login_id => undef
+			     );
+
+  $obj->closeBLM;
+
+  # new sesion
+  $self->startSession($self->{config});
+  $self->newSession;
+  $self->{'data'}->{'prefs'}->{expiry_secs} = $default_expiry;
+
+  $session;
+}
+
+
 
 sub create_session_dir {
   my $obj     = shift;
@@ -976,6 +1046,9 @@ sub cookieless_session {
 
   my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
 
+  # don't allow someone to access a stale session
+  $self->SESSION_CLEANUP( config => $self->{config} );
+
   my $id = shift;
   $self->{'new_session'} = 0 if $id;
   $self->{'session'} = $id || $self->{'session'};
@@ -983,7 +1056,8 @@ sub cookieless_session {
 
   $config->{'cookieless_sessions'} = 1;
 
-# kill the cookie if cookies are enabled, since on instantiation, UserSession ($session) will create a cookie
+# kill the cookie if cookies are enabled, since on instantiation,
+# UserSession ($session) will create a cookie
   $self->cookie( $self->{'name'},
                  'value'   => 'killed',
                  'expires' => -864000
@@ -1425,6 +1499,12 @@ sub closeBLM {
 1;
 
 # $Log$
+# Revision 1.10  2011/11/23 19:24:15  eutl420
+# - the change_passwd method was not sending 'session' to the UPDATE_LOGIN_PASSWORD() method
+# - create_temp_login_session() is a new method that creates a temporary session for a user
+#   so they can change their password
+# - before using a cookieless_session() we want to make sure that expired sessions are cleaned up
+#
 # Revision 1.9  2011/09/15 16:05:32  eutl420
 # - perl tidy
 #
