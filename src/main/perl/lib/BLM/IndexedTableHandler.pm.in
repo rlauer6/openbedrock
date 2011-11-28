@@ -575,7 +575,15 @@ sub new {
     bless $self, $class;
     $self->{dbi} = $self->{db} = $dbi;
 
-    if ($id) {
+    my $dir = $self->{_table_dir};
+
+    foreach ( @{$self->{_field_list}} ) {
+      if ( $dir->{$_}->{Type} eq 'timestamp') {
+	$self->set_display_only( $_ );
+      }
+    }
+
+    if ( $id ) {
       my $ref = $self->Select("select * from $table_name where id = ?", $id);
       foreach (keys %$ref) {
 	$self->set($_, $ref->{$_});
@@ -698,7 +706,7 @@ sub _set {
 	    my @date = split "/", $value;
 	    $date[2] += 2000 if $date[2] < 20;
 	    $date[2] += 1900 if $date[2] > 20;
-	    $value = sprintf("%04d-%02d-%02d", $date[(2, 0, 1)]);
+	    $value = sprintf("%04d-%02d-%02d", @date[(2, 0, 1)]);
 	}
 	$self->{$key} = $value;
     }
@@ -801,24 +809,76 @@ corresponding C<id> will be updated.
 sub save {
   my $self = shift;
 
-  if ($self->{id}) {
+  if ( $self->{id} ) {
     $self->_update;
   }
   else {
     $self->_insert;
   }
+
+  my $table_name = $self->{_table};
+  my $ref = $self->Select("select * from $table_name where id = ?", $self->{id});
+
+  foreach (keys %$ref) {
+    $self->set($_, $ref->{$_});
+  }
 }
 
-sub _format_fields_for_insert {
+
+=pod
+
+=head set_field
+
+ set_field( field-name, value )
+
+Formats a field before storing it to the database.  This method is
+only called if I<format mode> is selected for the given field.
+
+ <null $customer.set_format_mode('date_entered', 1)>
+
+ <null $customer.save()>
+
+C<BLM::IndexedTableHandler> has built-in formatters for field whose
+names contain the words date, time or phone and whose types are
+date/datetime, timestamp, char or varchar.
+
+If the field type is B<date>, B<datetime>, B<timestamp> and the column
+name contains the words date or time, AND format mode is selected,
+then the field is formatted appropriately before being inserted into
+the database.
+
+If the field type is B<char> or B<varchar> and the column name
+contains the word B<phone> the field is formatted as a phone number
+(Either xxx-yyyy or (zzz) xxx-yyyy).
+
+If you don't like this behavior or wish to apply other transformations
+of the data prior to the data being written to the database, you can
+override this method.
+
+=cut
+
+
+sub set_field {
   my $self = shift;
+  my ($field, $value) = @_;
 
-  my $dir = $self->{_table_dir};
+  return if $self->get_display_only( $field );
 
-  foreach my $field (@{$self->{_field_list}}) {
-    
-    if ($dir->{$field}->{Type} =~/(timestamp|date)/) {
-      next if $self->{$field} =~/^\s*$/;
+  my $type = $self->get_field_type( $field );
+  $value =~s/^\s*(.*?)\s*/$1/;
 
+  for ( $field ) {
+
+    /phone/ && $type=~/char/ && do {
+      
+      if ( $value ) {
+	$self->{$field} = $self->set_phone_field( $self->{$field} );
+	die "invalid phone format: $value\n"
+	  unless $self->{$field};
+      }
+      last;
+    };
+      
 # rules of engagement:
 # - if the date is of the form mm/dd/yy[yy] then we 
 #   we need to reformat the field to yyyy-mm-dd in order
@@ -834,10 +894,13 @@ sub _format_fields_for_insert {
 # - if the field is null, let it be
 # - if the field is not of a recognized format, let it be
 
+
+    /(date|time)/ && $type =~/(date|datetime|timestamp)/ && do {
+
       my $date;
       my ($mm, $dd, $year);
       
-      if ($self->{$field} =~/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/ ) {
+      if ($value =~/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/ ) {
 	($mm, $dd, $year) = ($1,$2,$3);
 	if ($year < 20) {
 	  $year += 2000;
@@ -847,15 +910,15 @@ sub _format_fields_for_insert {
 	}
 	$date = sprintf("%04d-%02d-%02d", $year, $1, $2);
       }
-      elsif ($self->{$field} =~/^\s*(\d{4}-\d{2}-\d{2})/) {
+      elsif ($value =~/^\s*(\d{4}-\d{2}-\d{2})/) {
 	$date = $1;
       }
       else {
-	$date = $self->{$field};
+	$date = $value;
       }
 
-      if ($dir->{$field}->{Type} =~/(timestamp|datetime)/) {
-	if ($self->{$field} =~/(\d{1,2}):(\d{1,2})(:\d{1,2})*\s*(AM|PM)*$/i) {
+      if ( $type =~/(timestamp|datetime)/) {
+	if ($value =~/(\d{1,2}):(\d{1,2})(:\d{1,2})*\s*(AM|PM)*$/i) {
 	  my ($hh, $mi, $sec, $ampm) = ($1, $2, $3, $4);
 	  $sec =~s/://;
 
@@ -873,6 +936,22 @@ sub _format_fields_for_insert {
       }
 
       $self->{$field} = $date;
+      last;
+    };
+    
+    $self->{$field} = $value;
+  }
+}
+
+
+sub _format_fields_for_insert {
+  my $self = shift;
+
+  my $dir = $self->{_table_dir};
+
+  foreach my $field (@{$self->{_field_list}}) {
+    if ( $self->get_format_mode( $field ) ) {
+      $self->set_field( $field, $self->{$field} );
     }
   }
 }
@@ -1268,6 +1347,35 @@ sub asref {
 }
 
 
+sub get_formatted_field_length {
+  my $self = shift;
+  my $field = shift;
+
+  my $type = $self->get_field_type( $field );
+
+  for ( $field ) {
+    /phone/ && $type =~/char/ && do {
+      return 14;
+    };
+
+    /(date|time)/ && $type =~/time/ && do {
+      return 20;
+    };
+
+    /date/ && $type =~/date/ && do {
+      return 10;
+    };
+
+    $type =~/\((\d+)\,?.*\)/ && return $1;
+
+    $type eq 'boolean' && return 1;
+  }
+
+  return undef;
+}
+
+
+
 =pod 
 
 =head2 get_field_length
@@ -1281,14 +1389,35 @@ Returns the length of a field.
 sub get_field_length {
   my ($self, $field_name) = @_;
   
-  my $type = $self->{_table_dir}->{$field_name}->{Type};
-  
-  if ($type =~/\((\d+)\,?.*\)/) {
+  my $type = $self->get_field_type( $field_name );
+
+  if ( $self->get_format_mode( $field_name ) ) {
+    return $self->get_formatted_field_length( $field_name );
+  }
+  elsif ($type =~/\((\d+)\,?.*\)/) {
     return $1;
   }
-  else {
-    return undef;
+  elsif ( $type eq 'date' ) {
+    return 10;
   }
+  elsif ( $type eq 'datetime' ) {
+    return 20;  # 12/45/78 01:34:67 90
+  }
+  elsif ( $type eq 'timestamp' ) {
+    return 20;
+  }
+  elsif ( $type eq 'boolean' ) {
+    return 1;
+  }
+
+  return undef;
+}
+
+sub get_field_type {
+  my $self = shift;
+  my $field_name = shift;
+
+  return $self->{_table_dir}->{$field_name}->{Type};
 }
 
 sub _get_options {
@@ -1372,18 +1501,46 @@ sub get_enum_values {
 sub create_date_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
 
+  my $length = $self->get_field_length( $field_name );
+  
+  my $value = $self->get_formatted_field( $field_name );
+  my $size = length($value) > $length ? length($value) : $length;
+
+  my $disabled = $self->get_display_only( $field_name );
+  
   return create_html_element('input', 
-			     (type=>'text', name=>$field_name, value=>$self->get($field_name), maxlength=>10, size=>10), 
-				%{$attributes->{input}});
+			     (
+			      type      => 'text', 
+			      name      => $field_name, 
+			      value     => $value,
+                              maxlength => $size,
+			      size      => $size
+			     ), 
+			     $disabled ? (disabled => undef) : (),
+			     %{$attributes->{input}});
   
 }
 
 sub create_char_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+  my $value = $self->get_formatted_field( $field_name );
+
   my $length = $self->get_field_length($field_name);
-  
+
+  my $size = ( $length < length($value) ) ? length($value) : $length;
+
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element('input', 
-			     (type=>'text', name=>$_, value=>$self->{$_}, maxlength=>$length, size=>$length), 
+			     (
+			      type      => 'text', 
+			      name      => $_, 
+			      value     => $value, 
+			      maxlength => $size,
+			      size      => $size
+			     ), 
+			     $disabled ? (disabled => undef) : (),
 			     %{$attributes->{input}})
 }
 
@@ -1399,26 +1556,75 @@ sub create_select_field {
       $value = $self->{$field_name};
     }
     
+  $attributes->{disabled} = undef
+    if $self->get_display_only( $field_name );
+
     return create_select_list($field_name, $value, $attributes, $options->{list});
   }
 
 sub create_radio_field {
   my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
-  
+
+  $attributes->{disabled} = undef
+    if $self->get_display_only( $field_name );
+
   return create_radio_buttons($field_name, $self->{$field_name}, $attributes, $options->{list});
+}
+
+sub get_formatted_field {
+  my $self = shift;
+  my $field_name = shift;
+
+  my $value = $self->get( $field_name );
+
+  if ( $self->get_format_mode( $field_name ) ) {
+    $value = $self->format_field( $field_name, $value );
+  }
+
+  return $value;
+}
+
+sub format_field {
+  my $self = shift;
+  my ($field_name, $value) = @_;
+
+  my $type = $self->get_field_type ( $field_name );
+  
+  for ( $field_name ) {
+    /date/ && $type =~/date/ && do {
+      $value = $self->get_date_field( $field_name );
+      last;
+    };
+    
+    /phone/ && $type =~/char/ && do {
+      $value = $self->get_phone_field( $field_name );
+      last;
+    };
+  }
+
+  return $value;
 }
 
 sub create_varchar_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
   
+  my $value = $self->get_formatted_field( $field_name );
+
   my $length = $self->get_field_length($field_name);
-  my $size = $length;
-  if ($length > 32) {
-    $size = 32;
-  }
-  
+
+  my $size = ( $length < length($value) ) ? length($value) : $length;
+ 
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element('input', 
-			     (type=>'text', name=> $field_name, value=>$self->get($field_name), maxlength=>$length, size=>$size), 
+			     (
+			      type      =>'text', 
+			      name      => $field_name, 
+                              value     => $value,
+                              maxlength => $length,
+			      size      => $size
+			     ),
+			     $disabled ? (disabled => undef) : (),
 			     $attributes ? %{$attributes->{input}} : ());
 }
 
@@ -1428,12 +1634,18 @@ sub create_tinyint_field {
   
   return $self->create_checkbox_field($field_name, $attributes, $labels, $lists);
   
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element('input', 
-			     (type=>"checkbox", name=>$field_name, value=> 1), 
+			     (
+			      type  =>"checkbox", 
+			      name  =>$field_name, 
+			      value => 1
+			     ), 
+			     $disabled ? (disabled => undef) : (),
 			     $attributes ? %{$attributes->{input}} : (), 
 			     $self->{$field_name} ? ("checked" => undef) : ());
 }
-
 
 sub create_checkbox_field {
   my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
@@ -1471,22 +1683,44 @@ sub create_checkbox_field {
 sub create_int_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
   
+  my $size = $self->get_field_length($field_name);
+  
+  my $value = $self->get_formatted_field( $field_name );
+  $size = ( $size > length($value) )  ? $size : length($value);
+
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element('input', 
-			     (type=>'text', name=>$field_name, value=>$self->{$field_name}, maxlength=>5, size=>5), 
+			     (
+			      type      => 'text', 
+			      name      => $field_name, 
+			      value     => $value,
+			      maxlength => $size,
+			      size      => $size
+			     ), 
+			     $disabled ? (disabled => undef) : (),
 			     $attributes ? %{$attributes->{input}} : ());
 }
 
 sub create_timestamp_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
+
+  my $size = $self->get_field_length($field_name);
   
+  my $value = $self->get_formatted_field( $field_name );
+  $size = length($value) || $size;
+
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element( 'input', 
 			      (
-			       type  => 'text', 
-			       name  => $field_name, 
-			       value => $self->{$field_name}, 
-			       maxlength =>10, 
-			       size => 10
-			      ), 
+			       type      => 'text', 
+			       name      => $field_name, 
+			       value     => $value,
+			       maxlength => $size,
+			       size      => $size,
+			      ),
+			      $disabled ? (disabled => undef) : (),
 			      $attributes ? %{$attributes->{input}} : ()
 			    );
 }
@@ -1494,14 +1728,22 @@ sub create_timestamp_field {
 sub create_decimal_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
   
+  my $size = $self->get_field_length($field_name);
+  
+  my $value = $self->get_formatted_field( $field_name );
+  $size = ($size > length($value)) ? $size : length($value);
+
+  my $disabled = $self->get_display_only( $field_name );
+
   return create_html_element( 'input', 
 			      (
-			       type  =>'text', 
-			       name  => $field_name, 
-                               value => $self->{$field_name}, 
-			       maxlength => 10, 
-			       size => 10
+			       type      =>'text', 
+			       name      => $field_name, 
+                               value     => $self->{$field_name}, 
+			       maxlength => $size,
+			       size      => $size
 			      ), 
+			      $disabled ? (disabled => undef) : (),
 			      $attributes ? %{$attributes->{input}} : ()
 			    );
 }
@@ -1509,6 +1751,7 @@ sub create_decimal_field {
 sub create_text_field {
   my ($self, $field_name, $attributes, $labels, $lists) = @_;
   
+  my $disabled = $self->get_display_only( $field_name );
   return sprintf("%s%s</textarea>", 
 		 create_html_element( 'textarea', 
 				      (
@@ -1516,6 +1759,7 @@ sub create_text_field {
 				       rows => 5, 
 				       cols => 40
 				      ), 
+				      $disabled ? (disabled => undef) : (),
 				      $attributes ? %{$attributes->{textarea}} : ()),
 		 $self->{$_}
 		);
@@ -1557,7 +1801,8 @@ submit the form and set the C<action> hidden element.
 sub html_form_footer {
   my $self = shift;
   my $attributes = shift || $self->{_attributes} || {};
-  
+  my %hidden = @_;
+
   my @html;
   my $form_name = $self->{_table};
   
@@ -1589,6 +1834,22 @@ sub html_form_footer {
   push @html, create_html_element('input', (type => "hidden", name=>"action", value=>""));
   push @html, create_html_element('input', (type => "hidden", name=>"table", value=>$self->{_table}));
   
+  # additional hidden input elements you might want to carry along
+  foreach (keys %hidden) {
+    push @html, create_html_element('input', (type  => "hidden", 
+					      name  => $_, 
+					      value => $hidden{$_}
+					     )
+				   );
+      
+  }
+
+  # add the format mode for these fields
+  foreach (@{$self->{_field_list}}) {
+    push @html, create_html_element('input', (type => "hidden", name=>"format_mode", value=> "$_"))
+      if $self->get_format_mode( $_ );
+  }
+
   return sprintf("%s\n%s\n", join("&nbsp;\n", @html), "</form>\n");
 }
 
@@ -1799,14 +2060,21 @@ a table handler object.
 
 =cut
 
+
 sub handler {
   my $self = shift;
   my $input = shift;
 
+  if ( $input->{format_mode} ) {
+    my @mode = ref($input->{format_mode}) ? @{$input->{format_mode}} : ($input->{format_mode});
+    foreach ( @mode ) {
+      $self->set_format_mode($_, 1);
+    }
+  }
+
   if ($input->{action} eq 'save') {
     $self->set($input);
     $self->save();
-
     return $self;
   } elsif ($input->{action} eq 'delete') {
     $self->delete();
@@ -1829,7 +2097,125 @@ sub handler {
   }
 }
 
+=pod
+
+=head2 get_display_only
+
+ get_display_only( field-name )
+
+Returns true or false depending on whether the field is set to be a
+display-only field
+
+=cut
+
+sub get_display_only {
+  my $self = shift;
+  my $field_name = shift;
+
+  $self->{_display_only} = {} unless $self->{_display_only};
+  return $self->{_display_only}->{$field_name};
+}
+
+
+=pod
+
+=head2 set_display_only
+
+ set_display_only( field-name )
+
+Set the field to be display only.  This prevents user input to this field.
+
+=cut
+
+sub set_display_only {
+  my $self = shift;
+  my $field_name = shift;
+
+  $self->{_display_only} = {} unless $self->{_display_only};
+  $self->{_display_only}->{$field_name} = 1;
+}
+
+
 # - Some default pseudo field type handlers
+
+=pod
+
+=head2 get_format_mode( field-name )
+
+Returns a boolean value that determines if a field should be formatted
+when it is show in a form field.
+
+=cut
+
+sub get_format_mode {
+  my $self = shift;
+  my $key = shift;
+
+  $self->{_format_mode} = {} unless $self->{_format_mode};
+
+  return $self->{_format_mode}->{$key};
+}
+
+
+=pod 
+
+=head2 set_format_mode
+
+ set_format_mode( field-name, mode )
+
+Indicate that a field should be formatted when the value is shown in a
+form field.  Before the fieldE<039>s value is output, it is passed to
+the C<format_field()> method if the format mode for the field
+is set to 1.  The method is responsible for returning a formatted
+version of the field.
+
+  <null $customer.set_format_mode('date_inserted', 1)>
+
+C<BLM::IndexedTableHandler> provides formatting for C<date>,
+C<datetime>, C<timestamp>, char and varchar fields whose name is has
+either the word "phone" or "date" in them.
+
+If you don't want any default behavior or you want some other behaivor
+you might consider overriding the C<format_field()> method.
+
+  package BLM::Customer;
+  
+  use BLM::IndexedTableHandler;
+  use Bedrock::Plugin;
+  
+  use strict;
+  use vars qw(@ISA);
+  
+  @ISA = qw( BLM::IndexedTableHandler Bedrock::Plugin);
+  
+  sub format_field {
+    my $self = shift;
+    my ($field, $value) = @_;
+  
+    for ( $field ) {
+      /(firstname|lastname)/ && do {
+        $value = ucfirst(lc($value));
+        return $value;
+      };
+  
+    }
+  
+    return $self->SUPER::format_field($field, $value);
+  }
+  
+  1;
+
+=cut
+
+sub set_format_mode {
+  my $self = shift;
+  my ($key, $mode) = @_;
+
+  $self->{_format_mode} = {} unless $self->{_format_mode};
+  $self->{_format_mode}->{$key} = $mode;
+}
+
+
 
 # +---------------+
 # | PHONE NUMBERS |
@@ -1842,7 +2228,7 @@ sub handler {
   set_phone_field(field, value)
 
 Removes extraneous data from a phone number field and returns and/or
-sets the column valued to just the digits of the phone number.  If the
+sets the column value to just the digits of the phone number.  If the
 resulting length of the object is 10 or 7 then the column is set to
 just the digits, otherwise it is set to undef.
 
@@ -2010,7 +2396,8 @@ sub curtime {
 
  get_date_field( field-name )
 
-Returns a MM/DD/YYYY formatted date from a MySQL YYYY-MM-DD date.
+Returns a MM/DD/YYYY or MM/DD/YYYYY HH:MI:SS formatted date or
+datetime value from a MySQL YYYY-MM-DD date.
 
 Example:
 
@@ -2021,11 +2408,16 @@ Example:
 sub get_date_field {
   my ($self, $key) = @_;
 
-  return undef unless $self->{$key};
+  return undef unless $self->{$key} && $self->{$key} !~/0000\-00\-00/;
 
   my @date = split("-", $self->{$key});
 
-  return sprintf("%02d/%02d/%04d", @date[(1,2,0)]);
+  $date[3] = $1 if $date[2] =~/\d{2} (\d{2}:\d{2}:\d{2})/;
+
+  my $fmt_date = sprintf("%02d/%02d/%04d", @date[(1,2,0)]);
+  $fmt_date .= ' ' . $date[3] if $date[3] && $date[2] !~/00:00:00/;
+
+  return $fmt_date;
 }
 
 =pod
@@ -2076,7 +2468,7 @@ sub set_email_field {
  validate_email( email )
 
 Returns true or false depending on validity of email address.  This
-doesn't mean this address is associated with a real email account,
+doesnE<039>t mean this address is associated with a real email account,
 just that it might. ;-)
 
 =cut
@@ -2131,6 +2523,11 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.13  2011/11/28 21:20:51  eutl420
+# - added the ability to carry along extra fields by passing them to html_form_footer()
+# - ability to set "display only" fields via set_display_only() method
+# - ability to set formatting on/off for fields via set_format_mode() method
+#
 # Revision 1.12  2011/11/21 14:08:10  eutl420
 # - incrementally improving pod
 # - in the _find() method we now eval the call to SelectList so that we can display the query in the error, also
