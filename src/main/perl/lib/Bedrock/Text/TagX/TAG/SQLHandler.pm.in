@@ -1,0 +1,112 @@
+package TagX::TAG::SQLHandler;
+
+use strict;
+
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+  @ISA = qw (Exporter);
+}
+
+use DBI;
+
+use TagX::Log;
+use Data::Dumper;
+
+sub ANONYMOUS {
+  '*anonymous*';
+}
+
+sub get_list_options {
+  my $self = shift;
+  my $option;
+
+  my @list;
+
+  if ( defined $option ) {
+    if ( UNIVERSAL::isa($option, 'ARRAY') ) {
+      push @list, @{$option};
+    }
+    else {
+      push @list, $option;
+    }
+  }
+  
+  return @list;
+}
+
+sub get_db_handle {
+  my $self = shift;
+  my $tx = shift;
+
+  my %options = @_;
+
+  my $verbose = $self->verbose;
+
+  my $name = $options{'dbname'};
+  &log_message( $self,
+                "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
+    if $name && $verbose;
+
+  my $dbh;
+  if ( $options{'db'} ) {
+    $dbh = $options{'db'};
+  } elsif ($name) {
+    $dbh = $tx->{'DB'}->{$name};
+    die "Unknown database connection named `$name'.\n" unless $dbh;
+  } else {
+    $dbh = $tx->{'DB'}->{&ANONYMOUS};
+  }
+
+  unless ( defined($dbh) and ref($dbh) ) {
+    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+    my $dsn;
+    if ( length( $ENV{'DBI_DSN'} ) ) {
+      $dsn = $ENV{'DBI_DSN'};
+      $options{username} = $options{username} || $ENV{DBI_USER};
+      $options{password} = $options{password} || $ENV{DBI_PASS};
+    } elsif ( $config->{DBI_DSN} ) {
+      &log_message( $self, "DSN will be taken from configuration..." )
+	if $verbose;
+      $dsn = $config->{DBI_DSN};
+      $options{username} = $options{username} || $config->{DBI_USER};
+      $options{password} = $options{password} || $config->{DBI_PASS};
+      &log_message( $self,
+                    "DSN: $dsn username: "
+                    . $options{username}
+                    . " password: "
+                    . $options{password}
+                  ) if $verbose;
+    } else {
+      die "No database connection to execute SQL statement."
+	. Dumper( [$config] ) . "\n"
+	  if $verbose;
+      die "No database connection to execute SQL statement.\n";
+    }
+
+    my $name = &ANONYMOUS;
+
+    $dbh = DBI->connect( $dsn,
+                         @options{qw(username password)},
+                         { 'AutoCommit' => 1,
+                           'PrintError' => 1,
+                           'RaiseError' => 1,
+                           'ChopBlanks' => 1
+                         }
+                       );
+    die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+
+    &log_message( $self, "Connected to database, handle = <$dbh>\n" )
+      if $verbose;
+
+    $tx->{'DB'}->{$name} = $dbh;
+  }
+
+  &log_message( $self, "Using database handle ($dbh)" )
+    if $verbose;
+
+  return $dbh;
+}
+
+1;
