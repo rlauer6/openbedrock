@@ -39,14 +39,11 @@ use DBI;
 use TagX::Log;
 use Bedrock::Hash;
 use TagX::TAG::WithBody::Loop;
+use TagX::TAG::SQLHandler;
 
 use Bedrock::Array;
 
-@ISA = qw (TagX::TAG::WithBody::Loop);
-
-sub ANONYMOUS {
-  '*anonymous*';
-}
+@ISA = qw (TagX::TAG::WithBody::Loop TagX::TAG::SQLHandler);
 
 sub closure {
   '/sqlselect';
@@ -65,6 +62,7 @@ sub finalize {
                   'raise=s'      => undef,
                   'meta-info=s'  => undef
                 );
+
   my @argv = $self->parse_options( \%options, @context );
   my $verbose = $self->verbose;
 
@@ -77,68 +75,7 @@ sub finalize {
     shift @argv;
   }
 
-  my $name = $options{'dbname'};
-  &log_message( undef,
-                "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
-  if $name;
-
-  my $dbh;
-  if ( $options{'db'} ) {
-    $dbh = $options{'db'};
-  }
-  elsif ($name) {
-    $dbh = $tx->{'DB'}->{$name};
-    die "Unknown database connection named `$name'.\n" unless $dbh;
-  }
-  else {
-    $dbh = $tx->{'DB'}->{&ANONYMOUS};
-  }
-
-  unless ( defined($dbh) and ref($dbh) ) {
-    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-    my $dsn;
-    if ( length( $ENV{'DBI_DSN'} ) ) {
-      $dsn = $ENV{'DBI_DSN'};
-      $options{username} = $options{username} || $ENV{DBI_USER};
-      $options{password} = $options{password} || $ENV{DBI_PASS};
-    }
-    elsif ( $config->{DBI_DSN} ) {
-      &log_message( $self, "DSN will be taken from configuration..." )
-      if $verbose;
-      $dsn = $config->{DBI_DSN};
-      $options{username} = $options{username} || $config->{DBI_USER};
-      $options{password} = $options{password} || $config->{DBI_PASS};
-      &log_message( $self,
-                    "DSN: $dsn username: "
-                    . $options{username}
-                    . " password: "
-                    . $options{password}
-                  ) if $verbose;
-    }
-    else {
-      die "No database connection to execute SQL statement.\n";
-    }
-
-    my $name = &ANONYMOUS;
-
-    $dbh = DBI->connect( $dsn,
-                         @options{qw(username password)},
-                         { 'AutoCommit' => 1,
-                           'PrintError' => 1,
-                           'RaiseError' => 1,
-                           'ChopBlanks' => 1
-                         }
-                       );
-    die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
-
-    &log_message( $self, "Connected to database, handle = <$dbh>\n" )
-    if $verbose;
-
-    $tx->{'DB'}->{$name} = $dbh;
-  }
-
-  &log_message( $self, "Using database handle ($dbh)" )
-  if $verbose;
+  my $dbh = $self->get_db_handle( $tx, %options );
 
   die "Specify SQL statement using --statement or as argument, not both.\n"
   if exists $options{'statement'} and @argv > 0;
@@ -492,6 +429,9 @@ C<E<lt>sqlE<gt>>, C<E<lt>sqlconnectE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.33  2011/12/01 17:12:37  eutl420
+# - use methods from Text::TagX::TAG::SQLHandler, get_db_handle(), etc
+#
 # Revision 1.32  2011/09/15 14:53:19  eutl420
 # - perltidy
 # - expose rownum, $_ inside <sqlselect> scope
