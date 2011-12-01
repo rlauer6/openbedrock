@@ -404,7 +404,6 @@ table to something like the Bedrock snippet below:
   </if>
  </if>
 
-
  <var $foo.html_form_header()>
  <var $foo.html_form_body()>
  <var $foo.html_form_footer()>
@@ -513,7 +512,9 @@ sub new {
 
     $table_name = $table_name || lc($2) or die "Unable to determine table name.";
 
-    $self->{config} = $config;
+    bless $self, $class;
+
+    $self->{_config} = $config;
 
 # - avoid redundant creation of data structure for each row in a list
 #   i.e. if this object is being constructed thusly:
@@ -548,21 +549,21 @@ sub new {
       $self->{_table_dir} = $fields;
       $self->{_field_list} = [sort {$fields->{$a}->{idx} <=> $fields->{$b}->{idx}} keys %$fields];
 
-      if ($self->{config}->{tables}->{$table_name}->{labels}) {
-	$self->{_labels} = $self->{config}->{tables}->{$table_name}->{labels};
+      if ($self->config->{tables}->{$table_name}->{labels}) {
+	$self->{_labels} = $self->config->{tables}->{$table_name}->{labels};
       }
 
-      if ($self->{config}->{tables}->{$table_name}->{lists}) {
-	$self->{_lists} = $self->{config}->{tables}->{$table_name}->{lists};
+      if ($self->config->{tables}->{$table_name}->{lists}) {
+	$self->{_lists} = $self->config->{tables}->{$table_name}->{lists};
       }
 
-      if ($self->{config}->{tables}->{$table_name}->{attributes}) {
-	$self->{_attributes} = $self->{config}->{tables}->{$table_name}->{attributes};
+      if ($self->config->{tables}->{$table_name}->{attributes}) {
+	$self->{_attributes} = $self->config->{tables}->{$table_name}->{attributes};
       }
 
-      if ($self->{config}->{tables}->{$table_name}->{search_fields}) {
+      if ($self->config->{tables}->{$table_name}->{search_fields}) {
 	$self->{_search_fields} = [];
-	foreach (@{$self->{config}->{tables}->{$table_name}->{search_fields}}) {
+	foreach (@{$self->config->{tables}->{$table_name}->{search_fields}}) {
 	  push @{$self->{_search_fields}}, $_->{exact};
 	  push @{$self->{_search_fields}}, $_->{field};
 	}
@@ -573,13 +574,12 @@ sub new {
       foreach (@{$self->{_field_list}}) {
 	$self->{$_} = undef;
       }
-      die unless $self->{config};
+      die unless $self->config;
     }
 
     $self->{_table} = $table_name;
 
-    bless $self, $class;
-    $self->{dbi} = $self->{db} = $dbi;
+    $self->{_dbi} = $self->{_db} = $dbi;
 
     my $dir = $self->{_table_dir};
 
@@ -596,7 +596,8 @@ sub new {
       }
     }
 
-    $self->{max_rows} = 50;
+    $self->max_rows( 50 );
+
     $self;
 }
 
@@ -630,7 +631,7 @@ sub init_config {
     my $self = shift;
     my $table = $self->{_table};
 
-    my $config = $self->{config}->{tables} || {};
+    my $config = $self->config->{tables} || {};
 
     my $table_config = $config->{$table} || {};
     my %default = (set => '', get => '', attributes => {}, labels => '');
@@ -643,21 +644,30 @@ sub init_config {
 	$table_config->{$type} = $config;
     }
 
-    $self->{config}->{tables}->{$table} = $table_config;
+    $self->config->{tables}->{$table} = $table_config;
 
-    return $self->{config};
+    return $self->config;
 }
 
-=pod
 
-=head2 dbi
+sub max_rows {
+  my $self = shift;
+  my $max_rows = shift;
 
-Returns the handle the DBI object representing the open database connection.
+  return $self->{_max_rows} unless $max_rows;
 
-=cut
+  $self->{_max_rows} = $max_rows;
+}
 
-sub dbi {
-    return $_[0]->{dbi};
+sub keys {
+  $_[0]->fields();
+}
+
+
+
+
+sub config {
+  return $_[0]->{_config};
 }
 
 =pod
@@ -669,21 +679,21 @@ sub dbi {
 # - Default getter method checks to see whether there is method override specified
 #   in tagx.xml
 sub get {
-    my ($self, $key) = @_;
-    
-    my $getters = $self->{config}->{tables}->{$self->{_table}}->{get};
-
-    if (my $method = $getters->{$key}) {
-	if ($self->can($method)) {
-	    return $self->can($method)->($self, $key);
-	}
-	else {
-	    die "You've specified a field formatter, but there is no method \'$method\'";
-	}
+  my ($self, $key) = @_;
+  
+  my $getters = $self->config->{tables}->{$self->{_table}}->{get};
+  
+  if (my $method = $getters->{$key}) {
+    if ($self->can($method)) {
+      return $self->can($method)->($self, $key);
     }
     else {
-	return $self->{$key};
+      die "You've specified a field formatter, but there is no method \'$method\'";
     }
+  }
+  else {
+    return $self->{$key};
+  }
 }
 
 sub _set {
@@ -691,7 +701,7 @@ sub _set {
   my $key;
   my $value;
 
-  my $setters = $self->{config}->{tables}->{$self->{_table}}->{set};
+  my $setters = $self->config->{tables}->{$self->{_table}}->{set};
 
   my $dir = $self->{_table_dir};
 
@@ -701,34 +711,34 @@ sub _set {
 
     if (my $method = $setters->{$key}) {
 	if ($self->can($method)) {
-	    $self->{$key} = $self->can($method)->($self, $key, $value);
+	  $self->{$key} = $self->can($method)->($self, $key, $value);
 	}
 	else {
-	    die "You've specified a field formatter, but there is no method \'$method\'";
+	  die "You've specified a field formatter, but there is no method \'$method\'";
 	}
     }
     elsif ($dir->{$key}->{Type} eq 'date') {
-	if ($value =~/\d{1,2}\/\d{1,2}\/\d{4}/) {
-	    $value = sprintf("%04d-%02d-%02d", (split "/", $value)[2, 0, 1]);
-	}
-	elsif ($value =~/\d{1,2}\/\d{1,2}\/\d{2}/) {
-	    my @date = split "/", $value;
-	    $date[2] += 2000 if $date[2] < 20;
+      if ($value =~/\d{1,2}\/\d{1,2}\/\d{4}/) {
+	$value = sprintf("%04d-%02d-%02d", (split "/", $value)[2, 0, 1]);
+      }
+      elsif ($value =~/\d{1,2}\/\d{1,2}\/\d{2}/) {
+	my @date = split "/", $value;
+	$date[2] += 2000 if $date[2] < 20;
 	    $date[2] += 1900 if $date[2] > 20;
-	    $value = sprintf("%04d-%02d-%02d", @date[(2, 0, 1)]);
-	}
-	$self->{$key} = $value;
+	$value = sprintf("%04d-%02d-%02d", @date[(2, 0, 1)]);
+      }
+      $self->{$key} = $value;
     }
     elsif ($dir->{$key}->{Type} =~/set/) {
-	if (ref($value)) {
-	    $self->{$key} = join(",",@$value);
+      if (ref($value)) {
+	$self->{$key} = join(",",@$value);
 	}
-	else {
-	    $self->{$key} = $value;
-	}
+      else {
+	$self->{$key} = $value;
+      }
     }
     else {
-	$self->{$key} = $value;
+      $self->{$key} = $value;
     }
   }
 }
@@ -860,7 +870,7 @@ If the field type is B<char> or B<varchar> and the column name
 contains the word B<phone> the field is formatted as a phone number
 (Either xxx-yyyy or (zzz) xxx-yyyy).
 
-If you don't like this behavior or wish to apply other transformations
+If you donE<039>t like this behavior or wish to apply other transformations
 of the data prior to the data being written to the database, you can
 override this method.
 
@@ -981,7 +991,7 @@ sub _insert {
 
   $self->Do($query, @{$self}{@{$self->{_field_list}}});
 
-  $self->{id} = $self->{dbi}->{mysql_insertid};
+  $self->{id} = $self->dbi->{mysql_insertid};
 }
 
 sub _update {
@@ -1006,7 +1016,10 @@ sub _find {
   my $self = shift;
   
   my $sql = sprintf("select id from %s ", $self->{_table});
-  
+
+  my $limit = " limit " . $self->{_max_rows} 
+    if $self->{_max_rows};
+
   if (@_) {
     $sql .= "where ";
   }
@@ -1031,6 +1044,8 @@ sub _find {
  
   my $ref;
 
+  $sql .= $limit;
+
   eval {
     $ref = $self->SelectList($sql, @args);
   };
@@ -1042,7 +1057,7 @@ sub _find {
 
   if ( @$ref ) {
     foreach ( @{$ref} ) {
-      my $obj = $self->new($self->{dbi}, $_->{id}, $self->{config}, $self->{_table});
+      my $obj = $self->new($self->dbi, $_->{id}, $self->config, $self->{_table});
       $obj->{idx} = ++$idx;
       push @list, $obj;
     }
@@ -1341,7 +1356,7 @@ sub fields {
 Returns a hash object containing just the fields and their values.
 This is not a particular useful object as it is not endowed with the
 magic of the C<BLM::IndexedTableHandler> class, however some may find
-it more satisfying than seeing all of the internal guts of the class'
+it more satisfying than seeing all of the internal guts of the classE<039>
 object hierarchy.
 
 =cut
@@ -1465,7 +1480,7 @@ sub _get_options {
 
 Return an array of possible values for a C<set> or C<enum> field type.
 
-Given a table with an enum column `doc_type':
+Given a table with an enum column 'doc_type':
 
   +----------+-------------------+------+-----+---------+----------------+
   | Field    | Type              | Null | Key | Default | Extra          |
@@ -1866,7 +1881,7 @@ sub html_form_footer {
 
 =head2 html_form_body
 
- html_form_body(attributes, labels, lists)
+ html_form_body(attributes, labels, lists, exclude-fields)
 
 =cut
 
@@ -1875,13 +1890,18 @@ sub html_form_body {
   my $attributes = shift || $self->{_attributes} || {};
   my $labels = shift || $self->{_labels} || {};
   my $lists = shift || $self->{_lists} || {};
-  
+  my $exclude_fields = shift || [];
+
+  my $exclude_field_list = {};
+  map { $exclude_field_list->{$_} = 1; } @{$exclude_fields};
+
   my $dir = $self->{_table_dir};
 
   my $html = create_html_element("table", %{$attributes->{table}})."\n";
   
   foreach (@{$self->{_field_list}}) {
-    
+    next if exists $exclude_field_list->{$_};
+
     # if no "maxlength" is given for an input field and a "size" is given, then use that as maxlength
     if ($attributes->{$_} && $attributes->{$_}->{input}->{size}) {
       $attributes->{$_}->{input}->{maxlength} = $attributes->{$_}->{input}->{size} 
@@ -2019,7 +2039,6 @@ sub html_form_body {
   
   return $html;
 }
-
 
 =pod
 
@@ -2535,6 +2554,11 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.15  2011/12/01 22:00:54  eutl420
+# - use '_' prefix for hash variables to avoid collision with column names
+# - in html_form_body() allow a new optional argument that is an array ref with
+#   fields names that represent those NOT to render
+#
 # Revision 1.14  2011/12/01 15:38:07  eutl420
 # - die in the constructor if the DBI object is not provide or if the DBI object does not indicate
 #   a connection to a MySQL database
