@@ -512,9 +512,11 @@ sub new {
 
     $table_name = $table_name || lc($2) or die "Unable to determine table name.";
 
-    bless $self, $class;
-
     $self->{_config} = $config;
+    $self->{_table} = $table_name;
+    $self->{_dbi} = $self->{_db} = $dbi;
+
+    bless $self, $class;
 
 # - avoid redundant creation of data structure for each row in a list
 #   i.e. if this object is being constructed thusly:
@@ -524,7 +526,7 @@ sub new {
 #   which is done from find() for example, then we really don't want to 
 #   create whole bunch of arrays that hold the table directory, one will do nicely thanks
 #
-    unless ( ref($this) && defined $this->{_field_list} ) {
+    unless ( ref($this) && $this->get_field_list ) {
       my $sth = $dbi->prepare("show fields from $table_name");
       $sth->execute;
 
@@ -544,26 +546,28 @@ sub new {
 
       die "Table must have an indexed field named [id] and it must be auto_increment!" 
 	unless $id_found;
+
       $sth->finish;
 
       $self->{_table_dir} = $fields;
       $self->{_field_list} = [sort {$fields->{$a}->{idx} <=> $fields->{$b}->{idx}} keys %$fields];
 
-      if ($self->config->{tables}->{$table_name}->{labels}) {
-	$self->{_labels} = $self->config->{tables}->{$table_name}->{labels};
+      if ( $self->get_table_config->{$table_name}->{labels} ) {
+	$self->{_labels} = $self->get_table_config->{$table_name}->{labels};
       }
 
-      if ($self->config->{tables}->{$table_name}->{lists}) {
-	$self->{_lists} = $self->config->{tables}->{$table_name}->{lists};
+      if ( $self->get_table_config->{$table_name}->{lists} ) {
+	$self->{_lists} = $self->{_config}->{tables}->{$table_name}->{lists};
       }
 
-      if ($self->config->{tables}->{$table_name}->{attributes}) {
-	$self->{_attributes} = $self->config->{tables}->{$table_name}->{attributes};
+      if ( $self->get_table_config->{$table_name}->{attributes}) {
+	$self->{_attributes} = $self->get_table_config->{$table_name}->{attributes};
       }
 
-      if ($self->config->{tables}->{$table_name}->{search_fields}) {
+      if ( $self->get_table_config->{$table_name}->{search_fields} ) {
 	$self->{_search_fields} = [];
-	foreach (@{$self->config->{tables}->{$table_name}->{search_fields}}) {
+
+	foreach ( @{$self->get_table_config->{$table_name}->{search_fields}} ) {
 	  push @{$self->{_search_fields}}, $_->{exact};
 	  push @{$self->{_search_fields}}, $_->{field};
 	}
@@ -571,19 +575,16 @@ sub new {
     }
     else {
       @{$self}{keys %$this} = values %$this if $this;
-      foreach (@{$self->{_field_list}}) {
+
+      foreach ( $self->get_fields() ) {
 	$self->{$_} = undef;
       }
-      die unless $self->config;
+      die unless $self->get_config;
     }
 
-    $self->{_table} = $table_name;
+    my $dir = $self->get_table_dir;
 
-    $self->{_dbi} = $self->{_db} = $dbi;
-
-    my $dir = $self->{_table_dir};
-
-    foreach ( @{$self->{_field_list}} ) {
+    foreach ( $self->get_fields ) {
       if ( $dir->{$_}->{Type} eq 'timestamp') {
 	$self->set_display_only( $_ );
       }
@@ -591,6 +592,7 @@ sub new {
 
     if ( $id ) {
       my $ref = $self->Select("select * from $table_name where id = ?", $id);
+
       foreach (keys %$ref) {
 	$self->set($_, $ref->{$_});
       }
@@ -599,6 +601,22 @@ sub new {
     $self->max_rows( 50 );
 
     $self;
+}
+
+sub get_attributes {
+  return $_[0]->{_attributes} || {};
+}
+
+sub get_labels {
+  return $_[0]->{_labels} || {};
+}
+
+sub get_lists {
+  return $_[0]->{_lists} || {};
+}
+
+sub get_field_list {
+  return $_[0]->{_field_list};
 }
 
 =head2 delete
@@ -629,24 +647,37 @@ sub delete {
 
 sub init_config {
     my $self = shift;
-    my $table = $self->{_table};
 
-    my $config = $self->config->{tables} || {};
+    # no configuration passed
+    return unless $self->get_config && $self->get_table_config;
 
-    my $table_config = $config->{$table} || {};
-    my %default = (set => '', get => '', attributes => {}, labels => '');
+    my $config = $self->get_table_config;
 
-    foreach my $type ('set', 'get', 'attributes', 'labels') {
+    # not configuration info for this particular table
+    return unless 
+      my $table_config = $config->{$self->get_table_name};
+
+    my %default = ( set        => '', 
+		    get        => '', 
+		    attributes => {}, 
+		    labels      => ''
+		  );
+
+    my @cols = $self->get_fields;
+
+    foreach my $type qw(set get attributes labels) {
 	my $config = $table_config->{$type} || {};
-	foreach (@{$self->{_field_list}}) {
-	    $config->{$_} = $default{$type} unless exists $config->{$_};
+	foreach ( @cols ) {
+	  $config->{$_} = $default{$type} 
+	    unless exists $config->{$_};
 	}
+
 	$table_config->{$type} = $config;
     }
 
-    $self->config->{tables}->{$table} = $table_config;
+    $self->get_table_config->{$self->get_table_name} = $table_config;
 
-    return $self->config;
+    return $self->get_config;
 }
 
 
@@ -664,10 +695,32 @@ sub keys {
 }
 
 
+sub get_table_name {
+  my $self = shift;
 
+  return $self->{_table};
+}
+
+sub get_table_config {
+  my $self = shift;
+
+  return $self->get_config->{tables} || {};
+}
+
+sub get_table_dir {
+  my $self = shift;
+
+  return $self->{_table_dir} || {};
+}
 
 sub config {
-  return $_[0]->{_config};
+  $_[0]->get_config;
+}
+
+sub get_config {
+  my $self = shift;
+
+  return $self->{_config} || {};
 }
 
 =pod
@@ -680,19 +733,24 @@ sub config {
 #   in tagx.xml
 sub get {
   my ($self, $key) = @_;
-  
-  my $getters = $self->config->{tables}->{$self->{_table}}->{get};
-  
-  if (my $method = $getters->{$key}) {
-    if ($self->can($method)) {
+
+  my $getters;
+
+  if ( $self->get_table_config ) {
+    $getters = $self->get_table_config->{$self->get_table_name}->{get};
+  }
+
+  return $self->{$key} unless $getters && $getters->{$key};
+
+  my $method= $getters->{$key};
+
+  if ( $method ) {
+    if ( $self->can( $method ) ) {
       return $self->can($method)->($self, $key);
     }
     else {
       die "You've specified a field formatter, but there is no method \'$method\'";
     }
-  }
-  else {
-    return $self->{$key};
   }
 }
 
@@ -701,9 +759,9 @@ sub _set {
   my $key;
   my $value;
 
-  my $setters = $self->config->{tables}->{$self->{_table}}->{set};
+  my $setters = $self->get_table_config->{$self->get_table_name}->{set};
 
-  my $dir = $self->{_table_dir};
+  my $dir = $self->get_table_dir;
 
   while (@_) {
     $key = shift;
@@ -782,10 +840,10 @@ sub set {
 #   the argument is an object (typicaly $input) and we're 
 #   setting the field values from that object...
     if (@_ == 1) {
-	my $dir = $self->{_table_dir};
+	my $dir = $self->get_table_dir;
 	my $ref = shift;
 
-	foreach (@{$self->{_field_list}}) {
+	foreach ( $self->get_fields() ) {
 	    if (exists $ref->{$_}) {
 		$self->_set($_, $ref->{$_});
 	    }
@@ -806,27 +864,78 @@ sub set {
     }
 }
 
+# dumps private/public keys separately (debugging)
+
+=pod
+
+=head2 dumper
+
+ dumper()
+
+Return a two-element array of public/private information stored by the
+class.  Typically used for debugging.
+
+ [0] => Bedrock hash representing the public key/value pairs (column values)
+ [1] => Bedrock hash of private key/value pairs
+
+=cut
+
+sub dumper {
+  my $self = shift;
+ 
+  my @private;
+  my @public;
+
+  foreach (CORE::keys %{$self}) {
+    push @private, $_ if $_=~/^_/;
+    push @public, $_ unless $_=~/^_/;
+  }
+  
+  my $public_values = Bedrock::Hash->new;
+  my $private_values = Bedrock::Hash->new;
+
+  @{$public_values}{@public} = @{$self}{@public};
+  @{$private_values}{@private} = @{$self}{@private};
+ 
+  return Bedrock::Array->new($public_values, $private_values);
+}
+
 
 =pod
 
 =head2 save
 
+ save( [$input] )
+
 This method will C<update> a record or C<insert> a new record into the
 database.  If the C<id> field is null or "0" it will assume a new
-record is to be added to the table, otherwise the record with
+record is to be added to the table, otherwise the record with the
 corresponding C<id> will be updated.
+
+The return value of the method is the value of the C<id> field.
+
+You can optionally pass a hash which contains the key/value pairs for
+columns of the record to set.  Only keys that correspond to valid
+columns will be set.
 
   <null --define-var="foo" $factory.foo($input.id)>
 
   <if $input.action --eq "save">
-    <null $foo.set($input)>
-    <null $foo.save()>
+    <null $foo.save($input)>
   </if>
 
 =cut
 
 sub save {
   my $self = shift;
+  my $input = shift;
+  
+  if ( UNIVERSAL::isa($input, 'HASH')) {
+    foreach ( $self->get_fields ) {
+      $self->set($_, $input->{$_} )
+	if exists $input->{$_};
+    }
+  }
 
   if ( $self->{id} ) {
     $self->_update;
@@ -835,12 +944,16 @@ sub save {
     $self->_insert;
   }
 
-  my $table_name = $self->{_table};
+  my $table_name = $self->get_table_name;
+
+  # update the record from the database
   my $ref = $self->Select("select * from $table_name where id = ?", $self->{id});
 
-  foreach (keys %$ref) {
+  foreach (CORE::keys %$ref) {
     $self->set($_, $ref->{$_});
   }
+
+  return $self->{id};
 }
 
 
@@ -966,9 +1079,9 @@ sub set_field {
 sub _format_fields_for_insert {
   my $self = shift;
 
-  my $dir = $self->{_table_dir};
+  my $dir = $self->get_table_dir;
 
-  foreach my $field (@{$self->{_field_list}}) {
+  foreach my $field ( $self->get_fields() ) {
     if ( $self->get_format_mode( $field ) ) {
       $self->set_field( $field, $self->{$field} );
     }
@@ -982,14 +1095,14 @@ sub _insert {
 
   my $query = "insert into %s (%s) values (%s)";
   $self->{id} = 0;
+
   $query = sprintf($query,
-		   $self->{_table}, 
+		   $self->get_table_name,
 		   join(",", @{$self->{_field_list}}),
-		   join(",", split "", "?" x scalar(@{$self->{_field_list}}))
-      );
+		   join(",", split "", "?" x scalar($self->get_fields()))
+		  );
 
-
-  $self->Do($query, @{$self}{@{$self->{_field_list}}});
+  $self->Do($query, @{$self}{$self->get_fields});
 
   $self->{id} = $self->dbi->{mysql_insertid};
 }
@@ -999,10 +1112,10 @@ sub _update {
 
   $self->_format_fields_for_insert;
 
-  my @fields = grep { !/^id$/ } @{$self->{_field_list}};
+  my @fields = grep { !/^id$/ } ($self->get_fields());
 
   my $query = sprintf("update %s set %s where id = ?",
-		      $self->{_table},
+		      $self->get_table_name,
 		      join(",", map { "$_ = ?" } @fields)
       );
 
@@ -1017,8 +1130,8 @@ sub _find {
   
   my $sql = sprintf("select id from %s ", $self->{_table});
 
-  my $limit = " limit " . $self->{_max_rows} 
-    if $self->{_max_rows};
+  my $limit = " limit " . $self->max_rows
+    if $self->max_rows;
 
   if (@_) {
     $sql .= "where ";
@@ -1026,10 +1139,14 @@ sub _find {
   
   my @args = ();
   my @where_clause;
-  
+  my @fields = $self->get_fields;
+
   while ( @_ ) {
     my $exact_flag = shift;
     my $field = shift;
+    die "$self: invalid column name: [$field]\n"
+      unless grep { /$field/ } @fields;
+
     my $value = shift;
     
     push @where_clause, sprintf(" %s %s ?", $field,  $exact_flag ? "=" : "like");
@@ -1057,7 +1174,7 @@ sub _find {
 
   if ( @$ref ) {
     foreach ( @{$ref} ) {
-      my $obj = $self->new($self->dbi, $_->{id}, $self->config, $self->{_table});
+      my $obj = $self->new($self->dbi, $_->{id}, $self->get_config, $self->get_table_name);
       $obj->{idx} = ++$idx;
       push @list, $obj;
     }
@@ -1072,9 +1189,9 @@ sub _find {
 # - an intelligent 'find'
 sub key_fields {
   my $self = shift;
-  my @fields = @{$self->{_field_list}};
+  my @fields = $self->get_fields();
   
-  my $dir = $self->{_table_dir};
+  my $dir = $self->get_table_dir;
   my @keys;
   
   foreach (@fields) {
@@ -1103,10 +1220,10 @@ sub set_key_fields {
   my @unique;
   my @mul;
 
-  my $dir = $self->{_table_dir};
+  my $dir = $self->get_table_dir;
   my %fields;
 
-  foreach (keys %{$dir}) {
+  foreach (CORE::keys %{$dir}) {
     $fields{$dir->{$_}->{idx}} = $_;
     push @unique, $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'UNI';
     push @mul,  $dir->{$_}->{idx} if $dir->{$_}->{Key} eq 'MUL';
@@ -1218,8 +1335,8 @@ sub search {
     
 # still uncomfortable with assuming certain wildcard/non-wildcard searching
     unless (@search_args) {
-      foreach (@{$self->{_field_list}}) {
-	if ($input->{$_}) {
+      foreach ( $self->get_fields() ) {
+	if ( $input->{$_} ) {
 	  push @search_args, 0, $_, $input->{$_};
 	}
       }
@@ -1232,11 +1349,11 @@ sub search {
 
 =head2 find
 
-  find(id)
+  find( id )
 
 Returns the row in the table with an C<id> = to the specified id.
 
-  find (field, value)
+  find ( field, value )
 
 Returns an array of hash references to row objects that match the field and 
 value passed.
@@ -1244,6 +1361,12 @@ value passed.
   find()
 
 Return all rows (up to C<max_rows>) in table.
+
+  find( match-flag, field, value, ...)
+
+Returns an array of hash references to row objects that match the
+fields and values passed.  Each C<match-flag> is is either 0,
+indicating B<non-exact match> or 1, indicating B<exact match>.
 
 =over 5
 
@@ -1290,6 +1413,14 @@ Would return all an array of player objects where the field F<fname> is like Jo%
 I<Note:> This method will always return an array even if there is only 1 row that matches
 the criteria.
 
+=head3 Example - Return rows based on matching more than 1 field.
+
+ <null --define-var="players" $player.find(1, 'position', 1. 0, 'lname', 'R')>
+
+Would return all of the records where the C<position> column was
+B<equal> to 1 and the last name of the player started with 'R'.
+
+
 =cut
 
 sub find {
@@ -1302,9 +1433,12 @@ sub find {
     my $ref = $self->_find(1, 'id', @_);
     return $ref ? $ref->[0] : undef;
   }
-  elsif ( @_ ) {
+  elsif ( @_ == 2) {
       return $self->_find(0, @_);
     }
+  elsif ( @_ > 2) {
+      return $self->_find( @_ );
+  }
   else {
     return $self->_find;
   }
@@ -1335,17 +1469,24 @@ sub find_unique {
 =head2 fields
 
  fields()
+ columns()
 
-Returns an array containg the field names.
+Returns a Bedrock array containg the column names.
 
 =cut
+
+sub columns { $_[0]->fields() };
 
 sub fields {
   my $self = shift;
 
-  return Bedrock::Array->new(@{$self->{_field_list}});
+  return Bedrock::Array->new( $self->get_fields() );
 }
 
+# returns an array containing the column names.
+sub get_fields {
+  @{$_[0]->{_field_list}};
+}
 
 =pod
 
@@ -1365,9 +1506,12 @@ sub asref {
   my $self = shift;
 
   my $ref = {};
-  @{$ref}{@{$self->{_field_list}}} = @{$self}{@{$self->{_field_list}}};
 
-  return Bedrock::Hash->new(%$ref);
+  my @cols = $self->get_fields();
+
+  @{$ref}{@cols} = @{$self}{@cols};
+
+  return Bedrock::Hash->new( %$ref );
 }
 
 
@@ -1441,35 +1585,57 @@ sub get_field_type {
   my $self = shift;
   my $field_name = shift;
 
-  return $self->{_table_dir}->{$field_name}->{Type};
+  return $self->get_table_dir->{$field_name}->{Type};
 }
 
 sub _get_options {
   my $self = shift;
-  
-  my ($option_type, $field_type) = @_;
+  my ($list_type, $field_type) = @_;
+
+  # 1. counties:select
+  # 2. counties
+  # 3. Atlantic,Bergen,Burlington,...
+  # 4. [ { id => 0, item => 'foo'} ... ]
+  # 5. { type => 'select',
+  #      list => [ { id => 0, item => 'foo'} ... ]
+  #     }   
+
   my $options = {};
-  
-  my ($table_name, $type) = split ":", $option_type;
-  $options->{type} = $type || 'select';
-  
-  if ($table_name) {
-    if ($table_name =~/\,/) {
-      $options->{list} = [map { {id=>$_, item => $_}} split ",", $table_name];
-    }
-    else {
-      $options->{list} = $self->SelectList(sprintf("select * from %s order by id", $table_name));
-    }
+
+  if ( UNIVERSAL::isa($list_type, 'HASH') ) {
+    $options = $list_type;
+  }
+  elsif ( UNIVERSAL::isa($list_type, 'ARRAY') ) {
+    $options->{list} = [map { {id => $_, item => $_} } @{$list_type}];
   }
   else {
-    $field_type =~/(enum|set)(\(.*?\))/;
-    $options->{list} = [map { {id => $_, item => $_} } eval $2];
-    if ($field_type =~/enum/  &&  @{$options->{list}} > 4) {
-      unshift @{$options->{list}}, {id => undef, item => "None"};
+ 
+    my ($table_name, $type) = split ":", $list_type;
+    
+    if ( $table_name ) {
+      if ( $table_name =~/\,/ ) {
+	my @list_items = split ",", $table_name;
+	$options->{list} = [map { {id => $_, item => $_}} split ",", $table_name];
+      }
+      else {
+	$options->{list} = $self->SelectList(sprintf("select * from %s order by id", $table_name));
+      }
+    
+    }
+    else {
+      $field_type =~/(enum|set)(\(.*?\))/;
+      
+      $options->{list} = [map { {id => $_, item => $_} } eval $2];
+      
+      if ($field_type =~/enum/  &&  @{$options->{list}} > 4) {
+	unshift @{$options->{list}}, {id => undef, item => "None"};
+      }
     }
   }
-  
-    return $options;
+
+  $options->{type} = $options->{type} || (@{$options->{list}} > 4) ? 'select' : 'radio',
+
+  return $options;
 }
 
 =pod
@@ -1824,7 +1990,7 @@ submit the form and set the C<action> hidden element.
 
 sub html_form_footer {
   my $self = shift;
-  my $attributes = shift || $self->{_attributes} || {};
+  my $attributes = shift || $self->get_attributes;
   my %hidden = @_;
 
   my @html;
@@ -1859,7 +2025,7 @@ sub html_form_footer {
   push @html, create_html_element('input', (type => "hidden", name=>"table", value=>$self->{_table}));
   
   # additional hidden input elements you might want to carry along
-  foreach (keys %hidden) {
+  foreach (CORE::keys %hidden) {
     push @html, create_html_element('input', (type  => "hidden", 
 					      name  => $_, 
 					      value => $hidden{$_}
@@ -1887,9 +2053,9 @@ sub html_form_footer {
 
 sub html_form_body {
   my $self = shift;
-  my $attributes = shift || $self->{_attributes} || {};
-  my $labels = shift || $self->{_labels} || {};
-  my $lists = shift || $self->{_lists} || {};
+  my $attributes = shift || $self->get_attributes;
+  my $labels = shift || $self->get_labels;
+  my $lists = shift || $self->get_lists;
   my $exclude_fields = shift || [];
 
   my $exclude_field_list = {};
@@ -1899,7 +2065,7 @@ sub html_form_body {
 
   my $html = create_html_element("table", %{$attributes->{table}})."\n";
   
-  foreach (@{$self->{_field_list}}) {
+  foreach ( $self->get_fields() ) {
     next if exists $exclude_field_list->{$_};
 
     # if no "maxlength" is given for an input field and a "size" is given, then use that as maxlength
@@ -1910,7 +2076,7 @@ sub html_form_body {
     
     # - first check to see if this is a pick list
     my $options;
-    $options = $self->_get_options($lists->{$_}, $dir->{$_}->{Type}) 
+    $options = $self->_get_options( $lists->{$_}, $dir->{$_}->{Type} ) 
       if $lists->{$_} || $dir->{$_}->{Type} =~/(enum|set)/;
     
     if ( $lists->{$_} ) {
@@ -2554,6 +2720,16 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.16  2011/12/05 15:44:48  eutl420
+# - added a bunch of new getter methods to avoid hash dipping and better isolate private data
+# - find method now supports three forms find(), find(column, value), find(match-flag, column, value)
+# - pick lists can now be sent as hash where value is array of hashes with id/item keys
+#
+#   { county : [ { id : 0, item : "Atlantic" ] ... }
+#
+# - save() method now optionally takes $input object
+# - new dumper() method that can be used to dump private/public data separately
+#
 # Revision 1.15  2011/12/01 22:00:54  eutl420
 # - use '_' prefix for hash variables to avoid collision with column names
 # - in html_form_body() allow a new optional argument that is an array ref with
