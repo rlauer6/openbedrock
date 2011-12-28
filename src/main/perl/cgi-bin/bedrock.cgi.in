@@ -13,66 +13,134 @@ use warnings;
 
 BEGIN
 {
-    if ( open( FILE, 'perl.INC' ) ) {
-	unshift @INC, <FILE>;
-	close FILE;
-	chomp @INC;
-    }
+  if ( open( FILE, 'perl.INC' ) ) {
+    unshift @INC, <FILE>;
+    close FILE;
+    chomp @INC;
+  }
 }
 
 use Carp;
 
 use Bedrock;
+use Bedrock::XML;
+use Bedrock::Log qw/MSG_ABORT MSG_DEBUG MSG_INFO 
+		    MSG_STATUS MSG_WARNING 
+		    MSG_ERROR MSG_SYSERROR MSG_FATAL/;
+
 use Apache::Bedrock;
 use Apache::Request_cgi;
 
+sub error {
+  my $status = shift;
+  my $status_name = shift;
+  my $message = shift;
+
+  print <<end_of_html;
+Content-type: text/html
+Status: $status
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html>
+<head>
+<title>$status $status_name</title>
+</head>
+<body>
+<h1>$status_name</h1>
+<p>$message</p>
+<hr>
+<address>$ENV{SERVER_SIGNATURE}</address>
+</body>
+</html>
+end_of_html
+  exit -1;
+}
+
+
 $SIG{TERM} = \&confess;
-$SIG{__WARN__} = \&Carp::cluck;
+
+# read configuration file, get LOGLEVEL
+eval {
+  my $tagx_xml = $ENV{CONFIG_PATH} . '/tagx.xml';
+
+  unless ( -s $tagx_xml ) {
+    $tagx_xml = $ENV{BEDROCK_CONFIG_PATH} . '/tagx.xml';
+  }
+
+  my $config = new Bedrock::XML( $tagx_xml );
+
+  for ( $config->{LOGLEVEL} ) { 
+    /MSG_ABORT/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_ABORT;
+      $SIG{__WARN__} = \&Carp::cluck;
+      last;
+    };
+    /MSG_DEBUG/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_DEBUG;
+      $SIG{__WARN__} = \&Carp::cluck;
+      last;
+    };
+    /MSG_INFO/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_INFO;
+      last;
+    };
+    /MSG_STATUS/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_STATUS;
+      last;
+    };
+    /MSG_WARNING/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_WARNING;
+      last;
+    };
+    /MSG_ERROR/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_ERROR;
+      last;
+    };
+    /MSG_SYSERROR/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_SYSERROR;
+      last;
+    };
+    /MSG_FATAL/ && do {
+      $Bedrock::Log::CutoffLevel = MSG_FATAL;
+      last;
+    };
+    $Bedrock::Log::CutoffLevel = MSG_DEBUG;
+  }
+};
+
+
+if ( $@ ) {
+  my $message =<<end_of_html;
+
+Possibly misconfigured Bedrock site:
+
+<pre>$@</pre>
+<pre>
+CONFIG_PATH = $ENV{CONFIG_PATH}
+BEDROCK_CONFIG_PATH = $ENV{BEDROCK_CONFIG_PATH}
+</pre>
+end_of_html
+  
+  error( 500, "Internal Server Error", $message);
+}
+
 my $code = &Apache::Bedrock::handler( Apache::Request_cgi->new );
 
 if ($code == 404) {
-    print <<eot;
-Content-type: text/html
-Status: 404
-
-<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-<html>
-<head>
-<title>404 Not Found</title>
-</head>
-<body>
-<h1>Not Found</h1>
-<p>The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server.</p>
-<hr>
-<address>$ENV{SERVER_SIGNATURE}</address>
-</body>
-</html>
-eot
+  error( 404, 
+	 "Not Found", 
+	 "The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server."
+       );
 }
 elsif ($code == 403) {
-    print <<eot;
-Content-type: text/html
-Status: 403
-
-<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-<html>
-<head>
-<title>403 Forbidden</title>
-</head>
-<body>
-<h1>Forbidden</h1>
-<p>
-    You don\'t have permission to access the requested object.
-    It is either read-protected or not readable by the server.
-</p>
-<hr>
-<address>$ENV{SERVER_SIGNATURE}</address>
-</body>
-</html>
-eot
+  error( 403,
+	 "Forbidden",
+	 "You don\'t have permission to access the requested object. It is either read-protected or not readable by the server."
+       );
 }
 else {
-    die "Bedrock handler returned code: $code" if $code;
+ error( 500, "Internal Server Error", "Unknown Bedrock error: $code")
+   if $code;
 }
 
 exit 0;
