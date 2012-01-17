@@ -4,8 +4,6 @@ dnl +-------------------------+
 dnl |  Autotools Boilerplate  |
 dnl +-------------------------+
 
-dnl FIXME: Use 'bedrock-dev@signatureinfo.com' (or whatever) for
-dnl        the bug reporting address once the mailman server is set up.
 AC_INIT([bedrock], [2.3.0-snapshot], [rlauer@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
@@ -34,9 +32,6 @@ dnl +------------------------+
 dnl makes $(LN_S) available in our Makefile.am files
 AC_PROG_LN_S
 
-## We need bash >= 2.x, but at Signture Information Solutions, LLC, we
-## don't have any machines ancient enough that we need to be concerned
-## that a too-ancient version will be found (I hope).
 AC_PATH_PROG(BASH_SH, bash)
 if test -z "$BASH_SH"; then
     AC_MSG_ERROR([bash not found])
@@ -60,6 +55,11 @@ fi
 AC_PATH_PROG([FIND], [find])
 if test -z "$FIND"; then
     AC_MSG_ERROR([find not found]);dnl Ha!
+fi
+
+AC_PATH_PROG([AWK], [awk])
+if test -z "$AWK"; then
+    AC_MSG_ERROR([awk not found]);dnl Ha!
 fi
 
 AC_PATH_PROG([GREP], [grep])
@@ -147,6 +147,7 @@ dnl infinitely better than discovering an oversite at runtime.
 dnl
 # Required Perl modules
 ads_PERL_MODULE([Apache2::Const], [REQUIRED])
+ads_PERL_MODULE([AppConfig], [REQUIRED])
 ads_PERL_MODULE([Carp], [REQUIRED])
 ads_PERL_MODULE([CGI], [REQUIRED], [3.15])
 ads_PERL_MODULE([Cwd],  [REQUIRED])
@@ -176,22 +177,6 @@ ads_PERL_MODULE([XML::Parser], [REQUIRED])
 
 # Optional Perl modules
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
-
-
-dnl +----------------------+
-dnl |  Checks for Headers  |
-dnl +----------------------+
-dnl None!
-
-dnl +------------------------------------------------------------------+
-dnl |  Checks for typedefs, structures, and compiler characteristics.  |
-dnl +------------------------------------------------------------------+
-dnl None!
-
-dnl +---------------------------------+
-dnl |  Checks for library functions.  |
-dnl +---------------------------------+
-dnl None!
 
 dnl +---------------------+
 dnl |  Autotools Output.  |
@@ -288,6 +273,11 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]configdir[@],$(configdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
   \
+  -e '"'"'s,[@]perlrun[@],$(perlrun),g'"'"' \
+  -e '"'"'s,[@]co[@],$(co),g'"'"' \
+  -e '"'"'s,[@]ci[@],$(ci),g'"'"' \
+  -e '"'"'s,[@]rlog[@],$(rlog),g'"'"' \
+\
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
   -e '"'"'s,[@]PERL_LIBDIR[@],$(PERL_LIBDIR),g'"'"' \
   -e '"'"'s,[@]POD2MAN[@],$(POD2MAN),g'"'"' \
@@ -298,14 +288,19 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]perl5_pkgvlibdir[@],$(perl5_pkgvlibdir),g'"'"' \
 \
   -e '"'"'s,[@]apache_default_htdocsdir[@],$(apache_default_htdocsdir),g'"'"' \
-  \
+\
+  -e '"'"'s,[@]AWK[@],$(AWK),g'"'"' \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
   -e '"'"'s,[@]CAT[@],$(CAT),g'"'"' \
   -e '"'"'s,[@]CHGRP[@],$(CHGRP),g'"'"' \
   -e '"'"'s,[@]CHOWN[@],$(CHOWN),g'"'"' \
+  -e '"'"'s,[@]CI[@],$(CI),g'"'"' \
+  -e '"'"'s,[@]CO[@],$(CO),g'"'"' \
   -e '"'"'s,[@]FIND[@],$(FIND),g'"'"' \
   -e '"'"'s,[@]GREP[@],$(GREP),g'"'"' \
   -e '"'"'s,[@]SED[@],$(SED),g'"'"' \
+  -e '"'"'s,[@]RCS[@],$(RCS),g'"'"' \
+  -e '"'"'s,[@]RLOG[@],$(RLOG),g'"'"' \
   -e '"'"'s,[@]RM[@],$(RM),g'"'"' \
   -e '"'"'s,[@]RMDIR[@],$(RMDIR),g'"'"' \
 '
@@ -372,12 +367,6 @@ dnl Actually output the declared files
 AC_OUTPUT
 
 
-# I know that shell functions are not considered portable to old
-# ancient *nices, but at ChoicePoint/Signature Information Solutions,
-# LLC we can be confident that a non-total-suck shell is being
-# used. We may need to beef something up to /find/ it, but there
-# should definitely be a shell installed that understands functions...
-#
 # Prints on stdout the fully expanded path represented by the value in
 # the SHELL_VAR_NAME param. Does /not/ assign the expanded value to
 # the named shell var.
