@@ -15,5 +15,6 @@ dist_img_DATA = \
     right_tab_red.gif \
     bedbug.jpg \
     bedrock.jpg \
+    bedrock.gif \
     br_lcap.gif \
     br_rcap.gif
