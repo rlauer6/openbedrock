@@ -4,7 +4,7 @@ dnl +-------------------------+
 dnl |  Autotools Boilerplate  |
 dnl +-------------------------+
 
-AC_INIT([bedrock], [2.3.0], [rlauer@signatureinfo.com])
+AC_INIT([bedrock], [2.3.1-snapshot], [rlauer@signatureinfo.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
