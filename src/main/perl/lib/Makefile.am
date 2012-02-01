@@ -114,6 +114,8 @@ perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Pebble.pm \
     Bedrock/Text/TagX/TAG/NoBody/Raise.pm \
     Bedrock/Text/TagX/TAG/NoBody/SQL.pm \
+    Bedrock/Text/TagX/TAG/NoBody/SQLCommit.pm \
+    Bedrock/Text/TagX/TAG/NoBody/SQLRollback.pm \
     Bedrock/Text/TagX/TAG/NoBody/SQLConnect.pm \
     Bedrock/Text/TagX/TAG/NoBody/SQLTable.pm \
     Bedrock/Text/TagX/TAG/NoBody/Trace.pm \
