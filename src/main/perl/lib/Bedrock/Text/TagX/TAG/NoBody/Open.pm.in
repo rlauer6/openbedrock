@@ -37,6 +37,8 @@ BEGIN {
 use TagX::Log;
 use TagX::TAG::NoBody;
 use IO::File;
+use Text::CSV_XS;
+use Symbol;
 
 @ISA = qw (TagX::TAG::NoBody);
 
@@ -45,7 +47,8 @@ sub finalize {
 
   my %options = ( 'define-var=s' => "_",
                   'mode=s'       => undef,
-                  'file=s'       => undef
+                  'file=s'       => undef,
+		  'filter=s'     => undef
                 );
 
   my @argv = $self->parse_options( \%options, @context );
@@ -69,8 +72,11 @@ sub finalize {
   if ( length( $options{'file'} ) ) {
     $file = $options{'file'};
   }
-  elsif (@argv) {
-    $file = "@argv";
+  elsif ( @argv > 1 ) {
+    die "Only 1 argument allowed: file\n";
+  }
+  else {
+    $file = $argv[0];
   }
 
   die "File not specified.\n" unless length($file);
@@ -81,9 +87,29 @@ sub finalize {
   }
 
   my $mode = $options{'mode'} || "r";
-  my $fh = IO::File->new( $file, $mode );
 
-  die "Could not open file $file with mode = $mode" unless defined $fh;
+  my $fh;
+
+  if ( exists $options{'filter'} ) {
+    die "--filter requires a filter name\n"
+      unless $options{filter};
+
+    my $filter = "Bedrock::Filter::" . $options{filter};
+
+    eval "require $filter;";
+    die "unknown or malformed filter: ". $options{filter} . "\n"
+      if $@;
+
+    $fh = gensym;
+    tie *{$fh},$filter,  $file, $mode;
+    bless $fh, $filter;
+  }
+  else {
+    $fh = IO::File->new( $file, $mode );
+  }
+
+  die "Could not open file $file with mode = $mode" 
+    unless defined $fh;
 
   $tx->{'VARS'}->{$name} = $fh;
 }
@@ -99,21 +125,22 @@ but the object created is an C<IO::File> handle.
 
 =head1 SYNTAX
 
- <open[:name] [options]>
+ <open[:name] [options] filename >
 
 =head1 DESCRIPTION
 
-You can use the C<open> tag to return a handle to an opened file that
-can be used with other tags (C<sink>) or plugins that accept handles
-as arguments.
+You can use the C<E<lt>openE<gt>> tag to return a handle to an file
+that can be used with other tags ( C<E<lt>sinkE<gt>>) or plugins that
+accept handles as arguments.
 
-I<Note: Although the name of the object can be defaulted to "$_" by
+I<Note: Although the name of the object can be defaulted to C<$_> by
 omitting the C<--define-var> option, this may be less than useful if
-you use the C<open> tag before entering a C<while> loop,something
+you use the C<open> tag before entering a C<while> loop, something
 typically done when reading a file as shown in the example.>
 
-The C<while> tag will reset C<$_> to the value of the term in quotes
-when it is evaluated each time through the loop. Caveat Emptor>.
+I<The C<E<lt>whileE<gt>> tag will reset C<$_> to the value of the term
+in quotes when it is evaluated each time through the loop. Caveat
+Emptor>.
 
 =head1 OPTIONS
 
@@ -149,24 +176,21 @@ that you can invoke on an open file handle.
 
 =head1 EXAMPLE
 
- <open:fd --file=($env.BEDROCK_CONFIG_PATH + "/tagx.xml") --mode="r">
+ <open:fh --file=($env.BEDROCK_CONFIG_PATH + "/tagx.xml") --mode="r">
+
  <pre>
- <while "$fd.getline()"><var $_></while>
+ <while $fh><var --htmlencode $_></while>
  </pre>
- <null $fd.close()>
 
-=head1 NOTES
-
-You are discouraged from using these kinds of constructions in pages.
-They are "programmatic" and not in the spirit of template development.
-A better alternative to reading a file, if you really need to do that,
-might be to use C<BLM::File> plugin.
 
 =cut
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.13  2012/02/06 22:17:51  eutl420
+# - add --filter option
+#
 # Revision 1.12  2011/09/21 20:35:05  eutl420
 # -pod fix
 #
