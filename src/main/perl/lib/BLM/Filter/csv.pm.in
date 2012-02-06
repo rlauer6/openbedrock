@@ -1,0 +1,221 @@
+#!@PERL@ -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package Bedrock::Filter::csv;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Bedrock::Handle;
+use Bedrock::Array;
+
+use IO::File;
+use Text::CSV_XS;
+
+@ISA = qw( Bedrock::Handle IO::File);
+
+sub TIEHANDLE
+{
+    my $class = shift;
+    my $file = shift;
+    my $mode = shift || 'r';
+
+    my $self = bless {}, $class;
+    $self->{'filename'} = $file;
+
+    $self->{'parser'} = new Text::CSV_XS;
+
+    $self->{'fh'} = new IO::File( $file, $mode);
+
+    die "Could open file: $file mode: $mode\n"
+      unless $self->{'fh'};
+
+    $self;
+}
+
+# since this is a handle, tied as a GLOB by Bedrock, we may be called
+# from the Bedrock page, hence we need to access the blessed hashref
+# OTOH...we may want to call these same functions internally from the
+# implemented methods (caps) and we can, since we are all part of
+# the same bless-ed family ;-)  Perl OO hoops... perlfunc -f tied
+#
+sub _self {
+  my $self = shift;
+  $self = $self->isa('HASH') ? $self : tied(*{$self});
+}
+
+sub quote_char          { $_[0]->{parser}->quote_char( $_[1] ) };
+sub sep_char            { $_[0]->{parser}->sep_char( $_[1] ) };
+sub eol                 { $_[0]->{parser}->eol( $_[1] ) };
+sub always_quote        { $_[0]->{parser}->always_quote( $_[1] ) };
+sub quote_space         { $_[0]->{parser}->quote_space( $_[1] ) };
+sub quote_null          { $_[0]->{parser}->quote_null( $_[1] ) };
+sub binary              { $_[0]->{parser}->binary( $_[1] ) };
+sub keep_meta_info      { $_[0]->{parser}->keep_meta_info( $_[1] ) };
+sub allow_loose_quotes  { $_[0]->{parser}->allow_loose_quotes( $_[1] ) };
+sub allow_loose_escapes { $_[0]->{parser}->allow_loose_escapes( $_[1] ) };
+sub allow_whitespace    { $_[0]->{parser}->allow_whitespace( $_[1] ) };
+sub blank_is_undef      { $_[0]->{parser}->blank_is_undef( $_[1] ) };
+sub empty_is_undef      { $_[0]->{parser}->empty_is_undef( $_[1] ) };
+sub verbatim            { $_[0]->{parser}->verbatim( $_[1] ) };
+sub auto_diag           { $_[0]->{parser}->auto_diag( $_[1] ) };
+
+sub _write {
+  my $self = shift;
+
+  die ref($self) . ": file opened in read/only mode\n"
+    if $self->{mode} eq 'r';
+
+  my @columns;
+
+  foreach my $elem ( @_ ) {
+    if ( UNIVERSAL::isa( $elem, 'ARRAY') ) {
+      push @columns, map { $_ } @$elem;
+    }
+    else {
+      push @columns, $elem;
+    }
+  }
+
+  $self->{parser}->combine( @columns );
+
+  $self->{fh}->print( $self->{parser}->string(), "\n");
+}
+
+sub WRITE  { _write( @_ ) };
+sub PRINT  { _write( @_ ) };
+sub PRINTF { _write( @_ ) };
+
+sub READLINE {
+  my $self = shift;
+
+  return undef if $self->{fh}->eof();
+
+  my $line = $self->{fh}->getline();
+  $self->{parser}->parse( $line );
+  my @fields = $self->{parser}->fields();
+
+  return Bedrock::Array->new( @fields );
+}
+
+# let's define EOF as end of worksheet, not end of workbook
+sub EOF {
+  my $self = shift;
+
+  return $self->{fh}->eof();
+}
+
+sub TELL {
+  my $self = shift;
+
+  return $self->{fh}->tell();
+}
+
+sub SEEK {
+  my $self = shift;
+
+  $self->{fh}->seek( @_ );
+}
+
+1;
+
+# $Log$
+# Revision 1.1  2012/02/06 22:14:10  eutl420
+# first check-in
+#
+
+=pod
+
+=head1 PUBLIC
+
+C<Bedrorck::Filter::csv> - Bedrock Command Separated Variables filter
+
+=head1 SYNOPSIS
+
+ <open:fh --filter=csv "foo.cvs">
+
+ <table>
+ <while $fh>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+Yes, it really is that easy.
+
+=head1 DESCRIPTION
+
+This module implements a Bedrock C<E<lt>openE<gt>> tag filter.  It
+allows you to read and write rows to a so-called CSV file.
+
+This is an experimental filter that demonstrates the use of tied
+handles and the C<E<lt>whileE<gt>> tag's new (from Bedrock 2.3.0)
+ability to take a HANDLE as an argument.
+
+The C<E<lt>whileE<gt>> tag, when passed a HANDLE as an argument will
+"read a line" from the handle.  For this filter, this is interpretted
+to mean "read a row" from a comma separated file.  The return value is
+a Bedrock array representing the columns in that row of the CSV file.
+
+The filter returns "undef" when an attempt is made to read
+beyond the last row of the CSV file.
+
+=head1 NOTES
+
+This filter  subclasses C<IO::File> and C<Tie::Handle>. Accordingly, some
+of the methods you might expect to invoke on a file handle actually
+work.  Some don't.
+
+=head1 METHODS
+
+=head1 EXAMPLE
+
+ <open:fh --filter=csv "foo.csv">
+
+ <table>
+ <while $fh>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@signatureinfo.com>
+
+=head1 SEE ALSO
+
+C<Text::CSV_XS>
+
+=cut
+

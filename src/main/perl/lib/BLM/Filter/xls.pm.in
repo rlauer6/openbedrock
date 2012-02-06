@@ -1,0 +1,421 @@
+#!@PERL@ -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package Bedrock::Filter::xls;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Bedrock::Handle;
+use Bedrock::Array;
+
+use IO::File;
+use Spreadsheet::ParseExcel;
+
+@ISA = qw( Bedrock::Handle IO::File);
+
+sub TIEHANDLE
+{
+    my $class = shift;
+    my $file = shift;
+    my $self = bless {}, $class;
+    $self->{'filename'} = $file;
+
+    $self->{'parser'} = Spreadsheet::ParseExcel->new();
+    $self->{'workbook'} = $self->{'parser'}->parse( $file );
+    die $self->{'parser'}, "\n"
+      unless defined $self->{'workbook'};
+
+    $self->{'worksheets'} = [ $self->{'workbook'}->worksheets() ];
+
+    $self->worksheet(0);
+    $self->row(0);
+     
+    $self->range();
+
+    $self->formatted(1);
+    $self;
+}
+
+# since this is a handle, tied as a GLOB by Bedrock, we may be called
+# from the Bedrock page, hence we need to access the blessed hashref
+# OTOH...we may want to call these same functions internally from the
+# implemented methods (caps) and we can, since we are all part of
+# the same bless-ed family ;-)  Perl OO hoops... perlfunc -f tied
+#
+sub _self {
+  my $self = shift;
+  $self = $self->isa('HASH') ? $self : tied(*{$self});
+}
+
+sub _max {
+  my $self = _self(shift);
+  $self->{$_[0]}->[1];
+}
+
+sub _min {
+  my $self = _self(shift);
+  $self->{$_[0]}->[0];
+}
+
+sub range {
+  my $self = _self(shift);
+
+  $self->{'row_range'} = [ $self->worksheet->row_range() ];
+  $self->{'col_range'} = [ $self->worksheet->col_range() ];
+
+  return [ @{$self}{qw(row_range col_range)} ];
+}
+
+sub get_name {
+  _self(shift)->worksheet->get_name();
+}
+
+sub formatted {
+  _self(shift)->_formatted( 1 );
+}
+
+sub unformatted {
+  _self(shift)->_formatted( 0 );
+}
+
+sub _formatted {
+  my $self = _self(shift);
+
+  $self->{formatted} = shift;
+}
+
+sub worksheet {
+  my $self = _self(shift);
+  my $sheet = shift;
+
+  if ( defined $sheet) {
+    $self->{sheet} = $sheet;
+    $self->row(0);
+    $self->range();
+  }
+  else {
+    $sheet = $self->{sheet};
+  }
+
+  return $self->{worksheets}->[$sheet];
+}
+
+sub sheet {
+  my $self = _self(shift);
+  $self->{sheet};
+}
+
+sub next_sheet {
+  my $self = _self(shift);
+  my $sheet = $self->{sheet};
+
+  $self->row(0);
+  $sheet++;
+  $self->{sheet} = $sheet;
+  return undef if $sheet >= @{$self->{worksheets}};
+  
+  $self->range($sheet);
+
+  return $sheet;
+}
+
+sub WRITE
+{
+  die "You can only read from the spreadsheet.";
+}
+
+
+sub row_max { $_[0]->_max('row_range'); }
+sub row_min { $_[0]->_min('row_range'); }
+sub col_max { $_[0]->_max('col_range'); }
+sub col_min { $_[0]->_min('col_range'); }
+
+sub row { 
+  my $self = _self(shift);
+
+  $self->{row} = $_[0] if exists $_[0];
+
+  return $self->{row};
+}
+
+sub rows {
+  my $self = _self(shift);
+
+  return  1 + $self->{row_range}->[1] - $self->{row_range}->[0];
+}
+
+sub cols {
+  my $self = _self(shift);
+
+  return  1 + $self->{col_range}->[1] - $self->{col_range}->[0];
+}
+
+sub next_row {
+  $_[0]->row($_[0]->row + 1);
+}
+
+sub GETC {
+  return undef;
+}
+
+sub READLINE {
+  my $self = shift;
+
+  return undef if $self->{'row'} > $self->row_max;
+  my @data;
+
+  for my $col ( $self->col_min .. $self->col_max ) {
+
+    my $cell = $self->worksheet->get_cell( $self->row, $col );
+    next unless $cell;
+    push @data, $self->{formatted} ? $cell->value() : $cell->unformatted();
+  }
+
+  $self->next_row;
+
+  return Bedrock::Array::Reference->new( \@data );
+}
+
+# let's define EOF as end of worksheet, not end of workbook
+sub EOF {
+  my $self = shift;
+
+  return ($self->{sheet} >= @{$self->{worksheets}});
+}
+
+sub TELL {
+  my $self = shift;
+
+  return $self->{sheet};
+}
+
+# seek to a worksheet
+sub SEEK {
+  my $self = shift;
+  my ($worksheet, $whence) = @_;
+
+  my $num_sheets = @{$self->{worksheets}};
+
+  $whence = $whence || "0";
+
+  for ( "$whence") {
+    /^0/ && do {
+      last;
+    };
+    /^1/ && do {
+      $worksheet += $self->{sheet};
+      last;
+    };
+    /^2/ && do {
+      $worksheet += $num_sheets - 1;
+      last;
+    };
+  }
+
+  # make sure between 0, $num_sheets - 1
+  $worksheet = $worksheet < 0 ? 0 : $worksheet;
+  $worksheet = ($worksheet < $num_sheets) ? $worksheet : $num_sheets - 1;
+
+  $self->worksheet( $worksheet );
+
+  $worksheet;
+}
+
+sub OPEN {
+  $_[0]->worksheet(0);
+  $_[0]->row(0)
+}
+
+sub CLOSE
+{
+  $_[0]->{'workbook'}->close;
+}
+
+1;
+
+# $Log$
+# Revision 1.1  2012/02/06 22:14:06  eutl420
+# first check-in
+#
+
+=pod
+
+=head1 PUBLIC
+
+C<Bedrorck::Filter::xls> - Bedrock interface to Spreadsheet::ParseExcel
+
+=head1 SYNOPSIS
+
+ <open:fh --filter=xls "foo.xls">
+
+ <table>
+ <while $SSPE>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+Yes, it really is that easy.
+
+=head1 DESCRIPTION
+
+This module implements a Bedrock C<E<lt>openE<gt>> tag filter.  It
+allows you to read rows from an Excel spreadsheet.
+
+This is an experimental filter that demonstrates the use of tied
+handles and the C<E<lt>whileE<gt>> tag's new (from Bedrock 2.3.0)
+ability to take a HANDLE as an argument.
+
+The C<E<lt>whileE<gt>> tag, when passed a HANDLE as an argument will
+"read a line" from the handle.  For this filter, this is interpretted
+to mean "read a row" from the current worksheet.  The return value is
+a Bedrock array representing the columns of the spreadsheet.
+
+The filter returns "undef" when an attempt is made to read
+beyond the last row of the worksheet.
+
+=head1 NOTES
+
+This filter  subclasses C<IO::File> and C<Tie::Handle>. Accordingly, some
+of the methods you might expect to invoke on a file handle actually
+work.  Some don't.  This filter can only read from a spreadsheet, it
+cannot produce one.
+
+Spreadsheets often have more than 1 worksheet.  The filter can navigate
+through each worksheet using the C<next_sheet()> method.  You can also
+C<seek> to a specific worksheet as the C<seek> method is implemented
+to allow you to position the HANDLE to a specfic sheet to read.
+
+ $fh.seek($sheet, 0) => position to worksheet 0, relative to the
+                          first worksheet.
+
+ $fh.seek(1, 1)      => position to the next worksheet
+
+ $fh.seek(0, 2)      => position to the last worksheet
+                          See `next_sheet()'
+
+C<seek()> returns the current worksheet, hence:
+
+ <var $fh.seek(0,2)>
+
+will tell you the number of worksheets in the file.
+
+=head1 METHODS
+
+=head2 cols
+
+Returns the number of columns in the worksheet.
+
+=head2 eof
+
+Returns true if beyond last row of last worksheet.
+
+  <while --not $fh.eof()>
+    <while $fh><var $_.join(",")>
+    </while>
+    <null $fh.next_worksheet()>
+  </while>
+
+=head2 formatted
+
+Tells the filter to return cells formatted.  This is the default.
+
+ <null $fh.formatted()>
+
+=head2 get_name
+
+Return the "name" of the current worksheet.
+
+ <var $fh.get_name()>
+
+=head2 getline
+
+Return a Bedrock array containing the columns from the current row.
+If you use the C<E<lt>whileE<gt>> tag and use the filter handle as the
+argument, C<getline()> will be called each time through the body of
+the while loop.  Returns false when there are no more rows in the
+current worksheet.
+
+Use C<next_sheet()> to advance to the next worksheet.
+
+Use C<eof()> to detect the end of all worksheets and rows.
+
+=head2 next_sheet
+
+Sets the filter to begin reading the next worksheet.
+
+=head2 rows
+
+Returns the number of rows in the current worksheet.
+
+=head2 seek
+
+Seeks to specfic worksheet.  See NOTES.  Has the effect of rewinding
+the filter to the beginning of the specified worksheet.
+
+=head2 sheet
+
+Returns the current worksheet index.  Has the effect of rewinding
+the filter to the beginning of the specified worksheet.s 
+
+=head2 tell
+
+Returns the current worksheet index.  Has the effect of rewinding
+the filter to the beginning of the specified worksheet.
+
+=head2 unformatted
+
+Set filter to return unformatted cells.  Defaults to formatted cells.
+
+=head1 EXAMPLE
+
+ <open:fh --filter=xls "foo.xls">
+
+ <table>
+ <while $fh>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@signatureinfo.com>
+
+=head1 SEE ALSO
+
+C<Spreadsheet::ParseExcel>
+
+=cut
+
