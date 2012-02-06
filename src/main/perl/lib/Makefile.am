@@ -4,6 +4,8 @@ PERL = @PERL@
 perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
+
+perl5bedrockfilterlibdir             	  = $(perl5libdir)/Bedrock/Filter
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockinputsourcelibdir          	  = $(perl5libdir)/Bedrock/InputSource
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
@@ -67,6 +69,10 @@ BEDROCK_CONTEXT=$(perl5bedrockcontextlib_DATA:.pm=.pm.in)
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
+
+perl5bedrockfilterlib_DATA = \
+    Bedrock/Filter/xls.pm \
+    Bedrock/Filter/csv.pm
 
 BEDROCK_HTML=$(perl5bedrockhtmllib_DATA:.pm=.pm.in)
 
