@@ -35,12 +35,15 @@ BEGIN {
 }
 
 use TagX::Log;
-use Bedrock::Text::URLEncode;
 use TagX::TAG::NoBody;
+
+use Bedrock::Text::URLEncode;
 use Bedrock::HTML::Helper qw(create_xhtml_element create_xhtml_element_header);
 use Bedrock::BedrockJSON;
 use Bedrock::Dump;
+
 use XML::Simple;
+use MIME::Base64;
 
 @ISA = qw (TagX::TAG::NoBody);
 
@@ -173,6 +176,7 @@ sub finalize {
 
   my %options = ( 'address=s'      => undef,
                   'anchor=s'       => undef,
+		  'base64'         => undef,
                   'bedrock-xml'    => undef,
                   'blockquote=s'   => undef,
                   'button=s'       => undef,
@@ -246,6 +250,28 @@ sub finalize {
 
   &log_message( $self, "Value: <$value>" )
     if $verbose;
+
+  # encode argument before other options
+  if ( defined $options{'base64'} ) {
+    if ( UNIVERSAL::isa( $value, 'SCALAR') ) {
+      $value = encode_base64( $value );
+    }
+    elsif ( UNIVERSAL::isa( $value, 'ARRAY') ) {
+      my $dummy = [];
+
+      foreach ( @$value ) {
+	push @$dummy, encode_base64($_ );
+      }
+      $value = $dummy;
+    }
+    elsif ( UNIVERSAL::isa( $value, 'HASH') ) {
+      my $dummy = {};
+      foreach (keys %$value) {
+	$dummy->{$_} = encoded_base64( $value->{$_} );
+      }
+      $value = $dummy;
+    }
+  }
 
   if ( defined $options{'bedrock-xml'} ) {
     if (    UNIVERSAL::isa( $value, 'ARRAY' )
@@ -859,6 +885,7 @@ is encountered.
 
 =head1 OPTIONS
 
+ --base64
  --bedrock-xml
  --default
  --delimiter
@@ -869,6 +896,12 @@ is encountered.
  --xml
 
 =over 5
+
+=item  --base64
+
+Encode the arguments as base64 before output.
+
+ <var --base64 $foo>
 
 =item  --bedrock-xml
 
@@ -1518,28 +1551,33 @@ Examples:
 You can specify attributes such as styles by setting the C<--ul>
 option to a hash or JSON string.
 
- <var -ul='{ style: color:"red" }' $pepbozy>
+ <var --ul='{ style: color:"red" }' $pepbozy>
 
 =back
 
 =head1 METHODS
 
-When used with the C<E<lt>varE<gt>> tag a Bedrock expression usually
-evaluates to a scalar.  Bedrock promotes all expressions that evaluate
-to a scalar to a Bedrock Scalar object, thus it seems logical to
-describe scalar methods here in the C<E<lt>varE<gt>> tag documentation.
+Typically, the C<E<lt>varE<gt>> tag is used with a I<Bedrock Scalar> or
+an expression that evaluates to a I<Bedrock Scalar>.  Bedrock promotes
+all expressions that evaluate to a scalar to a I<Bedrock Scalar> object,
+thus it seems logical to describe scalar B<methods> here in the
+C<E<lt>varE<gt>> tag documentation.
 
-ThereE<039>s a long list of methods you can invoke on scalars.  As you
-might expect since Bedrock is written in perl, a lot of these are
-simply covers on the corresponding perl built-in functions with a
-twist or two for the Bedrock environment.  Some of these methods may
+ThereE<039>s a faily long list of methods you can invoke on scalars.
+As you might expect since Bedrock is written in perl, a lot of these
+are simply covers on the corresponding perl built-in functions with a
+twist or two to make the API easy for Bedrock devlopers and/or
+appropriate for the Bedrock environment.  Some of these methods may
 have the same names as options to the the C<E<lt>varE<gt>> tag but may
-operate in different manners since output of text or HTML is not
-I<always> the purpose of these methods.
+operate in slighly different manners since output of text or HTML is
+not I<always> the purpose of these methods.
 
 The methods operate on the value of the scalar but aside from two
 methods C<toggle>, C<replace>, the methods B><do not alter the
-scalarE<039>s value>, they return the value of the transformation.
+scalarE<039>s value>, they return the value that the method returns.
+
+Unless otherwise noted below, the argument to the method is the
+scalar's value.
 
 =head2 align(direction, width)
 
@@ -1560,6 +1598,10 @@ Convenience routine for C<align>.
 =head2 align_right(width)
 
 Convenience routine for C<align>.
+
+=head2 base64
+
+Returns the base64 encoding of the scalar's value.  Equivalent to C<--base64>.
 
 =head2 chr
 
@@ -1611,6 +1653,18 @@ Returns 1 if scalar is greater than or equal to the given value.
 =head2 gt(value) I<deprecated>
 
 Returns 1 if scalar is greater than the given value.
+
+=head2 hmac_sha1(key)
+
+=head2 hmac_sha224(key)
+
+=head2 hmac_sha256(key)
+
+=head2 hmac_sha384(key)
+
+=head2 hmac_sha512(key)
+
+Returns HMAC-SHA-1/224/256/384/512 digest of the scalar value + a passed key as a binary string.
 
 =head2 htmlencode
 
@@ -1781,6 +1835,15 @@ substring from the far end of string.
 Returns value b if scalar eq a, a if scalar eq b and sets scalar to
 returned value.
 
+=head2 tr(search-list, replacement-list)
+
+Transliterates all occurrences in the scalar of the characters found
+in the search list with the corresponding character in the replacement
+list. See C<perldoc perlop> for more information regarding the perl
+C<tr> operator.
+
+ <null:foo $foo.tr('_-', '+/')>
+
 =head2 trim
 
 Trim the whitespace from the front and back of a string.
@@ -1795,7 +1858,7 @@ Upper case first letter of string.
 
 =head2 urlencode
 
-Consider the scalar value to be URL and encode appropriately.
+Consider the scalar value to be a URL and encode appropriately.
 
 =head1 SEE ALSO
 
@@ -1806,6 +1869,10 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<E<lt>nullE<gt>>, C<E<lt>sinkE<gt>>,
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.47  2012/02/06 18:43:15  eutl420
+# - added --base64 option for encoding strings as base64
+# - added pod for --base64 and new methods in in Scalar.pm: base64,tr,hmac_sha1, hmac_sha244, hmac_sha256, hmac_sha384, hmac_sha512
+#
 # Revision 1.46  2011/09/29 13:00:22  eutl420
 # pod tweak
 #
