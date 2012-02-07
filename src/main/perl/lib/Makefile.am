@@ -70,11 +70,13 @@ BEDROCK_CONTEXT=$(perl5bedrockcontextlib_DATA:.pm=.pm.in)
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
 
+BEDROCK_HTML=$(perl5bedrockhtmllib_DATA:.pm=.pm.in)
+
 perl5bedrockfilterlib_DATA = \
     Bedrock/Filter/xls.pm \
     Bedrock/Filter/csv.pm
 
-BEDROCK_HTML=$(perl5bedrockhtmllib_DATA:.pm=.pm.in)
+BEDROCK_FILTER=$(perl5bedrockfilterlib_DATA:.pm=.pm.in)
 
 perl5bedrockinputsourcelib_DATA = \
     Bedrock/InputSource/Term.pm
@@ -231,6 +233,7 @@ dist_noinst_DATA = \
     $(BEDROCK_APACHE) \
     $(BEDROCK_CONTEXT) \
     $(BEDROCK_HTML) \
+    $(BEDROCK_FILTER) \
     $(BEDROCK_INPUTSOURCE) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \
