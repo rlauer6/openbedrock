@@ -5,7 +5,6 @@ perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 
-perl5bedrockfilterlibdir             	  = $(perl5libdir)/Bedrock/Filter
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockinputsourcelibdir          	  = $(perl5libdir)/Bedrock/InputSource
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
@@ -22,10 +21,11 @@ perl5bedrocktexttagxtermlibdir 		  = $(perl5libdir)/Bedrock/Text/TagX/Term
 perl5bedrockxmllibdir          		  = $(perl5libdir)/Bedrock/XML
 perl5bedrockxmlcontainerlibdir 		  = $(perl5libdir)/Bedrock/XML/Container
 
-perl5blmlibdir                = $(perl5libdir)/BLM
+perl5blmlibdir                    = $(perl5libdir)/BLM
+perl5blmfilterlibdir              = $(perl5libdir)/BLM/Filter
 perl5blmindexedtablehandlerlibdir = $(perl5libdir)/BLM/IndexedTableHandler
-perl5blmstartuplibdir 	      = $(perl5libdir)/BLM/Startup
-perl5blmstartupsessionlibdir  = $(perl5libdir)/BLM/Startup/Session
+perl5blmstartuplibdir 	          = $(perl5libdir)/BLM/Startup
+perl5blmstartupsessionlibdir      = $(perl5libdir)/BLM/Startup/Session
 
 
 perl5lib_DATA = Bedrock.pm
@@ -72,11 +72,11 @@ perl5bedrockhtmllib_DATA = \
 
 BEDROCK_HTML=$(perl5bedrockhtmllib_DATA:.pm=.pm.in)
 
-perl5bedrockfilterlib_DATA = \
-    Bedrock/Filter/xls.pm \
-    Bedrock/Filter/csv.pm
+perl5blmfilterlib_DATA = \
+    BLM/Filter/xls.pm \
+    BLM/Filter/csv.pm
 
-BEDROCK_FILTER=$(perl5bedrockfilterlib_DATA:.pm=.pm.in)
+BEDROCK_FILTER=$(perl5bblmfilterlib_DATA:.pm=.pm.in)
 
 perl5bedrockinputsourcelib_DATA = \
     Bedrock/InputSource/Term.pm
