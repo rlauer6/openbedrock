@@ -44,7 +44,8 @@ perl5bedrocklib_DATA = \
     Bedrock/InputSource.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/Log.pm \
-    Bedrock/Plugin.pm
+    Bedrock/Plugin.pm \
+    Bedrock/Template.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
 
