@@ -44,6 +44,9 @@ use File::Basename;
 use Carp;
 use IO::File;
 
+use Crypt::CBC;
+use Crypt::DES;
+
 # deprecated in favor of CGI.pm
 sub args {
   my $self = shift;
@@ -77,6 +80,8 @@ sub content {
 #           Content-Type => scalar | []
 #           filename     => name of file
 #           maxsize      => 0/undef, unlimited
+#           passkey      => encryption passkey
+#           ciper        => encryption ciper (defaults to DES)
 
 sub upload_file {
   my $self     = shift;
@@ -145,7 +150,6 @@ sub upload_file {
                )
               );
 
-  open TEMPFILE, ">$uploaded_file";
   my $buffer;
   my $bytesread;
   my $size;
@@ -157,26 +161,51 @@ sub upload_file {
     $maxsize = $1 * 1024 * 1024 if $maxsize =~ /^(\d+)m/i;
   }
 
+  my $cipher;
+
+  if ( $options->{passkey} ) {
+    $options->{'cipher'} = $options->{'cipher'} || 'DES';
+    $cipher = Crypt::CBC->new( -cipher => $options->{cipher},
+				  -key => $options->{passkey}
+			     );
+
+    $cipher->start('encrypting');
+    $uploaded_file .= '.enc';
+  }
+    
+  open TEMPFILE, ">$uploaded_file";
+
   while ( $bytesread = read( $fh, $buffer, 4096 ) ) {
     $size += $bytesread;
     die "File size limit reached.\n"
     if $maxsize && $size >= $maxsize;
     &LOG_MESSAGE( MSG_DEBUG,
                   sprintf( "upload_file bytes read: %d", $bytesread ) );
-    print TEMPFILE $buffer;
+
+    if ( $cipher ) {
+      print TEMPFILE $cipher->crypt( $buffer );
+    }
+    else {
+      print TEMPFILE $buffer;
+    }
   }
+
+  print TEMPFILE $cipher->finish
+    if $cipher;
 
   close TEMPFILE;
 
   if ( -s $uploaded_file ) {
     my @l    = stat($uploaded_file);
+
     my $stat = Bedrock::Hash->new;
-    @{$stat}
-    {qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)}
-    = @l;
+    @{$stat}{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @l;
+
     $stat->{file}           = $uploaded_file;
     $stat->{$form_var}      = "$name$ext";
     $stat->{'content-type'} = $upload_content_type;
+    $stat->{'cipher'}       = $options->{'cipher'} if $options->{'cipher'};
+
     return $stat;
   }
   else {
@@ -424,6 +453,9 @@ sub header {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.24  2012/02/15 20:03:56  eutl420
+# - encrypt files before writing to disk using Crypt::CBC
+#
 # Revision 1.23  2011/12/28 17:17:19  eutl420
 # - remove supurious warning message
 #
