@@ -149,6 +149,8 @@ dnl
 ads_PERL_MODULE([Apache2::Const], [REQUIRED])
 ads_PERL_MODULE([AppConfig], [REQUIRED])
 ads_PERL_MODULE([Carp], [REQUIRED])
+ads_PERL_MODULE([Crypt::CBC])
+ads_PERL_MODULE([Crypt::DES])
 ads_PERL_MODULE([CGI], [REQUIRED], [3.15])
 ads_PERL_MODULE([Cwd],  [REQUIRED])
 ads_PERL_MODULE([DBI], [REQUIRED], [1.13])
