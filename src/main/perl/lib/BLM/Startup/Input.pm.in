@@ -170,7 +170,7 @@ of type C<FILE>):
   <if $input.upfile>
   <try>
    <null:file_info $input.upload_file('upfile')>
-   Successfully upload file <var $file_info.file>, size: <var $file_info.size>
+   Successfully uploaded file <var $file_info.file>, size: <var $file_info.size>
   <catch>
    Error uploading file <var $input.upfile>
   </try>
@@ -235,6 +235,25 @@ data associated with the file described below.
 
 Name of the file as it existed on the clientE<039>s system.
 
+I<NOTE: The HTML form variable that contains the name of the file to
+be uploaded is of type C<file>:>
+
+  <input type="file" name="upfile">
+
+I<Do not not use the value of this variable ( for example:
+C<$input.upfile> ) in pages that process the form.  Instead, the
+return value of the C<upload_file()> method call will include a member
+of the same name that will contain the name of the file uploaded by
+the browser.>
+
+Example:
+
+ <null:file_info $input.upload_file('upfile')>
+
+B<Use> C<$file_info.upfile>, B<not> C<$input.upfile> in the Bedrock page
+that processes your form.  C<$file_info.upfile> will contain the name of
+the file (on the client) that was uploaded by the browser.
+
 =item content-type
 
 The mime type of the file, as reported by the browser.
@@ -243,26 +262,9 @@ The mime type of the file, as reported by the browser.
 
 Name of the file that as it now resides on the web server.
 
-I<NOTE:> The CGI variable that contains the name of the file to be uploaded and is of type C<file>:
-
-  <input type="file" name="upfile">
-
-and has a dual nature (itE<039>s a file handle too!) that makes it unsuitable
-for consumption by Bedrock as a Bedrock scalar.  Thus in your page
-that processes the form that contains that variable you should use the
-copy of the name of the file returned in the C<upload_file> hash
-object as that is a true Bedrock scalar.  So, for example, if you named the CGI
-variable C<upfile> as in the example above and you executed the
-following Bedrock statement:
-
- <null:file_info $input.upload_file('upfile')>
-
-...then C<$file_info.upfile> would contain the name of the file (as it
-was represented by the client) that was uploaded.
-
 =item cipher
 
-Name of the cipher used to encrypt the file if the C<passkey> was
+Name of the cipher used to encrypt the file if C<passkey> was
 given in the option list.
 
 =back
@@ -291,17 +293,19 @@ Name you would like to give the file if not the default name as uploaded.
 
 =item path 
 
-The path to the upload directory where the file should be stored.  The
-web server process should be able to write to this directory of
-course.  Defaults to either:
+The path to the upload directory where the file should be stored.
+Make sure the web server is able to write to this directory by setting
+the proper permissions.  
 
-$config.UPLOAD_PATH (as defined in tagx.xml) or F< E<sol>tmp >
+Defaults to either:
+
+C<$config.UPLOAD_PATH> (as defined in F<tagx.xml>) or F< E<sol>tmp >
 
 =item content-type
 
-Either the mime-type or an array reference to a list of mime-types
+Either the I<mime type> or an array reference to a list of mime types
 that are acceptable.  This allows you to restrict the type of files
-that are accetable to upload. If the mime-type is not one of the types
+that are accetable to upload. If the mime type is not one of the types
 in your list the method will raise an exception.
 
   <null:file_info $input.upload_file('upfile', content-type, 'application/pdf')>
@@ -327,25 +331,92 @@ option.  Keep in mind the cipher must be installed on your web server!
 =head1 SANITIZING INPUT
 
 Form input may contain unwanted and potentially harmful input.
-Consider sanitizing your input before injecting it back into a page.
+Consider sanitizing your input before injecting it back into a page or
+using it in things like query strings.
 
 You can do this yourself in any one of a number of ways, however,
-Bedrock provides a way to do this transparently.
+Bedrock can strip potentially harmful HTML elements from the C<$input>
+object transparently.
 
-The input object will filter form input through HTML::Scrubber if you
-have defined a configuration object for the C<BLM::Startup::Input>
-object in F<tagx.xml> named C<scrubber>.  The C<scrubber> object can
-contain a C<deny> or an C<allow> scalar that defines the tags are
-either denied or those that are allowed.
+The C<$input> object can filter form input through C<HTML::Scrubber>
+if you have defined a configuration object for the
+C<BLM::Startup::Input> object in F<tagx.xml> of the name C<scrubber>.
+
+The C<scrubber> object can contain a C<deny> or an C<allow> scalar
+that defines the tags are either denied or those that are allowed.
+
+Example:
 
   <scalar name='allow'>b i p</scalar>
 
+...would only allow the specified HTML tags.
+
+  <scalar name="deny">script style</scalar>
+
+...would allow everything except the C<E<lt>scriptE<gt>> and
+C<E<lt>styleE<gt>> tags.
+
 See the C<HTML::Scrubber> documentation for more detail.
+
+=head1 ENCRYPTING UPLOADED FILES
+
+There may be times when you want to upload a file to the file server
+but want to immediately encrypt the file.  Bedrock supports the
+ability to encrypt the file as it is being written to disk by
+specifying encyrption options to the C<upload_file()> method.
+
+Files written in this fashion are never written to the server
+I<unencrytped>.  They are I<encrypted> as the data is read from the
+clientE<039>s browser and written to disk immediately in that form.
+Encrypted files will include the extension C<.enc> when they are
+stored on the web server.
+
+Encryption is accomplished using the Perl module C<Crypt::CBC> which
+utilizes other Perl modules (ciphers) to actually encrypt the data
+using a variety of algorithms.  By default, Bedrock will use the
+C<Crypt::DES> cipher.
+
+To encrypt a file during the upload process, you specify a C<passkey> and
+optionally a C<cipher> which implements the encryption algortithm.
+
+ <null $input.upload_file('upfile', 'passkey', $session.secret_key)>
+
+ <null $input.upload_file('upfile', 'passkey', $session.secret_key, 'cipher', 'Blowfish')>
+
+The C<passkey> can be a B<phrase>, a B<password> or some other B<token>
+that you will eventually pass to another program that decrypts the file.
+
+Encrypted files are compatible with the encryption format used by the
+I<OpenSSL> package.
+
+Decrypt a file using C<openssl>:
+
+  $ openssl enc -d -des-cbc -pass pass:flintstone -in myfile.pdf.enc -out myfile.pdf
+
+Typically a C<passkey> is a combination of a password known to the
+user and some other token or set of tokens known only to the server,
+that are converted into a secret key.  The secret key is then used to
+encrypt and decrypt the file.  
+
+Using this technique, the client supplies a password and the server
+provides its own token or password.  Together these values are used to
+form the secret key that can be used to unlock the encrypted file.
+Using both a client password and a server password, in addition to an
+algorithm that generates the secret key can provide somewhat better
+security than using a password alone.  While this is not necessarily
+the most secure way of encrypting a file, it can offer a good way to
+keep casual eyes off of files and allow access to files to only those
+that are actually authorized.
+
+<plugin:SHA>
+
+<null:secret_key $SHA.hmac_256_base64($input.passkey, $session.passkey)>
+<null:file_info $input.upload_file('upfile', 'passkey', $secret_key)>
 
 =head1 NOTES
 
 The C<upload_file> method will throw exceptions if an error occurs or
-if the mime-type of the file is not one of the types you specify.
+if the mime type of the file is not one of the types you specify.
 
 =head1 AUTHOR
 
@@ -358,6 +429,9 @@ Rob Lauer - rlauer@signatureinfo.com
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.26  2012/02/24 19:11:28  eutl420
+# -pod enhancements for file encryption
+#
 # Revision 1.25  2012/02/20 19:23:50  eutl420
 # - pod editing
 #
