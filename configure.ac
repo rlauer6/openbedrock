@@ -170,6 +170,8 @@ ads_PERL_MODULE([IO::Handle], [REQUIRED])
 # IO::Scalar is from the IO-stringy package, available here:
 #     http://www.cpan.org/modules/by-module/IO/
 ads_PERL_MODULE([IO::Scalar], [REQUIRED])
+ads_PERL_MODULE([IPC::Shareable], [REQUIRED])
+ads_PERL_MODULE([Time::HiRes], [REQUIRED])
 #
 ads_PERL_MODULE([JSON], [REQUIRED])
 ads_PERL_MODULE([MIME::Base64], [REQUIRED])
