@@ -65,6 +65,112 @@ use Pod::Html;
 use IO::Scalar;
 use IO::File;
 
+use Time::HiRes qw/gettimeofday/;
+
+use IPC::Shareable;
+
+# +-------------------------+
+# | Bedrock Config Cacheing |
+# +-------------------------+
+#
+# Basics:
+#
+# - cacheing Bedrock's config object avoids a lot of config file
+#   mashing which includes, file I/O, XML parsing, and merging of hash
+#   objects
+# 
+# - could be employed with either mod_perl or CGIs
+#
+# - The shared memory segment is created by the Apache parent process
+#   when a `startup.pl' script is invoked.  It creates the segment
+#   thusly:
+#
+#     tie %X, 'IPC::Shareable', { key => 'BCFG', create => 1, destroy => 1 };
+#   
+#   For a non-mod_perl environment (Bedrock running as a perl CGI
+#   script) you would need to run the `startup.pl' script at boot time
+#   or before your Apache server was started.  Also, you would NOT
+#   want the shared memory destroyed when the process terminates, thus
+#   you would set `destroy => 0', but would need to provide for some
+#   other way to clean up the shared memory segment (if you were
+#   concerned about such things).
+#
+# - in this module (Apache::Bedrock) we tie the hash object
+#   (%BEDROCK_CONFIG_CACHE) to the shared memory.  We do this in an
+#   eval block in the event that the shared memory is not available.
+#   If an error occurs during the tie, we simply will have an empty
+#   hash object and thus cacheing is disabled.
+#  
+#   The absence of the shared memory key is essentially then our
+#   trigger to cache or not to cache.
+#
+# - when the Bedrock handler() method is invoked, we check the cache
+#   before creating a config object.
+#
+#     $conf = $BEDROCK_CONFIG_CACHE{$key};
+#
+#   If an object exists, great, if not, we do the config dance and
+#   create a config object.  We then store the config object back in
+#   the hash used to cache the configs.  If we're not cacheing, we do
+#   it anyway, no harm, no foul here.
+#
+# - the "key" used as the hash index in the cache (not to be confused
+#   with the shared memory "key" that allows multiple processes to
+#   access the same block of shared memory) is composed of the server
+#   name from SERVER_NAME environment variable and the absolute path
+#   to the file being processed through the handler.
+#
+#   Keeping in mind that the mod_perl handler servers many virtual
+#   hosts we need to make sure that the correct config object is
+#   accessed.  Using the key as described above to store and fetch the
+#   config object will (should) insure that the correct config object
+#   is being used for the correct virtual host and for the correct
+#   directory within that virtual host.  Recall that Bedrock allows
+#   per directory configuration via `tagx_apps.xml'.
+#
+# - the shared memory object is destroyed when the Apache parent is
+#   gracefully terminated, since we set the `destroy' flag to 1 in our
+#   `startup.pl' script which is invoked by the Apache parent process.
+#   Again, note that in this module (Apache::Bedrock) we neither
+#   create, nor destroy the shared memory segment, but we use it if it
+#   is available.
+#
+# - flushing the config cache is a simple matter of executing this
+#   code:
+#
+#     tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+#     %FOO = ();
+#
+#   We can (will) provide an external utility for this trivial process
+#   as well as add something to the Bedrock Admin pages that
+#   accomplishes this task.
+#
+# - examing the cache is equally trivial
+#
+#     use IPC::Shareable;
+#     use Data::Dumper;
+#
+#     tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+#     print Dumper( \%FOO );
+#
+# - Are there other opportunities to speed up Bedrock using cacheing?
+#   At first blush, no.  The whole point of a templating package is to
+#   merge dynamic data with templates, so we never know what dynamic
+#   data is being merged.
+#
+#   Cacheing processed pages then it seems, is a non-starter, however
+#   we could conceivably cache the raw Bedrock page, avoiding the disk
+#   access associated with reading the .roc file into memory.  Given
+#   the advances in the way the O/S handles cacheing of disk objects
+#   itself, it seems like this might not be a place where a great deal
+#   of additional benefit might be derived with optmizations efforts.
+
+use vars qw/%BEDROCK_CONFIG_CACHE/;
+
+eval {
+  tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+};
+
 my $PWD;
 my @config_files_processed;
 
@@ -213,15 +319,24 @@ sub merge_modules {
   map { $dest_modules{ $_->{'binding'} } = $_; } @{ $dest_config->{'MODULES'} };
 
   if ( $src_modules && @$src_modules ) {
-    foreach (@$src_modules) {
+    foreach ( @$src_modules ) {
 
-      $r && $r->log->debug( "overriding MODULE binding " . $_->{'binding'} )
-      if exists $dest_modules{ $_->{'binding'} };
+      $r && $r->log->debug( sprintf(
+				    "[%s]: overriding MODULE binding %s",
+				    (caller(0))[3],
+				    $_->{'binding'}
+				   )
+			  )
+	if exists $dest_modules{ $_->{'binding'} };
 
-      $r
-      && $r->log->debug(
-                 sprintf( " merging module: %s", Bedrock::Dump::compact($_) ) );
-
+      $r && $r->log->debug(
+			   sprintf( 
+				   "[%s]: merging module: [%s]", 
+				   (caller(0))[3],
+				   Bedrock::Dump::compact( $_ )
+				  )
+			  );
+      
       $dest_modules{ $_->{'binding'} } = $_;
     }
 
@@ -236,13 +351,22 @@ sub merge_config {
   # bedrock master config, local config
   my ( $dest_config, $src_config ) = @_;
 
-  $r
-  && $r->log->debug(
-       sprintf( "merging configs: %s", Bedrock::Dump::compact($dest_config) ) );
-  $r
-  && $r->log->debug(
-        sprintf( "merging configs: %s", Bedrock::Dump::compact($src_config) ) );
+  $r && $r->log->debug(
+		       sprintf(
+			       "[%s]: merging configs: [%s]",
+			       (caller(0))[3],
+			       Bedrock::Dump::compact($dest_config)
+			      )
+		      );
 
+  $r && $r->log->debug(
+		       sprintf( 
+			       "[%s]: merging configs: [%s]", 
+			       (caller(0))[3],
+			       Bedrock::Dump::compact($src_config)
+			      )
+		      );
+ 
   # merge source-config with dest-config (override)
   map { $dest_config->{$_} = $src_config->{$_} unless $_ eq 'MODULES'; }
   keys %$src_config;
@@ -260,17 +384,33 @@ sub config {
 
   $dir =~ s!/$!!;
 
-  $r && $r->log->debug( sprintf( "env: %s", Bedrock::Dump::compact( \%ENV ) ) );
+  $r && $r->log->debug( 
+		       sprintf( 
+			       "[%s]: env: %s", 
+			       (caller(0))[3], 
+			       Bedrock::Dump::compact( \%ENV )
+			      )
+		      );
 
-  $r
-  && $r->log->debug(
-        sprintf( "uri-dir: %s DOCUMENT_ROOT: %s", $dir, $ENV{DOCUMENT_ROOT} ) );
-
+  $r && $r->log->debug( 
+		       sprintf( 
+			       "[%s]: uri-dir: %s DOCUMENT_ROOT: %s", 
+			       (caller(0))[3], 
+			       $dir || '/',
+			       $ENV{DOCUMENT_ROOT}
+			      )
+		      );
+  
   $dir =~ s/^$ENV{DOCUMENT_ROOT}//;    # Bedrock shell
 
-  $r
-  && $r->log->debug(
-            sprintf( "uri-dir: %s CONFIG_PATH: %s", $dir, $ENV{CONFIG_PATH} ) );
+  $r && $r->log->debug( 
+		       sprintf( 
+			       "[%s]: uri-dir: %s CONFIG_PATH: %s", 
+			       (caller(0))[3], 
+			       $dir || '/',
+			       $ENV{CONFIG_PATH}
+			      )
+		      );
 
   # Bedrock 2 wants the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH}
   # it can be overridden or merged with local configuration files.  To
@@ -281,89 +421,132 @@ sub config {
   my $conf;
   eval { $conf = Bedrock::Config->new('tagx.xml'); };
 
-  if ($@) {
-    $r && $r->log->warn($@);
-    $r
-    && $r->log->warn(
-                 "Problem reading " . $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml" );
+  if ( $@ ) {
+    $r && $r->log->warn( $@ );
+    $r && $r->log->warn( 
+			sprintf( 
+				"[%s]: error reading %s/tagx.xml" , 
+				(caller(0))[3], 
+				$ENV{BEDROCK_CONFIG_PATH}
+			       )
+		       );
   }
 
   push @config_files_processed, $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml";
 
-  # look for data-sources.xml
+  # look for data-sources.xml which defines database connection strings
   my $db_conf;
+
   foreach my $dir (qw(BEDROCK_CONFIG_PATH CONFIG_PATH)) {
-    if ( -s $ENV{$dir} . "/data-sources.xml" ) {
-      push @config_files_processed, $ENV{$dir} . "/data-sources.xml";
-      my $conf = Bedrock::Config->new( $ENV{$dir} . "/data-sources.xml" );
+
+    my $xml_file = $ENV{$dir}    . "/data-sources.xml";
+    if ( -s $xml_file ) {
+      push @config_files_processed, $xml_file;
+
+      my $conf = Bedrock::Config->new( $xml_file );
+
       $db_conf = merge_config( $r, $conf, $db_conf || Bedrock::Hash->new() );
     }
   }
 
-  $conf->{'_dbnames'} = $db_conf if $db_conf;
+  $conf->{'_dbnames'} = $db_conf 
+    if $db_conf;
 
+  # look for a tagx.xml that will be used with or instead of Bedrock's tagx.xml
   if ( -r $ENV{CONFIG_PATH} . '/tagx.xml' ) {
     if ( !$conf || $conf->{REPLACE_CONFIG} =~ /^y/i ) {
+      $r && $r->log->debug( 
+			   sprintf( 
+				   "[%s]: [%s/tagx.xml] replaces system [%s/tagx.xml].",
+				   (caller(0))[3],
+				   $ENV{CONFIG_PATH}, 
+				   $ENV{BEDROCK_CONFIG_PATH}
+				  )
+			  );
 
-      $r
-      && $r->log->debug( sprintf( "%s/tagx.xml replaces system %s/tagx.xml.",
-                                  $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH}
-                                )
-                       );
       $conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
       push @config_files_processed, $ENV{CONFIG_PATH} . '/tagx.xml';
     }
     else {
       my $local_conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
-      $conf =
-      ( $local_conf->{REPLACE_CONFIG} =~ /^y/i )
-      ? $local_conf
-      : merge_config( $r, $conf, $local_conf );
+
+      $conf = ( $local_conf->{REPLACE_CONFIG} =~ /^y/i ) ? $local_conf : merge_config( 
+										      $r, 
+										      $conf, 
+										      $local_conf
+										     );
       push @config_files_processed, $ENV{CONFIG_PATH} . '/tagx.xml';
     }
   }
 
   $r && $r->log->debug( "config: " . Bedrock::Dump::compact($conf) );
 
-  die sprintf(
-"No or empty 'tagx.xml' found.\n\nBEDROCK_CONFIG_PATH: [%s]\nCONFIG_PATH: [%s]\n",
-    $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH} )
-  unless $conf && keys %$conf;
+  die sprintf( "No or empty 'tagx.xml' found.\n" .
+	       "BEDROCK_CONFIG_PATH: [%s]\n" .
+	       "CONFIG_PATH: [%s]\n",
+	       $ENV{BEDROCK_CONFIG_PATH}, 
+	       $ENV{CONFIG_PATH} )
+    unless $conf && keys %$conf;
 
 # Look for auxillary application configurations and merge with (or replace)  master
 
   my @app_conf_files;
 
   my ( $dummy, $framework_dir ) = split /\//, $dir;
-  $r
-  && $r->log->debug("Looking for framework config file [${framework_dir}.xml");
 
-  my $framework_conf =
-  sprintf( "%s/framework/%s.xml", $ENV{CONFIG_PATH}, $framework_dir );
+  my $framework_conf = sprintf( 
+			       "%s/framework/%s.xml", 
+			       $ENV{CONFIG_PATH}, 
+			       $framework_dir
+			      );
 
-  $r
-  && $r->log->debug(
-        sprintf( "%s %s", ( -s $framework_conf ) ? "FOUND" : "DID NOT FIND" ) );
+  $r && $r->log->debug(
+		       sprintf(
+			       "[%s]: reading framework config file: [%s.xml]...%s",
+			       (caller(0))[3],
+			       $framework_dir,
+			       ( -s $framework_conf ) ? "FOUND" : "NOT FOUND" 
+			      )
+		      );
+
   push @app_conf_files, $framework_conf if -s $framework_conf;
+
 
   # look for more config files to merge
   foreach my $path ( ( $ENV{BEDROCK_CONFIG_PATH} . ".d",
                        $ENV{CONFIG_PATH},
                        $ENV{CONFIG_PATH} . ".d"
                      )
-                   )
-  {
-    $r
-    && $r->log->debug( sprintf( "Looking for config files in [%s]\n", $path ) );
+                   ) {
+
+    $r && $r->log->debug( 
+			 sprintf( "[%s]: reading config files: [%s]", 
+				  (caller(0))[3], 
+				  $path 
+				)
+			);
 
     next unless -d $path;
+
     local (*CONFIG_FILES);
     opendir CONFIG_FILES, "$path";
+
     while ( my $file = readdir CONFIG_FILES ) {
       next unless $file =~ /\.xml$/ && $file !~ /^(tagx|tagx_apps)\.xml$/;
-      $r && $r->log->debug("Merging configuration file: $file");
-      $conf = merge_config( $r, $conf,
-                           Bedrock::Config->newFromXML( $path . '/' . $file ) );
+
+      $r && $r->log->debug( 
+			   sprintf(
+				   "[%s]: merging config file: [%s]",
+				   (caller(0))[3],
+				   $file
+				  )
+			  );
+
+      $conf = merge_config( $r, 
+			    $conf,
+			    Bedrock::Config->newFromXML( $path . '/' . $file )
+			  );
+
       push @config_files_processed, $path . '/' . $file;
     }
     closedir CONFIG_FILES;
@@ -371,11 +554,14 @@ sub config {
 
   # look for module configs
   my @module_paths;
+
   foreach (qw/startup plugin/) {
+
     push @module_paths, $ENV{CONFIG_PATH} . ".d/" . $_
-    if -d $ENV{CONFIG_PATH} . ".d/" . $_;
+      if -d $ENV{CONFIG_PATH} . ".d/" . $_;
+
     push @module_paths, $ENV{BEDROCK_CONFIG_PATH} . ".d/" . $_
-    if -d $ENV{CONFIG_PATH} . ".d/" . $_;
+      if -d $ENV{CONFIG_PATH} . ".d/" . $_;
   }
 
   foreach my $path (@module_paths) {
@@ -384,17 +570,22 @@ sub config {
 
     while ( my $file = readdir CONFIG_FILES ) {
       next unless $file =~ /\.xml$/;
-      $r && $r->log->debug("Loading configuration file: $file");
+
+      $r && $r->log->debug(
+			   sprintf(
+				   "[%s]: loading config file: [%s]", 
+				   (caller(0))[3], 
+				   $file
+				  )
+			  );
+
       merge_modules( $r, $conf,
                      { MODULES =>
                        [ Bedrock::Config->newFromXML( $path . '/' . $file ) ]
                      }
                    );
+
       push @config_files_processed, $path . '/' . $file;
-      $r
-      && $r->log->debug(
-          sprintf( "[Apache::Bedrock] Directory requested: [%s]", $r->filename )
-      );
     }
 
     closedir CONFIG_FILES;
@@ -405,27 +596,46 @@ sub config {
   push @app_conf_files, $conf->{'APP_CONFIG'} if $conf->{'APP_CONFIG'};
 
   foreach my $dir_conffile (@app_conf_files) {
-    $r
-    && $r->log->debug(
-       sprintf( "Loading application configuration file: %s", $dir_conffile ) );
-
+    $r && $r->log->debug(
+			 sprintf( 
+				 "[%s]: loading app config file: [%s]", 
+				 (caller(0))[3],
+				 $dir_conffile
+				)
+			);
+    
     # Load the config file
     my $dir_conf = Bedrock::Config->new($dir_conffile);
     push @config_files_processed, $dir_conffile;
 
     my $dir_path = '/';
+    my %dirconfs;
 
     foreach my $dir_part ( undef, split /\//, $dir ) {
       $dir_path .= $dir_part;
 
+      next if $dirconfs{$dir_path};
+
+      $dirconfs{$dir_path} = $dir_path;
+      
       # Look up the app config, based on directory of current request
-      $r
-      && $r->log->debug(
-            "Looking up directory configuration [$dir_path] in config object.");
       my $app_conf = $dir_conf->{$dir_path} || $dir_conf->{ $dir_path . '/' };
 
-      $conf = merge_config( $r, $conf, $app_conf ) if $app_conf;
-      $dir_path .= '/' unless $dir_path eq '/';
+      $r && $r->log->debug(
+			   sprintf(
+				   "[%s]: reading directory config [%s]...%s",
+				   (caller(0))[3],
+				   $dir_path,
+				   $app_conf ? 'FOUND' : 'NOT FOUND'
+				  )
+			  );
+
+
+      $conf = merge_config( $r, $conf, $app_conf ) 
+	if $app_conf;
+
+      $dir_path .= '/'
+	unless $dir_path eq '/';
     }
   }
 
@@ -440,7 +650,8 @@ sub error {
   my $mesg = shift;
   my $code = shift || SERVER_ERROR;
 
-  $r && $r->log_error($mesg);
+  $r && $r->log_error( $mesg );
+
   chdir $PWD;
   return $code;
 }
@@ -453,15 +664,10 @@ sub show_pod {
   my $bedrock_admin_dir = $conf->{BEDROCK_ADMIN_DIR} || '/bedrock';
   my $outfile           = tmpnam;
 
-  &pod2html( '--infile',
-             $file,
-             '--outfile',
-             $outfile,
-             '--cachedir',
-             File::Spec->tmpdir(),
-             $conf->{BEDROCK_POD_CSS_URL}
-             ? "--css=" . $conf->{BEDROCK_POD_CSS_URL}
-             : ()
+  &pod2html( '--infile', $file,
+	     '--outfile', $outfile,
+             '--cachedir', File::Spec->tmpdir(),
+             $conf->{BEDROCK_POD_CSS_URL} ? "--css=" . $conf->{BEDROCK_POD_CSS_URL} : ()
            );
 
   # in the off chance somebody puts the stupid Bedrock images some place else
@@ -626,23 +832,21 @@ sub blm_ul {
   my %blm_listing;
 
   # just the names
-
   foreach (@_) {
     $blm_listing{$_} = $blms->{$_};
     $blm_listing{$_} =~ s/^(.*)::(.*)$/$2/;
   }
 
   $html = sprintf( "<h2>%s</h2>\n", $h2 );
-  return $html . sprintf(
-    "<ul>\n%s\n</ul>\n",
-    join(
-      "\n",
-      map {
-        sprintf( q{<li><a href="%s/plugins/%s">%s</a>},
-                 $bedrock_admin_dir, $_, $blm_listing{$_} )
-      } @_
-    )
-  );
+
+  my $li = '<li><a href=\"%s/plugins/%s\">%s</a>';
+  $html .= sprintf( 
+		   "<ul>\n%s\n</ul>\n",
+		    join("\n", map {  sprintf( $li, $bedrock_admin_dir, $_, $blm_listing{$_} ) } @_)
+		  );
+
+
+  return $html;
 }
 
 # +------------------------------+
@@ -652,17 +856,37 @@ sub blm_ul {
 sub handler {
   my $r = shift;
 
-  my $file;
+  # start HiRes timer
+  my ($start_seconds, $start_microseconds) = gettimeofday();
 
-  $r && $r->log->debug("[Apache::Bedrock] started");
+  $r && $r->log->info(
+		       sprintf(
+			       "[%s]: Apache::Bedrock started.", 
+			       (caller(0))[3]
+			       )
+		      );
+
+  $r && $r->log->debug(
+		       sprintf(
+			       "[%s]: request object: [%s]",
+			       (caller(0))[3],
+			       ref( $r )
+			      )
+		      );
+
+  my $file = "";
 
 # - under mod_perl naked directory requests, intended for the bedrock controller
 #   are passed along prior to file checking.  Thus the content_type is directory
   if ( $r->content_type =~ /directory/ ) {
-    $r
-    && $r->log->debug(
-       sprintf( "[Apache::Bedrock] Directory requested: [%s]", $r->filename ) );
-    $file = "";
+    $r && $r->log->debug(
+			 sprintf( 
+				 "[%s]: directory requested: [%s]", 
+				 (caller(0))[3],
+				 $r->filename
+				)
+			);
+
     $ENV{PATH_TRANSLATED} = $r->filename;
     $r->content_type('text/html');
   }
@@ -673,31 +897,81 @@ sub handler {
 #   8<
   else {
     $file = $r->filename;
-    $r
-    && $r->log->debug(
-            sprintf( "[Apache::Bedrock] File requested: [%s]", $r->filename ) );
+
+    $r && $r->log->debug( sprintf( 
+				  "[%s]: file requested: [%s]", 
+				  (caller(0))[3],
+				  $r->filename
+				 )
+			);
   }
 
   my $path_info = $ENV{PATH_INFO};
   $path_info =~ s/(.*?)\/$/$1/;
 
-  $r
-  && $r->log->debug(
-    sprintf(
-"[Apache::Bedrock] request file: [%s],  PATH_INFO: [%s],  PATH_TRANSLATED: [%s]",
-      $file, $path_info, $ENV{PATH_TRANSLATED}
-    )
-  );
+  $r && $r->log->debug( sprintf( "[%s]: request file.....[%s] " , (caller(0))[3], $file ) );
+  $r && $r->log->debug( sprintf( "[%s]: URI..............[%s] " , (caller(0))[3], $r->uri ) );
+  $r && $r->log->debug( sprintf( "[%s]: PATH_INFO........[%s] " , (caller(0))[3], $path_info ) );
+  $r && $r->log->debug( sprintf( "[%s]: PATH_TRANSLATED..[%s] " , (caller(0))[3], $ENV{PATH_TRANSLATED} ) );
 
   # Parse for the URI components
   my ( $uri_name, $uri_dir ) = &fileparse( $r->uri );
 
   my $conf;
-  eval { $conf = &config( $r, $uri_dir ); };
 
-  if ($@) {
-    &error( $r, "[Apache Bedrock] Could not read config file. $@" );
+  if ( $file && $ENV{BEDROCK_CACHE_CONFIG} && $ENV{BEDROCK_CACHE_CONFIG} =~/^y/i ) {
+    my ( $name, $path ) = &fileparse( $file );
+    my $key = $ENV{SERVER_NAME} . ':' . $path;
+
+    $r->log->debug(
+		   sprintf(
+			   "[%s]: cache contents: [%s]",
+			   (caller(0))[3],
+			   Bedrock::Dump::compact( [ keys %BEDROCK_CONFIG_CACHE ] )
+			  )
+		  );
+		    
+    $r->log->debug( sprintf(
+			    "[%s]: checking config cache: [%s]",
+			    (caller(0))[3],
+			    $key
+			   )
+		  );
+    
+    $conf = $BEDROCK_CONFIG_CACHE{$key};
+
+    unless ( $conf ) {
+      eval { $conf = &config( $r, $uri_dir ); };
+      $BEDROCK_CONFIG_CACHE{$key} = $conf;
+    }
+    else {
+      $r->log->debug( sprintf(
+			      "[%s]: using config from cache: [%s]",
+			      (caller(0))[3],
+			      $key
+			     )
+		    );
+    }
+  }
+  else {
+    eval { $conf = &config( $r, $uri_dir ); };
+  };
+
+
+  my ($seconds, $microseconds) = gettimeofday();
+
+  $r->log->debug(
+		 sprintf("[%s]: config processing complete: %s", 
+ 			 (caller(0))[3], 
+			 ($seconds - $start_seconds) + 
+			 ($microseconds - $start_microseconds)/1000000,
+			)
+		);
+
+  if ( $@ ) {
+    &error( $r, sprintf("[%s]: Could not read config file. $@", (caller(0))[3]) );
     my $config_files_listing = join( "\n", @config_files_processed );
+
     unless ( ref($r) =~ /shell/i ) {
       print <<eot;
 Content-type: text/html
@@ -759,38 +1033,41 @@ eom
 
   my $bedrock_admin_dir = $conf->{BEDROCK_ADMIN_DIR} || '/bedrock';
 
-  if ($file) {
+  if ( $file ) {
     unless ( $r->content_type eq 'text/html' ) {
-      &error( $r, "[Apache Bedrock] content type: Content-type not text/html" );
+      &error( $r, sprintf("[%s]: content type: Content-type not text/html", (caller(0))[3]) );
       return DECLINED;
     }
 
     unless ( -e $r->filename ) {
-      &error( $r, "[Apache Bedrock] File does not exist: $file" );
+      &error( $r, sprint("[%s]: file does not exist: [%s]", (caller(0))[3], $file) );
       return NOT_FOUND;
     }
 
     unless ( -r $r->filename ) {
-      &error( $r, "[Apache Bedrock] File permissions deny access: $file" );
+      &error( $r, sprintf("[%s]: file permissions deny access: [%s]", (caller(0))[3], $file) );
       return FORBIDDEN;
     }
   }
   elsif ( $path_info =~ /$bedrock_admin_dir\/?(.*?)$/ ) {
     $ENV{BEDROCK_REQUEST_DOC} = $1;
 
-    $r
-    && $r->log->info(
-      sprintf(
-"[Apache Bedrock] Bedrock admin directory request denied by configuration.\n"
-      )
-    ) unless ( $conf->{ALLOW_BEDROCK_INFO} =~ /(yes|docs)/i );
-    return FORBIDDEN unless $conf->{ALLOW_BEDROCK_INFO} =~ /(yes|docs)/i;
-
-    $r
-    && $r->log->debug(
-             sprintf( "[Apache Bedrock] Bedrock admin directory request [%s]\n",
-                      $ENV{BEDROCK_REQUEST_DOC} )
-                     );
+    unless ( $conf->{ALLOW_BEDROCK_INFO} =~ /(yes|docs)/i ) {
+      
+      $r && $r->log->error(  sprintf( 
+				     "[%s]: bedrock admin directory request denied by configuration!",
+				     (caller(0))[3]
+				    )
+			  );
+      return FORBIDDEN;
+    }
+    
+    
+    $r && $r->log->debug(
+			 sprintf( "[%s]: bedrock admin directory request: [%s]",
+				  (caller(0))[3],
+				  $ENV{BEDROCK_REQUEST_DOC} )
+			);
 
     my $doc = $ENV{BEDROCK_REQUEST_DOC};
 
@@ -856,11 +1133,12 @@ eom
         my $tag_file;
 
         foreach my $inc (@INC) {
+
           foreach ( "NoBody", "WithBody", "WithBody/Loop" ) {
             my $dir = sprintf( "%s/Text/TagX/TAG/%s", $inc, $_ );
-            $r
-            && $r->log->debug(sprintf( "Looking in %s for %s\n", $dir, $tag ) );
+
             opendir TAGS, $dir;
+
             while ( my $file = readdir TAGS ) {
               next unless $file =~ /$tag\.pm$/i;
               $tag_file = $dir . "/" . $file if ( -s $dir . "/" . $file );
@@ -1041,8 +1319,6 @@ eot
     }
   }
 
-  $r && $r->log->debug("[Apache::Bedrock]:$html\n");
-
   $PWD = &fastcwd unless defined($PWD);
 
   local ( $SIG{__DIE__}, $SIG{__WARN__} );
@@ -1055,9 +1331,12 @@ eot
 
     unless ($controller) {
       &error(
-        $r,
-"[Apache Bedrock] no framework object defined in 'tagx_apps.xml' for this directory."
-      );
+	     $r,
+	     sprintf(
+		     "[%s]: no framework object defined in 'tagx_apps.xml' for this directory.",
+		     (caller(0))[3]
+		    )
+	    );
       return NOT_FOUND;
     }
 
@@ -1109,7 +1388,7 @@ eot
 
   unless ($html) {
     unless ( chdir $app_dir ) {
-      return &error( $r, "[Apache Bedrock] chdir($app_dir) failed: $!" );
+      return &error( $r, sprintf("[%s] chdir($app_dir) failed: [%s]", (caller(0))[3], $!) );
     }
   }
 
@@ -1117,45 +1396,64 @@ eot
   my $tx;
   my $html_fd;
 
-  if ($controller) {
-    $r
-    && $r->log->debug(
-"[Apache Bedrock] Bedrock framework found in 'tagx_apps.xml', assuming this is a framework application ;-)"
-    );
+  if ( $controller ) {
+    $r && $r->log->debug( sprintf(
+				  "[%s]: Bedrock framework found in 'tagx_apps.xml'" .
+				  " assuming this is a framework application ;-)", 
+				  (caller(0))[3]
+				 )
+			);
 
     unless ( $controller->{pages} ) {
       return
-      &error(
-        $r,
-"[Apache Bedrock] Misconfigured Bedrock framework - no 'pages' object found!"
-      );
+	&error( $r,
+		sprintf("[%s]: misconfigured Bedrock framework - no 'pages' object found!", (caller(0))[3])
+	      );
     }
 
     unless ($page) {
       &error(
-        $r,
-"[Apache Bedrock] No page specified or no default 'page' set in Bedrock framework."
-      );
+	     $r,
+	     sprintf("[%s]: no page specified or no default 'page' set in Bedrock framework.", (caller(0))[3])
+	    );
     }
 
     my $action = $ctx->getInputValue("action") || "default";
-    $r
-    && $r->log->debug(
-          sprintf( "[Apache Bedrock] bedrock framework page: [%s] action: [%s]",
-                   $page, $action
-                 )
-    );
+
+    $r && $r->log->debug(
+			 sprintf( 
+				 "[%s]: bedrock framework page: [%s] action: [%s]",
+				 (caller(0))[3],
+				 $page, 
+				 $action
+				)
+			);
 
     my $page_def = $controller->{pages}->{$page};
 
     unless ($page_def) {
-      $r
-      && $r->log->warn(
-"[Apache Bedrock] No Bedrock framework definition for [$page] using defaults..."
-      );
-      $html = sprintf(
-"<html>\n<body>\n<b>Bedrock framework: </b>Page Under Construction - no controller for '%s'</b></body></html>",
-        $page );
+
+      $r && $r->log->warn(
+			  sprintf(
+				  "[%s]: no Bedrock framework definition for [%s] using defaults.",
+				  (caller(0))[3],
+				  $page
+				 )
+			 );
+
+      $html =<<end_of_html;
+<html>
+<head>
+<title>Bedrock Framework</title>
+</head>
+
+<body>
+<b>Bedrock framework:</b> Page Under Construction - no controller for '$page'
+</body>
+
+</html>
+end_of_html
+
     }
     else {
       $html .= "<html>\n" . build_head_section( $controller, $page );
@@ -1208,15 +1506,24 @@ eot
   $default_framework_log =
   sprintf( "%s.bedrock-framework", $default_framework_log );
 
-  my $f =
-    ( $conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp' ) . '/'
-  . ( $uri_name || $default_framework_log );
+  my $f;
+
+  # the default is to create HTML page logs...
+  unless ( $conf->{HTML_LOG} && $conf->{HTML_LOG} !~/^y/i ) {
+    $f = sprintf(
+		 "%s/%s", 
+		 $conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp',
+		 $uri_name || $default_framework_log
+		);
+  }
+
   my $sz = $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000;
 
   $tx->options( BEDROCK_PEBBLE_DIR => $conf->{'BEDROCK_PEBBLE_DIR'},
                 LOG_MAXSIZE        => $sz,
                 INCLUDE_DIR        => $conf->{INCLUDE_DIR} || ".",
                 LOG_PREFIX         => $f,
+		LOGFORMAT          => $conf->{LOGFORMAT} || '%t [%p] [%a]: %L ',
                 PEBBLE_DIR         => $conf->{'PEBBLE_DIR'},
                 ALLOW_SNIPPET_TAG  => $conf->{'ALLOW_SNIPPET_TAG'}
               );
@@ -1225,8 +1532,13 @@ eot
   # Load Generic startup BLMs
   #
   my $modules = $conf->{'MODULES'};
-  unless ($modules) {
-    return &error( $r, "Error in config file: MODULES is not defined." );
+
+  unless ( $modules ) {
+    return &error( $r, sprintf(
+			       "[%s]: error in config file: MODULES is not defined.",
+			       (caller(0))[3]
+			      )
+		 );
   }
 
   # Custom plugins
@@ -1247,18 +1559,26 @@ eot
     unless ( defined( $modconf->{'binding'} ) ) {
       return
       &error( $r,
-         "PID [$$]: Error in config: `binding' not defined for MODULES->[$i]" );
+	      sprintf(
+		      "[%s]: error in config: `binding' not defined for MODULES->[%s]",
+		      (caller(0))[3],
+		      $i
+		     )
+	    );
     }
 
     my $type = $modconf->{'type'} || 'hash';
     unless ( $type =~ /^(hash|array|handle|object)$/ ) {
-      return
-      &error(
-        $r,
-"PID [$$]: Error in config: MODULES->[$i] defined with invalid `type'($type)"
-      );
+      return &error(
+		    $r,
+		    sprintf(
+			    "[%s]: error in config: MODULES->[%s] defined with invalid `type'($type)",
+			    (caller(0))[3],
+			    $i
+			   )
+		   );
     }
-
+    
     # BLM specific configuration
     my $config = $modconf->{'config'};
 
@@ -1267,14 +1587,16 @@ eot
     if ( exists $modconf->{'header'} ) {
 
       # Croak if more than one module tries to become header module
-      if ($header) {
-        return
-        &error(
-          $r,
-"PID [$$]: Error in config: Multiple modules defined with `header': ($header, $modconf->{'binding'})"
-        );
+      if ( $header ) {
+        return &error( $r,
+		       sprintf("[%s]: error in config: Multiple modules defined with `header': (%s, %s)",
+			       (caller(0))[3],
+			       $header,
+			       $modconf->{'binding'}
+			      )
+		     );
       }
-
+      
       # Bind the header
       $header = $modconf->{'binding'};
 
@@ -1282,8 +1604,9 @@ eot
       $modfile =~ s!::!/!g;
       $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
       require $modfile;
-
+      
       my $obj;
+
       if ( $type eq 'hash' or $type eq 'object' ) {
         $obj = bless {}, $modconf->{'module'};
         tie %{$obj}, $modconf->{'module'}, $ctx, $config;
@@ -1340,28 +1663,44 @@ eot
   }
 
   # Croak if no header module
-  unless ($header) {
-    return &error( $r, "PID [$$]: Error in config file: No header module" );
+  unless ( $header ) {
+    return &error( $r,
+		   sprintf(
+			   "[%s]: error in config file: No header module",
+			   (caller(0))[3]
+			  )
+		 );
   }
 
   eval { $tx->output };
 
-  if ($@) {
+  if ( $@ ) {
     if ( $ENV{SERVER_SIGNATURE} =~ /apache/i ) {
-      $r
-      && $r->log_error(
-              "PID [$$]: Script $file encountered the following error\n    $@");
-      my $error_location =
-        $conf->{BEDROCK_ERROR_LOCATION}
-      ? $conf->{BEDROCK_ERROR_LOCATION}
-      : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+
+      $r && $r->log_error(
+			  sprintf(
+				  "[%s]: script [%s] encountered the following error:",
+				  (caller(0))[3],
+				  $file
+				 )
+			 );
+
+      $r && $r->log_error( "$@" );
+
+      my $error_location =  $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+
       $tx->show_error($error_location);
     }
     else {
-      $r
-      && $r->log_error(
-              "PID [$$]: Script $file encountered the following error\n    $@");
-
+      $r && $r->log_error( sprintf(
+				   "[%s]: script [%s] encountered the following error:",
+				   (caller(0))[3],
+				   $file
+				  )
+			   );
+      
+      $r && $r->log_error( "$@" );
+      
       # output error to STDERR
       my $line = $tx->{'error'}->line;
       my $file = $tx->{'error'}->file;
@@ -1387,8 +1726,9 @@ eot
 
       my @lines = split /\n/, $source;
       print STDERR sprintf( "Error on line [%d] (%s) - %s", $line, $file, $@ );
+
       # print the lines surrounding error
-      print STDERR sprintf( "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ] ) unless $line == 1;
+      print STDERR sprintf( "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ] ) unless $line <= 1;
       print STDERR sprintf( ">>[%3d] %s\n", $line,     $lines[ $line - 1 ] );
       print STDERR sprintf( "  [%3d] %s\n", $line + 1, $lines[ $line ] ) unless $line == @lines;
 
@@ -1420,6 +1760,16 @@ eot
     }
   }
 
+  ($seconds, $microseconds) = gettimeofday();
+
+  $r->log->info(
+		 sprintf("[%s]: processing completed in %s seconds.", 
+ 			 (caller(0))[3],
+			 ($seconds - $start_seconds) + 
+			 ($microseconds - $start_microseconds)/1000000,
+			)
+	       );
+
   return $ENV{SERVER_SIGNATURE} =~ /apache/i ? OK : 0;
 }
 
@@ -1428,6 +1778,11 @@ eot
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.59  2012/02/24 19:31:23  eutl420
+# - log messages are now in a more standard format that includes the subroutine name first
+# - some log messages have been made clearer and shorter, some moved from info to debug or debug to info
+# - we now try to tie the config cache shared memory variable and try to do config file cacheing
+#
 # Revision 1.58  2012/02/20 16:39:04  eutl420
 # - BEDROCK_USER_PEBBLE_DIR changed to PEBBLE_DIR
 #
