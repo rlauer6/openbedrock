@@ -37,6 +37,7 @@ BEGIN {
 
 use TagX::Log;
 use TagX::TAG::NoBody;
+
 use Symbol;
 use Bedrock::Plugin;
 
@@ -61,14 +62,15 @@ sub finalize {
 
   my $class = $tag_opts->{type}         || $tag_opts->{name};
   my $name  = $options{'define-plugin'} || $tag_opts->{name};
+
   $name =~ s/:://g;
 
   unless ($name) {
     $name = $class;
     if ( exists $tx->{'VARS'}->{$class} ) {
       &log_message( undef,
-                    "WARNING: Default name \$class already in use.\n"
-                    . "You probably want to use --define-var to assign an object name."
+                    "WARNING: Default name \$class already in use.\n" .
+                    "You probably want to use --define-var to assign an object name."
                   );
     }
   }
@@ -79,6 +81,7 @@ sub finalize {
     unless grep { $options{'dir-prefix'} } @INC;
   }
 
+  # adhoc addition of a PLUGIN path
   if ( $config->{PLUGIN_PATH} ) {
     my @plugin_inc = split /:/, $config->{PLUGIN_PATH};
 
@@ -88,9 +91,16 @@ sub finalize {
     }
   }
 
-  $class = 'BLM::' . $class unless $class =~ /^BLM::/;
-
-  unless ( $self->loadModule($class) ) {
+  my $plugin = ( $class =~/^BLM/ ) ? $class : 'BLM::' . $class;
+  
+  if ( $self->loadModule( $plugin ) ) {
+    $class = $plugin;
+  }
+  elsif ( $self->loadModule( $class ) ) {
+    &log_message( undef, "Successfully loaded perl class ($class)\n" )
+      if $verbose;
+  }
+  else {
     die "Could not load module: $class\n";
   }
 
@@ -98,74 +108,79 @@ sub finalize {
 
   if ( &UNIVERSAL::can( $class, 'TIEHASH' ) ) {
     &log_message( undef, "$self: creating an object of class $class" )
-    if $verbose;
+      if $verbose;
+
     $obj = {};
     tie %{$obj}, $class, @argv;
   }
   elsif ( &UNIVERSAL::can( $class, 'TIEARRAY' ) ) {
     &log_message( undef, "$self: creating an array of class $class" )
-    if $verbose;
+      if $verbose;
+
     $obj = [];
     tie @{$obj}, $class, @argv;
   }
   elsif ( &UNIVERSAL::can( $class, 'TIEHANDLE' ) ) {
     &log_message( undef, "$self: creating a handle of class $class" )
-    if $verbose;
+      if $verbose;
+
     $obj = gensym;
     tie *{$obj}, $class, @argv;
   }
   elsif ( &UNIVERSAL::can( $class, 'TIESCALAR' ) ) {
     &log_message( undef, "$self: creating a scalar of class $class" )
-    if $verbose;
-    my $scalar;
-    $obj = tie $scalar, $class;
-    $$obj = $argv[0];
+      if $verbose;
+
+    $obj = $argv[0];
+    tie $obj, $class;
   }
+  
   else {
-    die "Attempt to load invalid module: $class.\n";
+    if ( UNIVERSAL::can( $class, 'new' ) ) {
+      $obj = $class->new;
+    }
+    else {
+      die "Attempt to load invalid module: $class.\n";
+    }
   }
 
-  bless $obj, $class;
+  bless $obj, $class
+    unless ref($obj) eq $class;
 
-  if (    &UNIVERSAL::can( $class, 'new' )
-       && &UNIVERSAL::isa( $obj, 'Bedrock::Plugin' ) )
-  {
-    $obj = $obj->new(@argv);
-    $obj->verbose($verbose);
-    $obj->{_options} = Bedrock::Hash->new(%options);
-    if ( &UNIVERSAL::can( $obj, 'init_plugin' ) ) {
+  if ( UNIVERSAL::can( $class, 'new' ) ) {
+    $obj = $obj->new( @argv );
+
+    if ( UNIVERSAL::isa( $obj, 'Bedrock::Plugin' ) ) {
+      $obj->verbose( $verbose );
+      $obj->set_options( new Bedrcok::Hash( %options) );
       $tx->{'VARS'}->{ $options{'define-var'} } = $obj->init_plugin(@argv);
     }
-    $tx->{'VARS'}->{$name} = $obj;
   }
-  else {
-    $tx->{'VARS'}->{$name} = $obj;
-  }
+
+  $tx->{'VARS'}->{$name} = $obj;
 
   return $tx->{'VARS'}->{$name};
 }
 
 sub loadModule {
   my $self = shift;
-  my @mods = @_;
+  my $module = shift;
 
-  my $verbose = $self->{'config'}->{'verbose'};
-  for my $class (@mods) {
-    $class =~ s!::!/!g;
-    $class =~ s!$!.pm! unless $class =~ /\.pm$/;
-    next if $INC{$class};
-    eval { require $class; };
+  $module =~ s!::!/!g;
+  $module =~ s!$!.pm! unless $module =~ /\.pm$/;
 
-    unless ($@) {
-      &log_message( undef, "$class loaded successfully" ) if $verbose;
-    }
-    else {
-      &log_message( undef, "$class not loaded! " . $@ );
-      return 0;
-    }
-  }
+  return $module 
+    if $INC{$module};
 
-  return 1;
+  eval { require $module; };
+
+  &log_message( undef, "$module not loaded! " . $@ )
+    if $@;
+  
+  &log_message( undef, "$module loaded successfully" ) 
+    if $self->verbose && ! $@;
+  
+  return $@ ? undef : $module;
 }
 
 =head1 TAG - C<E<lt>pluginE<gt>>
@@ -268,6 +283,10 @@ C<Bedrock::Plugin>, C<Bedrock::Application::Plugin>, C<E<lt>pebbleE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.15  2012/02/24 19:39:59  eutl420
+# - cleaned up loadModule() method which seemed to have some dead code
+# - in finalize() we now load non-BLM perl classes
+#
 # Revision 1.14  2011/09/15 16:05:33  eutl420
 # - perl tidy
 #
