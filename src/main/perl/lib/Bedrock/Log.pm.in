@@ -34,15 +34,16 @@ use Cwd;
 
 BEGIN {
   use Exporter ();
-  use vars qw ($VERSION @ISA @EXPORT @EXPORT_OK $CutoffLevel $Log_File);
+  use vars qw ($VERSION @ISA @EXPORT @EXPORT_OK $CutoffLevel $Log_File $LOGFORMAT);
 
   $VERSION = do { my @r = ( q$Revision$ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
   @ISA = qw (Exporter);
 }
 
 @EXPORT = qw (LOG_MESSAGE
-MSG_ABORT MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
-MSG_SYSERROR MSG_FATAL MSG_QUIT);
+	      MSG_ABORT MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
+	      MSG_SYSERROR MSG_FATAL MSG_QUIT
+	    );
 
 @EXPORT_OK = qw (StartLogger);
 
@@ -84,10 +85,13 @@ sub StartLogger {
   # can be written: 1. User preference 2. Current dir 3. /tmp
 
   my $dir = undef;
+
   for ( $args{'LOGDIR'}, getcwd(), '/tmp' ) {
-    next                                     unless $_;
+    next unless $_;
+
     warn "Warning! [$_] is not a directory!" unless -d $_;
     warn "Warning! [$_] is not writable!"    unless -w $_;
+
     if ( -d $_ && -w $_ ) {
       $dir = $_;
       last;
@@ -137,8 +141,11 @@ sub StartLogger {
   $fd->autoflush(1);
   $fd->close;
 
+  $LOGFORMAT = $args{'LOGFORMAT'} 
+    if exists $args{'LOGFORMAT'};
+
   # And log a sample message
-  LOG_MESSAGE( MSG_INFO, "=" x 80 . "\n$0: Starting now" );
+  LOG_MESSAGE( MSG_INFO, sprintf("[%s]: [%s]", (caller(0))[3], $0) );
 
   # Log die and warn errors too if not redirected
   unless ( $SIG{__WARN__} ) {
@@ -150,6 +157,33 @@ sub StartLogger {
 
   # To indicate success to those who might want it
   1;
+}
+
+sub format_message {
+  my $level = shift;
+
+  my %vars = (
+	      '%a' => $ENV{REMOTE_ADDR},
+	      '%A' => $ENV{SERVER_ADDR},
+	      '%f' => $ENV{REQUEST_URI},
+	      '%h' => $ENV{REMOTE_HOST},
+	      '%H' => $ENV{SERVER_PROTOCOL},
+	      '%L' => $LevelStrings{$level},
+	      '%m' => $ENV{REQUEST_METHOD},
+	      '%p' => $ENV{SERVER_NAME},
+	      '%P' => $$,
+	      '%q' => $ENV{QUERY_STRING},
+	      '%t' => scalar(localtime),
+	      '%u' => $ENV{REMOTE_USER} || $ENV{REDIRECT_REMOTE_USER}
+	     );
+
+  my $message = $LOGFORMAT;
+
+  foreach my $v ( keys %vars ) {
+    $message =~s/$v/$vars{$v}/g;
+  }
+
+  return $message . "@_\n";
 }
 
 sub LOG_MESSAGE {
@@ -178,18 +212,27 @@ sub LOG_MESSAGE {
 
     $fd->autoflush(1);
 
-    # Make time
-    my @t = localtime;
-    my $time = sprintf "%02d/%02d/%4d %02d:%02d:%02d", $t[4] + 1, $t[3],
-    1900 + $t[5], $t[2], $t[1], $t[0];
+    # old-school Bedrock log format
+    unless ( defined $LOGFORMAT ) {
+      # Make time
+      my @t = localtime;
+      my $time = sprintf(
+			 "%02d/%02d/%4d %02d:%02d:%02d", 
+			 $t[4] + 1, $t[3], 1900 + $t[5], $t[2], $t[1], $t[0]
+			);
 
-    # Make caller
-    my ( $pack, $filename, $line ) = caller;
+      # Make caller
+      my ( $pack, $filename, $line ) = caller;
 
-    # And print message
-    $fd->print(
-              "\n$time \[$$\]\t$level_string\t$pack\:\:$filename($line)\n@_\n");
-    $fd->print("\t$!\n") if $level == &MSG_SYSERROR;
+      # And print message
+      $fd->print(
+		 "\n$time \[$$\]\t$level_string\t$pack\:\:$filename($line)\n@_\n");
+      $fd->print("    $!\n") if $level == &MSG_SYSERROR;
+    }
+    else {
+      $fd->print( format_message( $level, @_ ) );
+      $fd->print("    $!\n") if $level == &MSG_SYSERROR;
+    }
   }
 
   confess qq(Program aborted.\n) if $abort;
@@ -200,6 +243,9 @@ sub LOG_MESSAGE {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.9  2012/02/24 19:19:29  eutl420
+# - added new method format_message() and support plumbing to allow LOG_MESSAGE to use a custom format string for Bedrock logging
+#
 # Revision 1.8  2012/02/13 14:38:53  eutl420
 # - removed annoying "warn" during startup
 #
