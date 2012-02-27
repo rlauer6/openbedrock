@@ -1,0 +1,327 @@
+#!@PERL@ -w
+
+# ident "@(#) $Header$"
+# ident "@(#)        $Name$"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package BLM::Filter::crypt;
+
+use strict;
+
+BEGIN
+{
+    use Exporter ();
+    use vars	qw ($VERSION @ISA);
+    $VERSION = do { my @r = (q$Revision$ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+}
+
+use Bedrock::Handle;
+use Bedrock::Array;
+use Data::Dumper;
+
+use IO::File;
+use Text::CSV_XS;
+
+use Crypt::CBC;
+use Crypt::DES;
+
+@ISA = qw( Bedrock::Handle IO::File);
+
+sub TIEHANDLE
+{
+    my $class = shift;
+    my $file = shift;
+    my $mode = shift || 'r';
+
+    my $passkey = shift;
+
+    my $cipher = shift || 'DES';
+
+    my $self = bless {}, $class;
+
+    $self->{'filename'} = $file;
+    $self->{'mode'} = $mode;
+    $self->{'buffer'} = '';
+
+    $self->{cipher} = $cipher;
+    $self->{crypt} = new Crypt::CBC( -cipher => $cipher,
+				     -key    => $passkey,
+				     -salt   => 1
+				   );
+    if ( $mode eq 'w') {
+      $self->{crypt}->start('encrypting');
+    }
+    elsif ( $mode eq 'r' ) {
+      print "decrypting!\n";
+
+      $self->{crypt}->start('decrypting');
+    }
+    else {
+      die "invalid mode \'$mode\': must be \'r\' or \'w\'\n";
+    }
+
+    $self->{'fh'} = new IO::File( $file, $mode);
+
+    die "Could not open file: $file mode: $mode\n"
+      unless $self->{'fh'};
+
+    $self;
+}
+
+# since this is a handle, tied as a GLOB by Bedrock, we may be called
+# from the Bedrock page, hence we qneed to access the blessed hashref
+# OTOH...we may want to call these same functions internally from the
+# implemented methods (caps) and we can, since we are all part of
+# the same bless-ed family ;-)  Perl OO hoops... perlfunc -f tied
+#
+sub _self {
+  my $self = shift;
+  $self = $self->isa('HASH') ? $self : tied(*{$self});
+}
+
+sub _write {
+  my $self = shift;
+
+  die ref($self) . ": file opened in read/only mode\n"
+    if $self->{mode} eq 'r';
+
+  $self->{fh}->print( $self->{crypt}->crypt( @_ ) );
+}
+
+sub WRITE  { _write( @_ ) };
+sub PRINT  { _write( @_ ) };
+sub PRINTF { _write( @_ ) };
+
+sub read_buf {
+  my $self = shift;
+  my $nbytes = shift;
+
+  return undef
+    if $self->{fh}->eof() && ! length( $self->{buffer} );
+
+  my $tmp_buf;
+
+  while ( ( length( $self->{buffer} ) < $nbytes ) && ! $self->{fh}->eof )  {
+    if ( $self->{fh}->read( $tmp_buf, 256 ) ) {
+      my $tmp = $self->{crypt}->crypt( $tmp_buf );
+
+      if ( $self->{fh}->eof() ) {
+	$tmp .= $self->{crypt}->finish;
+      }
+
+      $self->{buffer} .= $tmp;
+    }
+  }
+
+  my $len = ( $nbytes < length($self->{buffer}) ) ? $nbytes : length( $self->{buffer} );
+
+  my $buf;
+
+  if ( $len == length( $self->{buffer} ) ) {
+    $buf = $self->{buffer};
+    $self->{buffer} = '';
+  }
+  else {
+    $buf = substr( $self->{buffer}, 0, $len);
+    my $rest = length($self->{buffer}) - $len;
+
+    my $newbuf = substr( $self->{buffer}, $len, length($self->{buffer}) - $len);
+    $self->{buffer} = $newbuf;
+  }
+    
+  return $buf;
+}
+
+
+sub READ {
+  my $self = shift;
+
+  my ($buf, $nbytes, $offset) = @_;
+
+  die ref($self) . ": file opened in write mode\n"
+    if $self->{mode} eq 'w';
+
+  $$buf = $self->read_buf( $nbytes );
+
+  return length($$buf);
+}
+
+sub getline {
+  my $self = shift;
+
+  my $line;
+  my $buf;
+
+  while ( ! $self->EOF ) {
+
+    $buf .= $self->read_buf( 256 );
+
+    if ( $buf =~/^(.*\n)/m ) {
+      $line = $1;
+      $buf =~s/^$line//m;
+
+      # put it back in buffer
+      $self->{buffer} = $buf . $self->{buffer};
+
+      last;
+    }
+    # if no newline, but we've already read all the data from the encrypted file...
+    elsif ( $self->{fh}->eof() ) {
+      $line = $buf;  # rest of buffer
+      $self->{buffer} = ''; 
+      last;
+    }
+  }
+
+  return $line;
+}
+
+sub getlines {
+    die "getlines() called in scalar context\n" unless wantarray;
+    my $self = shift;
+    my($line, @lines);
+    push(@lines, $line) while defined($line = $self->getline);
+    return @lines;
+}
+
+ 
+sub READLINE {
+
+  goto &getlines if wantarray;
+  goto &getline;
+
+}
+
+sub EOF {
+  my $self = shift;
+
+  return $self->{fh}->eof() && ! length( $self->{buffer} ) ;
+}
+
+sub TELL {
+  my $self = shift;
+
+  return $self->{fh}->tell();
+}
+
+sub SEEK {
+  my $self = shift;
+
+  $self->{fh}->seek( @_ );
+}
+
+sub CLOSE {
+  my $self = shift;
+
+  if ( $self->{mode}  eq 'w' ) {
+    $self->{fh}->print( $self->{crypt}->finish() );
+  }
+
+  $self->{fh}->close;
+  $self->{fh} = undef;
+}
+
+sub DESTROY {
+  my $self = shift;
+
+  return unless $self->{fh};
+
+  $self->CLOSE;
+}
+
+1;
+
+# $Log$
+# Revision 1.1  2012/02/27 14:20:21  eutl420
+# first check-in
+#
+# Revision 1.1  2012/02/06 22:14:10  eutl420
+# first check-in
+#
+
+=pod
+
+=head1 PUBLIC
+
+C<BLM::Filter::csv> - Bedrock Command Separated Variables filter
+
+=head1 SYNOPSIS
+
+ <open:fh --filter=csv "foo.cvs">
+
+ <table>
+ <while $fh>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+Yes, it really is that easy.
+
+=head1 DESCRIPTION
+
+This module implements a Bedrock C<E<lt>openE<gt>> tag filter.  It
+allows you to read and write rows to a so-called CSV file.
+
+This is an experimental filter that demonstrates the use of tied
+handles and the C<E<lt>whileE<gt>> tagE<039>s new (from Bedrock 2.3.0)
+ability to take a HANDLE as an argument.
+
+The C<E<lt>whileE<gt>> tag, when passed a HANDLE as an argument will
+"read a line" from the handle.  For this filter, this is interpretted
+to mean "read a row" from a comma separated file.  The return value is
+a Bedrock array representing the columns in that row of the CSV file.
+
+The filter returns "undef" when an attempt is made to read
+beyond the last row of the CSV file.
+
+=head1 NOTES
+
+This filter  subclasses C<IO::File> and C<Tie::Handle>. Accordingly, some
+of the methods you might expect to invoke on a file handle actually
+work.  Some donE<039>t.
+
+=head1 METHODS
+
+=head1 EXAMPLE
+
+ <open:fh --filter=csv "foo.csv">
+
+ <table>
+ <while $fh>
+  <tr>
+    <foreach $_>
+      <td><var $_></td></foreach>
+  </tr></while>
+ </table>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@signatureinfo.com>
+
+=head1 SEE ALSO
+
+C<Text::CSV_XS>
+
+=cut
+
