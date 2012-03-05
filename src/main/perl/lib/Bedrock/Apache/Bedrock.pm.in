@@ -849,6 +849,39 @@ sub blm_ul {
   return $html;
 }
 
+sub require_module {
+  my $modfile = shift;
+  
+  $modfile =~ s!::!/!g;
+  $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+  
+  require $modfile;
+}
+
+sub bind_module {
+  my %args = @_;
+
+  require_module( $args{module} );
+      
+  my $obj;
+
+  if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
+    $obj = bless {}, $args{module};
+    tie %{$obj}, $args{module}, $args{context}, $args{config};
+  }
+  elsif ( $args{type} eq 'array' ) {
+    $obj = bless [], $args{module};
+    tie @{$obj}, $args{module}, $args{context}, $args{config};
+  }
+  elsif ( $args{type} eq 'handle' ) {
+    $obj = bless gensym, $args{module};
+    tie *{$obj}, $args{module}, $args{context}, $args{config};
+  }
+
+  return $obj;
+}
+
+
 # +------------------------------+
 # | mod_perl HANDLER STARTS HERE |
 # +------------------------------+
@@ -1040,7 +1073,7 @@ eom
     }
 
     unless ( -e $r->filename ) {
-      &error( $r, sprint("[%s]: file does not exist: [%s]", (caller(0))[3], $file) );
+      &error( $r, sprintf("[%s]: file does not exist: [%s]", (caller(0))[3], $file) );
       return NOT_FOUND;
     }
 
@@ -1552,8 +1585,12 @@ end_of_html
   }
 
   my @startup = @{$modules};
-  my $i       = 0;
-  my $header;
+  my $i = 0;
+
+  my %pre_bound = ( HEADER  => undef,
+		    SESSION => undef
+		  );
+
   for my $modconf (@startup) {
 
     unless ( defined( $modconf->{'binding'} ) ) {
@@ -1568,6 +1605,7 @@ end_of_html
     }
 
     my $type = $modconf->{'type'} || 'hash';
+
     unless ( $type =~ /^(hash|array|handle|object)$/ ) {
       return &error(
 		    $r,
@@ -1582,88 +1620,72 @@ end_of_html
     # BLM specific configuration
     my $config = $modconf->{'config'};
 
-    # Special handling for header module. We create the object immediately
-    # and bind it
-    if ( exists $modconf->{'header'} ) {
-
-      # Croak if more than one module tries to become header module
-      if ( $header ) {
+    if ( exists $modconf->{'header'} || exists $modconf->{session}) {
+      my $binding = (exists $modconf->{'header'}) ? 'HEADER' : 'SESSION';
+      
+      # Croak if more than one module tries to become pre-bound with same name
+      if ( $pre_bound{$binding} ) {
         return &error( $r,
-		       sprintf("[%s]: error in config: Multiple modules defined with `header': (%s, %s)",
+		       sprintf("[%s]: error in config: Multiple modules defined: (%s, %s)",
 			       (caller(0))[3],
-			       $header,
+			       $pre_bound{$binding},
 			       $modconf->{'binding'}
 			      )
 		     );
       }
       
       # Bind the header
-      $header = $modconf->{'binding'};
+      $pre_bound{$binding} = $modconf->{'binding'};
 
-      my $modfile = $modconf->{'module'};
-      $modfile =~ s!::!/!g;
-      $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-      require $modfile;
-      
-      my $obj;
+      my $obj = bind_module( module  => $modconf->{'module'},
+			     type    => $type,
+			     context => $ctx,
+			     config  => $config
+			   );
 
-      if ( $type eq 'hash' or $type eq 'object' ) {
-        $obj = bless {}, $modconf->{'module'};
-        tie %{$obj}, $modconf->{'module'}, $ctx, $config;
-      }
-      elsif ( $type eq 'array' ) {
-        $obj = bless [], $modconf->{'module'};
-        tie @{$obj}, $modconf->{'module'}, $ctx, $config;
-      }
-      elsif ( $type eq 'handle' ) {
-        $obj = bless gensym, $modconf->{'module'};
-        tie *{$obj}, $modconf->{'module'}, $ctx, $config;
-      }
 
-      $tx->param( $header => $obj );
-      $tx->options( 'HEADER' => $obj );
+      $tx->param( $modconf->{'binding'} => $obj );
+      $tx->options( $binding => $obj );
 
-      # expose the context object to the header object so that
-      # developers can use the header object instead of the verboten
-      # cgi_headers_out() method or God forbid writing headers
-      # directly.
-      $ctx->set_header( $obj );
+      $ctx->{$binding} = $obj;
 
       next;
     }
 
     # bind a subroutine to the names so the constructor gets
     # invoked ONLY if the variable is accessed from the script.
-    $tx->param(
-      $modconf->{'binding'},
-      sub {
-        my $obj;
-        my $modfile = $modconf->{'module'};
-        $modfile =~ s!::!/!g;
-        $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-        require $modfile;
-        if ( $type eq 'hash' or $type eq 'object' ) {
-          $obj = bless {}, $modconf->{'module'};
-          tie %{$obj}, $modconf->{'module'}, $ctx, $config;
-        }
-        elsif ( $type eq 'array' ) {
-          $obj = bless [], $modconf->{'module'};
-          tie @{$obj}, $modconf->{'module'}, $ctx, $config;
-        }
-        elsif ( $type eq 'handle' ) {
-          $obj = bless gensym, $modconf->{'module'};
-          tie *{$obj}, $modconf->{'module'}, $ctx, $config;
-        }
-        $obj;
-      }
-    );
+    $tx->param( $modconf->{'binding'},
+		sub {
+		  my $obj;
+		  my $modfile = $modconf->{'module'};
+		  $modfile =~ s!::!/!g;
+		  $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+		  require $modfile;
+		  
+		  if ( $type eq 'hash' or $type eq 'object' ) {
+		    $obj = bless {}, $modconf->{'module'};
+		    tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+		  }
+		  elsif ( $type eq 'array' ) {
+		    $obj = bless [], $modconf->{'module'};
+		    tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+		  }
+		  elsif ( $type eq 'handle' ) {
+		    $obj = bless gensym, $modconf->{'module'};
+		    tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+		  }
+		  
+		  $obj;
+		}
+	      );
   }
+
   continue {
     $i++;
   }
 
   # Croak if no header module
-  unless ( $header ) {
+  unless ( $pre_bound{HEADER} ) {
     return &error( $r,
 		   sprintf(
 			   "[%s]: error in config file: No header module",
@@ -1778,6 +1800,10 @@ end_of_html
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.61  2012/03/05 16:33:15  eutl420
+# - added new require_module, bind_module to generalize process of "pre-binding" startup BLMs
+# - pre-bind 'session' manager and expose this to BLMs via the context object
+#
 # Revision 1.60  2012/02/27 14:33:48  eutl420
 # - should not have been escaping the double quotes
 #
