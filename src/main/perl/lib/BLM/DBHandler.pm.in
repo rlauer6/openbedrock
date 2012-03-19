@@ -12,21 +12,31 @@ BEGIN
 }
 
 use DBI;
+
 use Bedrock::Hash;
 use Bedrock::Array;
 
-@ISA = qw(Bedrock::Hash);
+@ISA = qw( Bedrock::Hash );
 
 sub new {
-    die ref($_[0])."->new([db handle])!" unless UNIVERSAL::isa($_[1], "DBI::db");
+  my ($class, $dbi)  = shift;
 
-    return bless $_[0]->SUPER::new(_db => $_[1], _dbi => $_[1], _max_rows => 100), $_[0];
+  die ref($class) . "->new([db handle])!" 
+    unless UNIVERSAL::isa( $dbi, "DBI::db");
+
+  return bless $class->SUPER::new(
+				  _db       => $dbi,
+				  _dbi      => $dbi,
+				  _max_rows => 100
+				 ),
+				   $class;
 }
 
 sub max_rows {
     my $self = shift;
 
-    $self->{_max_rows} = $_[0] if exists $_[0];
+    $self->{_max_rows} = $_[0] 
+      if exists $_[0];
 
     return $self->{_max_rows};
 }
@@ -48,47 +58,51 @@ sub errstr {
 }
 
 sub setBindVars {
-    my $self = shift;
-
-    if (UNIVERSAL::isa($self, 'HASH')) {
-	$self->{_args} = @_;
-	$self->{_arg_list} = join("|", @_);
-    }
+  my $self = shift;
+  
+  if (UNIVERSAL::isa($self, 'HASH')) {
+    $self->{_args} = @_;
+    $self->{_arg_list} = join("|", @_);
+  }
 }
 
 sub setQuery {
-    my $self = shift;
-
-    if (UNIVERSAL::isa($self, 'HASH')) {
-	$self->{_query} = shift;
-    }
+  my $self = shift;
+  
+  if (UNIVERSAL::isa($self, 'HASH')) {
+    $self->{_query} = shift;
+  }
 }
     
 # --- Common functions that may be used by all packages
 sub _dbDo
 {
-    my $self = shift;
-    my $db = shift;
-    my $query = shift;
-
-    $self->setBindVars(@_);
- 
-    my $sth = $self->_dbPrepare($db, $query);
-    my $rv = $sth->err();
+  my $self = shift;
+  my $db = shift;
+  my $query = shift;
+  
+  $self->setBindVars(@_);
+  
+  my $sth = $self->_dbPrepare($db, $query);
+  my $rv = $sth->err();
+  $self->setErr($sth->errstr());
+  
+  # make sure we start out with 0
+  $self->{rows} = 0;
+  
+  unless ( $sth->err() ) {
+    $sth->execute(@_);
+    $rv = $sth->err();
+    
+    $self->{rows} = $sth->rows();
     $self->setErr($sth->errstr());
-
-    unless ($sth->err()) {
-	$sth->execute(@_);
-	$rv = $sth->err();
-	$self->{rows} = $sth->rows();
-	$self->setErr($sth->errstr());
-    }
-
-    $self->{mysql_insertid} = $sth->{mysql_insertid};
-
-    $sth->finish;
-
-    return $rv;
+  }
+  
+  $self->{mysql_insertid} = $sth->{mysql_insertid};
+  
+  $sth->finish;
+  
+  return $rv;
 }
 
 sub dbi {
@@ -96,87 +110,88 @@ sub dbi {
 }
 
 sub Do {
-    my $self = shift;
-    return $self->_dbDo($self->dbi, @_);
+  my $self = shift;
+  return $self->_dbDo($self->dbi, @_);
 }
 
 sub _dbPrepare {
-    my $self = shift;
-    my $db = shift;
-    my $stmt = shift;
-
-    $self->setQuery($stmt);
-
-    my $sth;
-    die "no database handle for: [$stmt]:[" . ref($db) . "]" unless UNIVERSAL::isa($db, "DBI::db");
- 
-    $sth = $db->prepare($stmt);
-
-    return $sth;
+  my $self = shift;
+  my $db = shift;
+  my $stmt = shift;
+  
+  $self->setQuery($stmt);
+  
+  my $sth;
+  die "no database handle for: [$stmt]:[" . ref($db) . "]" 
+    unless UNIVERSAL::isa($db, "DBI::db");
+  
+  $sth = $db->prepare($stmt);
+  
+  return $sth;
 }
 
 sub Prepare {
-    my $self = shift;
-    return $self->_dbPrepare($self->dbi, @_);
+  my $self = shift;
+
+  return $self->_dbPrepare($self->dbi, @_);
 }
 
-sub _dbSelect
-{
-    my $self = shift;
-    my $db = shift;
-    my $query = shift;
-    my $arg1 = $_[0];
-
-    $self->setBindVars(@_);
-
-    my $sth = $self->_dbPrepare($db, $query);
-    $sth->execute(@_);
-
-# - probably bad design to throw an error here...since the caller should probably indicate how
-#   errors should be handled using RaiseError when connecting...
-    if ($db->{mysql_errno}) {
-      die "$query - [$arg1] - [".$_[0]."] ".$self->{args};
-    }
-
-    my $ref = $sth->fetchrow_hashref;
-    $sth->finish;
-
-    return $ref;
+sub _dbSelect {
+  my $self = shift;
+  my $db = shift;
+  my $query = shift;
+  my $arg1 = $_[0];
+  
+  $self->setBindVars(@_);
+  
+  my $sth = $self->_dbPrepare($db, $query);
+  $sth->execute(@_);
+  
+  # - probably bad design to throw an error here...since the caller should probably indicate how
+  #   errors should be handled using RaiseError when connecting...
+  if ( $db->{mysql_errno} ) {
+    die "$query - [$arg1] - [".$_[0]."] ".$self->{args};
+  }
+  
+  my $ref = $sth->fetchrow_hashref;
+  $sth->finish;
+  
+  return $ref;
 }
 
 sub Select {
-    my $self = shift;
+  my $self = shift;
 
-    $self->_dbSelect($self->dbi, @_);
+  $self->_dbSelect($self->dbi, @_);
 }
 
 sub _dbSelectList {
-    my $self = shift;
-    my $db = shift;
-    my $query = shift;
-
-    $self->setBindVars(@_);
-    my $sth = $self->_dbPrepare($db, $query);
-    $sth->execute(@_);
-
-    my @list;
-    my $ref;
-    my $nrows = 0 ;
-
-    while ($ref = $sth->fetchrow_hashref) {
-	push @list, Bedrock::Hash->new(%$ref);
-	last if $self->max_rows && $nrows++ >= $self->max_rows;
-    }
-    
-    $sth->finish;
-
-    return Bedrock::Array->new(@list);
+  my $self = shift;
+  my $db = shift;
+  my $query = shift;
+  
+  $self->setBindVars(@_);
+  my $sth = $self->_dbPrepare($db, $query);
+  $sth->execute(@_);
+  
+  my @list;
+  my $ref;
+  my $nrows = 0 ;
+  
+  while ($ref = $sth->fetchrow_hashref) {
+    push @list, Bedrock::Hash->new(%$ref);
+    last if $self->max_rows && $nrows++ >= $self->max_rows;
+  }
+  
+  $sth->finish;
+  
+  return Bedrock::Array->new(@list);
 }
 
 sub SelectList {
-    my $self = shift;
-
-    $self->_dbSelectList($self->dbi, @_);
+  my $self = shift;
+  
+  $self->_dbSelectList($self->dbi, @_);
 }
 
 sub _dbGetQuery { return $_[0]->{_query}; }
@@ -244,15 +259,19 @@ B<query> is the query to execute.
 
 B<args> are the bind variables to use in the query.
 
-=head2 Do([query], [args])
+=head2 Do([statement], [args])
 
-Execute a query statement.
+Execute a SQL statement.
 
   $dbhandler->Do("update results set status='1' where order_num = ?", $order_num);
 
-B<query> is the query to execute.
+B<statement> is the SQL statement to execute.
 
 B<args> are the bind variables to use in the query.
+
+Returns a non-zero value return code if there was an error.  Use
+C<errstr()> to retrieve error message.  Also sets C<-E<gt>{rows}> to
+the number of rows affected by the statement.
 
 =head2 errstr()
 
@@ -323,6 +342,10 @@ Rob Lauer - rlauer@signatureinfo.com
 =cut
 
 # $Log$
+# Revision 1.13  2012/03/19 14:02:04  eutl420
+# - set rows to 0 before executing SQL statement in _dbDo
+# - pod tweaks
+#
 # Revision 1.12  2011/12/05 15:16:04  eutl420
 # - in max_rows() if you sent 0, it would not set the value.  We should have allowed 0 to indicate
 #   unlimited rows
