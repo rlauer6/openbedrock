@@ -46,24 +46,23 @@ use constant OK           => Apache2::Const::OK;
 use constant DECLINED     => Apache2::Const::DECLINED;
 use constant REDIRECT     => Apache2::Const::REDIRECT;
 
+use Bedrock;
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
 use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Text::URLEncode;
 use Bedrock::VERSION;
-
-use Bedrock;
 use Text::TagX;
 
 use Cwd;
 use File::Basename;
-use File::Temp;
 use File::Spec;
-use Symbol;
-use Pod::Html;
-use IO::Scalar;
+use File::Temp;
 use IO::File;
+use IO::Scalar;
+use Pod::Html;
+use Symbol;
 
 use Time::HiRes qw/gettimeofday/;
 
@@ -668,9 +667,9 @@ sub show_pod {
 
   &pod2html( '--infile', $file,
 	     '--outfile', $outfile,
-             '--cachedir', File::Spec->tmpdir(),
-             $conf->{BEDROCK_POD_CSS_URL} ? "--css=" . $conf->{BEDROCK_POD_CSS_URL} : ()
-           );
+	     '--cachedir', File::Spec->tmpdir(),
+	     $conf->{BEDROCK_POD_CSS_URL} ? "--css=" . $conf->{BEDROCK_POD_CSS_URL} : ()
+	   );
 
   # in the off chance somebody puts the stupid Bedrock images some place else
   my $image_url = $conf->{BEDROCK_IMAGE_URL} || "/bedrock/img";
@@ -710,26 +709,75 @@ html
   return OK;
 }
 
-sub blm_listing {
+sub module_listing {
   my $dir = shift;
+
   my @listing;
 
   return () unless -d $dir;
-  local *BLMDIR;
-  opendir BLMDIR, $dir;
-  while ( my $file = readdir BLMDIR ) {
+
+  local *POD_DIR;
+  opendir POD_DIR, $dir;
+
+  while ( my $file = readdir POD_DIR ) {
     next if ( $file =~ /^\./ );
+
     if ( -d $dir . "/" . $file ) {
-      push @listing, blm_listing( $dir . "/" . $file );
+      push @listing, module_listing( $dir . "/" . $file );
     }
     else {
       push @listing, $dir . "/" . $1 if ( $file =~ /^(.*?)\.pm$/ );
     }
   }
 
-  closedir BLMDIR;
+  closedir POD_DIR;
 
   return @listing;
+}
+
+
+sub get_all_modules {
+  my $paths = shift;
+  my $public_only = shift;
+
+  my @module_listing;
+  my %module_map;
+
+  foreach my $dir ( @$paths ) {
+  
+    my @modules = module_listing( $dir );
+
+    foreach my $file ( @modules ) {
+      my $module = $file;
+      $module =~s/$dir\///;
+      $module =~s/\//::/g;
+      
+      $module_map{$module} = $file;
+    }
+
+    push @module_listing, @modules;
+  }
+  
+  local *POD;
+
+  foreach my $module ( keys %module_map) {
+    open POD, "<" . $module_map{$module} . ".pm" or next;
+    local $/;
+
+    my $source = <POD>;
+
+    if ( $source =~ /\=pod/si ) {
+      delete $module_map{$module}
+	unless ($source =~ /\=head1\s+public/si || ! $public_only );
+    }
+    else {
+      delete $module_map{$module};
+    }
+
+    close POD;
+  }
+
+  return \%module_map;
 }
 
 sub get_all_blms {
@@ -738,26 +786,9 @@ sub get_all_blms {
 
   my @blm_path = grep { -d $_ . "/BLM" } @INC;
 
-  foreach ( @blm_path ) {
-    push @module_listing, blm_listing( $_ . "/BLM" );
-  }
-  
-  local *BLM;
+  my $modules = get_all_modules( \@blm_path, 1 );
 
-  my @public_blms;
-
-  foreach my $file ( @module_listing) {
-    open BLM, "<" . $file . ".pm" or next;
-    local $/;
-    my $source = <BLM>;
-
-    if ( $source =~ /\=pod/si && $source =~ /\=head1\s+public/si ) {
-      push @public_blms, $file;
-    }
-    close BLM;
-  }
-
-  return sort @public_blms;
+  my @public_blms = @{$modules}{sort keys %$modules};
 }
 
 # return the standard documentation header
@@ -1113,11 +1144,11 @@ eom
       if ( $file ) {
         my @blm_listing = get_all_blms();
         my @path_list =
-        grep { /(BLM\/$file|BLM\/Startup\/$file)|BLM\/Filter\/$file/i } @blm_listing;
+	  grep { /(BLM\/$file|BLM\/Startup\/$file)|BLM\/Filter\/$file/i } @blm_listing;
 
         $path = $path_list[0] . ".pm" if @path_list && -s $path_list[0] . ".pm";
 
-        if ($path) {
+        if ( $path ) {
           $path =~ /(BLM\/.*?)\.pm$/;
           my $title = $1;
           $title =~ s/\//::/g;
@@ -1129,9 +1160,9 @@ eom
       }
       else {    # blm listing
         my @blm_listing = get_all_blms();
-        my $blms        = Bedrock::Hash->new;
+        my $blms = Bedrock::Hash->new;
 
-        foreach (@blm_listing) {
+        foreach (  @blm_listing ) {
           /BLM\/(.*?)$/;
           $blms->{$1} = "BLM/$1";
           $blms->{$1} =~ s/\//::/g;
@@ -1160,7 +1191,61 @@ eom
         return OK;
       }
     }
-    elsif ( $doc =~ /tag\/?(.*?)$/ ) {
+    elsif ( $doc =~/pod\/?(.*?)$/ ) {
+      my $module = $1;
+
+      my $module_listing;
+
+      my $pod_paths = $conf->{POD_PATHS};
+
+      if ( $pod_paths && @$pod_paths ) {
+	$module_listing = get_all_modules( $pod_paths, 0 );
+      }
+
+      my $html = doc_head(title      => "User Documenation Listing",
+			  stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+			  home       => $bedrock_admin_dir,
+			  image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO} 
+			 );
+
+      if ( $module && $module_listing && keys %$module_listing ) {
+	$module =~s/\//\:\:/g;
+	my $path = $module_listing->{$module} . '.pm';
+
+	return show_pod( $path, $conf, "Ctag" );
+      }
+      elsif ( $module_listing && keys %$module_listing ) {
+	my $pod_paths = $conf->{POD_PATHS};
+
+	if ( $pod_paths && @$pod_paths ) {
+	  my $modules = get_all_modules( $pod_paths, 0 );
+
+	  print $html. "<ul>\n";
+
+	  foreach my $module ( sort keys %$modules ) {
+	    my $path = $module;
+	    $path =~s/\:\:/\//g;
+
+	    my $href = sprintf('<a href="/bedrock/pod/%s">%s</a>', $path, $module ); 
+	    print "<li>$href</li>\n";
+	  }
+	  print <<eot;
+</ul>
+</body>
+</html>
+eot
+	  return OK;
+	}
+      }
+      else {
+	print $html;
+	print "No user documentation found.";
+	print "</body></html>";
+
+	return OK;
+      }
+    }
+    elsif ( $doc =~/tag\/?(.*?)$/ ) {
       my $tag = lc($1);
 
       if ($tag) {
@@ -1261,6 +1346,15 @@ eot
                        );
 
       $html .= "<hr>\n";
+
+      if ( @{$conf->{POD_PATHS}} ) {
+        $html .= "<h1>User Documentation</h1>\n";
+	$html .= ul_links ( $bedrock_admin_dir,
+			    "pod" => "Module Listing"
+			  );
+	
+	$html .= "<hr>\n";
+      }
 
       unless ( $conf->{ALLOW_BEDROCK_INFO} eq 'docs' ) {
         $html .= "<h1>Bedrock Environment</h1>\n";
@@ -1835,6 +1929,11 @@ end_of_html
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.65  2012/05/09 19:02:09  eutl420
+# - reworked the get_all_blms(), blm_listing() methods into get_all_modules() and module_listing() methods to support user
+#   documentation.  Add an array object to tagx.xml named POD_PATHS and Bedrock will add look for perl modules in these paths
+#   and make their documentation available on the /bedrock/pod page.
+#
 # Revision 1.64  2012/05/08 16:50:42  eutl420
 # - use run-time module inclusion (require IPC::Shareable) if environment variable set
 #
