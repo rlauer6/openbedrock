@@ -1,5 +1,25 @@
 # $Id$
 
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 package BLM::DBHandler;
 
 use strict;
@@ -18,6 +38,50 @@ use Bedrock::Array;
 
 @ISA = qw( Bedrock::Hash );
 
+=pod
+
+=head1 PUBLIC
+
+C<BLM::DBHandler> - Provides support for MySQL database operations in
+a Bedrock environment.  Typically used as the base class for a perl
+module package used when building a Bedrock application.
+
+=head1 SYNOPSIS
+
+ package BLM::MyJunk;
+
+ use BLM::DBHandler;
+
+ @ISA = qw(BLM::DBHandler);
+
+ 1;
+
+..and voila your C<BLM::MyJunk> now has some nifty data access methods.
+
+or in a standalone situation...
+
+ my $dbi = DBI->connect('dbi:mysql:mydb', 'user', 'password');
+
+ my $dbhandler = BLM::DBHandler->new( $dbi );
+
+ my $results = $dbhandler->SelectList("select * from custmr where name acct = ?", $acct);
+
+=head1 METHODS
+
+=head2 CONSTRUCTOR
+
+=head3 new
+
+ new( dbi )
+ 
+Create a new C<DBHandler object>.
+
+  my $dbhandler = BLM::DBHandler->new( $dbi );
+
+B<dbi> is a C<DBI> handle to an open MySQL database.
+
+=cut
+
 sub new {
   my ($class, $dbi) = @_;
 
@@ -32,6 +96,78 @@ sub new {
 				   $class;
 }
 
+=pod
+
+=head2 SETTER/GETTER METHODS
+
+=cut
+
+=pod
+
+=head3 dbi
+
+ dbi()
+
+Returns the current C<DBI> handle.
+
+=cut
+
+sub dbi {
+  return $_[0]->{_dbi};
+}
+
+=pod
+
+=head3 errstr
+
+ errstr()
+
+Returns the error message from the last executed statement.
+
+=cut
+
+sub errstr {
+    my $self = shift;
+
+    return $self->{_err};
+}
+
+=pod
+
+=head3 get_bind_vars
+
+ get_bind_vars()
+
+Return an array containing the last bind variables used.  Helpful in debugging.
+
+=cut
+
+sub _dbGetBindVars { return $_[0]->{_args}; }
+sub get_bind_vars { goto &_dbGetBindVars; }
+
+=pod
+
+=head3 get_query
+
+ get_query()
+
+Return the last query executed. Helpful in debugging.
+
+=cut
+
+sub _dbGetQuery { return $_[0]->{_query}; }
+sub get_query { goto &_dbGetQuery; }
+
+=pod
+
+=head3 max_rows
+
+ max_rows( [rows] )
+
+Set or retrieve the maximum number of rows to return in a C<SelectList> call.  The default is 100.
+
+=cut
+
 sub max_rows {
     my $self = shift;
 
@@ -41,61 +177,33 @@ sub max_rows {
     return $self->{_max_rows};
 }
 
-sub setErr {
-    my $self = shift;
 
-    if (UNIVERSAL::isa($self, 'HASH')) {
-	$self->{_err} = shift;
-    }
+=pod
 
-    $self->{_err};
-}
+=head2 SQL METHODS
 
-sub errstr {
-    my $self = shift;
+=cut
 
-    return $self->{_err};
-}
-
-sub setBindVars {
-  my $self = shift;
-  
-  if (UNIVERSAL::isa($self, 'HASH')) {
-    $self->{_args} = @_;
-    $self->{_arg_list} = join("|", @_);
-  }
-}
-
-sub setQuery {
-  my $self = shift;
-  
-  if (UNIVERSAL::isa($self, 'HASH')) {
-    $self->{_query} = shift;
-  }
-}
-    
-# --- Common functions that may be used by all packages
-sub _dbDo
-{
+sub _dbDo {
   my $self = shift;
   my $db = shift;
   my $query = shift;
   
-  $self->setBindVars(@_);
+  $self->set_bind_vars(@_);
   
   my $sth = $self->_dbPrepare($db, $query);
   my $rv = $sth->err();
-  $self->setErr($sth->errstr());
+  $self->set_err($sth->errstr());
   
   # make sure we start out with 0
   $self->{rows} = 0;
   
   unless ( $sth->err() ) {
-    $sth->execute(@_);
+    $sth->execute( @_ );
     $rv = $sth->err();
     
     $self->{rows} = $sth->rows();
-    $self->setErr($sth->errstr());
+    $self->set_err( $sth->errstr() );
   }
   
   $self->{mysql_insertid} = $sth->{mysql_insertid};
@@ -105,21 +213,84 @@ sub _dbDo
   return $rv;
 }
 
-sub dbi {
-  return $_[0]->{_dbi};
+=pod
+
+=head3 Do
+
+Deprecated.  See C<do()>
+
+=head3 do
+
+ do( query, [args] )
+
+Execute a SQL statement.
+
+  $dbhandler->do("update results set status='1' where order_num = ?", $order_num);
+
+=over 5
+
+=item query
+
+The SQL statement to execute.
+
+=item args
+
+The bind variables to use in the query.
+
+=back
+
+Returns a non-zero value if there was an error.  Use
+C<errstr()> to retrieve error message.  Also sets C<-E<gt>{rows}> to
+the number of rows affected by the statement.
+
+=cut
+
+sub do {
+  my $self = shift;
+
+  return $self->_dbDo( $self->dbi, @_);
 }
 
 sub Do {
-  my $self = shift;
-  return $self->_dbDo($self->dbi, @_);
+  goto &do;
 }
+
+=pod
+
+=head3 prepare
+
+ prepare( query )
+
+Prepare a statement for execution. Returns a statement handle.
+
+=over 5
+
+=item query
+
+The query to execute.
+
+=back
+
+Example:
+
+ my $sth = $dbhandler->prepare("select * from my_table where ...");
+ $sth->execute;
+
+Why would you do this instead of:
+
+   my $sth = $dbi->prepare("select * from my_table where ....");
+   $sth->execute;
+
+...well because this class handles errors, saves querys, etc. (see below).
+
+=cut
 
 sub _dbPrepare {
   my $self = shift;
   my $db = shift;
   my $stmt = shift;
   
-  $self->setQuery($stmt);
+  $self->set_query( $stmt );
   
   my $sth;
   die "no database handle for: [$stmt]:[" . ref($db) . "]" 
@@ -131,6 +302,10 @@ sub _dbPrepare {
 }
 
 sub Prepare {
+  goto &prepare;
+}
+
+sub prepare {
   my $self = shift;
 
   return $self->_dbPrepare($self->dbi, @_);
@@ -142,7 +317,7 @@ sub _dbSelect {
   my $query = shift;
   my $arg1 = $_[0];
   
-  $self->setBindVars(@_);
+  $self->set_bind_vars(@_);
   
   my $sth = $self->_dbPrepare($db, $query);
   $sth->execute(@_);
@@ -159,10 +334,46 @@ sub _dbSelect {
   return $ref;
 }
 
-sub Select {
+=pod
+
+=head3 Select
+
+Deprecated.  See C<select()>.
+
+=head3 select
+
+ select( query, [args] )
+
+Select a record from a database. Returns a C<Bedrock::Hash> containing the fields of the record.
+
+Example:
+
+  my $rec = $dbhandler->select("select * from custmr where acct = ?", 1);
+
+  printf "%s\n", $rec->{'NAME'};
+
+=over 5
+
+=item query
+
+The SQL query to execute.
+
+=item args
+
+The bind variables to use in the query.
+
+=back
+
+=cut
+
+sub select {
   my $self = shift;
 
   $self->_dbSelect($self->dbi, @_);
+}
+
+sub Select {
+  goto &select;
 }
 
 sub _dbSelectList {
@@ -170,7 +381,7 @@ sub _dbSelectList {
   my $db = shift;
   my $query = shift;
   
-  $self->setBindVars(@_);
+  $self->set_bind_vars(@_);
   my $sth = $self->_dbPrepare($db, $query);
   $sth->execute(@_);
   
@@ -179,7 +390,7 @@ sub _dbSelectList {
   my $nrows = 0 ;
   
   while ($ref = $sth->fetchrow_hashref) {
-    push @list, Bedrock::Hash->new(%$ref);
+    push @list, Bedrock::Hash->new( %$ref );
     last if $self->max_rows && $nrows++ >= $self->max_rows;
   }
   
@@ -188,136 +399,98 @@ sub _dbSelectList {
   return Bedrock::Array->new(@list);
 }
 
-sub SelectList {
-  my $self = shift;
-  
-  $self->_dbSelectList($self->dbi, @_);
-}
-
-sub _dbGetQuery { return $_[0]->{_query}; }
-sub _dbGetBindVars { return $_[0]->{_args}; }
-
 =pod
 
-=head1 NAME
+=head3 SelectList
 
-C<BLM::DBHandler> - Provides support for MySQL database operations.  Typically used as the base class for some package of yours.
+Deprecated. See C<select_list()>.
 
-=head1 SYNOPSIS
+=head3 select_list
 
- package BLM:MyJunk;
-
- use BLM::DBHandler;
-
- @ISA = qw(BLM::DBHandler);
-
- 1;
-
-..and voila your C<MyJunk> now has some nifty data access methods
-
-or in a standalone situation...
-
- $dbi = DBI->connect(...);
- my $dbhandler = BLM::DBHandler->new($dbi);
- my $results = $dbhandler->SelectList("select * from custmr where name acct = ?", $acct);
-
-=head1 METHODS
-
-=head2 new([dbi])
-
-Create a new C<DBHandler object>.
-
-  my $dbhandler = BLM::DBHandler->new($dbi);
-
-B<dbi> is a C<DBI> handle to an open MySQL database.
-
-=head2 Select( [query], [args] )
-
-Select a record from a database. Returns a C<Bedrock::Hash> containing the fields of the record.
-
-Example:
-
-  my $rec = $dbhandler->Select("select * from custmr where acct = ?", 1);
-
-  printf "%s\n", $rec->{'NAME'};
-
-B<query> is the query to execute.
-
-B<args> are the bind variables to use in the query.
-
-=head2 SelectList([query], [args] )
+ select_list( query, [args] )
 
 Selects multiple records from a database.  Returns a C<Bedrock::Array> of C<Bedrock::Hash> objects.
 
-  my $list = $dbhandler->Select("select * from custmr where name like 'TEST%'");
+  my $list = $dbhandler->select_list("select * from custmr where name like 'TEST%'");
 
   foreach $rec (@$list) {
     printf "%s\n", $rec->{'NAME'};
   }
 
-B<query> is the query to execute.
+=over 5
 
-B<args> are the bind variables to use in the query.
+=item query
 
-=head2 Do([statement], [args])
+The query to execute.
 
-Execute a SQL statement.
+=item args
 
-  $dbhandler->Do("update results set status='1' where order_num = ?", $order_num);
+The bind variables to use in the query.
 
-B<statement> is the SQL statement to execute.
+=back
 
-B<args> are the bind variables to use in the query.
+=cut
 
-Returns a non-zero value return code if there was an error.  Use
-C<errstr()> to retrieve error message.  Also sets C<-E<gt>{rows}> to
-the number of rows affected by the statement.
+sub SelectList {
+  goto &select_list;
+}
 
-=head2 errstr()
+sub select_list {
+  my $self = shift;
+  
+  $self->_dbSelectList($self->dbi, @_);
+}
 
-Return the error message from last executed statement.
+# +-----------------+
+# | private methods |
+# +-----------------+
 
-=head2 max_rows([n])
+sub setErr {
+  goto &set_err;
+}
 
-Set or retrieve the maximum number of rows to return in a C<SelectList> call.  The default is 100.
+sub set_err {
+    my $self = shift;
 
-=head2 MISCELLANEOUS METHODS
+    if ( UNIVERSAL::isa($self, 'HASH') ) {
+	$self->{_err} = shift;
+    }
 
-These methods are generally not to be used publicly, but circumstances
-may dictate their use so here they are.
-
-=head3 _dbPrepare([dbhandle], [query])
-
-Prepare a statement for execution. Returns a statement handle.
-
-B<dbi> is a handle to an open database obtain via C<DBI> 
-
-B<query> is the query to execute.
-
-Example:
-
- my $sth = $dbhandler->_dbPrepare($dbi, "select * from my_table where ...");
- $sth->execute;
-
-Why would you do this instead of:
-
-   my $sth = $dbi->prepare("select * from my_table where ....");
-   $sth->execute;
-
-...well because this class handles errors, saves querys, etc. (see below).
+    $self->{_err};
+}
 
 
-=head3 _dbGetQuery()
+sub setBindVars {
+  goto &set_bind_vars;
+}
 
-Return the last query executed. Helpful in debugging.
+sub set_bind_vars {
+  my $self = shift;
+  
+  if (UNIVERSAL::isa($self, 'HASH')) {
+    $self->{_args} = @_;
+    $self->{_arg_list} = join("|", @_);
+  }
+}
 
-=head3 _dbGetBindVars()
+sub setQuery {
+  goto &set_query;
+}
 
-Return an array containing the last bind variables used.  Helpful in debugging.
+sub set_query {
+  my $self = shift;
+  
+  if ( UNIVERSAL::isa( $self, 'HASH') ) {
+    $self->{_query} = shift;
+  }
+}
+    
+
+=pod
 
 =head2 ATTRIBUTES
 
-Several attributes are stored within class that you might find useful.
+Several attributes are stored within this class that you might find useful.
 
 =head3 err
 
@@ -325,15 +498,21 @@ Last error message returned by an executed statement. Can be retrieved with the 
 
 =head3 max_rows
 
-Maximum number of rows to return on a C<SelectList> call.  Can be set or retrieved via the C<max_rows()> method.
+Maximum number of rows to return on a C<SelectList> call.  Can be set
+or retrieved via the C<max_rows()> method.
 
 =head3 mysql_insertid
 
-Updated after a C<Do> just in case you were doing an insert on a table with an C<auto_increment> field.
+Updated after a C<Do> just in case you were doing an insert on a table
+with an C<auto_increment> field.
 
 =head3 rows
 
 Number of rows affected by the last execute statement.
+
+=head1 SEE ALSO
+
+C<DBI>, C<BLM::IndexedTableHandler>
 
 =head1 AUTHOR
 
@@ -342,6 +521,19 @@ Rob Lauer - rlauer@signatureinfo.com
 =cut
 
 # $Log$
+# Revision 1.15  2012/06/13 13:56:15  eutl420
+# - reorganized, tweaked pod
+# - added new names for old method calls to hopefully deprecated CamelCase UpperCase method names
+#   + Prepare -> prepare
+#   + Select -> select
+#   + Do -> do
+#   + SelectList -> select_list
+#   + GetQuery -> get_query
+#   + GetBindVars -> get_bind_vars
+#   + SetBindVars -> set_bind_vars
+#   + setErr -> set_err
+#   + setQuery -> set_query
+#
 # Revision 1.14  2012/04/16 13:08:51  eutl420
 # - new method was not shifting off both argument
 #
