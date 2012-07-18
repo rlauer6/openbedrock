@@ -37,7 +37,16 @@ C<BLM::IndexedTableHandler> -- Base class for a MySQL table handler
 
 =head1 SYNOPSIS
 
-Create a perl module to handle the MySQL table named F<foo>...
+  my $foo_ith = new BLM::IndexedTableHandler( $dbi, $id, 'foo' );
+
+  # foo handler with locking
+  my $foo_ith = new BLM::IndexedTableHandler( $dbi, { id => $id, 
+                                                      table_name => 'foo',
+                                                      lock => 1
+                                                     }
+                                                );
+
+Using C<BLM::IndexedTableHandler> as a base class:
 
   package BLM::Foo;
 
@@ -50,7 +59,9 @@ Create a perl module to handle the MySQL table named F<foo>...
 
   1;
 
-  my $foo_handler = BLM::Foo->new($dbi);
+
+ my $foo_ith = new BLM::Foo( $dbi );
+
 
 =head1 DESCRIPTION
 
@@ -501,20 +512,104 @@ documentation for the C<html_form_body()> method.
 
 =head1 METHODS
 
+=head2 new
+
+ new( dbi, id, config, table-name )
+ new( dbi, { id => id, table_name => table-name, config => config, lock => 0 |1  })
+
+=over 5
+
+=item dbi
+
+An instance of a C<DBI> object representing an open connection to a
+MySQL database.
+
+=item id
+
+The C<id> field which uniquely identifies a record in the MySQL table.
+
+=item config
+
+Configuration object containing an object named C<tables> that
+contains options for handling MySQL tables.
+
+=item table-name
+
+The name of the MySQL table.
+
+=item lock
+
+The lock mode.
+
+ 0 => no locking
+ 1 => FOR UPDATE
+ 2 => LOCK IN SHARE MODE
+
+=over 5
+
+=item LOCK IN SHARE MODE
+
+I<SELECT ... LOCK IN SHARE MODE sets a shared mode lock on any rows that
+are read. Other sessions can read the rows, but cannot modify them
+until your transaction commits. If any of these rows were changed by
+another transaction that has not yet committed, your query waits until
+that transaction ends and then uses the latest values.> - from http://dev.mysql.com
+
+=item FOR UPDATE
+
+I<SELECT ... FOR UPDATE locks the rows and any associated index entries,
+the same as if you issued an UPDATE statement for those rows. Other
+transactions are blocked from updating those rows, from doing SELECT
+... LOCK IN SHARE MODE, or from reading the data in certain
+transaction isolation levels. Consistent reads ignore any locks set on
+the records that exist in the read view. (Old versions of a record
+cannot be locked; they are reconstructed by applying undo logs on an
+in-memory copy of the record.)> - from http://dev.mysql.com
+
+=back
+
+B<Note that row level locking in MySQL is only available with the InnoDB
+engine.  The row is locked immediately when the object is instatiated
+for the give C<id>.  You should commit the record to release the lock.>
+
+=back 
+
 =cut
 
 sub new {
     my $this = shift;
     my $class = ref($this) || $this;
-    my ($dbi, $id, $config, $table_name) = @_;
+    my $dbi = shift;
+    my $self = bless {}, $class;
+    
+    my ( $id, $config, $table_name );
 
-    die "usage: BLM::IndexedTableHandler->new( dbi, ...)\n"
-      unless ref($dbi) =~/DBI/; 
-      
+    unless ( ref($_[0]) ) {
+     ($id, $config, $table_name) = @_;
+    }
+    else {
+      my $opts = shift;
+
+      $id = $opts->{id};
+      $config = $opts->{config};
+      $table_name = $opts->{'table_name'};
+      $self->lock( $opts->{lock} );
+    }
+
+    if ( ref($dbi) ) {
+      unless ( ref($dbi) =~/DBI/ ) {
+	my $ref = $dbi;
+
+	$dbi = $ref->{dbi};
+	die "usage: BLM::IndexedTableHandler->new( dbi, ...)\n"
+	  unless $dbi && ref($dbi) =~/DBI/;
+
+	($id, $config, $table_name) = @{$ref}{qw/id config table/};
+      }
+    }
+    
     die "BLM::IndexedTableHandler currently only supports MySQL tables.\n"
       unless $dbi->get_info(17) =~/mysql/i;
-
-    my $self = {};
 
     $class =~/^(.*)::(.*?)(=.*)?$/;
 
@@ -523,8 +618,6 @@ sub new {
     $self->{_config} = $config;
     $self->{_table} = $table_name;
     $self->{_dbi} = $self->{_db} = $dbi;
-
-    bless $self, $class;
 
 # - avoid redundant creation of data structure for each row in a list
 #   i.e. if this object is being constructed thusly:
@@ -599,7 +692,14 @@ sub new {
     }
 
     if ( $id ) {
-      my $ref = $self->Select("select * from $table_name where id = ?", $id);
+      my $query = "select * from %s where id = ? %s";
+      
+      my $lock_mode = { 0 => '',
+			1 => 'for update',
+			2 => 'lock in share mode'
+		      }->{$self->lock};
+
+      my $ref = $self->Select( sprintf($query, $table_name, $lock_mode), $id );
 
       foreach (keys %$ref) {
 	$self->set($_, $ref->{$_});
@@ -609,6 +709,15 @@ sub new {
     $self->max_rows( 50 );
 
     $self;
+}
+
+sub lock {
+  my $self = shift;
+
+  $self->{_lock} = $_[0]
+    if ( @_ );
+
+  return $self->{_lock};
 }
 
 sub get_attributes {
@@ -2736,6 +2845,10 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.21  2012/07/18 13:44:05  lauerrc
+# - row level locking now supported when instantiating an object from an id.  new() method now takes dbi, hash-ref
+# - added lock() method
+#
 # Revision 1.20  2012/04/16 13:12:58  eutl420
 # - when using the handler() method and passing the input object, ITH was updating all of the columns of the table, not just those
 #   found in the input object (or ITH object).
