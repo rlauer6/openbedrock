@@ -34,6 +34,10 @@ use Apache2::Log;
 use APR::Const -compile => qw(:error SUCCESS);
 
 use strict;
+use Data::Dumper;
+
+use warnings;
+no warnings qw/uninitialized/;
 
 #
 # Define the following mod_perl constants since we could be using
@@ -713,7 +717,6 @@ sub module_listing {
   my $dir = shift;
   my $no_blms = shift;
 
-
   my @listing;
 
   return () unless -d $dir;
@@ -739,6 +742,37 @@ sub module_listing {
   return @listing;
 }
 
+=pod
+
+=head2 get_all_modules
+
+ get_all_modules( paths, public-only, blms)
+
+Returns a hash reference containing perl module names and their paths.
+
+=over 5
+
+=item paths
+
+Array reference of paths to search for perl modules.  If the array
+element is a hash instead of a scalar representing a path, then the
+hash object should contain two keys (C<dir> and C<filter>).  The
+C<dir> key should contain the directory to search for perl modules and
+the C<filter> key should contain a regular expression that will be
+used to filter modules in that directory.
+
+=item public-only
+
+Boolean flag that indicates whether only modules with a C<head1> tag
+of C<PUBLIC> should be returned.
+
+=item blms
+
+Boolean flag that indicates C<BLM> modules should be ignored.
+
+=back
+
+=cut
 
 sub get_all_modules {
   my $paths = shift;
@@ -748,13 +782,30 @@ sub get_all_modules {
   my @module_listing;
   my %module_map;
 
-  foreach my $dir ( @$paths ) {
+  foreach my $path ( @$paths ) {
+    my $dir;
+    my $filter;
+
+    if ( UNIVERSAL::isa( $path, 'HASH') ) {
+      $dir = $path->{dir};
+      $filter = $path->{filter};
+    }
+    else {
+      $dir = $path;
+    }
+
     my @modules = module_listing( $dir, $no_blms );
 
     foreach my $file ( @modules ) {
+      
       my $module = $file;
       $module =~s/$dir\///;
       $module =~s/\//::/g;
+
+      $filter = qr/$filter/ 
+	if $filter;
+
+      next if $filter && $module !~ $filter;
       
       $module_map{$module} = $file;
     }
@@ -770,7 +821,7 @@ sub get_all_modules {
 
     my $source = <POD>;
 
-    if ( $source =~ /\=pod/si ) {
+    if ( $source =~ /\=(pod|head1)/si ) {
       delete $module_map{$module}
 	unless ($source =~ /\=head1\s+public/si || ! $public_only );
     }
@@ -784,6 +835,12 @@ sub get_all_modules {
   return \%module_map;
 }
 
+=pod
+
+=head2 get_all_blms
+
+=cut
+
 sub get_all_blms {
 
   my @module_listing;
@@ -795,7 +852,14 @@ sub get_all_blms {
   @{$modules}{sort keys %$modules};
 }
 
+=pod
+
+=head2 doc_head
+
+=cut
+
 # return the standard documentation header
+
 sub doc_head {
   my %attributes = @_;
   my $head;
@@ -847,6 +911,12 @@ sub ul_links {
 
 sub page_name { $_[0] .= ".inc" unless $_[0] =~ /\.inc$/; $_[0]; }
 
+=pod
+
+=head2 include
+
+=cut
+
 sub include {
   my @pages = split ";", $_[0];
   my $include;
@@ -858,10 +928,16 @@ sub include {
   $include;
 }
 
+=pod
+
+=head2 blm_ul
+
+=cut
+
 sub blm_ul {
   my $bedrock_admin_dir = shift;
-  my $blms              = shift;
-  my $h2                = shift;
+  my $blms = shift;
+  my $h2 = shift;
 
   return unless @_;
   my $html;
@@ -885,6 +961,12 @@ sub blm_ul {
 
   return $html;
 }
+
+=pod
+
+=head2 require_module
+
+=cut
 
 sub require_module {
   my $modfile = shift;
@@ -1202,7 +1284,8 @@ eom
       my $pod_paths = [ '@libdir@/bedrock/perl5' ];
       $module_listing = get_all_modules( $pod_paths, 0 );
 
-      my $html = doc_head(title      => "System Documentation Listing",
+      my $html = doc_head(
+			  title      => "System Documentation Listing",
 			  stylesheet => $conf->{BEDROCK_POD_CSS_URL},
 			  home       => $bedrock_admin_dir,
 			  image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO} 
@@ -1244,6 +1327,8 @@ eot
       my $pod_paths = $conf->{POD_PATHS};
 
       if ( $pod_paths && @$pod_paths ) {
+        warn Dumper( $pod_paths );
+
 	$module_listing = get_all_modules( $pod_paths, 0 );
       }
 
@@ -1797,7 +1882,6 @@ end_of_html
       # Bind the module
       $pre_bound{$binding} = $modconf->{'binding'};
 
-      
       my $obj;
 
       eval {
@@ -1999,6 +2083,10 @@ eom
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.70  2012/07/29 16:44:37  lauerrc
+# - filter modules in get_all_modules() based on regexp
+# - look for =pod or =head1 when deciding if module has pod since some modules are sloppy
+#
 # Revision 1.69  2012/07/18 13:39:58  lauerrc
 # - if config() method CONFIG_PATH should be BEDROCK_CONFIG_PATH - we weren't checking both locations since we were pushing the same
 #   directory twice
