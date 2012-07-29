@@ -58,6 +58,8 @@ sub finalize {
                   'bind=s'       => undef,
                   'arg=s'        => undef,
                   'define-var=s' => undef,
+		  'define-recordset=s' => undef,
+		  'recordset'    => undef,
                   'need-rows=s'  => undef,
                   'raise=s'      => undef,
                   'meta-info=s'  => undef
@@ -70,6 +72,11 @@ sub finalize {
 
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
+  if ( $options{'define-recordset'} ) {
+    $options{'define-var'} =  $options{'define-recordset'};
+    $options{recordset} = 1;
+  }
+
   if ( $tag_opts->{name} ) {
     $options{'define-var'} = $tag_opts->{name};
     shift @argv;
@@ -78,7 +85,7 @@ sub finalize {
   my $dbh = $self->get_db_handle( $tx, %options );
 
   die "Specify SQL statement using --statement or as argument, not both.\n"
-  if exists $options{'statement'} and @argv > 0;
+    if exists $options{'statement'} and @argv > 0;
 
   my $statement;
   if ( exists $options{'statement'} ) {
@@ -91,15 +98,15 @@ sub finalize {
   die "<sqlselect>: no statement specified.\n" unless length($statement);
 
   if ( exists $options{'arg'} ) {
-    my @args =
-    &UNIVERSAL::isa( $options{'arg'}, 'ARRAY' )
-    ? @{ $options{'arg'} }
-    : ( $options{'arg'} );
+    my @args = &UNIVERSAL::isa($options{'arg'}, 'ARRAY') ? @{$options{'arg'}} : ($options{'arg'});
+
     &log_message( $self, "Substituting following args into statement:\n@args" )
-    if $verbose;
+      if $verbose;
+
     $statement = sprintf( $statement, @args );
+
     &log_message( $self, "Statement after arg-substitution\n$statement" )
-    if $verbose;
+      if $verbose;
   }
 
   my $sth = $dbh->prepare($statement);
@@ -159,17 +166,19 @@ sub finalize {
   continue {
     $i++;
   }
-  &log_message( $self, $str ) if $verbose;
+
+  &log_message( $self, $str ) 
+    if $verbose;
 
   my $rows = $sth->execute;
   die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
-  unless defined($rows);
+    unless defined($rows);
 
   my $meta_info;
   if ( $options{'meta-info'} ) {
     &log_message( $self,
               "Need to define meta information variable $options{'meta-info'}" )
-    if $verbose;
+      if $verbose;
     $meta_info = { 'NUM_OF_FIELDS' => $sth->{NUM_OF_FIELDS},
                    'NUM_OF_PARAMS' => $sth->{NUM_OF_PARAMS},
                    'STATEMENT'     => $sth->{Statement}
@@ -279,9 +288,12 @@ sub finalize {
 "Invalid integer `$options{'need-rows'}' specified as argument to --need-rows.\n";
     }
   }
-
-  $tx->param( $defined => Bedrock::Array::Reference->new( \@rows ) )
-  if $defined;
+ 
+  # return a Bedrock::Array or a Bedrock::RecordSet
+  if ( $defined ) {
+    my $obj = $options{recordset} ?  new Bedrock::RecordSet( \@rows ) : new Bedrock::Array::Reference( \@rows );
+    $tx->param( $defined => $obj );
+  }
 }
 
 =pod
@@ -312,38 +324,18 @@ specify the C<--define-var> option.
 
 =head1 OPTIONS
 
- --db         = "handle-name"
- --statement  = "sql-statement"
- --define-var = "var-name"
- --bind       = expression
- --arg        = expression
- --raise      = "string"
- --need-rows  = integer|expression
+ --arg              = expression
+ --bind             = expression
+ --db               = "handle-name"
+ --define-recordset = "var-name"
+ --define-var       = "var-name"
  --meta-info
+ --need-rows        = integer|expression
+ --raise            = "string"
+ --recordset        
+ --statement        = "sql-statement"
 
 =over 5
-
-=item --db
-
-Name of the database handle object.  The handle associated with the
-most recent C<E<lt>sqlconnectE<gt>> is assumed if this parameter is not
-specified.
-
-=item --statement
-
-SQL query statement to execute.  The statement can contain bind
-variable specifiers C<?> and format specifiers C<%s>.
-
-=item --define-var
-
-Name of an object which will be used to store the query results.  The
-object return is a Bedrock array.
-
-=item --bind
-
-One or more bind variables may be specified using multiple C<--bind>
-statements or by specifying an array object as the C<--bind> parameter.
-They are bound in the order in which they are defined.
 
 =item --arg
 
@@ -351,14 +343,27 @@ One or more arguments to use as arguments to C<sprintf> using SQL
 statement as a format string.  Multiple C<--arg> options may be used
 or you may specify and array object as the C<--arg> parameter.
 
-=item --raise
+=item --bind
 
-Exception string to raise if the number of rows specfied by
-C<--need-rows> is not returned.
+One or more bind variables may be specified using multiple C<--bind>
+statements or by specifying an array object as the C<--bind> parameter.
+They are bound in the order in which they are defined.
 
-=item --need-rows
+=item --db
 
-Maximum number of rows to return.  The expression should evaluate to an integer.
+Name of the database handle object.  The handle associated with the
+most recent C<E<lt>sqlconnectE<gt>> is assumed if this parameter is not
+specified.
+
+=item --define-recordset
+
+Name of an object which will be used to store the query results.  The
+object return is a Bedrock recordset.
+
+=item --define-var
+
+Name of an object which will be used to store the query results.  The
+object return is a Bedrock array.
 
 =item --meta-info
 
@@ -391,6 +396,24 @@ elements depending upon the DBI implementation:
 =item COUNT
 
 =back
+
+=item --need-rows
+
+Maximum number of rows to return.  The expression should evaluate to an integer.
+
+=item --raise
+
+Exception string to raise if the number of rows specfied by
+C<--need-rows> is not returned.
+
+=item --recordset
+
+Return a C<Bedrock::RecordSet> instead of a C<Bedrock::Array> object.
+
+=item --statement
+
+SQL query statement to execute.  The statement can contain bind
+variable specifiers C<?> and format specifiers C<%s>.
 
 =back
 
@@ -429,6 +452,9 @@ C<E<lt>sqlE<gt>>, C<E<lt>sqlconnectE<gt>>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.34  2012/07/29 18:42:07  lauerrc
+# - support for --recordset option
+#
 # Revision 1.33  2011/12/01 17:12:37  eutl420
 # - use methods from Text::TagX::TAG::SQLHandler, get_db_handle(), etc
 #

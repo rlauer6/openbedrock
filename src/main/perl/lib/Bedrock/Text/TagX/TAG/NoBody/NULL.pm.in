@@ -50,6 +50,24 @@ use TagX::TAG::NoBody;
 
 @ISA = qw (TagX::TAG::NoBody);
 
+sub param {
+  my ($options, $tx, $obj ) = @_;
+
+  my $name;
+  
+  foreach ( qw/define-var define-array define-object/ ) {
+    last if $name = $options->{$_};
+  }
+
+  if ( $options->{recordset} ) {
+    die "invalid object type: must be array"
+      unless UNIVERSAL::isa( $obj, 'ARRAY') || ! $obj;
+    $obj = new Bedrock::RecordSet( $obj || [] );
+  }
+  
+  $tx->param( $name => $obj );
+}
+
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
@@ -68,7 +86,8 @@ sub finalize {
 		  'encode'          => undef,
 		  'base64'          => undef,
                   'xml'             => undef,
-                  'filter-hash=s'   => undef
+                  'filter-hash=s'   => undef,
+                  'recordset'       => undef
                 );
 
   my @argv = $self->parse_options( \%options, @context );
@@ -213,8 +232,8 @@ sub finalize {
       if ( exists $options{'json'} ) {
         my $json_string = join( '', @argv );
         $json_string = $json_string || $options{'default'};
-        $tx->param(
-                $options{'define-var'} => Bedrock::JSON::decode($json_string) );
+
+        param( \%options, $tx, Bedrock::JSON::decode($json_string) );
       }
       else {
 
@@ -223,8 +242,7 @@ sub finalize {
              && UNIVERSAL::isa( $argv[0], 'ARRAY' ) )
         {
           my $ref = shift @argv;
-          $tx->param(
-              $options{'define-var'} => Bedrock::Array->new( @{$ref}, @argv ) );
+          param( \%options, $tx, Bedrock::Array->new( @{$ref}, @argv ) );
         }
         elsif ( exists $options{'expand-all'} ) {
           my @list;
@@ -232,16 +250,16 @@ sub finalize {
             ( UNIVERSAL::isa( $_, 'ARRAY' ) ) ? push @list, @{$_} : push @list,
             $_;
           }
-          $tx->param( $options{'define-var'} => Bedrock::Array->new(@list) );
+	  param( \%options, $tx, new Bedrock::Array( @list ) );
         }
         else {
-          $tx->param( $options{'define-var'} => Bedrock::Array->new(@argv) );
+	  param( \%options, $tx, new Bedrock::Array( @argv ) );
         }
       }
     }
     elsif ( @argv == 1 ) {
       &log_message( $self, "Assigning $argv[0] to $options{'define-var'}" )
-      if $verbose;
+	if $verbose;
 
       if ( defined $options{'file'} || defined $options{'handle'} ) {
         my $fh = $argv[0];
@@ -272,7 +290,7 @@ sub finalize {
 	  die "cannot encode scalars\n"
 	    unless ref( $thingy );
 
-	  $tx->param( $options{'define-var'} => Bedrock::JSON::encode( $thingy ) );
+	  param( \%options, $tx, Bedrock::JSON::encode( $thingy ) );
 	}
 	else {
 	  my $json = Bedrock::JSON->new( $argv[0] || $options{'default'} );
@@ -280,7 +298,7 @@ sub finalize {
 	  &log_message( $self,
 			"in NULL " . Bedrock::Dump::compact( $json->decode ) )
 	    if $verbose;
-	  $tx->param( $options{'define-var'} => $json->decode );
+	  param( \%options, $tx, $json->decode );
 	}
       }
       elsif ( defined $options{'bedrock-xml'} ) {
@@ -301,7 +319,7 @@ sub finalize {
 	  $xml = Bedrock::XML::writeXML( $argv[0] );
 	}
 
-        $tx->param( $options{'define-var'} => $xml || $options{'default'} );
+        param( \%options, $tx, $xml || $options{'default'} );
       }
       elsif ( defined $options{'xml'} ) {
         my $config  = $tx->out_handle->{Handle}->{'CONFIG'};
@@ -310,8 +328,7 @@ sub finalize {
 	  my $xml     = XML::Simple->new( %{$options} );
 
 	  # see if --xml in context of a file handle output
-	  $tx->param( $options{'define-var'} =>
-		      $xml->XMLin( $argv[0] || $options{'default'} ) );
+	  param( \%options, $tx, $xml->XMLin( $argv[0] || $options{'default'} ) );
 	}
 	else {
 	  my $options = $config->{'XML'}->{'out'}->devolve;
@@ -325,7 +342,7 @@ sub finalize {
 	  }
 	  
 	  $value = XMLout( $argv[0], %{$options} );
-	  $tx->param( $options{'define-var'} => $value || $options{'default'} );
+	  param( \%options, $tx, $value || $options{'default'} );
 	}
 
       }
@@ -338,9 +355,10 @@ sub finalize {
         ( $key, $value ) = @$filter if ( UNIVERSAL::isa( $filter, 'ARRAY' ) );
         ( $key, $value ) = %$filter if ( UNIVERSAL::isa( $filter, 'HASH' ) );
         &log_message( $self, "filtering on key: $key value: $value" )
-        if $verbose;
+	  if $verbose;
 
         my @filtered_array;
+
         foreach ( @{ $argv[0] } ) {
           if ( UNIVERSAL::isa( $_, 'HASH' ) ) {
             push @filtered_array, $_ if $_->{$key} eq $value;
@@ -349,30 +367,26 @@ sub finalize {
             push @filtered_array, $_;
           }
         }
-        $tx->param(
-               $options{'define-var'} => Bedrock::Array->new(@filtered_array) );
+
+        param( \%options, $tx, Bedrock::Array->new(@filtered_array) );
       }
       elsif ( defined $options{'default'} ) {
-        $tx->param(   $options{'define-var'} => defined $argv[0]
-                    ? $argv[0]
-                    : $options{'default'}
-                  );
+        param( \%options, $tx, defined $argv[0] ? $argv[0] : $options{'default'});
       }
       elsif ( defined $options{'expand-args'}
               && UNIVERSAL::isa( $argv[0], 'ARRAY' ) )
       {
-        $tx->param(
-               $options{'define-var'} => Bedrock::Array->new( @{ $argv[0] } ) );
+        param( \%options, $tx, Bedrock::Array->new( @{ $argv[0] } ) );
       }
       else {
-        $tx->param( $options{'define-var'} => $argv[0] );
+        param( \%options, $tx, $argv[0] );
       }
     }
     else {
       &log_message( $self,
                    "Creating an undefined scalar named $options{'define-var'}" )
-      if $verbose;
-      $tx->param( $options{'define-var'} => undef );
+	if $verbose;
+      param( \%options, $tx, undef );
     }
   }
   elsif ( exists $options{'define-array'} ) {
@@ -380,7 +394,8 @@ sub finalize {
    # define-array explicitly specifies array creation with the arguments, if any
     &log_message( $self,
                  "Defining an array with (@argv)[" . scalar(@argv) . " items]" )
-    if $verbose;
+      if $verbose;
+
     if ( defined $options{'expand-args'} || defined $options{'expand-args'} ) {
 
       #
@@ -388,10 +403,11 @@ sub finalize {
       foreach (@argv) {
         ( UNIVERSAL::isa( $_, 'ARRAY' ) ) ? push @list, @$_ : push @list, $_;
       }
-      $tx->param( $options{'define-array'} => Bedrock::Array->new(@list) );
+      
+      param( \%options, $tx, Bedrock::Array->new(@list) );
     }
     else {
-      $tx->param( $options{'define-array'} => Bedrock::Array->new(@argv) );
+      param( \%options, $tx, Bedrock::Array->new(@argv) );
     }
   }
   elsif ( exists $options{'define-object'} ) {
@@ -415,8 +431,8 @@ sub finalize {
 
       &log_message( $self,
                     "in NULL " . Bedrock::Dump::compact( $json->decode ) )
-      if $verbose;
-      $tx->param( $options{'define-object'} => $json->decode );
+	if $verbose;
+     param( \%options, $tx, $json->decode );
     }
     else {
 
@@ -494,13 +510,15 @@ sub finalize {
       if @argv % 2 && !defined $obj;
 
       &log_message( $self, "Key-value pairs for object creation are\n(@argv)" )
-      if ( $verbose && !defined $obj );
+	if ( $verbose && !defined $obj );
+
       $obj = Bedrock::Hash->new(@argv) unless defined $obj;
 
       &log_message( $self,
                     "Creating an object named $options{'define-object'}" )
-      if $verbose;
-      $tx->param( $options{'define-object'} => $obj );
+	if $verbose;
+
+      param( \%options, $tx, $obj );
     }
   }
 }
@@ -745,6 +763,9 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<Bedrock::Array>, C<Bedrock::Hash>
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.46  2012/07/29 18:42:07  lauerrc
+# - support for --recordset option
+#
 # Revision 1.45  2012/06/04 13:43:08  eutl420
 # - added the --encode option to the null tag which allows one to encode objects into their scalar representation.  More or
 #   less equivalent to <sink> but there may be some future possbilities for additional encoding hooks
