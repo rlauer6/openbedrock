@@ -74,6 +74,7 @@ sub valid {
 
 1;
 
+
 package Bedrock::Array;
 
 use strict;
@@ -127,45 +128,6 @@ sub sort {
   }
 
   return Bedrock::Array->new(@unsorted);
-}
-
-
-sub hash_sort {
-  my $array = shift;
-
-  foreach ( @{$array} ) { 
-    die "array must be array of hashes\n"
-      unless UNIVERSAL::isa($_, 'HASH' );
-  }
-
-  my @sort_string;
-
-  while ( @_ ) {
-    
-    my ($field, $order, $type ) = (shift, shift, shift);
-
-    $order = $order || 'asc';
-    $type = $type || 'alpha';
-
-    push @sort_string, sprintf("\$%s->{%s} %s \$%s->{%s}",
-			       ($order =~/^a/i) ? 'a' : 'b',
-			       $field,
-			       ($type =~/^n/i) ? '<=>' : 'cmp',
-			       ($order =~/^a/i) ? 'b' : 'a',
-			       $field
-			      );
-  }
-
-  my @sorted_array;
-
-  my $sort_cmd = "\@sorted_array = sort { " . join("||", @sort_string) . ' } @{$array};';
-
-  eval "$sort_cmd";
-
-  die "error sorting: $@\n"
-    if $@;
-
-  return new Bedrock::Array( @sorted_array );
 }
 
 sub map {
@@ -278,6 +240,7 @@ sub matches {
 sub grep {
   my $self    = shift;
   my $pattern = shift;
+
   my $re      = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
 
   die "Invalid pattern - $@ "
@@ -351,6 +314,10 @@ sub shift {
 
 }
 
+sub recordset {
+  return Bedrock::RecordSet->new( shift );
+}
+
 1;
 
 package Bedrock::Array::Reference;
@@ -377,6 +344,114 @@ sub new {
 
 1;
 
+
+package Bedrock::RecordSet;
+
+our @ISA = qw(Bedrock::Array::Reference);
+
+sub new {
+  my $proto = shift;
+  my $class = ref($proto) || $proto;
+
+  my $ref = UNIVERSAL::isa( $_[0], 'ARRAY') ? shift : \@_;
+
+  foreach ( @{$ref} ) {
+    die "invalid element type: must be hash reference - not [$_]\n"
+      unless UNIVERSAL::isa( $_, 'HASH' );
+  }
+
+  my $self = bless $ref, $class;
+  tie @{$self}, $class;
+
+  $self;
+}
+
+sub sort {
+  my $array = shift;
+
+  my @sort_string;
+
+  while ( @_ ) {
+    
+    my ($field, $order, $type ) = (shift, shift, shift);
+
+    $order = $order || 'asc';
+    $type = $type || 'alpha';
+
+    push @sort_string, sprintf("\$%s->{%s} %s \$%s->{%s}",
+			       ($order =~/^a/i) ? 'a' : 'b',
+			       $field,
+			       ($type =~/^n/i) ? '<=>' : 'cmp',
+			       ($order =~/^a/i) ? 'b' : 'a',
+			       $field
+			      );
+  }
+
+  my @sorted_array;
+
+  my $sort_cmd = "\@sorted_array = sort { " . join("||", @sort_string) . ' } @{$array};';
+
+  eval "$sort_cmd";
+
+  die "error sorting: $@\n"
+    if $@;
+
+  return new Bedrock::RecordSet( \@sorted_array );
+}
+
+sub STORE {
+  my $obj = shift;
+
+  die "invalid element type: must be hash reference\n"
+    unless UNIVERSAL::isa( $_[1], 'HASH' );
+
+  my $self = tied(@{$obj});
+  $self->SUPER::STORE( @_ );
+}
+
+sub PUSH {
+  my $obj = shift;
+
+  foreach ( @_ ) {
+    die "invalid element type: must be hash reference"
+      unless UNIVERSAL::isa( $_, 'HASH' );
+  }
+
+  my $self = tied(@{$obj});
+  $self->SUPER::PUSH( @_ );
+}
+
+sub push {
+  my $self = shift;
+
+  if ( UNIVERSAL::isa( $_[0], 'ARRAY' ) ) {
+    foreach ( @{$_[0]} ) {
+      $self->SUPER::push( $_ );
+    }
+  }
+  elsif ( UNIVERSAL::isa( $_[0], 'HASH') ) {
+    $self->SUPER::push( new Bedrock::Hash( %{$_[0]} ) );
+  }
+  else {
+    $self->SUPER::push( new Bedrock::Hash( @_ ) );
+  }
+}
+
+sub grep {
+  my $self = shift;
+  my $key = shift;
+  my $pattern = shift;
+
+  my $re = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
+
+  die "Invalid pattern - $@ "
+    if $@;
+
+  return new Bedrock::RecordSet( map { $_->{$key} =~ $re ? $_ : () } @{$self} );
+}
+
+1;
+
 =head1 NAME
 
 C<Bedrock::Array> - Implements an array object.
@@ -386,6 +461,8 @@ C<Bedrock::Array> - Implements an array object.
 Implements a Bedrock array object with many interesting methods.
 
 =head1 SYNOPSIS
+
+ my $array = new Bedrock::Array( qw/a b c d e f/ );
 
  <null --define-array="array" a b c d e f >
 
@@ -421,90 +498,26 @@ Implements a Bedrock array object with many interesting methods.
 
 =head2 xml
 
-=head1 CHANGELOG
-
-$Log$
-Revision 1.20  2012/07/18 13:40:44  lauerrc
-- added new hash_sort() method for sorting arrays of hashes
-
-Revision 1.19  2011/11/28 21:08:23  eutl420
-- move functions above shift() to avoid stupid warning
-
-Revision 1.18  2011/09/21 20:18:44  eutl420
-- add support for 's' and 'g' flags for matches() method
-
-Revision 1.17  2011/09/16 12:50:36  eutl420
-- added method matches() that returns an array based on matches of a pattern
-  similar but less perlish than grep
-- grep method now returns an empty array instead of undef if no matches found
-
-Revision 1.16  2011/09/15 16:05:32  eutl420
-- perl tidy
-
-Revision 1.15  2011/09/09 18:11:02  eutl420
-- the xml() method apparently never worked since it was somehow put into the Bedrock::Array::Iterator package
-  It has been moved to the Bedrock::Array package
-- added the method bedrock_xml() which as its name implies, returns a bedrock_xml representation of the array
-
-Revision 1.14  2011/08/07 16:06:49  eutl420
-use Bedrock::BedrockJSON instead of Bedrock::JSON to avoid namespace collisions with JSON when use Bedrock; is employed
-
-Revision 1.13  2011/07/17 16:56:08  eutl420
-- build .pm from .pm.in, added @PERL@
-
-Revision 1.12  2011/07/12 19:10:36  eutl420
-set VERSION from cvs Revision keyword
-
-Revision 1.11  2010/11/30 22:14:04  rlauer
-- get(n) did not work because we were using $_[1] as an index (undefined)
-
-Revision 1.10  2010/11/29 15:57:52  rlauer
-- change openbedrock.org to openbedrock.net
-
-Revision 1.9  2010/09/15 16:38:41  rlauer
-bump version
-
-Revision 1.8  2010/09/15 16:18:25  rlauer
-- added Bedrock::Array::Reference to create Bedrock::Array objects from
-  references.  Can potentially speedup some operations if utilized more
-  widespread throughtout Bedrock and applications themselves.
-
-Revision 1.7  2010/01/09 14:45:26  rlauer
-rearranged order of subroutines to avoid some warnings
-
-Revision 1.6  2010/01/04 02:26:23  rlauer
-add method xml()
-
-Revision 1.5  2009/12/31 18:32:50  rlauer
-sorting with direction and type, use the Bedrock::JSON package
-
-Revision 1.4  2009/12/31 00:03:31  rlauer
-allow grep to use regexps or arbitrary strings
-
-Revision 1.3  2009/12/30 12:42:48  rlauer
-add grep(), map()
-
-Revision 1.2  2009/12/28 20:31:33  rlauer
-move SIS:: up to Bedrock::
-
-Revision 1.1  2009/12/28 19:30:15  rlauer
-removing SIS:stuff, moving to Bedrock::stuff
-
-Revision 1.10  2009/12/08 21:21:19  rlauer
-adding some pod
-
-
 =head1 AUTHOR
 
 J. Sridhar
 
-=head1 CREDITS
+=head1 SEE OTHER
+
+E<lt>arrayE<gt>
 
 =cut
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.21  2012/07/29 16:51:21  lauerrc
+# - removed hash_sort() method and moved that to the Bedrock::RecordSet class as sort()
+# - Bedrock::RecordSet object added with methods
+#   + sort()
+#   + grep()
+#   ...and implementations for PUSH() and STORE() which verify that that array element is a hash
+#
 # Revision 1.20  2012/07/18 13:40:44  lauerrc
 # - added new hash_sort() method for sorting arrays of hashes
 #
