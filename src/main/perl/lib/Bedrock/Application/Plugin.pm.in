@@ -27,6 +27,8 @@ package Bedrock::Application::Plugin;
 
 use Bedrock::Hash;
 
+use DBI;
+
 use TagX::Log;
 
 use vars qw(@ISA);
@@ -91,9 +93,9 @@ drop this file in the C<$ENV{CONFIG_PATH}/config.d/startup> directory.
    <scalar name="binding">foo</scalar> 
    <scalar name="module">BLM::Startup::Foo</scalar> 
      <object name="config">
-       <scalar name="data_source">dbi:mysql:bedrock</scalar>
-       <scalar name="username">fred</scalar>
-       <scalar name="password">flintstone</scalar>
+       <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
+       <scalar name="DBI_USER">fred</scalar>
+       <scalar name="DBI_PASS">flintstone</scalar>
      </object>
  </object> 
 
@@ -101,8 +103,77 @@ Then in your page...
 
  <var $foo.hello_world()>
 
-=cut
+=head2 FREEBIES
 
+The C<Bedrock::Application::Plugin> module provides some convience
+methods and functionality that is typically required when writing an
+application plugin.  Plugins typically interact with databases, access
+configuration information and possibly the userE<039>s session data.
+
+=over 5
+
+=item * Database Connectivity
+
+If you define the C<DBI_DSN>, C<DBI_USER> and C<DBI_PASS> variables in
+the C<config> object of the pluginE<039>s configuration, then the
+database will be opened when the class is instantiated.  You can use
+the C<dbi()> method to return the handle to the opened database.
+
+The database is opened in the C<init_plugin()> method, thus if you
+decide to override this method but would still want the default
+behavior, make sure you call the parent classE<039> method.
+
+ sub init_plugin {
+   my $self = shift;
+  
+   $self->SUPER::init_plugin();
+   ...
+ }
+
+=item * Session access
+
+Use the C<session()> method to access the session object.  The
+C<$session> object is only available in application plugins if you
+have set the C<session> value to 'yes' in the session managerE<039>s
+configuration object.
+
+  <!-- Generic Bedrock Sessions -->
+  <object>
+    <scalar name="binding">session</scalar>
+    <scalar name="session">yes</scalar>
+    ...
+
+The C<session()> method returns the session object.  Setting a value
+in the returned session object will set the value in the userE<039>s
+session.
+
+ my $session = $self->session();
+ $session->{foo} = 'bar';
+
+
+=item * Configuration access
+
+You can access the pluginE<039>s configuration object using the C<config()> method.
+
+You can access BedrockE<039>s configuration object using the C<global_config()> method.
+
+=item * Logging
+
+You can write log messages to BedrockE<039>s page log using the log methods.
+
+ log_error()
+ log_warn()
+ log_info()
+ log_status()
+ log_debug()
+
+ $self->log_debug("This is s a debug message....");
+
+The logging methods respect the C<LOGLEVEL> value in F<tagx.xml>.
+
+=back
+
+=cut
 
 sub TIEHASH {
   my ( $class, $ctx, $config ) = @_;
@@ -149,6 +220,12 @@ sub closeBLM {
   my $obj = shift;
 
   my $self = tied(%{$obj});
+
+  # disconnect from database if connected
+  if ( $self->dbi && ref($self->dbi) =~/DBI/ && $self->dbi->ping ) {
+    $self->dbi->disconnect;
+  }
+
 }
 
 =pod
@@ -194,6 +271,26 @@ sub context {
 
 =pod
 
+=head2 dbi
+
+ dbi( [dbi] )
+
+Set or return a DBI handle.
+
+=cut
+
+sub dbi {
+  my $self = shift;
+
+  if ( @_ ) {
+    $self->set('__dbi', shift);
+  }
+
+  return $self->get('__dbi');
+}
+
+=pod
+
 =head2 global_config
 
  global_config()
@@ -205,7 +302,6 @@ Returns the Bedrock F<tagx.xml> config object.
 sub global_config {
   return $_[0]->context->{CONFIG};
 }
-
 
 =pod
 
@@ -223,15 +319,25 @@ Your initialization method should return true if successful.
 =cut
 
 sub init_plugin {
+  my $self = shift;
+
+  if ( $self->config->{DBI_DSN} ) {
+    $self->dbi( 
+	       DBI->connect( @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, 
+			     { RaiseError => 1, PrintError => 1}
+			   )
+	      );
+  }
+
   return 1;
 }
 
 
 =pod
 
-=head2 log_message
+=head2 log
 
- log_message( level, message )
+ log( level, message )
 
 Log a message to the Bedrock page log using the current global logging
 level.
@@ -261,7 +367,7 @@ my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
 
 use Data::Dumper;
 
-sub log_message {
+sub _log {
   my $level = shift;
 
   my $self = shift;
@@ -305,11 +411,11 @@ sub log_message {
 
 =cut
 
-sub log_info   { log_message( MSG_INFO,    @_ ) };
-sub log_debug  { log_message( MSG_DEBUG,   @_ ) };
-sub log_status { log_message( MSG_STATUS,  @_ ) };
-sub log_error  { log_message( MSG_ERROR,   @_ ) };
-sub log_warn   { log_message( MSG_WARNING, @_ ) };
+sub log_info   { _log( MSG_INFO,    @_ ) };
+sub log_debug  { _log( MSG_DEBUG,   @_ ) };
+sub log_status { _log( MSG_STATUS,  @_ ) };
+sub log_error  { _log( MSG_ERROR,   @_ ) };
+sub log_warn   { _log( MSG_WARNING, @_ ) };
 
 =pod
 
@@ -374,6 +480,12 @@ C<Bedrock::Plugin>, C<Bedrock::Context>, C<Bedrock::Hash>
 =cut
 
 # $Log$
+# Revision 1.8  2012/08/06 15:51:51  lauerrc
+# - log_message() changed to _log() to avoid conflict
+# - init_plugin() will now connect to database if DBI_* defined
+# - closeBLM() will disconnect from database if connected
+# - dbi() new method
+#
 # Revision 1.7  2012/07/30 13:30:48  lauerrc
 # - pod tweaks
 #
