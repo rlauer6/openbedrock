@@ -19,6 +19,8 @@ docdir = $(datadir)/doc/bedrock-$(VERSION)
 
 FILES = \
     AUTHORS \
+    bedrock-build \
+    build-bedrock-rpm \
     BUGS \
     INSTALL \
     NEWS \
