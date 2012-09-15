@@ -25,6 +25,14 @@ AC_REVISION([$Revision$])dnl
 DFLT_MAINTAINER="rlauer@signatureinfo.com"
 AC_SUBST([DFLT_MAINTAINER])
 
+if ! test -e bedrock-build; then
+ BEDROCK_RELEASE="0"
+else
+  BEDROCK_RELEASE=$(cat bedrock-build)
+fi
+
+AC_SUBST([BEDROCK_RELEASE])
+
 dnl +------------------------+
 dnl |  Checks for programs.  |
 dnl +------------------------+
