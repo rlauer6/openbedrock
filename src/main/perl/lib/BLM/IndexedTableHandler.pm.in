@@ -738,7 +738,13 @@ sub get_field_list {
 
 =head2 delete
 
-Deletes the currently defined row from the database.
+ delete()
+ delete( id )
+ delete( column-name )
+
+Deletes the currently defined row from the database, a specified
+record identified by C<id> or removes a column from the object so that
+it will not be updated on subsequent saves.
 
   <null --define-var="foo" $factory.foo($input.id)>
 
@@ -747,54 +753,99 @@ Deletes the currently defined row from the database.
      <null --define-var="foo" $factory.foo()>
   </if>
 
+=over 5
+
+=item id
+
+The C<id> of the record you wish to delete.  If no value is given for
+C<id> the current object is deleted if the C<id> column is set.
+
+=item column-name
+
+The name of a column in the table.  If this value is passed then the
+member will be deleted from the object allowing you to update a record
+without updating that particular column.  I<Note that the C<save()>
+method will read the record back into the object after it has been
+updated, thus restoring that column to the object.>
+
+=back
+
 =cut
 
 sub delete {
-    my $self = shift;
-    my $id = shift;
+  my $self = shift;
+  my $id = shift || $self->{id};
+  
+  if ( $id && $id =~/^\d+$/ ) {
+    $self->reset();
+    return $self->_delete( $id );
+  }
+  elsif ( $id && grep { /$id/} @{$self->get_field_list} ) {
+    return delete $self->{$id};
+  }
+}
 
-    $id = $self->{id} unless $id;
+sub _delete {
+  my $self = shift;
+  my $id = shift;
 
-    $self->Do("delete from ". $self->{_table}." where id = ?", $id);
+  $self->Do("delete from ". $self->{_table}." where id = ?", $id);
 
-    foreach (@{$self->{_field_list}}) {
-      $self->{$_} = undef;
-    }
+  return $self->{rows};
+}
+
+=pod
+
+=head2 reset
+
+ reset
+
+Clears all of the columns in the object.
+
+=cut
+
+
+sub reset {
+  my $self = shift;
+
+  foreach (@{$self->get_field_list}) {
+    $self->{$_} = undef;
+  }
 }
 
 sub init_config {
-    my $self = shift;
+  my $self = shift;
 
     # no configuration passed
-    return unless $self->get_config && $self->get_table_config;
-
+  return unless $self->get_config && $self->get_table_config;
+  
     my $config = $self->get_table_config;
-
-    # not configuration info for this particular table
-    return unless 
-      my $table_config = $config->{$self->get_table_name};
-
-    my %default = ( set        => '', 
-		    get        => '', 
-		    attributes => {}, 
-		    labels      => ''
-		  );
-
+  
+  # not configuration info for this particular table
+  return unless 
+    my $table_config = $config->{$self->get_table_name};
+  
+  my %default = ( set        => '', 
+		  get        => '', 
+		  attributes => {}, 
+		  labels      => ''
+		);
+  
     my @cols = $self->get_fields;
-
-    foreach my $type qw(set get attributes labels) {
-	my $config = $table_config->{$type} || {};
-	foreach ( @cols ) {
-	  $config->{$_} = $default{$type} 
-	    unless exists $config->{$_};
-	}
-
-	$table_config->{$type} = $config;
+  
+  foreach my $type qw(set get attributes labels) {
+    my $config = $table_config->{$type} || {};
+    foreach ( @cols ) {
+      $config->{$_} = $default{$type} 
+	unless exists $config->{$_};
     }
-
+    
+    $table_config->{$type} = $config;
+  }
+  
     $self->get_table_config->{$self->get_table_name} = $table_config;
-
-    return $self->get_config;
+  
+  return $self->get_config;
 }
 
 
@@ -1047,6 +1098,12 @@ columns will be set.
   <if $input.action --eq "save">
     <null $foo.save($input)>
   </if>
+
+I<Note that only the fields corresponding to the columns that exist in
+the object are updated.  In other words if you want to avoid updating
+a column, delete the member from the object.>
+
+  <null $foo.delete('bar')>
 
 =cut
 
@@ -2858,6 +2915,10 @@ DBHandler
 =cut
 
 # $Log$
+# Revision 1.23  2012/12/30 16:53:34  rlauer
+# - added method reset() to clear all columns
+# - updated delete method to take id or column name to delete members of an object prior to saving
+#
 # Revision 1.22  2012/12/27 20:20:36  rlauer
 # - update the asref() function to take a list of keys
 #
