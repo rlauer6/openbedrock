@@ -114,6 +114,7 @@ BEDROCK_TEXT_TAGX_TAG=$(perl5bedrocktexttagxtaglib_DATA:.pm=.pm.in)
 
 perl5bedrocktexttagxtagnobodylib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody/Array.pm \
+    Bedrock/Text/TagX/TAG/NoBody/Comment.pm \
     Bedrock/Text/TagX/TAG/NoBody/Plugin.pm \
     Bedrock/Text/TagX/TAG/NoBody/Case.pm \
     Bedrock/Text/TagX/TAG/NoBody/Exec.pm \
