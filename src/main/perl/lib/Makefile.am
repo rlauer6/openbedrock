@@ -199,6 +199,7 @@ perl5blmlib_DATA = \
     BLM/Recycle.pm \
     BLM/FTP.pm \
     BLM/SMTP.pm \
+    BLM/Session.pm \
     BLM/Stat.pm \
     BLM/Timenow.pm
 
