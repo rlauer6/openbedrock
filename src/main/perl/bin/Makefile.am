@@ -10,7 +10,8 @@ POD2MAN = /usr/bin/pod2man
 
 PERLSCRIPTS = \
     bedrock.pl.in \
-    bedrock-plugin.pl.in
+    bedrock-plugin.pl.in \
+    bedrock-cache.pl.in
 
 GPERLSCRIPTS = $(PERLSCRIPTS:.pl.in=.pl)
 
