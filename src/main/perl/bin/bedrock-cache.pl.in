@@ -1,0 +1,207 @@
+#!@PERL@
+
+# $Id$
+
+=pod
+
+=head1 NAME
+
+bedrock-cache.pl
+
+=head1 SYNOPSIS
+
+Create the cache...
+
+ $ bedrock-cache.pl -c
+
+List cache contents...
+
+ $ bedrock-cache.pl -l
+
+Delete the cache...
+
+ $ bedrock-cache.pl -d
+
+=head1 DESCRIPTION
+
+The Bedrock I<cache> is currently used to cache the Bedrock
+configuration object created by Bedrock when a Bedrock page is
+accessed on an Apache virtual host.  Cacheing of the configuration is
+optionally done when the Bedrock Apache handler begins to process a
+page.
+
+The I<cache> is implemented as shared memory using Perl's
+C<IPC::Shareable> module.
+
+Because the configuration object is created from potentially several
+different XML-based configuration files that are merged together to
+create the final object, startup time for the page may be adversely
+affected.  One way to mitigate that startup time is to cache the
+configuration object since configuration files are unlikely to change
+very often for production applications.
+
+Bedrock will automatically use the cache if it has been created (with
+this utility for example) and the environment variable
+C<BEDROCK_CACHE_CONFIG> has a value of "On".  This value is typically
+set in the Apache virtual host configuration file using the C<SetEnv>
+directive. 
+
+ SetEnv BEDROCK_CACHE_CONFIG On
+
+=head1 NOTES
+
+For more gory details regarding Bedrock configuration file cacheing,
+see the I<perldocs> for C<Bedrock::Handler>.
+
+=head1 OPTIONS
+
+=over 5
+
+=item --delete
+
+Deletes the shared memory object and removes the cache.
+
+=item --file
+
+Caches a file.  The key is the fully qualified path name of the file.
+This is experimental and Bedrock does not currently use this in any
+way shape or form.  It has been added to this utility for potential
+future usage.
+
+=item --list
+
+Dumps the contents of the cache.
+
+=item --help
+
+Usage notes.
+
+=item --reset
+
+Clears the cache, but does not delete it.
+
+=item --size
+
+Sets the size of the cache.  Only valid when used with the C<--create> option.
+
+=back
+
+=cut
+
+use strict;
+use vars qw/$LIST $CREATE $DELETE $HELP $SIZE %BEDROCK_CONFIG_CACHE $RESET $FILE/;
+
+use IPC::Shareable;
+use Getopt::Long;
+use Data::Dumper;
+
+sub usage {
+  print <<eom;
+usage: bedrock-cache.pl options
+
+ Options:
+
+   --create = create the cache
+   --delete = delete the cache
+   --file   = filename of a file to cache (experimental)
+   --list   = list the contents of the cache
+   --help   = this
+   --reset  = clear the cache
+   --size   = size of the cache in MB (default: 256)
+ 
+eom
+
+  return;
+}
+
+# +--------------------------+
+# | MAIN PROGRAM STARTS HERE |
+# +--------------------------+
+
+GetOptions(
+	   "list",   \$LIST,
+	   "create", \$CREATE,
+	   "delete", \$DELETE,
+	   "size",   \$SIZE,
+	   "help|?", \$HELP,
+	   "reset",  \$RESET,
+	   "file=s", \$FILE
+	  );
+
+if ( $HELP ) {
+  usage();
+  
+  exit -1;
+}
+
+$SIZE = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256 unless $SIZE;
+$CREATE = 1 if $CREATE;
+
+# see if we have a cache defined 
+eval {
+  { 
+    local $SIG{__WARN__} = sub {};
+    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', {
+						  key     => 'BCFG',
+						  create  => $CREATE,
+						  destroy => 0,
+						  size    => 1024 * ( $SIZE  )       
+						 };                                                                
+  }
+};
+
+unless ( $@ ) {
+  if ( $LIST ) {
+    print Dumper(\%BEDROCK_CONFIG_CACHE);
+  }
+  elsif ( $DELETE ) {
+    (tied %BEDROCK_CONFIG_CACHE)->remove;
+  }
+  elsif ( $RESET ) {
+    %BEDROCK_CONFIG_CACHE = ();
+  }
+  elsif ( $FILE ) {
+    die "file ($FILE) not found\n" unless -s $FILE;
+    {
+      local $/;
+      open FILE, "<$FILE";
+
+      my $file = <FILE>;
+      close FILE;
+      $BEDROCK_CONFIG_CACHE{$FILE} = $file;
+    }
+  }
+  elsif ( $CREATE ) {
+    # created
+  }
+  elsif ( $SIZE ) {
+    print STDERR "error: size only matters with --create\n";
+  }
+  else {
+    usage();
+  }
+}
+else {
+  print STDERR $@;
+
+  exit -1;
+}
+
+exit 0;
+
+# $Log$
+# Revision 1.1  2013/05/09 21:18:00  rlauer
+# - added new utility to manage configuration cache
+#
+
+=pod
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=head1 SEE ALSO
+
+C<IPC::Shareable>, C<Bedrock::Handler>
+
+=cut
