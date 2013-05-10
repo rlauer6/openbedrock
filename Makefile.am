@@ -17,6 +17,9 @@ ACLOCAL_AMFLAGS = -I autotools
 
 docdir = $(datadir)/doc/bedrock-$(VERSION)
 
+#just in case the session directory has not been created
+apache_session_DATA = 
+
 FILES = \
     AUTHORS \
     bedrock-build \
