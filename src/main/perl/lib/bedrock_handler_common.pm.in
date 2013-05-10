@@ -1,0 +1,108 @@
+package bedrock_handler_common;
+
+use strict;
+use vars;
+use vars qw/@ISA @EXPORT %BEDROCK_CONFIG_CACHE/;
+
+BEGIN {
+  @ISA = qw/Exporter/;
+  @EXPORT = qw/get_loglevel init_bedrock_handler/;
+}
+
+=pod
+
+=head2 get_loglevel
+
+Returns the current loglevel.  Note this may change during the course
+of processing.  The short version of this is, the confusion between
+Apache's log level and Bedrock's.  Under the CGI version of Bedrock
+the request object does not have access to the Apache log level.  We
+fake it by looking for an environment variable named BEDROCK_LOGLEVEL.
+
+Sometime after Bedrock begins processing pages,
+Bedrock::Log::StartLogger is called with a log level it retrieved from
+the config object.
+
+The config object is (possibly) a merged version of Bedrock's tagx.xml
+and the application's tagx.xml.
+
+I think what makes sense, is for logging at the handler level to stick
+to one way of determing the log level, perhaps BEDROCK_LOGLEVEL or to
+make it obvious that this is mimicking Apache's LogLevel directive -
+BedrockLogLevel?
+
+=cut
+
+sub get_loglevel {
+  my $r = shift;
+
+  if ( $ENV{MOD_PERL} ) {
+    return $r->server->loglevel();
+  }
+  else {
+    return $r->get_loglevel_str();
+  }
+}
+
+
+sub init_bedrock_handler {
+  my $r = shift;
+
+  my ($package, $sub, $line) = caller(1);
+
+  $r->log->info( $sub . '[' . $line . ']: Started...Bedrock loglevel is ' . get_loglevel($r));
+
+  my $bedrock_handler = eval { Bedrock::Handler->new( $r ); };
+
+  if ( $@ ) {
+    $r->log->error( "Could not read config file. $@" );
+
+    unless ( ref($r) =~ /shell/i ) {
+      $r->content_type('text/html');
+      $r->send_http_header;
+
+      print <<eot;
+<html>
+<head>
+<title>Bedrock Configuration Error</title>
+</head>
+<body>
+<div style="color:red;">An error was encountered while trying to read Bedrock&#39; configuration file:</div>
+<pre>
+You most likely have a malformed .xml file somewhere in your configuration path.
+While reading the configuration directories, Bedrock has thrown the following exception:
+
+$@
+
+Check the log file for more information.
+</pre>
+</body>
+</html>
+eot
+      return undef;
+    }
+    else {
+      print <<eom;
+
+Bedrock shell could not process one or more of your configuration files.
+
+You most likely have a malformed .xml file somewhere in your configuration path.
+While reading the configuration directories, Bedrock has thrown the following exception:
+
+\t$@
+
+Check the log file for more information.\n
+eom
+      return undef;
+    }
+  }
+
+  return $bedrock_handler;
+}
+
+# $Log$
+# Revision 1.1  2013/05/10 15:04:39  rlauer
+# first check-in of modules extracted from old Apache::Bedrock and our new Apache::BedrockSessionFiles
+#
+
+1;

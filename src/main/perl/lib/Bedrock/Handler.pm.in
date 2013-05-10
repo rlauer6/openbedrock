@@ -1,0 +1,672 @@
+# $Id$
+
+package Bedrock::Handler;
+
+use strict;
+use warnings;
+use Data::Dumper;
+
+use vars qw/@ISA @EXPORT_OK %EXPORT_TAGS/;
+
+@EXPORT_OK = qw/%BEDROCK_CONFIG_CACHE/;
+@ISA = qw/Exporter/;
+
+%EXPORT_TAGS = (all => \@EXPORT_OK);
+
+use strict;
+
+use Apache2::Const -compile =>
+qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
+
+use constant NOT_FOUND    => Apache2::Const::NOT_FOUND;
+use constant SERVER_ERROR => Apache2::Const::SERVER_ERROR;
+use constant FORBIDDEN    => Apache2::Const::FORBIDDEN;
+use constant OK           => Apache2::Const::OK;
+use constant DECLINED     => Apache2::Const::DECLINED;
+use constant REDIRECT     => Apache2::Const::REDIRECT;
+
+use Cwd;
+use File::Basename;
+
+my %BEDROCK_CONFIG_CACHE;
+
+if ( $ENV{BEDROCK_CACHE_CONFIG} ) {
+  eval {
+    require IPC::Shareable;
+    {
+      local $SIG{__WARN__} = sub {};
+      tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', { 
+						    key    => 'BCFG', 
+						    create => 0, 
+						    size   => 1024 * ( $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256 )
+						   }; 
+    }
+  };
+}
+
+=pod
+
+=head1 NAME
+
+C<Bedrock::Handler> - common Bedrock handler methods
+
+=head1 SYNOPSIS
+
+ my $bedrock_handler = Bedrock::Handler->new($r);
+
+=head1 DESCRIPTION
+
+Class to be used to provide some helper functions for writing Bedrock
+Apache handlers.  Performs a common set of initialization activities
+like creating Bedrock's configuration environment from the various
+configuration files that are supported by Bedrock.
+
+=head1 METHODS
+
+=head2 new
+
+ new( apache-request-object )
+
+Creates a new instance of a Bedrock handler object.
+
+=cut
+
+sub new {
+  my ($class, $r)  = @_;
+  my $self = bless {}, $class;
+
+  $self->{_apache_handler} = $r;
+  $self->{_pwd} = fastcwd();
+  $self->{_config_files_processed} = [];
+
+#
+# under mod_perl naked directory requests are passed along prior to
+# file checking.  Thus the content_type is directory
+#
+# under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
+#   8<
+#     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
+#   8<
+  #
+  $self->{file} = do {
+    if ( $r->content_type =~ /directory/ ) {
+      $ENV{PATH_TRANSLATED} = $r->filename;
+      $r->content_type('text/html');
+      "";
+    }
+    else {
+      $r->filename;
+    }
+  };
+
+  my $path_info;
+  
+  if ( defined $ENV{PATH_INFO} ) {
+    $path_info = $ENV{PATH_INFO};
+    $path_info =~ s/(.*?)\/$/$1/;
+  }
+
+  # Parse for the URI components
+  @{$self}{qw/uri_name uri_dir/} = fileparse( $r->uri );
+
+  if ( defined $r->filename ) {
+    @{$self}{qw/filename path/} = fileparse( $r->filename );
+  }
+  
+  eval { $self->{_config} = $self->get_config; };
+
+  if ( $@ ) {
+    $@ .= "<br>\nconfig files processed:<br>\n" . join("<br>\n", @{$self->{_config_files_processed}})
+      if defined $self->{_config_files_processed} && @{$self->{_config_files_processed}};
+    die $@;
+  }
+
+  $self->{path_info} = $path_info;
+
+  $self->log_debug( sprintf( "SCRIPT_NAME......[%s] " , $ENV{SCRIPT_NAME}) );
+  $self->log_debug( sprintf( "request file.....[%s] " , defined $self->{file} ? $self->{file} : 'undef') );
+  $self->log_debug( sprintf( "URI..............[%s] " , $r->uri ) );
+  $self->log_debug( sprintf( "URI_DIR..........[%s] " , $self->{uri_dir} ) );
+  $self->log_debug( sprintf( "URI_NAME.........[%s] " , $self->{uri_name} ) );
+  $self->log_debug( sprintf( "PATH_INFO........[%s] " , defined $path_info ? $path_info : 'undef') );
+  $self->log_debug( sprintf( "PATH_TRANSLATED..[%s] " , defined $ENV{PATH_TRANSLATED} ? $ENV{PATH_TRANSLATED} : 'undef') );
+  $self->log_debug( sprintf( "filename.........[%s] " , defined $self->{filename} ? $self->{filename} : 'undef') );
+  $self->log_debug( sprintf( "path.............[%s] " , defined $self->{path} ? $self->{path} : 'undef') );
+
+  $self;
+}
+
+sub _log {
+
+  my $who = (caller(2) =~/Bedrock::Handler/) ? 3 : 2;
+
+  while ( (caller($who))[3] =~/eval/ ) { $who++; last unless defined ((caller($who))[2]); }
+
+  my $level = $_[2];
+  my (undef, undef, $line, $caller) = caller($who);
+  
+  $_[0]->{_apache_handler}->log->$level( $caller . '[' . $line . ']: ' . $_[1] );
+}
+
+=pod
+
+=head2 log_info
+
+=head2 log_error
+
+=head2 log_warn
+
+=head2 log_debug
+
+ log_debug( message )
+
+Logs a message at the given log level to Apache's error log.
+
+=cut
+
+sub log_info  { _log(@_, 'info') };
+sub log_error { _log(@_, 'error') };
+sub log_warn  { _log(@_, 'warn') };
+sub log_debug { _log(@_, 'debug') };
+
+=pod
+
+=head2 get_config
+
+ get_config()
+
+Returns Bedrock's configuration object.  Note that the hash that is
+returned is the fully exploded configuration environment for Bedrock.
+The configuration (may) have come from the cache if cacheing has been
+enabled.  See L<CONFIGURATION CACHEING>
+
+=cut
+
+sub get_config {
+  my $self = shift;
+  
+  return $self->{_config}
+    if exists $self->{_config};
+  
+  my $key = $ENV{SERVER_NAME} . ':' . $self->get_uri_dir;
+
+  if ( $ENV{BEDROCK_CACHE_CONFIG} && $ENV{BEDROCK_CACHE_CONFIG} =~/(yes|y|on)/i ) {
+    
+    if ( $BEDROCK_CONFIG_CACHE{$key} ) {
+      $self->{_config} = Bedrock::XML->newFromString( $BEDROCK_CONFIG_CACHE{$key} );
+    }
+  }
+  
+  $self->{_config}  = $self->get_bedrock_config
+    unless exists $self->{_config};
+  
+  $BEDROCK_CONFIG_CACHE{$key} = Bedrock::XML::writeXML( $self->{_config} ); # this might fail ungracefully
+  
+  return $self->{_config};
+}
+
+=pod
+
+=head2 get_uri_dir
+
+=cut
+
+sub get_uri_dir {
+  $_[0]->{uri_dir};
+}
+
+=pod
+
+=head2 restore_dir
+
+=cut
+
+sub restore_dir {
+  my $self = shift;
+  
+  chdir $self->{_pwd}
+    if exists $self->{_pwd};
+}
+
+=pod
+
+=head2 get_bedrock_admin_dir
+
+=cut
+
+sub get_bedrock_admin_dir {
+  my $self = shift;
+
+  $self->get_config->{BEDROCK_ADMIN_DIR} || '/bedrock';
+}
+
+sub error {
+  my ($self, $err_msg, $code) = @_;
+  $code = shift || SERVER_ERROR;
+
+  $self->log_error( $err_msg );
+
+  $self->restore_dir;
+
+  return $code;
+}
+
+=pod
+
+=head2 merge_modules
+
+=cut
+
+sub merge_modules {
+  my ( $self, $config, $dest_config) = @_;
+
+  # no modules in source or config
+  unless ( @{$dest_config->{MODULES}} ) {
+    $dest_config->{MODULES} = $config->{MODULES}
+      if exists $config->{MODULES};
+  }
+  elsif ( exists $config->{MODULES} && @{$config->{MODULES}} ) {
+    # get the binding names for existing modules as these should be
+    # unique and use these to create a hash of all module configurations
+    my %modules;
+    map { $modules{$_->{binding}} = $_; } @{$dest_config->{MODULES}};
+    
+    # possible overrwite modules from source
+    map { $modules{$_->{binding}} = $_; } @{$config->{MODULES}};
+    
+    $dest_config->{MODULES} = [ values %modules ];
+  }
+
+  return $dest_config;
+}
+
+=pod
+
+=head2 merge_config
+
+=cut
+
+sub merge_config {
+  my ( $self, $config, $dest_config ) = @_;
+  die "usage: merge_config( source-config, dest-config )\n"
+    unless defined $dest_config;
+
+  # merge source-config with master
+  map { $dest_config->{$_} = $config->{$_} unless $_ eq 'MODULES'; } keys %$config;
+
+  # merge modules separately
+  $dest_config = $self->merge_modules( $config, $dest_config );
+
+  return $dest_config;
+}
+
+sub config_files_processed {
+  my ($self, $config_file) = @_;
+  
+  push @{$self->{_config_files_processed}}, $config_file
+    if defined $config_file;
+  
+  return @{$self->{_config_files_processed}};
+}
+
+=pod
+
+=head2 get_bedrock_config
+
+ get_bedrock_config( apache-request, uri-dir )
+
+=cut
+
+sub get_bedrock_config {
+  my $self = shift;
+
+  my $dir = $self->get_uri_dir;
+  $dir =~s|^/||;
+
+  # Bedrock shell
+  $dir =~ s/^$ENV{DOCUMENT_ROOT}//;    
+
+  # + -------------------------------------------------------------------------- +
+  # | Bedrock 2 looks for the master tagx.xml in $ENV{BEDROCK_CONFIG_PATH}       |
+  # | it can be overridden or merged with local configuration files.  To         |
+  # | override the master, add this to the master tagx.xml file                  |
+  # |                                                                            |
+  # | <scalar name="REPLACE_CONFIG">yes</scalar>                                 |              
+  # + -------------------------------------------------------------------------- +
+
+  my $conf = eval { Bedrock::Config->new( $ENV{BEDROCK_CONFIG_PATH} . '/tagx.xml'); };
+
+  # it's probably okay, not to find this, but only if you have your
+  # own tagx.xml somewhere, so let's at least warn
+  if ( $@ ) {
+    $self->log_warn( sprintf( "error reading %s/tagx.xml -\n %s\n", 
+			      $ENV{BEDROCK_CONFIG_PATH},
+			      $@
+			    )
+		   );
+  }
+  else {
+    $self->config_files_processed( $ENV{BEDROCK_CONFIG_PATH} . "/tagx.xml" );
+  }
+  
+  # look for data-sources.xml which defines database connection strings
+  my $db_conf;
+
+  foreach my $config_path (qw(BEDROCK_CONFIG_PATH CONFIG_PATH)) {
+
+    my $xml_file = $ENV{$config_path}    . "/data-sources.xml"
+      if exists $ENV{config_path};
+
+    if ( $xml_file && -s $xml_file ) {
+      $self->config_files_processed( $xml_file );
+
+      my $conf = Bedrock::Config->new( $xml_file );
+
+      $db_conf = $self->merge_config( $conf, $db_conf || Bedrock::Hash->new());
+    }
+  }
+
+  $conf->{'_dbnames'} = $db_conf 
+    if defined $db_conf;
+
+  # look for a tagx.xml that will be used with or instead of Bedrock's tagx.xml
+  if ( exists $ENV{CONFIG_PATH} && -r $ENV{CONFIG_PATH} . '/tagx.xml' ) {
+    if ( !$conf || $conf->{REPLACE_CONFIG} =~ /^y/i ) {
+      $conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+      $self->config_files_processed( $ENV{CONFIG_PATH} . '/tagx.xml' );
+    }
+    else {
+      my $local_conf = Bedrock::Config->new( $ENV{CONFIG_PATH} . '/tagx.xml' );
+
+      if ( exists $local_conf->{REPLACE_CONFIG} && $local_conf->{REPLACE_CONFIG} =~ /^y/i ) {
+	$self->log_debug("replacing standard Bedrock configuration");
+	$conf = $local_conf;
+      }
+      else {
+	$conf = $self->merge_config( $local_conf, $conf );
+      }
+
+      $self->config_files_processed( $ENV{CONFIG_PATH} . '/tagx.xml' );
+    }
+  }
+  
+  die sprintf( "No or empty 'tagx.xml' found.\n" .
+	       "BEDROCK_CONFIG_PATH: [%s]\n" .
+	       "CONFIG_PATH: [%s]\n",
+	       $ENV{BEDROCK_CONFIG_PATH}, 
+	       $ENV{CONFIG_PATH} )
+    unless $conf && keys %$conf;
+
+  # Look for auxillary application configurations and merge with (or replace)  master
+  my @app_conf_files;
+
+  if ( exists $ENV{CONFIG_PATH} ) {
+    my ( undef, $framework_dir ) = split /\//, $dir || '/';
+
+    my $framework_conf = sprintf( 
+				 "%s/framework/%s.xml", 
+				 $ENV{CONFIG_PATH}, 
+				 $framework_dir
+			      );
+    push @app_conf_files, $framework_conf if -s $framework_conf;
+  }
+
+  # look for more config files to merge
+  my @config_paths = $ENV{BEDROCK_CONFIG_PATH} . '.d';
+
+  if ( exists $ENV{CONFIG_PATH} ) {
+    push @config_paths, $ENV{CONFIG_PATH};
+    push @config_paths, $ENV{CONFIG_PATH} . '.d';
+  }
+
+  foreach my $path ( @config_paths ) {
+    next unless -d $path;
+
+    local (*CONFIG_FILES);
+    opendir CONFIG_FILES, "$path";
+
+    while ( my $file = readdir CONFIG_FILES ) {
+      next unless $file =~ /\.xml$/ && $file !~ /^(tagx|tagx_apps)\.xml$/;
+
+      $conf = $self->merge_config( Bedrock::Config->newFromXML( $path . '/' . $file ), $conf );
+      
+      $self->config_files_processed( $path . '/' . $file );
+    }
+
+    closedir CONFIG_FILES;
+  }
+
+  # look for module configs
+  my @module_paths;
+
+  foreach ( qw/startup plugin/ ) {
+    # note the order is important here, we want local configurations
+    # to override system configurations
+    push @module_paths, $ENV{BEDROCK_CONFIG_PATH} . ".d/" . $_
+      if -d $ENV{BEDROCK_CONFIG_PATH} . ".d/" . $_;
+    
+    push @module_paths, $ENV{CONFIG_PATH} . ".d/" . $_
+      if exists $ENV{CONFIG_PATH} && -d $ENV{CONFIG_PATH} . ".d/" . $_;
+  }
+
+  foreach my $path ( @module_paths ) {
+    local (*CONFIG_FILES);
+    opendir CONFIG_FILES, "$path";
+
+    while ( my $file = readdir CONFIG_FILES ) {
+      next unless $file =~ /\.xml$/;
+
+      $conf = $self->merge_modules( { MODULES => [ Bedrock::Config->newFromXML( $path . '/' . $file ) ] }, $conf );
+      
+      $self->config_files_processed( $path . '/' . $file );
+    }
+
+    closedir CONFIG_FILES;
+  }
+
+  # note that configurations above could have overridden APP_CONFIG
+  # These are directory level configurations (tagx_apps.xml)
+  push @app_conf_files, $conf->{'APP_CONFIG'} if $conf->{'APP_CONFIG'};
+
+  foreach my $dir_conffile (@app_conf_files) {
+   
+    # Load the config file
+    my $dir_conf = Bedrock::Config->new($dir_conffile);
+    $self->config_files_processed( $dir_conffile );
+
+    my $dir_path = '/';
+    my %dirconfs;
+
+    foreach my $dir_part ( undef, split /\//, $dir ) {
+      $dir_path .= $dir_part if defined $dir_part;
+
+      next if $dirconfs{$dir_path};
+
+      $dirconfs{$dir_path} = $dir_path;
+      
+      # Look up the app config, based on directory of current request
+      my $app_conf = $dir_conf->{$dir_path} || $dir_conf->{ $dir_path . '/' };
+
+      $conf = $self->merge_config( $app_conf, $conf ) 
+	if $app_conf;
+
+      $dir_path .= '/'
+	unless $dir_path eq '/';
+    }
+  }
+
+  $conf->{CONFIG_PATH} = $ENV{CONFIG_PATH};
+
+  # override use of BEDROCK_IMAGE_URL if app defines own
+  $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
+
+  # And voila! we have the merged config
+  $conf;
+}
+
+=pod
+
+=head1 CONFIGURATION CACHEING
+
+=head2 Why cache the configuration?
+
+Creating Bedrock's configuration object is not a simple matter of
+reading 1 configuration file.  Thus cacheing Bedrock's config object
+can avoid a lot of config file mashing which includes; file I/O, XML
+parsing, and merging of hash objects.
+
+Cacheing of the configuration file can be use with mod_perl or when
+running Bedrock as a CGI and make Bedrock's startup times up to 50%
+faster.
+
+=head2 Initializing the cache
+
+A shared memory segment should be created sometime before the
+Apache parent process is started (typically F<startup.pl>). It should
+create the segment in a similar way as show below:
+
+ tie %X, 'IPC::Shareable', { 
+                            key     => 'BCFG', 
+                            create  => 1, 
+                            destroy => 0, 
+                            size    => 256 * 1024
+                           };
+
+Note that use of the shared memory key C<BCFG> is not optional.  If you
+want Bedrock to know about your shared memory segment, you and Bedrock
+must agree on the key name - we chose C<BCFG>.
+
+For a non-mod_perl environment (Bedrock running asa a perl CGI script)
+you would need to create the shared memory segment at boot time or
+before your Apache server was started.  Also, you do NOT want the
+shared memory destroyed when the process terminates, thus you would
+set `destroy => 0' when tieing the object as shown above.
+
+You also are responsible for providing some other way to
+clean up the shared memory segment (if you were concerned about such
+things).
+
+=head2 Size Matters
+
+New studies now show what we've all suspected. B<size> I<does> matter.
+The cache is populated with a serialized (Bedrock XML) version of the
+config object.  Empirically you're going to need at least 128K or so
+depending on how many directories you've scattered your Bedrock files
+amongst.  Each directory that is I<Bedrock enabled> (.roc file is being
+processed therein) may have its own configuration (Learn about
+I<tagx_apps.xml> on the Bedrock Wiki).
+
+Our shared memory segment size, must account for the possibility that
+you might have a per directory configuration via F<tagx_apps.xml>.
+Thus the hash key for getting the configuration object is based on the
+directory from which the object is being served.  Make sure the size
+here and the size in your shared memory initialization script agree.
+Set the cached size (in MB) in the Apache configuration file using the
+C<SetEnv> directive.  The default is 256MB.
+
+ SetEnv BEDROCK_CACHE_CONFIG On
+ SetEnv BEDROCK_CACHE_CONFIG_SIZE 256
+
+=head2 More Gory Details
+
+In this module (Apache::Bedrock) we tie the hash object
+(C<%BEDROCK_CONFIG_CACHE>) to the shared memory segment using the
+C<IPC::Shareable> module.  We do this in an eval block in the event
+that the shared memory is not available.  If an error occurs during
+the tie, we simply will have an empty hash object and thus cacheing is
+disabled.  The absence of the shared memory key is essentially then
+our trigger to cache or not to cache.
+
+When the Bedrock handler() method is invoked, we check the cache
+before creating a config object.
+
+ $BEDROCK_CONFIG_CACHE{$key};
+
+If the serialized object exists, great, if not, we do the config
+dance and create a config object.  We then store the serialized
+config object back in the hash used to cache the configs.  If we're
+not cacheing, we do it anyway, no harm, no foul here.
+
+The I<key> used as the hash index into the cache (not to be confused
+with the shared memory "key" that allows multiple processes to access
+the same block of shared memory) is composed of the server name from
+C<SERVER_NAME> environment variable and the absolute path to the file
+being processed through the handler.  This is done because Bedrock
+supports the possibility of per directory configurations.
+
+Keeping in mind that the mod_perl handler servers many virtual hosts
+we need to make sure that the correct config object is accessed.
+Using the key as described above to store and fetch the serialized
+config object will (should) insure that the correct config object is
+being used for the correct virtual host and for the correct directory
+within that virtual host.  Again, recall that Bedrock allows per directory
+configuration via F<tagx_apps.xml>.
+
+The shared memory object should probably be destroyed when the Apache
+parent is terminated.  Again, note that in this module
+(C<Bedrock::Handler>) we neither create, nor destroy the shared memory
+segment, but we use it if it is available.  IOW those wishing to take
+advantage of cacheing have some housekeeping to do.  Bedrock could
+facilitate this operation (and may), however optimizing the framework
+is probably something that should be done by those who know what they
+are doing to avoid any surprises.
+
+=head2 Cache Manipulation
+
+Flushing the config cache is a simple matter of executing this code:
+
+ #!/usr/bin/perl
+
+ use IPC::Shareable;
+
+ tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+ %FOO = ();
+
+Examing the cache is equally trivial
+
+ #!/usr/bin/perl
+
+ use IPC::Shareable;
+ use Data::Dumper;
+
+ tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+ print Dumper( \%FOO );
+
+...as is destroying the cache
+
+ #!/usr/bin/perl
+
+ use IPC::Shareable;
+ 
+ tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };
+ $FOO->remove();
+
+=head2 What else should we cache?
+
+Are there other opportunities to speed up Bedrock using cacheing?  At
+first blush, no.  The whole point of a templating package is to merge
+dynamic data with templates, so we never know what dynamic data is
+being merged.  Of course, that's not always the case, or we might
+designate some pages that do get parsed as I<cacheable> since Bedrock
+parsing is not instantaneous.
+
+Cacheing processed pages it seems then is generally a non-starter.
+We could conceivably cache the raw Bedrock page avoiding the
+disk access associated with reading C<.roc> and C<.inc> files into
+memory.  Given the advances in the way the O/S handles cacheing of
+disk objects, it seems like this might not be a place where a
+great deal of additional benefit might be derived with optmizations
+efforts - however I<YMMV>.
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+# $Log$
+# Revision 1.1  2013/05/10 15:04:39  rlauer
+# first check-in of modules extracted from old Apache::Bedrock and our new Apache::BedrockSessionFiles
+#
+
+1;
