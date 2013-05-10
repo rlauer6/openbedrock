@@ -239,6 +239,7 @@ BLM_STARTUP_SESSION=$(perl5blmstartupsessionlib_DATA:.pm=.pm.in)
 
 dist_noinst_DATA = \
     Bedrock.pm.in \
+    bedrock_handler_common.pm.in \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
