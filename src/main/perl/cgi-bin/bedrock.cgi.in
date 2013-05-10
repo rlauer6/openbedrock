@@ -21,26 +21,30 @@ BEGIN
 }
 
 use CGI qw/:cgi/;
-# for POSTs that are big, this avoids a timeout
+
+# 8<------------------- start of fix ---------------------------------
+#  fix for POSTs that are somewhat big, some servers will terminate
+#  the connection if the server does not respond quickly enough,
+#  mistakely belieiving it may be a DoS attack.
 param;
+# 8<------------------- end of fix -----------------------------------
 
 use Carp;
 
 use Bedrock;
-use Bedrock::XML;
-use Bedrock::Log qw/MSG_ABORT MSG_DEBUG MSG_INFO 
-		    MSG_STATUS MSG_WARNING 
-		    MSG_ERROR MSG_SYSERROR MSG_FATAL/;
 
 use Apache::Bedrock;
+use Apache::BedrockDocs;
+use Apache::BedrockSessionFiles;
+
 use Apache::Request_cgi;
 
 sub error {
-  my $status = shift;
-  my $status_name = shift;
-  my $message = shift;
-
-  print <<end_of_html;
+    my $status = shift;
+    my $status_name = shift;
+    my $message = shift;
+    
+    print <<end_of_html;
 Content-type: text/html
 Status: $status
 
@@ -57,13 +61,13 @@ Status: $status
 </body>
 </html>
 end_of_html
-  exit -1;
-}
 
+exit -1;
+}
 
 $SIG{TERM} = \&confess;
 
-# find Bedrock's log level...we would prefer to get the current
+# what's our LogLevel...we would prefer to get the current
 # logging level from the environment because Bedrock's ability to read
 # the configuration file is part of what we want to examine at the
 # DEBUG log level!
@@ -80,94 +84,38 @@ $SIG{TERM} = \&confess;
 #
 # The Apache request object ($r) under mod_perl uses the value define
 # in httpd.conf while Bedrock's request object implemented for
-# bedrock.cgi uses $ENV{BEDROCK_LOGLEVEL}.
+# bedrock.cgi uses $ENV{BedrockLogLevel}
+#
+# It's possible to use Apache::ConfigFile to parse Apache's
+# configuration file, however we would have to know where the virtual
+# host and server configuration files reside in order to munge for
+# LogLevel.  That seems a bit wonky, so we're going to introduce
+# BedrockLogLevel which allows the site administrator to mirror
+# LogLevel, only for `bedrock.cgi' applications.  This may be
+# reconsidered in future versions of Bedrock.
 
-my $log_level;
-
-if ( $ENV{BEDROCK_LOGLEVEL} ) {
-  $log_level = $ENV{BEDROCK_LOGLEVEL};
-}
-else {
-  # read configuration file, get LOGLEVEL
-  eval {
-    my $tagx_xml = $ENV{CONFIG_PATH} . '/tagx.xml';
-    
-    unless ( -s $tagx_xml ) {
-      $tagx_xml = $ENV{BEDROCK_CONFIG_PATH} . '/tagx.xml';
-    }
-    
-    my $config = new Bedrock::XML( $tagx_xml );
-    $log_level = $config->{LOGLEVEL};
-  };
-}
-
-for ( $log_level) { 
-  /MSG_ABORT/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_ABORT;
-    $SIG{__WARN__} = \&Carp::cluck;
-    last;
-  };
-
-  /MSG_DEBUG/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_DEBUG;
-    $SIG{__WARN__} = \&Carp::cluck;
-	last;
-  };
-
-  /MSG_INFO/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_INFO;
-    last;
-  };
-
-  /MSG_STATUS/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_STATUS;
-    last;
-  };
-
-  /MSG_WARNING/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_WARNING;
-    last;
-  };
-
-  /MSG_ERROR/ && do {
-      $Bedrock::Log::CutoffLevel = MSG_ERROR;
-      last;
-    };
-
-  /MSG_SYSERROR/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_SYSERROR;
-    last;
-  };
-
-  /MSG_FATAL/ && do {
-    $Bedrock::Log::CutoffLevel = MSG_FATAL;
-    last;
-  };
-
-  $Bedrock::Log::CutoffLevel = MSG_DEBUG;
-}
-
-
-if ( $@ ) {
-    my $message =<<end_of_html;
-    
-Possibly misconfigured Bedrock site:
-
-<pre>$@</pre>
-<pre>
-CONFIG_PATH = $ENV{CONFIG_PATH}
-BEDROCK_CONFIG_PATH = $ENV{BEDROCK_CONFIG_PATH}
-</pre>
-end_of_html
-
-error( 500, "Internal Server Error", $message);
-}
-
-$Bedrock::Log::LOGFORMAT = '';
+my $log_level = $ENV{BedrockLogLevel} || 'info'; # default log level
 
 my $r = new Apache::Request_cgi;
 
-my $code = &Apache::Bedrock::handler( $r );
+my $code;
+
+for ( "$0" ) {
+  /bedrock\.cgi/ && do {
+      $code = &Apache::Bedrock::handler( $r );
+      last;
+  };
+
+  /bedrock\-docs\.cgi/ && do {
+      $code = &Apache::BedrockDocs::handler( $r );
+      last;
+  };
+
+  /bedrock\-session\-files\.cgi/ && do {
+      $code = &Apache::BedrockSessionFiles::handler( $r );
+      last;
+  };
+}
 
 if ($code == 404) {
     error( 404, 
@@ -221,41 +169,39 @@ __END__
 
   bedrock.cgi - Apache Bedrock CGI handler
 
-
 =head1 SYNOPSIS
 
-  FIXME: finish documenting bedrock.cgi program
+  /cgi-bin/bedrock.cgi
 
 =head1 DESCRIPTION
 
-C<bedrock.cgi> is part of the Bedrock project.
+C<bedrock.cgi> is part of the Bedrock project.  It invokes various
+Apache handlers to implement portions of the Bedrock web application
+framework.  Its primary job is to server up Bedrock pages, but can
+also be used to serve up Bedrock documentation and files located in a
+user's session directory.
 
 =head1 DIAGNOSTICS
 
 Exits with zero on success, non-zero on error.
 
-
 =head1 BUGS
 
-None known. If you find any, please report them to the Signature
-Inforamation Solutions, LLC Developers' mailing list:
+None known. If you find any, please report them to the 
 
-  cjldev@signatureinfo.com
+=head1 ORIGINAL AUTHOR
 
-=head1 AUTHORS
+Jay Sridhar
 
-Written by Jay Sridhar.
-
-Contributions from:
+=head2 Contributors
 
 =over 4
 
-=item Rob Lauer <RLauer@signatureinfo.com>
+=item Rob Lauer <rlauer6@comcast.net>
 
-=item Alan D. Salewski <ASalewski@signatureinfo.com>
+=item Alan D. Salewski
 
 =back
-
 
 =head1 COPYRIGHT
 
@@ -268,3 +214,12 @@ There is NO WARRANTY, to the extent permitted by law.
 
 =cut
 
+# $Log$
+# Revision 1.10  2013/05/10 14:51:17  rlauer
+# - add support for using the bedrock.cgi harness to invoke the Apache::Bedrock, Apache::BerockDocs,
+#   and the Apache::BedrockSessionFiles handlers.  The idea is to create a symbolic link to bedrock.cgi
+#   with various names that help the harness decide what to do.
+# - replaced Bedrock::Log with writes to STDERR so that logging is done in the main Apache error_log.
+#   We now use the environment variable BedrockLogLevel to determine the logging level.  The value should
+#   mimic Apache's LogLevel values.
+#
