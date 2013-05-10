@@ -25,30 +25,51 @@
 
 package Apache::Request_cgi;
 
-use Bedrock::Log;
+# let's duplicate STDERR so our Apache handler can write to the Apache
+# log properly.
+
+open BEDROCK_STDERR, ">>&STDERR";
+
+sub get_loglevel {
+  return  { 
+	   'error' => 3,
+	   'warn'  => 2,
+	   'info'  => 1,
+	   'debug' => 0
+	  }->{get_loglevel_str()};
+}
+
+sub get_loglevel_str {
+  return $ENV{BedrockLogLevel} || 'info';
+}
+
+sub log_message {
+  my ($self, $logmsg, $level) = @_;
+
+  $logmsg .= "\n" unless $logmsg =~/\n$/;
+
+  print BEDROCK_STDERR $logmsg
+    if ( $level >= $self->get_loglevel );
+}
 
 sub log_error {
-  my $self = shift;
-  unshift @_, MSG_ERROR;
-  goto &LOG_MESSAGE;
+  push @_, 3;
+  goto &log_message;
 }
 
 sub warn {
-  my $self = shift;
-  unshift @_, MSG_WARNING;
-  goto &LOG_MESSAGE;
+  push @_, 2;
+  goto &log_message;
 }
 
 sub debug {
-  my $self = shift;
-  unshift @_, MSG_DEBUG;
-  goto &LOG_MESSAGE;
+  push @_, 0;
+  goto &log_message;
 }
 
 sub info {
-  my $self = shift;
-  unshift @_, MSG_INFO;
-  goto &LOG_MESSAGE;
+  push @_, 1;
+  goto &log_message;
 }
 
 sub error {
@@ -60,17 +81,24 @@ sub log {
 }
 
 sub content_type {
+  my ($self, $type) = @_;
 
-  for ( $ENV{PATH_TRANSLATED} ) {
-    /\.roc/ && do {
-      return 'text/html';
-    };
-    /\.jroc/ && do {
-      return 'application/json';
-    };
+  if ( defined $type ) {
+    $self->cgi_header_out('Content-type', $type);
   }
+  else {
+    for ( $ENV{PATH_TRANSLATED} ) {
+      /\.roc/ && do {
+	return 'text/html';
+      };
 
-  'text/html';
+      /\.jroc/ && do {
+	return 'application/json';
+      };
+    }
+  
+    return 'text/html';
+  }
 }
 
 sub filename {
@@ -156,9 +184,6 @@ sub cgi_header_out {
 sub send_http_header {
   my $self = shift;
 
-  $self->debug(sprintf("[%s]: Headers are:", (caller(0))[3]));
-  $self->debug(sprintf("[%s]: %s", "$self->{'headers'}") );
-
   print $self->{'headers'}, "\r\n";
   $self->{'headers'} = undef;
 }
@@ -183,6 +208,11 @@ sub new {
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.18  2013/05/10 15:49:13  rlauer
+# - reworked logging so that we write to STDERR to force messages to Apache's error log.  We also use
+#   BedrockLogLevel (mimics Apache's LogLevel) to set the logging level
+# - content_type() method was supposed to set & get content_type
+#
 # Revision 1.17  2012/08/06 15:48:18  lauerrc
 # - default mime-type for .jroc/.jrock application/json
 #
