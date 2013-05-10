@@ -121,11 +121,21 @@ AC_ARG_WITH(
 AC_SUBST([apache_layout])
 
 apache_default_htdocsdir=/var/www
+apache_default_sessiondir=/var/www/session
+
 if test "$apache_layout" = "RedHat"; then
   apache_default_htdocsdir=/var/www/html
 fi
 
 AC_SUBST([apache_default_htdocsdir])
+
+AC_ARG_WITH(
+        [apache-sessiondir],[  --with-apache-sessiondir=DIR, default=/var/www/session],
+        [apache_session_dir=$withval],
+	[apache_session_dir="/var/www/session"]
+        )
+
+AC_SUBST([apache_sessiondir])
 
 dnl require /at least/ perl version 5.8.0
 ads_PROG_PERL([5.008000])
@@ -304,6 +314,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]perl5_pkgvlibdir[@],$(perl5_pkgvlibdir),g'"'"' \
 \
   -e '"'"'s,[@]apache_default_htdocsdir[@],$(apache_default_htdocsdir),g'"'"' \
+  -e '"'"'s,[@]apache_sessiondir[@],$(apache_sessiondir),g'"'"' \
 \
   -e '"'"'s,[@]AWK[@],$(AWK),g'"'"' \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
