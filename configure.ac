@@ -131,8 +131,8 @@ AC_SUBST([apache_default_htdocsdir])
 
 AC_ARG_WITH(
         [apache-sessiondir],[  --with-apache-sessiondir=DIR, default=/var/www/session],
-        [apache_session_dir=$withval],
-	[apache_session_dir="/var/www/session"]
+        [apache_sessiondir=$withval],
+	[apache_sessiondir="/var/www/session"]
         )
 
 AC_SUBST([apache_sessiondir])
