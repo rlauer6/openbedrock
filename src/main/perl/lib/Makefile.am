@@ -28,7 +28,9 @@ perl5blmstartuplibdir 	          = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir      = $(perl5libdir)/BLM/Startup/Session
 
 
-perl5lib_DATA = Bedrock.pm
+perl5lib_DATA = \
+    Bedrock.pm \
+    bedrock_handler_common.pm.in
 
 perl5bedrocklib_DATA = \
     Bedrock/BedrockConfig.pm \
@@ -40,6 +42,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BufferStream.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
+    Bedrock/Handler.pm \
     Bedrock/Hash.pm \
     Bedrock/InputSource.pm \
     Bedrock/BedrockJSON.pm \
@@ -59,7 +62,9 @@ perl5bedrockapachelib_DATA = \
     Bedrock/Apache/bedrock.pl \
     Bedrock/Apache/bedrock_sh.pl \
     Bedrock/Apache/Request_cgi.pm \
-    Bedrock/Apache/Request_shell.pm
+    Bedrock/Apache/Request_shell.pm \
+    Bedrock/Apache/BedrockSessionFiles.pm \
+    Bedrock/Apache/BedrockDocs.pm
 
 BEDROCK_APACHE=$(perl5bedrockapachelib_DATA:.pm=.pm.in)
 
