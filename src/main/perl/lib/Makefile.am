@@ -30,7 +30,7 @@ perl5blmstartupsessionlibdir      = $(perl5libdir)/BLM/Startup/Session
 
 perl5lib_DATA = \
     Bedrock.pm \
-    bedrock_handler_common.pm.in
+    bedrock_handler_common.pm
 
 perl5bedrocklib_DATA = \
     Bedrock/BedrockConfig.pm \
