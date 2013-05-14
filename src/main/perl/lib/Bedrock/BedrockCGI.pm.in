@@ -22,6 +22,7 @@
 #    along with this program; if not, write to the Free Software
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
+
 package Bedrock::BedrockCGI;
 
 1;
@@ -32,23 +33,90 @@ use File::Basename;
 
 use Bedrock;
 use Bedrock::Context;
-use Text::URLEncode qw/Htmlencode/;
-use Text::TagX;
+use Bedrock::Handler;
 
 use Apache::Bedrock;
 use Apache::Request_cgi;
 
 use BLM::Startup::UserSession;
+
+use Text::URLEncode qw/Htmlencode/;
+use Text::TagX;
+
 use IO::Scalar;
 
-# new( CONTENT_TYPE => content-type,
-#      LOGDIR       => dir,
-#      LOG_FILE     => log-file
-#      COOKIELESS   => 0/1
-#    )
-#
-# all arguments are optional
-#
+=pod
+
+=head1 NAME
+
+ Bedrock::CGI
+
+=head1 SYNOPSIS
+
+ use Bedrock::BedrockCGI;
+
+ my $bedrock = new Bedrock::CGI;
+
+ $bedrock->print( $bedrock->cgi->start_html("Hello World") );
+ $bedrock->print( $bedrock->cgi->h1("Hello World") ) ;
+ $bedrock->print( $bedrock->cgi->end_html );
+
+ # access Bedrock configuration info
+ $bedrock->config("DBI_DSN");
+
+ # access session information
+ my $data = $bedrock->session("email");
+ 
+ # set session information (persistent)
+ $bedrock->session("email", "rlauer\@openbedrock.net");
+
+=head1 DESCRIPTION
+
+C<Bedrock::CGI> facilitates the writing of perl CGI programs that
+interact with the Bedrock environment.  Using C<Bedrock::CGI> the perl
+developer has access to Bedrock global and site level configuration
+data as well as the ability to access and persist data to a Bedrock
+session.
+
+HTML (or other data) is buffered when you use the C<print()> method.
+On exit, the class will flush the buffer and CGI headers to STDOUT.
+
+=head1 METHODS
+
+=cut
+
+=pod
+
+=head2 new
+
+ new(options)
+
+C<options> is a hash of options:
+
+=over 5
+
+=item CONTENT_TYPE
+
+default: 'text/html'
+
+=item LOGDIR
+
+default: C<$bedrock->config( 'LOGDIR' )>
+
+=item LOGFILE
+
+default: C<sprintf("%s/%s.log", $bedrock->config( 'LOGDIR' ), $0);>
+
+=item COOKIELESS
+
+If set to 1, then sessions are assumed to be cookieless.
+
+default: 0
+
+=back
+
+=cut
+
 sub new {
   my $class   = shift;
   my %options = @_;
@@ -79,108 +147,126 @@ sub new {
   return $self;
 }
 
-# returns an Apache request handler
-sub handler {
-  return ( exists $_[0]->{APACHE_HANDLER} )
-  ? $_[0]->{APACHE_HANDLER}
-  : ( $_[0]->{APACHE_HANDLER} = new Apache::Request_cgi );
-}
+=pod
 
-# returns the Bedrock "context object"
-sub context {
-  my $self = shift;
+=head2 config
 
-  return ( exists $self->{ctx} )
-  ? $self->{ctx}
-  : ( $self->{ctx} =
-      Bedrock::Context->new( APACHE_HANDLER => $self->handler,
-                             CONFIG         => $self->config
-                           )
-    );
-}
+ config()
+ config(key)
 
-# initialize the session
-sub init_session {
-  my $self       = shift;
-  my $cookieless = shift;
+Access Bedrock configuration information.
 
-  my $config = $self->config->get_module_config('UserSession');
-  $config->{cookieless_session} = $cookieless;
+ $bedrock->config( $key );
 
-  return BLM::Startup::UserSession->new( $self->context, $config );
-}
+If you call C<config()> without an argument it will return a
+C<Bedrock::Config> object.
 
-# buffer output
-sub print {
-  my $self = shift;
+ $bedrock->config->{ $key };
 
-  $self->{DATA} .= shift;
-}
+ $bedrock->config->get_module_config( 'UserSession' );
 
-sub log {
-  my $self = shift;
+=cut
 
-  TagX::Log::log_message( undef, $_[0] );
-}
-
-# session - return session object
-# session( key ) return session value
-# session( key, value ) set session value
-sub session {
-  my $self = shift;
-
-  die "No SESSION object available."
-  unless exists $self->{SESSION};
-
-  if ( @_ > 1 ) {
-    return $self->{SESSION}->{ $_[0] } = $_[1];
-  }
-  elsif ( @_ == 1 ) {
-    if ( UNIVERSAL::isa( $_[0], 'ARRAY' ) ) {
-      return @{ $self->{SESSION} }{ @{ $_[0] } };
-    }
-    else {
-      return $self->{SESSION}->{ $_[0] };
-    }
-  }
-  else {
-    return $self->{SESSION};
-  }
-}
-
-# config - return config object
-# config( key ) - return config key value
 sub config {
   my ( $self, $key ) = @_;
 
-  my $config =
-  ( exists $self->{CONFIG} )
-  ? $self->{CONFIG}
-  : ( $self->{CONFIG} = Apache::Bedrock::config( $self->handler ) );
+  my $bh = new Bedrock::Handler( $self->handler );
+  my $config =  ( exists $self->{CONFIG} )  ? $self->{CONFIG}  : ( $self->{CONFIG} = $bh->get_config);
 
   return ( $key ? $config->{$key} : $config );
 }
 
-# clear output buffer
+
+=pod
+
+=head2 clear
+
+Remove all data from the output buffer.  If the output buffer is
+empty, no headers will be printed on exit.  =head2 config
+
+=cut
+
 sub clear {
   delete $_[0]->{DATA};
 }
+
+=pod
+
+=head2 cgi
+
+ cgi()
+
+Returns a CGI object.  See C<perldoc CGI>.
+
+=cut
 
 sub cgi {
   return $_[0]->context->cgi;
 }
 
+=pod
+
+=head2 context
+
+ context()
+
+Returns the Bedrock C<Bedrock::Context> object.
+
+=cut
+
+sub context {
+  my $self = shift;
+
+  unless (exists $self->{ctx} ) {
+    $self->{ctx} = Bedrock::Context->new( 
+					 APACHE_HANDLER => $self->handler,
+					 CONFIG         => $self->config
+					)
+  }
+
+  return $self->{ctx};
+}
+
+=pod
+
+=head2 exec
+
+ exec( html, vars );
+
+Use the Bedrock templating engine to create output from a Bedrock
+snippet and a hash of values.
+
+  my $snippet = '<var $foo>';
+  my $foo = "Hello World!";
+
+  $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
+
+C<exec()> will throw an exception which contains an HTML listing and
+diagnosis if the snippet cannot b interpretted.  It's up to you to
+catch this and do something interesting (like send it to the browser)
+with it.  Anything in the print buffer prior to the error is removed.
+
+  eval {
+    $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
+  };
+
+  if ( $@ ) {
+    $bedrock->print( $@ );
+  }
+
+=cut
+
 sub exec {
-  my $self    = shift;
+  my $self = shift;
   my $snippet = shift;
+  my %args = @_;
 
   my $snippet_fd = IO::Scalar->new( \$snippet );
-  my $output     = "";
+  my $output = "";
 
   my $output_fd = IO::Scalar->new( \$output );
 
   my $tx = Text::TagX->new( $snippet_fd, $output_fd );
-  my %args = @_;
 
   map { $tx->param( $_ => $args{$_} ) } keys %args;
 
@@ -228,13 +314,134 @@ sub exec {
   return $output;
 }
 
-# redirect
+=pod
+
+=head2 handler
+
+ handler()
+
+Returns an Apache request handler
+
+=cut
+
+sub handler {
+  return ( exists $_[0]->{APACHE_HANDLER} )  ? $_[0]->{APACHE_HANDLER}  : ( $_[0]->{APACHE_HANDLER} = new Apache::Request_cgi );
+}
+
+# initialize the session
+sub init_session {
+  my $self       = shift;
+  my $cookieless = shift;
+
+  my $config = $self->config->get_module_config('UserSession');
+  $config->{cookieless_session} = $cookieless;
+
+  return BLM::Startup::UserSession->new( $self->context, $config );
+}
+
+=pod
+
+=head2 print
+
+ print( data );
+
+Add data to the output buffer.  The buffer will be flushed to STDOUT
+when the program exits unless the buffer is cleared using the
+C<clear()> method.
+
+=cut
+
+sub print {
+  my $self = shift;
+
+  $self->{DATA} .= shift;
+}
+
+=pod
+
+=head2 log
+
+ log( message )
+
+Write a message to the script's log file.  See the C<new()> method.
+Typically the log file should be located in the virtual hosts log
+directory alongside other Bedrock and site logs.
+
+=cut
+
+sub log {
+  my $self = shift;
+
+  TagX::Log::log_message( undef, $_[0] );
+}
+
+=pod
+
+=head2 redirect
+
+ redirct(url);
+
+Redirect browser.  Clears the buffer and then redirects. See C<perldoc
+CGI>
+
+ $bedrock->redirect("http://www.google.com");
+
+=cut
+
 sub redirect {
   my $self = shift;
 
   $self->clear;
   $self->cgi->redirect(@_);
 }
+
+=pod
+
+=head2 session
+
+ session()
+ session( key )
+ session( key, value )
+
+Set or access Bedrock session information.  Setting a session value
+persists the value in Bedrock's session so that you can access it in
+subsequent Bedrock pages using the C<$session> object.
+
+ # get a session value
+ $bedrock->session('foo');
+
+ # to get multiple values
+ my ($first, $last) = $bedrock->session(['firstname', 'lastname']);
+
+ my ($first, $last) = @{$bedrock->session}{qw/firstname lastname/};
+
+ # set a session value
+ $bedrock->session('site_prefs', $prefs);
+
+=cut
+
+sub session {
+  my $self = shift;
+
+  die "No SESSION object available."
+  unless exists $self->{SESSION};
+
+  if ( @_ > 1 ) {
+    return $self->{SESSION}->{ $_[0] } = $_[1];
+  }
+  elsif ( @_ == 1 ) {
+    if ( UNIVERSAL::isa( $_[0], 'ARRAY' ) ) {
+      return @{ $self->{SESSION} }{ @{ $_[0] } };
+    }
+    else {
+      return $self->{SESSION}->{ $_[0] };
+    }
+  }
+  else {
+    return $self->{SESSION};
+  }
+}
+
 
 # flush output, close session
 sub DESTROY {
@@ -253,161 +460,9 @@ sub DESTROY {
 
 =pod
 
-=head1 NAME
-
- Bedrock::CGI
-
-=head1 SYNOPSIS
-
- use Bedrock::BedrockCGI;
-
- my $bedrock = new Bedrock::CGI;
-
- $bedrock->print( $bedrock->cgi->start_html("Hello World") );
- $bedrock->print( $bedrock->cgi->h1("Hello World") ) ;
- $bedrock->print( $bedrock->cgi->end_html );
-
- # access Bedrock configuration info
- $bedrock->config("DBI_DSN");
-
- # access session information
- my $data = $bedrock->session("email");
- 
- # set session information (persistent)
- $bedrock->session("email", "rlauer\@openbedrock.net");
-
-=head1 DESCRIPTION
-
-C<Bedrock::CGI> facilitates the writing of perl CGI programs that
-interact with the Bedrock environment.  Using C<Bedrock::CGI> the perl
-developer has access to Bedrock global and site level configuration
-data as well as the ability to access and persist data to a Bedrock
-session.
-
-HTML (or other data) is buffered when you use the C<print()> method.
-On exit, the class will flush the buffer and CGI headers to STDOUT.
-
-=head1 METHODS
-
-=head2 new( %options )
-
- my $bedrock = new Bedrock::CGI;
-
-C<%options> include:
-
-=over 5
-
-=item CONTENT_TYPE
-
-default: 'text/html'
-
-=item LOGDIR
-
-default: C<$bedrock->config( 'LOGDIR' )>
-
-=item LOGFILE
-
-default: C<sprintf("%s/%s.log", $bedrock->config( 'LOGDIR' ), $0);>
-
-=item COOKIELESS
-
-If set to 1, then sessions are assumed to be cookieless.
-
-default: 0
-
-=back
-
-=head2 cgi
-
-Returns a CGI object.  See C<perldoc CGI>.
-
-=head2 clear
-
-Remove all data from the output buffer.  If the output buffer is
-empty, no headers will be printed on exit.  =head2 config
-
-=head2 config
-
-Access Bedrock configuration information.
-
- $bedrock->config( $key );
-
-If you call C<config()> without an argument it will return a
-C<Bedrock::Config> object.
-
- $bedrock->config->{ $key };
-
- $bedrock->config->get_module_config( 'UserSession' );
-
-=head2 exec
-
-Use the Bedrock templating engine to create output from a Bedrock
-snippet and a hash of values.
-
-  my $snippet = '<var $foo>';
-  my $foo = "Hello World!";
-
-  $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
-
-C<exec()> will throw an exception which contains an HTML listing and
-diagnosis if the snippet cannot b interpretted.  It's up to you to
-catch this and do something interesting (like send it to the browser)
-with it.  Anything in the print buffer prior to the error is removed.
-
-  eval {
-    $bedrock->print( $bedrock->exec($snippet, foo => $foo) );
-  };
-
-  if ( $@ ) {
-    $bedrock->print( $@ );
-  }
-
-=head2 log
-
-Write a message to the script's log file.  See the C<new()> method.
-Typically the log file should be located in the virtual hosts log
-directory alongside other Bedrock and site logs.
-
-=head2 print
-
-Add data to the output buffer.  The buffer will be flushed to STDOUT
-when the program exits unless the buffer is cleared using the
-C<clear()> method.
-
-=head2 flush
-
-Flush the current contents of the buffer.  Don't use this unless you
-know what you are doing and why you are doing it.  In general, you
-should not need to write the output to STDOUT until you have completed
-generation of the content.
-
-=head2 redirect
-
-Redirect browser.  Clears the buffer and then redirects. See C<perldoc
-CGI>
-
- $bedrock->redirect("http://www.google.com");
-
-=head2 session
-
-Set or access Bedrock session information.  Setting a session value
-persists the value in Bedrock's session so that you can access it in
-subsequent Bedrock pages using the C<$session> object.
-
- # get a session value
- $bedrock->session('foo');
-
- # to get multiple values
- my ($first, $last) = $bedrock->session(['firstname', 'lastname']);
-
- my ($first, $last) = @{$bedrock->session}{qw/firstname lastname/};
-
- # set a session value
- $bedrock->session('site_prefs', $prefs);
-
 =head1 AUTHOR
 
-Rob Lauer - <rlauer@signatureinfo.com>
+Rob Lauer - <rlauer6@comcast.net>
 
 =head1 SEE ALSO
 
@@ -416,6 +471,10 @@ C<CGI.pm>
 =cut
 
 # $Log$
+# Revision 1.11  2013/05/14 18:58:28  rlauer
+# - in config() method we now use Bedrock::Handler object to retrieve a Bedrock::Config object
+# - moved the pod in-line, some tweaks
+#
 # Revision 1.10  2013/05/10 15:53:27  rlauer
 # - use Bedrock, use Text::URLEncode in order to avoid duplicate symbol warnings (encode, etc)
 #
