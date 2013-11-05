@@ -47,17 +47,65 @@ use Crypt::DES;
 use File::Basename;
 use IO::File;
 
-# upload_file(form-var-name, options ... | {})
-#  options: path         =>
-#           Content-Type => scalar | []
-#           filename     => name of file
-#           maxsize      => 0/undef, unlimited
-#           passkey      => encryption passkey
-#           ciper        => encryption ciper (defaults to DES)
+=pod
+
+=head1 NAME
+
+C<Bedrock::Context>
+
+=head1 SYNOPSIS
+
+ use Bedrock::Context;
+
+ my $ctx = new Bedrock::Context( CONFIG => $config, APACHE_HANDLER => $handler );
+
+=head1 METHODS
+
+=cut
+
+
+=pod
+
+=head2 upload_file
+
+ upload_file(form-var-name, options ... | {})
+
+Upload a file form the client.
+
+=over 5
+
+=item path
+
+Path where file should be stored.  Looks for C<UPLOAD_PATH> in the
+configuration object.  Defaults to F</tmp>.
+
+=item 'Content-Type'
+
+Scalar containging the allowable mime-type or an array of allowable mime-types.
+
+=item filename
+
+Name of the file.
+
+=item maxsize
+
+Maximum size to accept.  Value can be expressed as in M[B] or K[B].
+
+=item passkey
+
+Encryption passkey.
+
+=item cipher
+
+Encryption cipher (defaults to DES)
+
+=back
+
+=cut
 
 sub upload_file {
-  my $self     = shift;
-  my $form_var = shift;
+  my ($self, $form_var) = (shift, shift);
+
   my $options  = {};
 
   my $fh = $self->cgi->param($form_var);
@@ -82,6 +130,7 @@ sub upload_file {
   if ( $options->{'Content-type'} || $options->{'content-type'} ) {
     my $content_type = $options->{'Content-type'} || $options->{'content-type'};
     my @content_types;
+
     push @content_types,
     ( UNIVERSAL::isa( $content_type, 'ARRAY' ) )
     ? @$content_type
@@ -111,7 +160,7 @@ sub upload_file {
   my $upload_path;
   my $upload_filename;
 
-  $upload_path = $options->{path} || ( $self->{CONFIG}->{UPLOAD_PATH} || '/tmp' );
+  $upload_path = $options->{path} || ( $self->config->{UPLOAD_PATH} || '/tmp' );
   unless ( -d $upload_path ) {
     die "unable to create path: $upload_path\n"
       unless mkdir $upload_path, 0777;
@@ -193,30 +242,49 @@ sub upload_file {
   }
 }
 
+=pod
+
+=head2 cgi
+
+ cgi()
+
+Returns a CGI object.
+
+=cut
+
 sub cgi {
   $_[0]->{cgi} = $_[0]->{cgi} ? $_[0]->{cgi} : new CGI;
 }
 
-#
-# Method to get input parameter(s)/value(s)
-# Invoked either with
-#    1. a list of parameter names. Returns the value of the
-#       parameters requested
-#    2. No args. Returns the names of all parameters in the
-#       input
+=pod
+
+=head2 getInputValue
+
+ getInputValue( key )
+
+Method to get input parameter(s)/value(s). Invoked either with
+
+- A list of parameter names. Returns the value of the parameters requested
+
+- No args. Returns the names of all parameters in the input
+
+=cut
+
 sub getInputValue {
   my $self = shift;
 
-  unless ( exists $self->{'INPUT'} ) {
+  unless ( defined $self->input ) {
 
     # Collect the input
 
-    my $r = $self->{'APACHE_HANDLER'};
+    my $r = $self->apache_handler;
 
-# - a mod_perl 1.x -> 2.x gotcha... $r->args, $r->content in array context no longer supported, does not return
-#   parsed results.  Replaced with Apache::Request_cgi args/contents although I have a feeling there is a more
-#   better faster way to do this...
-#	my @args = ($self->args, $self->content);
+    # - a mod_perl 1.x -> 2.x gotcha... $r->args, $r->content in array
+    # context no longer supported, does not return parsed results.
+    # Replaced with Apache::Request_cgi args/contents although I have a
+    # feeling there is a more better faster way to do this...
+    # my @args = ($self->args, $self->content);
+    
     my @args = $self->cgi->param;
 
     my $input = {};
@@ -229,66 +297,90 @@ sub getInputValue {
         $input->{$name} = $values[0];
       }
     }
-    $self->{'INPUT'} = $input;
+    $self->input($input);
   }
 
   if ( @_ > 0 ) {
 
     # Have some parameters -- need the values
-    return @{ $self->{'INPUT'} }{@_};
+    return @{ $self->input }{@_};
   }
   else {
 
     # No parameters -- need the names of all parameters
-    return keys %{ $self->{'INPUT'} };
+    return keys %{ $self->input };
   }
 }
 
-#
-# Constructor for Apache modules
-# Returns the created object
-# Mandatory Arguments are as follows:
-#    APACHE_HANDLER	=> Apache handler object
-#    OUTPUT_HANDLER	=>
-#	Output handler supporting a `print()' method. Defaults to APACHE_HANDLER
-#	if not specified.
-# One of the following must be present
-#    CONFIG	        => Hash containing config info
-#    CONFIG_FILE	=> Name of the config file
-#
+=pod
+
+=head2 new
+
+ new( args )
+
+Constructor for Apache modules.  Returns the created object.
+
+Mandatory arguments are as follows:
+
+=over 5
+
+=item  APACHE_HANDLER
+
+Apache handler object
+
+=item OUTPUT_HANDLER
+
+Output handler supporting a `print()' method. Defaults to APACHE_HANDLER if not specified.
+
+=item CONFIG
+
+Hash containing config info
+
+=item CONFIG_FILE
+
+Name of the configuration file.
+
+=back
+
+=cut
+
 sub new {
   my $class = shift;
   my %args  = @_;
 
   die "$class->new(): CONFIG or CONFIG_FILE parameter must be specified."
+
   unless $args{'CONFIG'}
     or $args{'CONFIG_FILE'};
 
   die "$class->new(): APACHE_HANDLER parameter must be specified."
-  unless $args{'APACHE_HANDLER'};
+    unless $args{'APACHE_HANDLER'};
 
   my $self = bless {}, $class;
+
+  my $config;
+
   if ( $args{'CONFIG'} ) {
-    $self->{'CONFIG'} = $args{'CONFIG'};
+    $config = $self->config($args{'CONFIG'});
   }
   else {
-    $self->{'CONFIG'} = Bedrock::Config->new( $args{'CONFIG_FILE'} );
+    $config = $self->config( Bedrock::Config->new( $args{'CONFIG_FILE'} ) );
   }
 
-  $self->{'APACHE_HANDLER'} = $args{'APACHE_HANDLER'};
+  $self->apache_handler( $args{'APACHE_HANDLER'} );
 
   if ( $args{'OUTPUT_HANDLER'} ) {
-    $self->{'OUTPUT_HANDLER'} = $args{'OUTPUT_HANDLER'};
+    $self->output_handler($args{'OUTPUT_HANDLER'});
   }
   else {
-    $self->{'OUTPUT_HANDLER'} = $args{'APACHE_HANDLER'};
+    $self->output_handler( $args{'APACHE_HANDLER'} );
   }
  
   &Bedrock::Log::StartLogger(
-			     LOGDIR     => $self->{'CONFIG'}->{'LOGDIR'},
-			     LOGLEVEL   => $self->{'CONFIG'}->{'LOGLEVEL'},
-			     LOGFORMAT  => $self->{'CONFIG'}->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
-			     LOGFILE    => $self->{'CONFIG'}->{'LOGFILE'} || 'bedrock.log'
+			     LOGDIR     => $config->{'LOGDIR'},
+			     LOGLEVEL   => $config->{'LOGLEVEL'},
+			     LOGFORMAT  => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
+			     LOGFILE    => $config->{'LOGFILE'} || 'bedrock.log'
 			    );
   $self;
 }
@@ -298,77 +390,159 @@ sub new {
 # to do something else and not keep the user waiting
 #
 sub close {
-  shift->{'OUTPUT_HANDLER'}->close;
+  shift->output_handler->close;
 }
 
+=pod
+
+=head2 print
+
+ print( list );
+
+Sends the array of output to the destination.
+
+=cut
+
 sub print {
-  shift->{'OUTPUT_HANDLER'}->print(@_);
+  shift->output_handler->print(@_);
 }
+
+
+=pod
+
+=head2 cgi_header_in
+
+ cgi_header_in()
+
+Reads the headers.
+
+=cut
+
 
 sub cgi_header_in {
   my $self = shift;
-  my $r    = $self->{APACHE_HANDLER};
+  my $r  = $self->apache_handler;
 
   ref($r) =~ /Apache2/ ? %{ $r->headers_in } : $r->headers_in;
 }
 
+=pod
+
+=head2 cgi_header_out
+
+ cgi_header_out( headers )
+
+Sends the headers to the header cache for output.
+
+=cut
+
 sub cgi_header_out {
   my $self = shift;
-  my $r    = $self->{APACHE_HANDLER};
+  my $r = $self->apache_handler;
 
+  # mod_perl 1/2
   ref($r) =~ /Apache2/ ? $r->err_headers_out->add(@_) : $r->header_out(@_);
 }
 
+
+=pod
+
+=head2 send_http_headers
+
+Outputs the headers.
+
+=cut
+
 sub send_http_header {
-  shift->{'APACHE_HANDLER'}->send_http_header;
+  shift->apache_handler->send_http_header;
 }
+
+=pod
+
+=head2 getOutputValue
+
+ getOutputValue( list )
+
+Returns a list of output values or a list of keys if no list is given.
+
+=cut
 
 sub getOutputValue {
   my $self = shift;
-  return unless exists $self->{'output_vars'};
+
+  return unless defined $self->output_vars;
+
   if ( @_ == 1 ) {
-    return $self->{'output_vars'}->{ $_[0] };
+    return $self->output_vars->{ $_[0] };
   }
   elsif (@_) {
     &confess("Scalar context is not valid here: should be array context only")
     unless wantarray;
-    return @{ $self->{'output_vars'} }{@_};
+    return @{ $self->output_vars }{@_};
   }
   else {
     &confess("Scalar context is not valid here: should be array context only")
     unless wantarray;
-    return keys %{ $self->{'output_vars'} };
+    return keys %{ $self->output_vars };
   }
 }
+
+=pod
+
+=head2 setOutputValue
+
+ setOutputValue(key, value)
+
+=cut
 
 sub setOutputValue {
   my $self = shift;
-  $self->{'output_vars'} = {} unless exists $self->{'output_vars'};
+
+  $self->output_vars = {} unless defined $self->output_vars;
+
   my %args = @_;
   my ( $key, $value );
+
   while ( ( $key, $value ) = each %args ) {
-    $self->{'output_vars'}->{$key} = $value;
+    $self->output_vars->{$key} = $value;
   }
 }
 
-#
-# Method returns a config parameter value. Used to hide the Config object from the public.
-#
+=pod
+
+=head2 getConfigValue
+
+ getConfigValue( key || key-list )
+
+Method returns a config parameter value. Used to hide the config
+object from the public.
+
+=cut
+
 sub getConfigValue {
   my $self = shift;
+
   if ( @_ > 0 ) {
-    wantarray ? @{ $self->{'CONFIG'} }{@_} : $self->{'CONFIG'}->{ $_[0] };
+    wantarray ? @{ $self->config }{@_} : $self->config->{ $_[0] };
   }
   else {
-    keys %{ $self->{'CONFIG'} };
+    keys %{ $self->config };
   }
 }
 
-#
-# Method for management of cookies
-#
+=pod
+
+=head2 getCookieValue
+
+ getCookieValue( cookie || cookie-list )
+
+Method returns one or more cookies.
+
+=cut
+
 sub getCookieValue {
   my $self = shift;
+
   return unless exists $ENV{'HTTP_COOKIE'};
 
   my $raw_cookie = $ENV{'HTTP_COOKIE'};
@@ -400,40 +574,135 @@ sub getCookieValue {
   }
 }
 
+=pod
+
+=head2 setCookieValue
+
+ setCookieValue( cookie )
+
+Set a cookie.
+
+=cut
+
+
 sub setCookieValue {
   my $self = shift;
 
   die "something's wrong, no HEADER object defined in the context object!"
-    unless $self->{HEADER};
+    unless $self->header;
   
-  $self->{HEADER}->set('Set-Cookie', shift);
+  $self->header->set('Set-Cookie', shift);
 }
 
+=pod
+
+=head1 SETTERS/GETTERS
+
+These will set or get the value associated with the name of the
+method. e.g. C<output_handler()> returns the value of the
+OUTPUT_HANDLER key.
+
+=cut
+
+=pod
+
+=head2 apache_handler
+
+The Apache request handler.
+
+=head2 config
+
+The Bedrock configuration object.
+
+=head2 header
+
+The header object (typically C<BLM::Startup::Header>).
+
+=head2 input
+
+Hash of CGI values.
+
+=head2 outut_handler
+
+Output handler object.
+
+=head2 output_vars
+
+Hash of output values.
+
+=head2 session
+
+Session object if available.
+
+=cut
+
+sub output_handler {
+  _set(@_, 'OUTPUT_HANDLER');
+}
+
+sub apache_handler {
+  _set(@_, 'APACHE_HANDLER');
+}
+
+sub session {
+  _set( @_, 'SESSION');
+}
 
 sub config {
-  my $self = shift;
-  $self->{'CONFIG'};
+  _set(@_, 'CONFIG');
 }
 
 sub input {
-  my $self = shift;
-  $self->{'INPUT'};
-}
-
-sub set_header {
-  my $self = shift;
-  $self->{HEADER} = shift;
+  _set(@_, 'INPUT');
 }
 
 sub header {
-  my $self = shift;
-  $self->{HEADER};
-
+  _set( @_, 'HEADER');
 }
+
+sub output_vars {
+  _set( @_, 'output_vars');
+}
+
+# deprecated
+sub set_header {
+  _set(@_, 'HEADER');
+}
+
+sub _set {
+  my $self = shift;
+
+  my $key;
+  my $value;
+
+  if ( @_ > 1 ) {
+    ($value, $key) = @_;
+    $self->{$key} = $value;
+  }
+  else {
+    $key = $_[0];
+  }
+
+  $self->{$key};
+}
+
+=pod
+
+=head1 AUTHOR
+
+J. Sridhar
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
 
 #
 # Name of Release: $Name$
 # $Log$
+# Revision 1.28  2013/11/05 15:48:44  rlauer
+# - added a lot of pod
+# - added setters/getters to prevent direct access to objects CONFIG, INPUT, SESSION, HEADER
+#
 # Revision 1.27  2013/05/10 15:53:27  rlauer
 # - use Bedrock, use Text::URLEncode in order to avoid duplicate symbol warnings (encode, etc)
 #
