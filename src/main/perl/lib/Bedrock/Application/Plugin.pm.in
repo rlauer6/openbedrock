@@ -25,17 +25,14 @@
 
 package Bedrock::Application::Plugin;
 
-use Bedrock::Hash;
-
 use DBI;
 
 use TagX::Log;
 
-use vars qw(@ISA);
-
 use strict;
+use warnings;
 
-@ISA = qw/Bedrock::Hash/;
+use parent qw/Bedrock::Hash/;
 
 =pod
 
@@ -49,32 +46,30 @@ Bedrock::Application::Plugin
 
   use Bedrock::Application::Plugin;
 
-  use vars qw(@ISA);
-
-  @ISA = qw( Bedrock::Application::Plugin );
+  use parent qw( Bedrock::Application::Plugin );
 
   1;
 
 =head1 DESCRIPTION
 
 C<Bedrock::Application::Plugin> is a base class that can be used to
-provide the basics for the plumbing for your typical Bedrock
-Application Plugin (nee: C<BLM>).
+provide the basic plumbing for your typical Bedrock Application Plugin
+(formerly knowns as BLMs).
 
  package BLM::Startup::Foo;
 
- use Bedrock::Application::Plugin;
+ use parent qw(Bedrock::Application::Plugin);
 
- @ISA = qw(Bedrock::Application::Plugin);
+ # typically you plugin implements some applicaion specific
+ # initialization code
 
- # typically Plugins implement an initialization method
  sub init_plugin {
    my $self = shift;
    
    # your initialization code goes here...for example...connect to a database
    eval {
      my $dbi = DBI->connect( @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/} );
-     $self->set('dbi', $dbi );
+     $self->dbi($dbi);
    };
 
   return $@ ? 0 : 1;
@@ -121,7 +116,7 @@ the C<dbi()> method to return the handle to the opened database.
 
 The database is opened in the C<init_plugin()> method, thus if you
 decide to override this method but would still want the default
-behavior, make sure you call the parent classE<039> method.
+behavior, make sure you call the parentE<039>s C<init_plugin()> method.
 
  sub init_plugin {
    my $self = shift;
@@ -132,9 +127,9 @@ behavior, make sure you call the parent classE<039> method.
 
 =item * Session access
 
-Use the C<session()> method to access the session object.  The
+You can use the C<session()> method to access the session object.  The
 C<$session> object is only available in application plugins if you
-have set the C<session> value to 'yes' in the session managerE<039>s
+have set the C<session> value to I<yes> in the session managerE<039>s
 configuration object.
 
   <!-- Generic Bedrock Sessions -->
@@ -148,14 +143,15 @@ in the returned session object will set the value in the userE<039>s
 session.
 
  my $session = $self->session();
- $session->{foo} = 'bar';
-
+ $session->set('foo', 'bar');
 
 =item * Configuration access
 
-You can access the pluginE<039>s configuration object using the C<config()> method.
+You can access the pluginE<039>s configuration object using the
+C<config()> method.
 
-You can access BedrockE<039>s configuration object using the C<global_config()> method.
+You can access BedrockE<039>s configuration object using the
+C<global_config()> method.
 
 =item * Logging
 
@@ -183,11 +179,16 @@ sub TIEHASH {
   $self->context( $ctx );
 
   $self->config( $config );
-
-  die "plugin $class failed to initialize properly"
+  
+  # keep in mind this object may not exist because it is not pre-bound
+  $self->input( $self->context->{INPUT} );
+  
+  $self->session( $self->context->{SESSION} );
+  
+  die "plugin $class failed to initialize properly\n"
     unless $self->init_plugin;
 
-  $self;
+  return $self;
 }
 
 =pod
@@ -201,31 +202,35 @@ be called prior to the plugin objectE<039>s destruction.
 
 You should perform any clean-up necessary in this method prior to your
 object being destroyed. I<You should not implement a C<DESTROY> method
-in your BLM, but rather use this method to perform your shutdown
+in your Plugin, but rather use this method to perform your shutdown
 actions.  Your method is called with the Bedrock object that
 was tied to your pluginE<039>s implemention, so you need to use the
 template below to access your objectE<039>s class instance>.
 
+The default implementation is shown below.
+
  sub closeBLM {
    my $obj = shift;
-
+     
    my $self = tied(%{$obj});
-
-   # your code here
+   
+   # disconnect from database if connected
+   if ( $self->dbi && ref($self->dbi) =~/DBI/ && $self->dbi->ping ) {
+     $self->dbi->disconnect;
+   }
  }
 
 =cut
 
 sub closeBLM {
   my $obj = shift;
-
+    
   my $self = tied(%{$obj});
-
+  
   # disconnect from database if connected
   if ( $self->dbi && ref($self->dbi) =~/DBI/ && $self->dbi->ping ) {
     $self->dbi->disconnect;
   }
-
 }
 
 =pod
@@ -295,7 +300,8 @@ sub dbi {
 
  global_config()
 
-Returns the Bedrock F<tagx.xml> config object.
+Returns the Bedrock F<tagx.xml> config object.  Note this is the final
+merged configuration object.
 
 =cut
 
@@ -316,6 +322,12 @@ and the context object via the C<config()> and C<context()> methods.
 
 Your initialization method should return true if successful.
 
+The default C<init_plugin()> method will look in your PluginE<039>s
+C<config> object for database parameters C<DBI_DSN, DBI_USER,
+DBI_PASS> and attempt to connect to the database for you.  If
+successful, you can use the C<dbi> method to fetch the database
+handle.
+
 =cut
 
 sub init_plugin {
@@ -323,8 +335,11 @@ sub init_plugin {
 
   if ( $self->config->{DBI_DSN} ) {
     $self->dbi( 
-	       DBI->connect( @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, 
-			     { RaiseError => 1, PrintError => 1}
+	       DBI->connect( 
+			    @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, 
+			    {
+			     RaiseError => 1, PrintError => 1
+			    }
 			   )
 	      );
   }
@@ -332,6 +347,34 @@ sub init_plugin {
   return 1;
 }
 
+
+=pod
+
+=head2 input
+
+ input( $input )
+
+Returns or sets the C<$input> object.  I<This is of dubious value.>  The
+C<$input> object is not pre-bound, so although we initialize it in the
+constructor from the C<Bedrock::Context> object, it is possible that
+it was never instantiated by Bedrock.
+
+If you have an C<$input> object you want to share, go ahead and set it,
+however a better practice is to have your methods accept the argument
+from the web developer.
+
+ <null $my_object.my_method($input)>
+
+=cut
+
+sub input {
+  my $self = shift;
+  
+  $self->{__input} = $_[0]
+    if @_;
+  
+  return $self->{__input};
+}
 
 =pod
 
@@ -357,13 +400,13 @@ use constant MSG_FATAL    => 1 << 7;
 
 
 my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
-                     &MSG_INFO     => q(MSG_INFO),
-                     &MSG_STATUS   => q(MSG_STATUS),
-                     &MSG_WARNING  => q(MSG_WARNING),
-                     &MSG_ERROR    => q(MSG_ERROR),
-                     &MSG_SYSERROR => q(MSG_SYSERROR),
-                     &MSG_FATAL    => q(MSG_FATAL)
-                   );
+		     &MSG_INFO     => q(MSG_INFO),
+		     &MSG_STATUS   => q(MSG_STATUS),
+		     &MSG_WARNING  => q(MSG_WARNING),
+		     &MSG_ERROR    => q(MSG_ERROR),
+		     &MSG_SYSERROR => q(MSG_SYSERROR),
+		     &MSG_FATAL    => q(MSG_FATAL)
+		   );
 
 use Data::Dumper;
 
@@ -423,16 +466,16 @@ sub log_warn   { _log( MSG_WARNING, @_ ) };
 
  session()
 
-Return C<$session> object.  
+Returns the C<$session> object.  
 
-I<Note that BLMs only have access to the C<$session> object via the
+Application Plugins only have access to the C<$session> object via the
 C<context> object if the C<$session> object is being pre-bound,
-similar to the way the C<$header> object is treated.  Normally BLMs
-(like the C<$session> object) are only created when they are used in
-the Bedrock page itself. 
+similar to the way the C<$header> object is treated.  Plugins
+other than the C<$header> or C<$session> objects are only created when
+they are used in the Bedrock page itself.
 
-To have Bedrock pre-bind the C<$session> object you must declare the
-session handling BLM as the official C<$session> object.>
+I<To have Bedrock pre-bind the C<$session> object you must declare the
+session handling Plugin as the official C<$session> object.>
 
     <!-- Generic Bedrock Sessions -->
     <object>
@@ -460,6 +503,11 @@ session handling BLM as the official C<$session> object.>
       </object>
     </object>
 
+I<Future versions of Bedrock may include a mechanism to pre-bind
+Plugin objects of arbritary type.  Currently, Bedrock treats the
+C<$session> and C<$header> objects as the only objects that it will
+instantiate when the Bedrock handler is invoked.>
+
 =cut
 
 sub session {
@@ -485,6 +533,10 @@ C<Bedrock::Plugin>, C<Bedrock::Context>, C<Bedrock::Hash>
 =cut
 
 # $Log$
+# Revision 1.10  2013/11/05 15:46:02  rlauer
+# - added more pod
+# - new input() method for grabbing INPUT object so folks don't access Bedrock::Context hash directly
+#
 # Revision 1.9  2013/04/02 13:33:36  rlauer
 # - fix backward compatibility issue which broke ability to access the config object of BLMS, thusly $blm.config.
 #
