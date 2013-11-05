@@ -53,23 +53,30 @@ use IO::Scalar;
 
 =head1 SYNOPSIS
 
- use Bedrock::BedrockCGI;
+#!/usr/bin/perl
 
- my $bedrock = Bedrock::CGI->new;
-
- $bedrock->print( $bedrock->cgi->start_html("Hello World") );
- $bedrock->print( $bedrock->cgi->h1("Hello World") ) ;
- $bedrock->print( $bedrock->cgi->end_html );
-
- # access Bedrock configuration info
- $bedrock->config("DBI_DSN");
-
- # access session information
- my $email = $bedrock->session("email");
- 
- # set session information (persistent)
- $bedrock->session("email", "rlauer\@openbedrock.net");
-
+  BEGIN {
+    push @INC, '/usr/lib/bedrock/perl5';
+  }
+  
+  use Bedrock::BedrockCGI;
+  use Data::Dumper;
+  
+  my $bedrock = Bedrock::CGI->new;
+  
+  # set session information (persistent)
+  $bedrock->session("foo", "bar");
+  
+  my $session_dump = Dumper $bedrock->session;
+  
+  $bedrock->print(qq{
+  <html>
+    <body>
+     <pre>$session_dump</pre>
+    </body>
+  </html> 
+  });
+  
 =head1 DESCRIPTION
 
 C<Bedrock::CGI> facilitates the writing of perl CGI programs that
@@ -82,6 +89,26 @@ You can also access Bedrock's templating magic using the C<exec> method.
 
 HTML (or other data) is buffered when you use the C<print()> method.
 On exit, the class will flush the buffer and CGI headers to STDOUT.
+
+=head1 NOTES
+
+C<Bedrock::CGI> is does not behave identically to Bedrock (run as a)
+CGI or Bedrock under mod_perl.  Since your request has not gone
+through the C<Bedrock::Apache::Bedrock::handler>, you're not getting
+the full benefits of the Bedrock environment upon instantiation of the
+C<Bedrock::CGI> object.  That is by design.
+
+You probably donE<039>t want your CGI to be as heavy weight as the
+full Bedrock environment, otherwise you might as well use Bedrock!  At
+some point we probably do want to create create a heavier weight
+framework for writing CGI programs that better emulates the Bedrock
+envirorment.
+
+Typical use cases for using C<Bedrock::CGI> include applications where
+you may want to do something fairly trivial, but want access to
+BedrockE<039>s persitent session or you want to do some back end
+processing and might like to fork and return to the front end UI
+quickly.
 
 =head1 METHODS
 
@@ -125,9 +152,12 @@ sub new {
 
   my $self = bless {}, $class;
 
-  $self->handler->header_out( 'Content-type',
-                              $options{CONTENT_TYPE} || 'text/html' );
+  $self->handler->header_out( 
+			     'Content-type',
+			     $options{CONTENT_TYPE} || 'text/html'
+			    );
 
+  # retrieve the configuration object
   $self->config;
 
   # Bedrock logging
@@ -178,7 +208,6 @@ sub config {
   return ( $key ? $config->{$key} : $config );
 }
 
-
 =pod
 
 =head2 clear
@@ -219,14 +248,14 @@ Returns the Bedrock C<Bedrock::Context> object.
 sub context {
   my $self = shift;
 
-  unless (exists $self->{ctx} ) {
-    $self->{ctx} = Bedrock::Context->new( 
+  unless (exists $self->{_ctx} ) {
+    $self->{_ctx} = Bedrock::Context->new( 
 					 APACHE_HANDLER => $self->handler,
 					 CONFIG         => $self->config
 					)
   }
 
-  return $self->{ctx};
+  return $self->{_ctx};
 }
 
 =pod
@@ -337,7 +366,11 @@ sub init_session {
   my $config = $self->config->get_module_config('UserSession');
   $config->{cookieless_session} = $cookieless;
 
-  $self->{SESSION} = BLM::Startup::UserSession->new( $self->context, $config );
+  my $session = BLM::Startup::UserSession->new( $self->context, $config );
+
+  $self->{SESSION} = $session;
+
+  $self->context->session($session)
 }
 
 =pod
@@ -472,6 +505,11 @@ C<CGI.pm>
 =cut
 
 # $Log$
+# Revision 1.14  2013/11/05 15:47:30  rlauer
+# - added more pod
+# - use getters/setters instead of reaching into Bedrock::Context object if possible
+# - in init_session() we now save the session object so CGIs can use the session() method
+#
 # Revision 1.13  2013/10/29 13:57:03  rlauer
 # - init_session() method now stores session object directly to SESSION hash key
 # - as per above new() does not need to store session object to hash
