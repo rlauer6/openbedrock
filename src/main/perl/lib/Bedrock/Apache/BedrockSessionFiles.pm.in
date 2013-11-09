@@ -31,8 +31,7 @@ BEGIN {
   require Apache2::compat if $ENV{MOD_PERL};
 }
 
-use Apache2::Const -compile =>
-qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
+use Apache2::Const -compile => qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
 use Apache2::Log;
 use APR::Const -compile => qw(:error SUCCESS);
 
@@ -50,8 +49,63 @@ use constant REDIRECT     => Apache2::Const::REDIRECT;
 use Bedrock::Handler;
 use Data::Dumper;
 use File::Basename;
+use IO::File;
 
 use vars qw/%ENV/;
+
+=pod
+
+=head1 NAME
+
+C<Apache::BedrockSessionFiles>
+
+=head1 DESCRIPTION
+
+Implements an Apache handler that serves files from a Bedrock session
+directory.  This is typically used when a web developer wants to serve
+a private file to a user, or make a file available for only a short
+period of time.  In other words, the URL would be useless to anyone
+else since the session is specfic to a single browser instance.
+
+=head1 NOTES
+
+By using the C<copy2session()> method of the C<$session> object, the
+developer copies a file to a userE<039>s session directory and
+redirects the user to the appropriate URI.
+
+ <null $session.copy2session('single-use.pdf')>
+ <null $header.see_other('/session/single-use.pdf')>
+
+I<Files in session directories are automatically removed when the
+session expires.>
+
+=head1 Setting Up the Apache Handler
+
+Setup the handler in your Apache configuration file thusly:
+
+  Action bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
+
+  Alias /session /var/www/vhosts/mysite/session
+
+  <Directory /var/www/vhosts/mysite//session>
+    AcceptPathInfo On
+    Options -Indexes
+  
+    <IfModule mod_perl.c>
+      SetHandler perl-script
+      PerlHandler Apache::BedrockSessionFiles
+    </IfModule>
+  
+    <IfModule !mod_perl.c>
+      SetHandler bedrock-session-files
+    </IfModule>
+  
+  </Directory>
+
+If you want to use the CGI version instead of the C<mod_perl> version of the handler, copy the CGI handler to your F</cgi-bin> directory. F<bedrock-session-files.cgi> is distributed as part of Bedrock and can
+be found at F<@libdir@/bedrock/cgi-bin/bedrock-session-files.cgi>. 
+
+=cut
 
 # +------------------------------+
 # | mod_perl HANDLER STARTS HERE |
@@ -69,21 +123,37 @@ sub handler {
   $r && $r->log->debug( sprintf( "[%s]: URI..............[%s] " , (caller(0))[3], $r->uri ) );
   $r && $r->log->debug( sprintf( "[%s]: PATH_INFO........[%s] " , (caller(0))[3], $path_info ) );
   $r && $r->log->debug( sprintf( "[%s]: PATH_TRANSLATED..[%s] " , (caller(0))[3], $ENV{PATH_TRANSLATED} ) );
+  $r && $r->log->debug( sprintf( "[%s]: HTTP_COOKIE......[%s] " , (caller(0))[3], $ENV{HTTP_COOKIE} ) );
+  $r && $r->log->debug( sprintf( "[%s]: content_type.....[%s] " , (caller(0))[3], $r->content_type ) );
 
   # filename (however actual file will exist under user's session directory)
-  my ($name, $path, $ext) = fileparse( $r->filename, qr/\.([^.]*)$/ );
+  my ($name, $path, $ext) = fileparse( ($r->filename || 'index.html'), qr/\.([^.]*)$/ );
   
   unless ( $ENV{HTTP_COOKIE} =~/session=([0-9a-f]+)$/ ) {
+    $r && $r->log->error("ERROR: No session found.");
     return NOT_FOUND;
   }
 
   my $session = $1;
 
-  my $bedrock_handler = Bedrock::Handler->new( $r );
-  my $conf = $bedrock_handler->get_config();
-  my $filename = sprintf("%s/%s/%s", $conf->{SESSION_DIR}, $session, $r->filename);
+  my $conf = eval {
+    my $bedrock_handler = Bedrock::Handler->new( $r );
+    $bedrock_handler->get_config();
+  };
+
+  if ( $@ ) {
+    $r->log->debug( sprintf( "ERROR: %s ", $@) );
+    return NOT_FOUND;
+  }
+
+  my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
+
+  $r && $r->log->debug( sprintf( "[%s]: SESSION_DIR......[%s] " , (caller(0))[3], $conf->{SESSION_DIR} ) );
+  $r && $r->log->debug( sprintf( "[%s]: session..........[%s] " , (caller(0))[3], $session ) );
+  $r && $r->log->debug( sprintf( "[%s]: filename.........[%s] " , (caller(0))[3], $filename ) );
 
   unless ( -e $filename ) {
+    $r && $r->log->error("FILE NOT FOUND: [$filename]");
     return NOT_FOUND;
   }
   elsif ( -r $filename ) {
@@ -92,25 +162,40 @@ sub handler {
     return FORBIDDEN;
   }
 
-  my $content_type = $r->content_type;
-  my $env = Dumper \%ENV;
-
   $r->send_http_header;
   
-  print <<eot;
-<html>
-<body>
-<p>$filename</p>
-<p>$content_type</p>
-<pre>
-$env
-</pre>
-</body>
-</html>
-eot
+  my $fh = IO::File->new("<$filename");
+  my $buffer;
+
+  while (read($fh, $buffer, 4096) ) {
+    print $buffer;
+  }
+
+  close $fh;
 
   return OK;
 }
+
+=pod
+
+=head1 SEE OTHER
+
+C<Bedrock::Handler>, C<Bedrock::Apache::Requeset_cgi>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+# $Log$
+# Revision 1.2  2013/11/09 15:39:36  rlauer
+# - added pod
+# - send contents of file
+# - default to index.html
+# - debug messages added
+# - construction of file path was busted
+#
 
 1;
 
