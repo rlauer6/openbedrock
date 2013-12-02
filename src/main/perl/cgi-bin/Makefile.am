@@ -63,5 +63,5 @@ bedrock.cgi.1: bedrock.cgi.in
 	    --section=1 > $@
 
 install-data-hook:
-	[ $$(id -u) == "0" ] && ln -s $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
-	[ $$(id -u) == "0" ] && ln -s $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
+	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
+	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
