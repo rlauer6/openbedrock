@@ -57,7 +57,7 @@ C<BLM::Startup::SessionManager> - Base class for implementing Bedrock sessions.
 =head1 DESCRIPTION
 
 This is a base class that you can use as a starting point when
-implementing a custom Bedrock session manager.  For example
+implementing a custom Bedrock session manager.  For an example
 implementations, see: C<BLM::Startup::MySQLSession>,
 C<BLM::Startup::PostgreSQLSession> and C<BLM::Startup::SQLiteSession>.
 
@@ -86,14 +86,32 @@ implement the functionality you are providing.
 The purpose of your implementation is to store a userE<039>s data to a
 permanent data store.  Permanence is defined based on the type of
 session that is being created by the calls to your handlers.  Login
-sessions should save a userE<039>s data for access any time the user I<logs
-in> using the session objectE<039>s C<login()> method.
+sessions should save a userE<039>s data for access any time the user
+I<logs in> using the session objectE<039>s C<login()> method.
 
-Anonymous sessions on the other hand tend to expire based on some
+I<Note: if you are not particularly interested in login sessions, then
+donE<039>t bother implementing the method. It is certanly conceivable
+that you may want to provide transient sessions for your application
+and your implementation is not interested in persisting data for
+particular users across session instances.  It is totally up to you
+whether or not you want to provide that functionality.  If you choose
+not to, it might be nice to throw an exception or something to
+indicate that this feature is not provided in your session
+implementation.>
+
+ sub LOGIN {
+   die "method not provided in this implementation\n";
+ }
+
+Anonymous sessions on the other hand, tend to expire based on some
 setting in your configuration file.  That expiration is translated
 into the expiry date of a cookie, thus cookie based session ids become
 unavailable after that time and thus the session associated with that
-id becomes inaccessible.
+id becomes inaccessible.  Likewise, with login sessions the cookie
+expires the session, but not the data in the session store.  Once a
+login session expires, the user must login in again to reactivate the
+session, but their data is still in tact - assumming you impplement
+things properly.
 
 =head3 Selecting Your Storage Method
 
@@ -103,14 +121,16 @@ please.  The calls made to methods you write are provided the relevant
 pieces of information needed to store or retrieve a particular
 session, including the C<config> object that is defined in your
 F<tagx.xml> entry for this Application Plugin.  Since you have control
-over what goes in that configuration section you should have what you
-need to implement your session manager.
+over what goes in that configuration section you should provide
+whatever additional settings or configuration values you need to
+implement your session manager.
 
 The storage and retrieval mechanism might involve an SQL table for
 example, or it might be involve some other way to store and retrieve
 data based on a unique key.  The only real requirement is that the API
 provide a way to store and retrieve data using a unique key.
-Typically this means a database table and a unique key.
+Typically this means a database table and a unique key, however there
+is a variety ways you can skin that cat.
 
 Requests to store and retrieve session data will occur across
 different client requests implying a different Apache process will
@@ -118,8 +138,9 @@ service different requests.  That means you must have a way to persist
 the data across these requests, i.e. you canE<039>t simply store things in
 a hash for the current request for example.
 
-Sessions are generally not meant to last forever and are not usually
-large. Your application needs will dictate much of that.
+Sessions are generally not meant to last forever (unless we are
+talking about login sessions) and are not usually large, however your
+application needs will dictate much of that.
 
 If you decide to implement sessions using a database table, the
 reference implemenation documented in C<BLM::Startup::MySQLSession>
@@ -154,6 +175,12 @@ I<somewhere>.  Other arguments to C<STORE_*> will tell you what
 session or user this data belongs to so you can store the data in such
 as way as to allow for later retrieval using that same information as
 a key or index.
+
+So, to clarify a bit - you are B<NOT> responsible for serializing and
+deserializing the session information!  Your implementation is only
+responsible for fetchinng and storing a serialized representation of a
+userE<039>s session.  The rest of the plumbing takes care of the
+actual process of serialization and deserialization.
 
 =head3 Arguments to Methods
 
@@ -258,11 +285,15 @@ A flag that indicates if the session is new.
 
 =item password
 
-The password associated with the username of a registered user.  Used as an argument to the C<register()> and C<login()> methods of the session object.
+The password associated with the username of a registered user.  Used
+as an argument to the C<register()> and C<login()> methods of the
+session object.
 
 =item prefs
 
-This is the payload that contains the session data that you should store or retrieve.
+This is the payload that contains the session data that you should
+store or retrieve.  It is a serialized representation of the session
+object.
 
 =item session
 
@@ -270,7 +301,8 @@ A unique session identifier based on an MD5 digest value.
 
 =item username
 
-The username associated with a registered user.  Used as an argument to the C<register()> and C<login()> methods of the session object.
+The username associated with a registered user.  Used as an argument
+to the C<register()> and C<login()> methods of the session object.
 
 =item verbose
 
@@ -283,7 +315,7 @@ An integer, possibly >=0 that indicates the verbosity level desired.
 The method descriptions below include an indication of which hash
 elements are passed and a brief explanation of what the method is
 required to do and/or return.  Your method should access the arguments
-similar to the following stub:
+in a similar manner as shown in the stub below:
 
   sub CONNECT {
     my $self = shift;
@@ -335,6 +367,43 @@ This method is called when the session object is destroyed prior to
 the call to C<DISCONNECT>.  You can use this opportunity to clear out
 stale sessions if necessary.
 
+Just a quick note about stale sessions.  If you don't have a way to
+clear out expired sessions, you will quickly start collecting them
+like beer cans in the recycle bin.  There are three obvious ways to
+cleanup sessions, however depending on your implementation you may not
+care, or there may be some magic in your implementation that obviates
+the need for cleanup.  The three obvious ways I know of to cleanup
+sessions are:
+
+=over 5
+
+=item * Look for stales sessions during the SESSION_CLEANUP() method.
+
+This works, as long as some active session is running, otherwise you
+would never have been called.  This implies your session store will
+always include at least 1 stale session.
+
+=item * Run a scheduled job and clean up stale sessions
+
+This works, and is the approach that seems logical.  But who wants to
+write more software than they have to?
+
+=item * Use magic
+
+This is the best approach, if you pull it off.  By magic, I really
+mean use some technology that expires itself, in the background,
+without any intervention from you.  An example of this might be using
+Redis which includes the ability the expire objects.  Just make sure
+that you are renewing the lease on these objects.
+
+=back
+
+Finally, you can ignore the problem - if itE<039>s not a problem for you.
+If you have an infinite amount of storage and access times to your
+session are not impacted by the number of objects you store, then
+ignore the problem by all means.  Again, YMMV.
+
+
 =head3 LOGOUT
 
  username => username
@@ -342,7 +411,9 @@ stale sessions if necessary.
  config   => configuration-object
 
 This method is called in response to the session object method
-C<logout()>.
+C<logout()>.  Typically, userE<039>s like to logout of applications
+for a variety of reasons including security.  This is an opportunity
+for you to expire the session in some manner.
 
 =head2 REQUIRED METHODS
 
@@ -1581,6 +1652,9 @@ sub closeBLM {
 1;
 
 # $Log$
+# Revision 1.21  2013/12/02 02:13:43  rlauer
+# - pod tweaks
+#
 # Revision 1.20  2013/11/09 15:27:30  rlauer
 # - added new method copy2session() to support serving files from a user's session directory
 #
