@@ -264,29 +264,11 @@ dist_noinst_DATA = \
 
 @do_subst_command@
 
-# 
-# Module version numbers are set in the BEGIN block...to an
-# unnecessary execute of a regular expression we can just as easily
-# set the version number as a constant during the build of this .pm
-# after filtering through `sed'
-#
-# So instead of:
-#
-# BEGIN {
-#     $VERSION = do { ... };
-# }
-#
-# We'll evaluate the regexp and set $VERSION as a constant
-#
-##    $VERSION = do { ... };
-#    $VERSION = 1.10;
- 
 SUFFIXES = .tdy .in .pm .pm.in
 
 %.pm: %.pm.in
 	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
 	$(do_subst) $< > $@
-	$(PERL) -i -n -e '/^(.*?)\$$VERSION\s*=\s*do/ ? print "#$$_$$1\$$VERSION = " . (eval $$_ ) . ";\n" : print "$$_";' $@
 
 TIDY = $(dist_noinst_DATA:.pm.in=.pm.in.tdy)
 

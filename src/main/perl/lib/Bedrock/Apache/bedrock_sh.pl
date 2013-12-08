@@ -1,7 +1,5 @@
 #!/usr/local/bin/perl -w
 
-# ident "@(#) $Header$"
-# ident "@(#)        $Name$"
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -56,8 +54,6 @@ die "Bedrock handler returned code: $code" if $code;
 exit 0;
 
 #
-# Name of Release: $Name$
-# $Log$
 # Revision 1.4  2010/11/29 15:57:52  rlauer
 # - change openbedrock.org to openbedrock.net
 #

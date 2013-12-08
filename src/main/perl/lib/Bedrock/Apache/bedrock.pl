@@ -1,7 +1,5 @@
 #!/usr/bin/perl
 
-# ident "@(#) $Header$"
-# ident "@(#)        $Name$"
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -75,8 +73,6 @@ else {
 exit 0;
 
 #
-# Name of Release: $Name$
-# $Log$
 # Revision 1.5  2010/11/29 15:57:52  rlauer
 # - change openbedrock.org to openbedrock.net
 #

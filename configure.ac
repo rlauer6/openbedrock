@@ -19,9 +19,6 @@ dnl Turn on all Automake warnings and report them as errors
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 
 
-dnl AC_REVISION puts cvs revision in comment at top of generated 'configure'
-AC_REVISION([$Revision$])dnl
-
 DFLT_MAINTAINER="rlauer6@comcast.net"
 AC_SUBST([DFLT_MAINTAINER])
 
