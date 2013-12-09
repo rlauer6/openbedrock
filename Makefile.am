@@ -21,7 +21,6 @@ apache_session_DATA =
 FILES = \
     AUTHORS \
     bedrock-build \
-    build-bedrock-rpm \
     BUGS \
     INSTALL \
     NEWS \
