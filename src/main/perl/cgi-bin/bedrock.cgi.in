@@ -65,36 +65,43 @@ exit -1;
 
 $SIG{TERM} = \&confess;
 
-# what's our LogLevel...we would prefer to get the current
-# logging level from the environment because Bedrock's ability to read
-# the configuration file is part of what we want to examine at the
-# DEBUG log level!
-# 
-# One of the differences between running bedrock.cgi and mod_perl is
-# how logging is handled.  Apache's httpd.conf configuration file can
-# define (and does) define a log level.
+# ----------------------
+# What's our LogLevel?
+# ----------------------
+
+# In order to determine Bedrock's log level, we look in the
+# environment for `BedrockLogLevel`.  The default level is `info`.
+
+my $log_level = $ENV{BedrockLogLevel} || 'info'; # default log level
+
+# We do this so that we are logging at the correct level upon entry to
+# this script.  Reading the log level from the Bedrock configuration
+# is too late if we want to log information regarding the process of
+# interpretting the configuration file (and we do).  Ideally we would
+# use Apache's log level, however that is not directly exposed to us
+# in a CGI Perl script.
+#
+# Apache's httpd.conf configuration file can define (and does) define
+# a log level.
 #
 #   LogLevel warn
 # 
-# Within the mod_perl handler you'll often see this construction:
+# We recommend that you simply clone the value of LogLevel using the
+# environment variable `BedrockLoglevel`.
 #
-# $r && $r->log->debug(...)
-#
-# The Apache request object ($r) under mod_perl uses the value define
-# in httpd.conf while Bedrock's request object implemented for
-# bedrock.cgi uses $ENV{BedrockLogLevel}
+#   LogLevel warn
+#   SetEnv BedrockLogLevel warn
 #
 # It's possible to use Apache::ConfigFile to parse Apache's
 # configuration file, however we would have to know where the virtual
 # host and server configuration files reside in order to munge for
-# BedrockLogLevel which allows the site administrator to mirror
-# reconsidered in future versions of Bedrock.
-
-my $log_level = $ENV{BedrockLogLevel} || 'info'; # default log level
+# `LogLevel`.
 
 my $r = new Apache::Request_cgi;
 
 my $code;
+
+$r && $r->info("---- Bedrock CGI script [$0] started ----");
 
 for ( "$0" ) {
   /bedrock\.cgi/ && do {
@@ -111,7 +118,49 @@ for ( "$0" ) {
       $code = &Apache::BedrockSessionFiles::handler( $r );
       last;
   };
+  
+  # custom bedrock handler
+ /bedrock\-(.*?)\.cgi$/ && do {
+    my $cgi_suffix = $1;
+    my $class;
+
+    map { $class .= ucfirst($_); } split '-', $cgi_suffix;
+
+    $class = 'Apache::Bedrock' . $class;
+
+    $r && $r->debug("Custom handler detected: [$class]");
+
+    eval "require $class";
+
+    unless ( $@ ) {
+      eval "\$code = &". $class . "::handler( \$r );";
+
+      error(500, "could not invoke handler\n" . $@)
+	if $@;
+    }
+    else {
+      error(500, "could not load $class " . $@);
+    }
+
+    last;
+  };
 }
+
+# This CGI tries to do something intelligent with handler return codes
+# understanding that the return code from this script itself is pretty
+# irrelevant.  Apache more or less ignores that, so we try to use the
+# return code from the handler as a way to figure out what we should
+# present to the user, however a better approach may be to simply do
+# nothing.
+#
+# Custom handlers can always detect whether they are running as
+# mod_perl or through this CGI version of Bedrock ($ENV{MOD_PERL}) and
+# handle any HTTP status returns by itself.  That is want the default
+# Bedrock handler sort of does and always return an OK status code
+# (0).
+#
+# If you are using this harness to run your own customized mod_perl
+# handler, take note of the information above.
 
 if ($code == 404) {
     error( 404, 
@@ -125,7 +174,7 @@ elsif ($code == 403) {
 	   "You don\'t have permission to access the requested object. It is either read-protected or not readable by the server."
 	);
 }
-elsif ( $r->content_type =~/json/ ) {
+elsif ( $r->content_type =~/json/ ) { # no code missing, just a stub in the event we decide that we need to do something special
 }
 elsif ( $code ) {
     error( $code, "Internal Server Error", "Unknown Bedrock error: [$code]");
@@ -136,28 +185,6 @@ exit 0;
 __END__
 
 
-#
-# ----------------------------------------------------------------------------
-# Documentation
-#
-# The docs are in Perl's POD format, so you can run either the 'perldoc' or
-# 'pod2man' programs on this file to produce a man page.
-#
-# To generate a man page for distribution (in a tarball, DEB, or RPM, for
-# instance), you'll probably want to run pod2man something like this:
-#
-#     $ pod2man /path/to/this/file \
-#               --center='Bedrock' \
-#               --release='bedrock.cgi-1.6.6' \
-#               --section='1' \
-#               > /outputdir/bedrock.cgi.1
-#
-# To inspect the page formatting, etc., you can pipe the above 'pod2man'
-# command to:
-#     'man -l -'
-# instead of redirecting the output to a file.
-#
-# ----------------------------------------------------------------------------
 
 =pod
 
@@ -173,9 +200,118 @@ __END__
 
 C<bedrock.cgi> is part of the Bedrock project.  It invokes various
 Apache handlers to implement portions of the Bedrock web application
-framework.  Its primary job is to server up Bedrock pages, but can
-also be used to serve up Bedrock documentation and files located in a
-user's session directory.
+framework.  Its primary job is to serve up Bedrock pages by passing
+the request through the C<Apache::Bedrock> handler, but this Perl
+script can also be used to serve up Bedrock documentation
+(C<Apache::BedrockDocs>) as well as files located in a userE<039>s
+session directory (C<Apache::BedrockSessionFiles>).
+
+When C<bedrock.cgi> is invoked, it determines which handler to use by
+examing the script name.
+
+=over 5
+
+=item C<Apache::Bedrock>
+
+If the script name is C<bedrock.cgi>, then the script invokes the
+C<Apache::Bedrock> handler.
+
+=item C<Apache::BedrockDocs>
+
+If the script name is C<bedrock-docs.cgi>, then the script invokes the
+C<Apache::BedrockDocs> handler.
+
+=item C<Apache::BedrockSessionFiles>
+
+If the script name is C<bedrock-session-files.cgi>, then the script invokes the
+C<Apache::BedrockSessionFiles> handler.
+
+=item Custom Handlers
+
+You can invoke your own handler by copying C<bedrock.cgi> and renaming
+the file using the template shown below:
+
+ bedrock-CLASSNAME.cgi
+
+Dashes in your CLASSNAME are removed and the first letter of each word
+is upper cased. Using the model above you can see that the session
+file handler is named C<Apache::BedrockSessionFiles> and the CGI is
+named C<bedrock-session-files>.
+
+If the name of your Bedrock CGI script is C<bedrock-foo-bar>, then the
+class should be named C<Apache::BedrockFooBar>.
+
+=back
+
+=head1 LOG LEVELS
+
+When running the CGI version of Bedrock, BedrockE<039>s initial log
+level is controlled by the environment variable I<BedrockLogLevel>.
+You can set that in your Apache configuration file as shown below.
+
+ SetEnv BedrockLogLevel warn
+
+Note that the log levels set here are a subset of the log level values
+use by Apache.
+
+ error
+ warn
+ info
+ debug
+
+The default level is I<info>.
+
+This should not be confused with BedrockE<039>s log level that is set
+in F<tagx.xml>.  That value controls the verbosity of logs B<AFTER>
+Bedrock has gone through an initialization phase and is actually
+parsing your Bedrock page.
+
+We recommend that you simply clone the value of ApacheE<039>s
+I<LogLevel> using the environment variable I<BedrockLoglevel>.
+
+ LogLevel warn
+ SetEnv BedrockLogLevel warn
+
+Messages logged in the Bedrock handler itself using the Apache request
+object are logged to the virtual host or main Apache error log.
+
+ $r && $r->debug("this is a debug message");
+
+=head1 CONFIGURING APACHE
+
+C<bedrock.cgi> is invoked by Apache as the parser for Bedrock
+content. The handler is configured in the normal manner in which
+Apache handlers are configured.
+
+  Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
+
+  AddHandler bedrock-cgi .roc .rock .jroc .jrock
+
+  SetHandler bedrock-cgi
+
+Enabling the C<mod_perl> handlers for Bedrock is done by specifying
+the handler classes use the B<PerlHandler> directive.
+
+  <IfModule mod_perl.c>
+    PerlRequire   /usr/lib/bedrock/config/startup.pl
+    AddHandler    perl-script .roc .jroc
+    PerlHandler   Apache::Bedrock
+  </IfModule>
+
+You can use the C<<IfModule>> directive to detect that C<mod_perl> is
+available and either use the CGI version of Bedrock or the C<mod_perl>
+handler.
+
+  <IfModule mod_perl.c>
+    SetHandler perl-script
+    PerlHandler Apache::Bedrock 
+  </IfModule>
+
+  <IfModule !mod_perl.c>
+    SetHandler bedrock-cgi
+  </IfModule>
+
+This method works with any of the handlers describe above.
 
 =head1 DIAGNOSTICS
 
