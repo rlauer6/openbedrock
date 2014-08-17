@@ -46,6 +46,7 @@ use File::Basename;
 use Bedrock::BedrockConfig;
 
 my %BEDROCK_CONFIG_CACHE;
+my $MOD_PERL;
 
 if ( $ENV{BEDROCK_CACHE_CONFIG} ) {
   eval {
@@ -92,19 +93,39 @@ sub new {
   my ($class, $r)  = @_;
   my $self = bless {}, $class;
 
-  $self->{_apache_handler} = $r;
   $self->{_pwd} = fastcwd();
   $self->{_config_files_processed} = [];
 
-#
-# under mod_perl naked directory requests are passed along prior to
-# file checking.  Thus the content_type is directory
-#
-# under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
-#   8<
-#     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
-#   8<
+  $self->apache_handler($r);
+
+  $MOD_PERL = exists $ENV{MOD_PERL};
+
+  $self->init_request;
+
+  eval { $self->{_config} = $self->get_config; };
+
+  if ( $@ ) {
+    $@ .= "<br>\nconfig files processed:<br>\n" . join("<br>\n", @{$self->{_config_files_processed}})
+      if defined $self->{_config_files_processed} && @{$self->{_config_files_processed}};
+    die $@;
+  }
+
+  $self;
+}
+
+sub init_request {
+  my $self = shift;
+  my $r = $self->apache_handler;
+  
   #
+  # under mod_perl naked directory requests are passed along prior to
+  # file checking.  Thus the content_type is directory
+  #
+  # under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
+  #   8<
+  #     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
+  #   8<
+  
   $self->{file} = do {
     if ( $r->content_type =~ /directory/ ) {
       $ENV{PATH_TRANSLATED} = $r->filename;
@@ -132,14 +153,6 @@ sub new {
       if $r->filename;
   }
   
-  eval { $self->{_config} = $self->get_config; };
-
-  if ( $@ ) {
-    $@ .= "<br>\nconfig files processed:<br>\n" . join("<br>\n", @{$self->{_config_files_processed}})
-      if defined $self->{_config_files_processed} && @{$self->{_config_files_processed}};
-    die $@;
-  }
-
   $self->{path_info} = $path_info;
 
   $self->log_debug( sprintf( "SCRIPT_NAME......[%s] " , $ENV{SCRIPT_NAME}) );
@@ -151,8 +164,32 @@ sub new {
   $self->log_debug( sprintf( "PATH_TRANSLATED..[%s] " , (defined $ENV{PATH_TRANSLATED}) ? $ENV{PATH_TRANSLATED} : 'undef') );
   $self->log_debug( sprintf( "filename.........[%s] " , (defined $self->{filename}) ? $self->{filename} : 'undef') );
   $self->log_debug( sprintf( "path.............[%s] " , (defined $self->{path}) ? $self->{path} : 'undef') );
+  $self->log_debug( sprintf( "mod_perl.........[%s] " , ($self->is_mod_perl) ? 'yes' : 'no'));
 
-  $self;
+}
+
+
+sub is_mod_perl {
+  return $MOD_PERL;
+}
+
+=pod
+
+=head2 apache_handler
+
+ apache_handler( [request-handler] )
+
+Set or get the Apache request handler.
+
+=cut
+
+sub apache_handler {
+  my ($self, $r) = @_;
+
+  $self->{_apache_handler} = $r
+    if defined $r;
+
+  return $self->{_apache_handler};
 }
 
 sub _log {
