@@ -1,13 +1,8 @@
 SUBDIRS = .
 
 ax_perl5_extra_includes = @ax_perl5_extra_includes@
-apache_default_htdocsdir = @apache_default_htdocsdir@
-bedrock_admindir = $(apache_default_htdocsdir)/bedrock
-apache_sessiondir = @apache_sessiondir@
 
 VERSION = @VERSION@
-
-bedrock_admin_DATA = 
 
 @do_subst_command@
 
