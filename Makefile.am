@@ -18,6 +18,9 @@ docdir = $(datadir)/doc/bedrock-$(VERSION)
 #just in case the session directory has not been created
 apache_session_DATA = 
 
+bedrockdir = $(apache_default_htdocsdir)/bedrock
+bedrock_DATA =
+
 FILES = \
     AUTHORS \
     bedrock-build \
