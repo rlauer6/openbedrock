@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -21,9 +20,23 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::Term::JSON;
+package TagX::Term::Anon;
+# implements a class for handling JSON or Perl data structures
+# represented as strings in things like tag arguments or arguments to
+# method calls:
+#
+#  <null:foo { 'x', 1, 'y', 2} >
+#
+#  <null:foo { x =\> 1 ,  y =\> 2 } >
+#
+#  <null:foo [ 1,2,3,4 ] >
+#
+#  <null $foo.method({ 'x', 1, 'y', 2})>
+#
+#  etc, etc, etc
 
 use strict;
+use warnings;
 
 BEGIN {
   use Exporter ();
@@ -32,20 +45,125 @@ BEGIN {
 }
 
 use TagX::Term::String;
-use Bedrock::BedrockJSON;
+use Text::CSV_XS;
+use Data::Dumper;
 
 @ISA = qw (TagX::Term::String);
 
 sub eval {
   my $self = shift;
+  my $retval;
 
-  Bedrock::JSON::decode $$self;
+  if ( $$self =~/^\s*([\{\[])(.*?)[\}\]]\s*$/ ) { 
+    my $list = $2;
+
+    my $type = $1;
+
+    # anonymous hash or array?
+    if ( $type eq '{' ) {
+      $retval = {};
+      my @args = csv_split( $list );
+
+      foreach ( @args ) {
+	my ($k, $v) = split /=>|:/;
+	for ( "$v" ) {
+	  $k =~s/^\s*[\"\'](.*?)[\"\']\s*$/$1/;
+	  $retval->{$k} = TagX::Parser::parse_stm()->eval( @_ ); 
+	}
+      }
+      return $retval;
+    }
+    # anonymous array
+    else {
+      $retval = [];
+
+      foreach ( csv_split( $list ) ) {
+	s/^\s*[\"\'](.*?)[\"\']\s*$/$1/;
+	push @$retval, TagX::Parser::parse_stm()->eval( @_ ); 
+      }
+    }
+  }
+
+  $retval;
 }
 
+sub csv_split {
+  # fast enough?
+  my $csv = new Text::CSV_XS;
+  $csv->parse( shift );
+
+  ($csv->fields());
+}
+
+sub perl_eval {
+  my $self = shift;
+  my $term = $$self;
+
+  # see if we recognize the data structure as JSON or Perl...at this
+  # point in the parsing we are being asked to evaluate the object so
+  # it has already been determined that that object is an 'anonymous'
+  # something by virtue of its form -> {} or [].
+
+  # JSON?
+  my $val = eval {
+    Bedrock::JSON::decode $$self;
+  };
+
+  # caveat emptor: as you can see if the JSON decode fails, we then
+  # move on to try to evaluate the structure as Perl data structure,
+  # but what if the string WAS in fact meant to be a JSON string and
+  # the user just screwed up the JSON syntax????
+  return $val unless $@;
+  
+  # Perl data structure?
+  use Safe;
+  
+  my $s = new Safe 'bedrock';
+  
+  # add Bedrock variables to namespace from context frames, converting
+  # any Bedrock::Array or Bedrock::Hash objects into simple hash or
+  # array references.  We do this because otherwise we would have to
+  # allow method invocations in our evaluation namespace and we might
+  # not want to do that.
+  foreach my $ctx (@_) {
+    map { ${$s->varglob($_)} = devolve( $ctx->{$_}); } keys %{$ctx};
+  }
+  
+  # limit what can be evaluated to bare minimum in order to compile
+  # anonymous hash and array reference creation.
+  #
+  # The list of permitted op codes passed to `permit_only()' was
+  # empirically derived by trial and error.
+  #
+  # see: perl -MOpcode=opdump -e opdump | less
+  #
+  # It is true that there may be ways of attempting to execute code
+  # that is not covered in those op codes...method invocations on
+  # objects comes to mind...the question has to be raised
+  # though..."How much do we want a web developer to be able to
+  # evaluate? Do we want to recreate PHP?"
+ 
+  $s->permit_only(qw/aelem helem padany lineseq const rv2hv leaveloop rv2av rv2sv pushmark list anonlist anonhash leaveeval/);
+
+  $val = $s->reval( $term );
+  
+  die "could not parse statement: $term - $@\n"
+    if $@;
+
+  $val;
+}
+
+# devolve object into hash or array references if strict (no method
+# invocations)
+sub devolve {
+  my $obj = shift;
+  return ( ref($obj) =~/Bedrock::(Hash|Array)/ ) ? $obj->devolve : $obj;
+}
 
 package TagX::Parser;
 
 use strict;
+use warnings;
 
 BEGIN {
   use Exporter ();
@@ -91,7 +209,8 @@ sub parse_stm {
   s/^\s*//;
 
   /^([\[\{](.*?)[\]\}])\s*$/ && do {
-    my $val = TagX::Term::JSON->new( $1 );
+    my $val = TagX::Term::Anon->new( $1 );
+
     $_ = undef;
     return $val;
   };
@@ -129,7 +248,7 @@ sub parse_stm {
       my @args;
 	    
       /^\s*([\[\{](.*?)[\]\}])\s*\)\s*$/ && do {
-	push @args, TagX::Term::JSON->new( $1 );
+	push @args, TagX::Term::Anon->new( $1 );
 	$_ = undef;
       };
 
@@ -163,7 +282,7 @@ sub parse_stm {
   elsif (s/^\x28//) {
 
     /^\s*([\[\{](.*?)[\]\}])\s*\)\s*$/ && do {
-      my $val = TagX::Term::JSON->new( $1 );
+      my $val = TagX::Term::Anon->new( $1 );
       $_ = undef;
       return $val;
     };
