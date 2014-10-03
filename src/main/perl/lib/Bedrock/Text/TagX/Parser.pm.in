@@ -33,7 +33,12 @@ package TagX::Term::Anon;
 #
 #  <null $foo.method({ 'x', 1, 'y', 2})>
 #
+#  <null:foo { x : 1, y : 2, z : "test"}>
+#
 #  etc, etc, etc
+#
+
+
 
 use strict;
 use warnings;
@@ -45,57 +50,12 @@ BEGIN {
 }
 
 use TagX::Term::String;
-use Text::CSV_XS;
 use Data::Dumper;
 
 @ISA = qw (TagX::Term::String);
 
+
 sub eval {
-  my $self = shift;
-  my $retval;
-
-  if ( $$self =~/^\s*([\{\[])(.*?)[\}\]]\s*$/ ) { 
-    my $list = $2;
-
-    my $type = $1;
-
-    # anonymous hash or array?
-    if ( $type eq '{' ) {
-      $retval = {};
-      my @args = csv_split( $list );
-
-      foreach ( @args ) {
-	my ($k, $v) = split /=>|:/;
-	for ( "$v" ) {
-	  $k =~s/^\s*[\"\'](.*?)[\"\']\s*$/$1/;
-	  $retval->{$k} = TagX::Parser::parse_stm()->eval( @_ ); 
-	}
-      }
-      return $retval;
-    }
-    # anonymous array
-    else {
-      $retval = [];
-
-      foreach ( csv_split( $list ) ) {
-	s/^\s*[\"\'](.*?)[\"\']\s*$/$1/;
-	push @$retval, TagX::Parser::parse_stm()->eval( @_ ); 
-      }
-    }
-  }
-
-  $retval;
-}
-
-sub csv_split {
-  # fast enough?
-  my $csv = new Text::CSV_XS;
-  $csv->parse( shift );
-
-  ($csv->fields());
-}
-
-sub perl_eval {
   my $self = shift;
   my $term = $$self;
 
@@ -115,7 +75,9 @@ sub perl_eval {
   # the user just screwed up the JSON syntax????
   return $val unless $@;
   
-  # Perl data structure?
+  my $err = $@;
+
+ # Perl data structure?
   use Safe;
   
   my $s = new Safe 'bedrock';
@@ -147,7 +109,11 @@ sub perl_eval {
 
   $val = $s->reval( $term );
   
-  die "could not parse statement: $term - $@\n"
+  # we have to decided whether to display the JSON error or the Perl eval error (log both)
+  warn "could not parse statement: $term\n$@\$err\n"
+    if $@;
+
+  die "$err\n"
     if $@;
 
   $val;
@@ -209,6 +175,7 @@ sub parse_stm {
   s/^\s*//;
 
   /^([\[\{](.*?)[\]\}])\s*$/ && do {
+    warn "anon: $1";
     my $val = TagX::Term::Anon->new( $1 );
 
     $_ = undef;
