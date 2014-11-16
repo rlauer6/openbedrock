@@ -1,11 +1,8 @@
--*-text-*-
-
 This is the README file for the 'bedrock' project.
 
-See `http://twiki.openbedrock.net' for more helpful hints.
+See http://twiki.openbedrock.net for more helpful hints.
 
-Overview
-========
+# Overview
 
 Bedrock is a server side web development framework that can be used
 with Apache web servers. It allows HTML programmers to create dynamic
@@ -24,13 +21,13 @@ Although Bedrock has grown to include many features, some of which are
 not found in other web application environments, some interesting and
 robust applications can be built with only 7 Bedrock tags:
 
-  <if>
-  <null>
-  <var>
-  <sqlselect>
-  <sql>
-  <sqlconnect>
-  <foreach>
+    <if>
+    <null>
+    <var>
+    <sqlselect>
+    <sql>
+    <sqlconnect>
+    <foreach>
 
 At the time of writing (2013-12-08), the project is being cleaned up
 after a long period of inactivity. Version 1.6.4 was released in 2001,
@@ -69,8 +66,7 @@ changes from previous releases. Any incompatibilities with previous versions
 will be noted in the 'NEWS' file.
 
 
-Prerequisites
-=============
+# Prerequisites
 
 'bedrock' is intended to be built on Unix and Unix-like systems, so expects a
 standard set of utilities (cat, sed, awk, rm, ...) to be present. These
@@ -113,52 +109,43 @@ dependencies for you.  If you insist on doing this the hard way then
 you'll need to make sure you have the proper dependencies installed
 before proceeding.
 
-
-Special Note Regarding Apache Versions
-======================================
+# Special Note Regarding Apache Versions
 
 Bedrock 2.x has been modified and tested to work primarily in
 conjunction with Apache 2.2 and later.  If you REALLY want to make
 Bedrock 2.0 work with previous versions of Apache it can be done,
 however please note the following caveats:
 
-  - Apache::Bedrock (2) under mod_perl 1 will not work as it has been
-    specifically modified to work with mod_perl 2.  If this becomes an
-    issue or a grassroots campaign is mounted, a replacement
-    Apache::Bedrock that works with mod_perl 1 may be released in the
-    future.
+- Apache::Bedrock (2) under mod_perl 1 will not work as it has been
+specifically modified to work with mod_perl 2.  If this becomes an
+issue or a grassroots campaign is mounted, a replacement
+Apache::Bedrock that works with mod_perl 1 may be released in the
+future.
+- Bedrock running as a CGI should work with no compatibility issues
+under Apache 1.x/2.0/2.2.
+- To run Bedrock 2.x under Apache 2.0.x you may want to make the
+  following tweak after configure your site to work with Bedrock:
+  - remove the word "virtual" from the `bedrock.conf.in' file found in
+    src/main/bedrock/config.This is necessary because Apache 2.0 lacks
+    the virtual attribute on the handler and checks for existence
+    before invoking the handler.  This would resulting in a 404 error
+    if the directory did not exist.
 
-  - Bedrock running as a CGI should work with no compatibility issues
-    under Apache 1.x/2.0/2.2.
+    Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
 
-  - To run Bedrock 2.x under Apache 2.0.x you may want to make the
-    following tweak after configure your site to work with Bedrock:
+  - remove the 'tag' directory in the /bedrock directory and
+    replace this with an empty file:
 
-    + remove the word "virtual" from the `bedrock.conf.in' file
-      found in src/main/bedrock/config
-
-      This is necessary because Apache 2.0 lacks the virtual attribute
-      on the handler and checks for existence before invoking the
-      handler.  This would resulting in a 404 error if the directory
-      did not exist.
-
-      Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
-
-    + remove the 'tag' directory in the /bedrock directory and
-      replace this with an empty file:
-
-      sudo rmdir /var/www/myvhost.com/htdocs/bedrock/tag
-      sudo touch /var/www/myvhost.com/htdocs/bedrock/tag
-
+    sudo rmdir /var/www/myvhost.com/htdocs/bedrock/tag
+    sudo touch /var/www/myvhost.com/htdocs/bedrock/tag
 
   - The "experimental" Bedrock framework will not work properly under
     mod_perl 1.0 since it relies on the 'virtual' attribute for an
     Apache handler introduced in Apache 2.2, although it "may" work
     with Bedrock running as a CGI handler.
 
+# Installing and Configuring a Bedrock Enabled Website
 
-Installing and Configuring a Bedrock Enabled Website
-====================================================
 
 Installing Bedrock "should be" a simple 2-step process.
 
