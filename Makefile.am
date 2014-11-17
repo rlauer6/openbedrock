@@ -27,7 +27,7 @@ FILES = \
     BUGS \
     INSTALL \
     NEWS \
-    README \
+    README.md \
     README.Apache \
     COPYING \
     ChangeLog \
