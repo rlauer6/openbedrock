@@ -1,6 +1,6 @@
 This is the README file for the 'bedrock' project.
 
-See http://twiki.openbedrock.net for more helpful hints.
+See [http://twiki.openbedrock.net]() for more helpful hints.
 
 # Overview
 
@@ -51,32 +51,31 @@ more respectable <while> loop.  This could be at the expense of some
 minor incompatibilities (which should be seen as improvements) in
 previous versions of Bedrock.
 
-See the "Prerequisites" section below for other programs that must be
+See the *Prerequisites* section below for other programs that must be
 installed and configured on your system before you can install the Bedrock
 package.
 
-See the 'BUGS' file for information on reporting bugs.
+See the `BUGS` file for information on reporting bugs.
 
-See the 'INSTALL' file for installation instructions.
+See the `INSTALL` file for installation instructions.
 
-See the 'HACKING' file for developer build instructions and the like.
+See the `HACKING` file for developer build instructions and the like.
 
-See the 'NEWS' file for changes for this release, and a running list of
+See the `NEWS` file for changes for this release, and a running list of
 changes from previous releases. Any incompatibilities with previous versions
 will be noted in the 'NEWS' file.
 
-
 # Prerequisites
 
-'bedrock' is intended to be built on Unix and Unix-like systems, so expects a
+Bedrock is intended to be built on Unix and Unix-like systems, so expects a
 standard set of utilities (cat, sed, awk, rm, ...) to be present. These
 utilities are not explicitly listed below as prerequisites as they should be
 present on any modern Unix or GNU/Linux system (or Cygwin, if the Universe
 hates you ;-). We also do not explicitly list those Perl modules that are part
 of the core library shipped with Perl (e.g., Data::Dumper, MIME::Base64, etc.)
 
-The various 'bedrock' components are primarily implemented in Perl, so of
-course a Perl installation is needed. Current 'bedrock' development is done
+The various Bedrock components are primarily implemented in Perl, so of
+course, a Perl installation is needed. Current Bedrock development is done
 using Perl 5.8.8, but any 5.8.x+ features that are used should be
 conditional. This means that Bedrock should work with versions of Perl prior
 to 5.8.x, as well.
@@ -103,51 +102,49 @@ to 5.8.x, as well.
     HTML::Scrubber      ???        BLM::Startup::Input  http://cpan.perl.org/modules/by-module/HTML
     IPC::Shareable      ???        Bedrock::Apache::Bedrock http://cpan.perl.org/modules/by-module/IPC
 
-If you're installing Bedrock from a Debian .deb file or a RedHat rpm
-file, you should have success letting the package managers pull the
-dependencies for you.  If you insist on doing this the hard way then
-you'll need to make sure you have the proper dependencies installed
-before proceeding.
+If you're installing Bedrock from a Debian `.deb` file or a RedHat
+`.rpm` file, you should have success letting the package managers pull
+the dependencies for you.  If you insist on doing this the hard way
+then you'll need to make sure you have the proper dependencies
+installed before proceeding. _Assistance creating a CPAN module would
+be welcome._
 
 # Special Note Regarding Apache Versions
 
 Bedrock 2.x has been modified and tested to work primarily in
-conjunction with Apache 2.2 and later.  If you REALLY want to make
-Bedrock 2.0 work with previous versions of Apache it can be done,
+conjunction with Apache 2.2 and later.  If you *REALLY* want to make
+Bedrock 2.x work with previous versions of Apache it can be done,
 however please note the following caveats:
 
-- Apache::Bedrock (2) under mod_perl 1 will not work as it has been
+- Apache::Bedrock (2) under `mod_perl` 1 will not work as it has been
 specifically modified to work with mod_perl 2.  If this becomes an
 issue or a grassroots campaign is mounted, a replacement
-Apache::Bedrock that works with mod_perl 1 may be released in the
+Apache::Bedrock that works with `mod_perl` 1 may be released in the
 future.
+
 - Bedrock running as a CGI should work with no compatibility issues
 under Apache 1.x/2.0/2.2.
+
 - To run Bedrock 2.x under Apache 2.0.x you may want to make the
-  following tweak after configure your site to work with Bedrock:
-  - remove the word "virtual" from the `bedrock.conf.in' file found in
-    src/main/bedrock/config.This is necessary because Apache 2.0 lacks
-    the virtual attribute on the handler and checks for existence
-    before invoking the handler.  This would resulting in a 404 error
-    if the directory did not exist.
+following tweak after configure your site to work with Bedrock:
+
+    - remove the word "virtual" from the `bedrock.conf.in` file found in
+`src/main/bedrock/config`.  This is necessary because Apache 2.0 lacks
+the `virtual` attribute on the handler and checks for existence
+before invoking the handler.  This would result in a 404 error
+if the directory did not exist.
 
     Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
 
-  - remove the 'tag' directory in the /bedrock directory and
-    replace this with an empty file:
+    - remove the `tag` directory in the `/bedrock` directory and
+replace this with an empty file:
 
     sudo rmdir /var/www/myvhost.com/htdocs/bedrock/tag
     sudo touch /var/www/myvhost.com/htdocs/bedrock/tag
 
-  - The "experimental" Bedrock framework will not work properly under
-    mod_perl 1.0 since it relies on the 'virtual' attribute for an
-    Apache handler introduced in Apache 2.2, although it "may" work
-    with Bedrock running as a CGI handler.
-
 # Installing and Configuring a Bedrock Enabled Website
 
-
-Installing Bedrock "should be" a simple 2-step process.
+Installing Bedrock __should be__ a simple 2-step process.
 
 1. Install core-Bedrock
 
@@ -163,8 +160,7 @@ Installing Bedrock "should be" a simple 2-step process.
    - See the 'README.Apache' file.
 
 
-Creating a persistent Session Database
-======================================
+# Creating a persistent Session Database
 
 Bedrock implements persistent user sessions using an application
 plugin called BLM::Startup::UserSession.  The reference implementation
@@ -175,9 +171,9 @@ There are also implementations using PostgreSQL and SQLLite.
 To create the database and table necessary to use the Bedrock $session
 object, you'll want to do something similar to:
 
-  $ mysqladmin -u root -p create bedrock
+    $ mysqladmin -u root -p create bedrock
 
-  $ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock 
+    $ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock
 
 See `perldoc /usr/lib/bedrock/perl5/BLM/Startup/UserSession.pm' for
 more details.
