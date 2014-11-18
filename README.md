@@ -133,7 +133,6 @@ following tweak after configure your site to work with Bedrock:
 the `virtual` attribute on the handler and checks for existence
 before invoking the handler.  This would result in a 404 error
 if the directory did not exist.
-
 ```
     Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
 ```
