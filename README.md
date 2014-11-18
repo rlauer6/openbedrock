@@ -139,6 +139,7 @@ if the directory did not exist.
     - remove the `tag` directory in the `/bedrock` directory and
 replace this with an empty file:
 
+
     sudo rmdir /var/www/myvhost.com/htdocs/bedrock/tag
     sudo touch /var/www/myvhost.com/htdocs/bedrock/tag
 
