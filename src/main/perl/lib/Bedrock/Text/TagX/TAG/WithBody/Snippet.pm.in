@@ -24,7 +24,11 @@
 package TagX::TAG::WithBody::Snippet;
 
 use strict;
+use warnings;
+
 use Bedrock::Hash;
+use Bedrock::Snippet;
+use Data::Dumper;
 
 BEGIN {
   use Exporter ();
@@ -36,6 +40,31 @@ use TagX::TAG::WithBody;
 
 @ISA = qw (TagX::TAG::WithBody);
 
+
+sub error_listing {
+  my ($source, $error, $type) = @_;
+
+  require IO::Scalar;
+
+  my $fd = IO::Scalar->new( \$source );
+
+  my $err_line = $1
+    if $error =~/line (\d+),/m;
+  
+  my $listing = sprintf( "snippet - %s\n\n%s\n", $type, $@ );
+  
+  my $line_no = 0;
+  
+  while (defined ($_ = $fd->getline)) {
+    chomp;
+    $listing .= sprintf("[%4d] %s %s\n", ++$line_no, ($line_no eq $err_line) ? '>>' : '  ', $_);
+  }
+
+  $fd->close;
+
+  return $listing;
+}
+
 sub closure {
   '/snippet';
 }
@@ -43,8 +72,10 @@ sub closure {
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'define-var=s'     => '_',
-                  'define-snippet=s' => 'snippet' );
+  my %options = ( 
+		 'define-var=s'     => '_',
+		 'define-snippet=s' => 'snippet'
+		);
 
   my @argv = $self->parse_options( \%options, @context );
 
@@ -63,77 +94,59 @@ sub finalize {
     shift @argv;
   }
 
-  my $data = $self->{subobjs}->[0];
-  my $obj;
+  my $snippet = $self->{subobjs}->[0];
 
-  eval { $obj = $self->create_snippet_class( "Snippet_" . $$, $data ); };
+  &log_message( $self, "Compiling snippet:\n$snippet\n" )
+    if $verbose;
 
-  die "There was an error creating your snippet:\n" . $@
-  if $@;
+  # compile snippet
+  my $obj =  eval { 
+    $self->create_snippet_class( $snippet );
+  };
 
-  # the data is theoretically the code snippet
-  &log_message( $self,
-           "Assigning result of <snippet> to [" . $options{'define-var'} . "]" )
-  if $verbose;
+  die error_listing( $snippet, $@, 'complilation error')
+    if $@;
 
-  my $snippet_value;
+  &log_message( $self, "Assigning result of <snippet> to [" . $options{'define-var'} . "]" )
+    if $verbose;
 
-  eval { $snippet_value = $obj->init_snippet(@argv); };
+  # initiaize snippet, create methods
+  my $rv = eval { 
+    $obj->init_snippet( \@context, $tx->config, @argv );
+  };
 
-  die "There was an error executing your snippet:\n" . $@
-  if $@;
+  die error_listing( $snippet, $@, 'error initializing snippet' )
+    if $@;
 
+  &log_message( $self, Dumper [ $tx->{out_handle}->{Handle}->{OUTPUT_HANDLER}->{config} ]);
+
+  $tx->param( $options{'define-var'} => $rv );
   $tx->param( $options{'define-snippet'} => $obj );
-  $tx->param( $options{'define-var'}     => $snippet_value );
 }
 
 # create_snippet_class( name, code );
 sub create_snippet_class {
-  my $self         = shift;
-  my $snippet_name = shift;
-  my $code_snippet = shift;
+  my ($self, $code) = @_;
+  
+  my $prefix =<<eoc;
+  my \$context = shift;
+  my \$config = shift;
 
-  my $snippet_def = q{
-package BLM::%s;
+  \$self->config(\$config);
+  \$self->context(\$context);
 
-use vars qw( @ISA ); 
+# 8<------- YOUR CODE START HERE -------
+eoc
 
-@ISA = qw( Bedrock::Hash BLM::SNIPPET );
+  $code = $prefix . $code;
+  $code .= "# 8<------- YOUR CODE STOPS HERE -------\n";
 
-use Bedrock::Hash;
+  my $snip = Bedrock::Snippet->new( name => 'init_snippet', code => $code );
 
-};
+  die $@
+    if $@;
 
-  $snippet_def .= q/
-sub init_snippet {
-  my $self = shift;
-
-  %s
-
-  return;
-}
-/;
-
-  $snippet_def = sprintf( $snippet_def, $snippet_name, $code_snippet );
-
-  eval "$snippet_def";
-
-  die "BAD SNIPPET DEFINITION: " . $@
-  if $@;
-
-  my $obj;
-
-  eval sprintf(
-    q{
-$obj = BLM::%s->new(@_);
-},
-    $snippet_name
-              );
-
-  die "COULD NOT INITITIALIZE SNIPPET " . $snippet_name . "\n", $@
-  if $@;
-
-  return $obj;
+  return $snip;
 }
 
 1;
@@ -145,25 +158,56 @@ $obj = BLM::%s->new(@_);
 =head1 PURPOSE
 
 The C<E<lt>snippetE<gt>> tag allows the Bedrock developer to include a
-snippet of perl code.
+snippet of Perl code.
 
-=head1 SYNTAX
+=head1 SYNOPSIS
 
- <snippet[:var-name] [options] expression ...>
- 
+ <snippet $input.some_value>
+ use Digest::MD5 qw/md5/;
+
+ return md5(shift);
  </snippet>
+ <var $_>
+
+ <snippet:foo>
+ use Digest::MD5 qw/md5/;
+
+ sub my_md5 {
+   my $self = shift;
+
+   return md5(shift);
+ }
+ </snippet>
+
+ <var $foo.md5($input.value)>
 
 =head1 DESCRIPTION
 
-While discouraged immensely, the C<E<lt>snippetE<gt>> tag can be used
-to prototype nascent Plugins.  You can create short snippets of perl
-code that return a single value or include a set of subroutines that
-can be invoked as methods of your C<snippet> object.  
+ <snippet[:var-name] [options] arg1 arg2 ... >
+ # your Perl code here...
+ </snippet>
 
-The list of expression is passed as a list to your snippet as if your
-snippet was a perl suboutine.
+While I<highly discouraged>, the C<E<lt>snippetE<gt>> tag can be used
+to include Perl code in your Bedrock page that can return a single
+value or perform some function.  The tag can encapsulate defined methods that
+can then be invoked anywhere on the page.
+
+Arguments defined in snippet definition are used to invoke a one time
+initialization sequence for the snippet.
+
+ <snippet --define-var="foo" $bar>
+ use Digest::MD5 qw/md5/;
+
+ return md5(shift);
+
+ </snippet>
+ md5: <var $foo>
 
 =head1 OPTIONS
+
+ <snippet[:var-name] [options] arg1 arg2 ... >
+ # your Perl code here...
+ </snippet>
 
  --define-var     = "var-name"
  --define-snippet = "snippet-name"
@@ -181,24 +225,46 @@ variable C<$_>.
 The name that will be given to the snippet object that is created. If
 not provided the name of the object is C<$snippet>.
 
+HereE<039>s an example where neither option is used and a method named
+C<my_join> is created.
+
+ <snippet>
+ sub my_join {
+  my $self = shift;
+
+  return join(",", @_);
+ }
+ </snippet>
+
+Then to use the snippet...
+
+ <var $snippet.my_join("a", "b", "c")>
+
+I<Note that the C<my_join> is a method of a class that whose parent is
+C<BLM::Hash>.  Hence you can provide persistenc e to your snippet
+object<039>s hash members.>
+
 =back
 
 =head1 NOTES
 
-As noted above, Bedrock discourages the use of programming constructs
-within your Bedrock page.  Bedrock should be used to assemble a page,
-not to create a program that outputs an HTML page.  If you want to
-program use PHP or perl.  Having said that...
+As noted above, Bedrock B<discourages> the use of programming
+constructs within your Bedrock page.  Bedrock should be used to
+assemble a page, not to create a program that outputs an HTML page.
+If you really want to write program that creates an HTMP page, you
+probably use PHP or Perl directly.  Having said that, this tag can be
+useful for prototyping.
 
-It may however be useful for a web appliation development tool to
+It may useful for a web application development tool like Bedrock to
 include an environment whereby a protoype of a Plugin can be
-developed.  Hence the C<snippet> concept.
+developed.  Hence the C<snippet> concept.  I<Proceed with caution.>
 
 I<The return value of a C<snippet> is stored in a variable specified by
 the C<--define-var> option or in C<$_> if no variable name is
 specified.>
 
-I<You can create subroutines within the snippet that are called locally or that are invoked from your Bedrock page.>
+I<You can create subroutines within the snippet that are called
+locally or that are invoked from your Bedrock page.>
 
 Subroutines are actually class methods of a I<pseudo-Plugin> that is
 temporarily created during the intepretation of your page.  You can
@@ -228,7 +294,7 @@ C<BLM/Foo.pm>) I<somewhere where perl will find it>.
 
    # -- add the stuff you had at the top of your snippet here and return a value 
 
-   return;
+   return 1;
  }
 
  # -- add your snippet methods here
@@ -274,13 +340,47 @@ C<BLM/Foo.pm>) I<somewhere where perl will find it>.
   my $self = shift;
   my @a = split " ", shift;
  
- return join(" ", map { ucfirst } @a);
+  return join(" ", map { ucfirst } @a);
  }
  </snippet>
  
  Return value is <var $_> : Method call return value is <var $hello_world.HelloWorld("hello world")>
 
 =back
+
+=head1 GOODIES
+
+Your snippet is actually a class of type C<Bedrock::Snippet> and your
+initialization code is actually part of the classE<039>s
+C<init_snippet()> method.  You initialization code can access the
+method reference as C<$self>.
+
+There are also some useful methods of the class you might want to use.
+
+=head2 config
+
+Returns BedrockE<039>s configuration object. Since Bedrock defines the
+C<$config> object during page processing, you could simply pass
+parameters from the configuration object into your snippet or use the
+method in your snippet.
+
+ <snippet>
+
+ if ( $self->config->{SOME_CONFIG_VAR} ) {
+   ...
+ }
+ 
+ </snippet>
+
+=head2 context
+
+Returns an array reference to BedrockE<039>s current symbol context.
+Each element of the array defines a C<TagX::Symtab> object.  The
+symbol table object contains a set of key/value pairs that represent
+localized Bedrock variables.  Tread with care...you probably do not
+really need to access this.
+
+ $self->context->[0]->{'_'}; # current default variable if defined
 
 =head1 SEE ALSO
 
