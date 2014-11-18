@@ -128,7 +128,7 @@ under Apache 1.x/2.0/2.2.
 - To run Bedrock 2.x under Apache 2.0.x you may want to make the
 following tweak after configure your site to work with Bedrock:
 
-    - remove the word "virtual" from the `bedrock.conf.in` file found in
+  - remove the word "virtual" from the `bedrock.conf.in` file found in
 `src/main/bedrock/config`.  This is necessary because Apache 2.0 lacks
 the `virtual` attribute on the handler and checks for existence
 before invoking the handler.  This would result in a 404 error
@@ -138,7 +138,7 @@ if the directory did not exist.
     Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
 ```
 
-    - remove the `tag` directory in the `/bedrock` directory and
+  - remove the `tag` directory in the `/bedrock` directory and
 replace this with an empty file:
 
 ```
@@ -152,17 +152,16 @@ Installing Bedrock __should be__ a simple 2-step process.
 
 1. Install core-Bedrock
 
-   - Download the tar ball and read the 'INSTALL' file or
+  - Download the tar ball and read the 'INSTALL' file or
 
-   - Download the .deb file and use dpkg to install Bedrock and the dependencies
+  - Download the .deb file and use dpkg to install Bedrock and the dependencies
 
-   - Download the .rpm file and use yum to install Bedrock and the
-     dependencies
+  - Download the .rpm file and use yum to install Bedrock and the
+    dependencies
 
 2. Configure your Apache server to enable Bedrock
 
-   - See the 'README.Apache' file.
-
+  - See the 'README.Apache' file.
 
 # Creating a persistent Session Database
 
@@ -179,5 +178,5 @@ object, you'll want to do something similar to:
 
     $ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock
 
-See `perldoc /usr/lib/bedrock/perl5/BLM/Startup/UserSession.pm' for
+See `perldoc /usr/lib/bedrock/perl5/BLM/Startup/UserSession.pm` for
 more details.
