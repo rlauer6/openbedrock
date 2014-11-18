@@ -138,6 +138,7 @@ if the directory did not exist.
     Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
 ```
 
+-
   - remove the `tag` directory in the `/bedrock` directory and
 replace this with an empty file:
 
