@@ -134,14 +134,17 @@ the `virtual` attribute on the handler and checks for existence
 before invoking the handler.  This would result in a 404 error
 if the directory did not exist.
 
+```
     Action        bedrock-cgi /cgi-bin/bedrock.cgi virtual
+```
 
     - remove the `tag` directory in the `/bedrock` directory and
 replace this with an empty file:
 
-
+```
     sudo rmdir /var/www/myvhost.com/htdocs/bedrock/tag
     sudo touch /var/www/myvhost.com/htdocs/bedrock/tag
+```
 
 # Installing and Configuring a Bedrock Enabled Website
 
