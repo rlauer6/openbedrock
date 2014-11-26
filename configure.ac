@@ -197,6 +197,7 @@ ads_PERL_MODULE([Text::CSV_XS],[OPTIONAL])
 ads_PERL_MODULE([Tie::IxHash], [REQUIRED])
 ads_PERL_MODULE([XML::Simple], [REQUIRED])
 ads_PERL_MODULE([XML::Parser], [REQUIRED])
+ads_PERL_MODULE([Text::CSV_XS], [REQUIRED])
 
 # Optional Perl modules
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
