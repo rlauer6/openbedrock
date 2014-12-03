@@ -24,11 +24,27 @@ my $output;
 
 my $tx = Text::TagX->new($template, IO::Scalar->new( \$output));
 
-$tx->param(@ARGV);
- 
-my $error = $tx->output;
+my $obj = $tx->get_parse_object;
 
-die @{$error}
+# This loop is to demonstrate the separation of parsing and evaluation.
+# At the moment, only the first evaluation results in expected output; the
+# second evaluation produces an empty string.
+for my $args (
+  [ qw(foo 1) ],
+  [ qw(foo 0) ],
+) {
+  my $symtab = TagX::Symtab->new;
+  while (my ($k, $v) = splice @$args, 0, 2) {
+    $symtab->{$k} = $v;
+  }
+  $tx->vars($symtab);
+  $tx->out_handle( TagX::Output->new( IO::Scalar->new(\my $output) ) );
+  $obj->finalize;
+ 
+  my $error = $tx->output;
+
+  die @{$error}
     if @{$error};
 
-print $output;
+  print $output;
+}
