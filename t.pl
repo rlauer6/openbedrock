@@ -27,8 +27,6 @@ my $tx = Text::TagX->new($template, IO::Scalar->new( \$output));
 my $obj = $tx->get_parse_object;
 
 # This loop is to demonstrate the separation of parsing and evaluation.
-# At the moment, only the first evaluation results in expected output; the
-# second evaluation produces an empty string.
 for my $args (
   [ qw(foo 1) ],
   [ qw(foo 0) ],
