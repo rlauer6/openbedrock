@@ -25,6 +25,12 @@ my $output;
 my $tx = Text::TagX->new($template, IO::Scalar->new( \$output));
 
 my $obj = $tx->get_parse_object;
+for (qw(input out_handle)) {
+  delete $$obj{TagX}{$_};
+}
+my $ser = Dumper($obj); use Data::Dumper;
+eval "\$obj = do { $ser }";   ## XXX odd: other forms of eval don't work
+                              ## (return value of eval).
 
 # This loop is to demonstrate the separation of parsing and evaluation.
 for my $args (
@@ -38,11 +44,6 @@ for my $args (
   $tx->vars($symtab);
   $tx->out_handle( TagX::Output->new( IO::Scalar->new(\my $output) ) );
   $obj->finalize;
- 
-  my $error = $tx->output;
-
-  die @{$error}
-    if @{$error};
 
   print $output;
 }
