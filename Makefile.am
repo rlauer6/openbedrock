@@ -49,3 +49,6 @@ DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 
 test:
 	$(MAKE) -C src/main/perl test
+
+verbose-test:
+	PROVE_ARGS=-v $(MAKE) -C src/main/perl test

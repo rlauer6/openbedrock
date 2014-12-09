@@ -6,4 +6,4 @@ SUBDIRS = lib \
           .
 
 test:
-	prove -Ilib{,/Bedrock,/Bedrock/Text} t
+	prove $(PROVE_ARGS) -Ilib{,/Bedrock,/Bedrock/Text} t
