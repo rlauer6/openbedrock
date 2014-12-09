@@ -4,3 +4,6 @@ SUBDIRS = lib \
           bin \
           cgi-bin \
           .
+
+test:
+	prove -Ilib{,/Bedrock,/Bedrock/Text} t

@@ -46,3 +46,6 @@ MAINTAINERCLEANFILES = config.status \
                        *~
 
 DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
+
+test:
+	$(MAKE) -C src/main/perl test
