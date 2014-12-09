@@ -32,16 +32,26 @@ sub test_input {
         local $/;
         <$fh>
     };
-    (my $output_file = $input_file) =~ s/\.input$/.output/;
-    my $expected_output = do {
-        open my $fh, '<', $output_file
-            or die "cannot open $output_file for reading: $!";
-        local $/;
-        <$fh>
-    };
+
     my $template = Bedrock::Template->new($input_text);
     my $generated_output = $template->parse;
     my $test_name = substr $input_file, length($dir) + 1;
     $test_name =~ s/\.input$//;
-    is $generated_output, $expected_output, $test_name;
+
+    (my $output_file = $input_file) =~ s/\.input$/.output/;
+    if (-r $output_file) {
+        my $expected_output = do {
+            open my $fh, '<', $output_file
+                or die "cannot open $output_file for reading: $!";
+            local $/;
+            <$fh>
+        };
+        is $generated_output, $expected_output, $test_name;
+    } else {
+        # Generate output.  This is simply for convenience.
+        open my $fh, '>', $output_file
+            or die "cannot open $output_file for writing: $!";
+        print $fh $generated_output;
+        ok 1, "generated output for $test_name";
+    }
 }
