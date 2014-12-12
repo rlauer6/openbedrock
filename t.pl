@@ -5,6 +5,7 @@
 use strict;
 use warnings;
 
+use Data::Dumper;
 use IO::Scalar;
 use Log::Log4perl qw(:easy);
 use Text::TagX;
@@ -24,13 +25,16 @@ my $output;
 
 my $tx = Text::TagX->new($template, IO::Scalar->new( \$output));
 
-my $obj = $tx->get_parse_object;
+my $parsed_obj = $tx->get_parse_object;
 for (qw(input out_handle)) {
-  delete $$obj{TagX}{$_};
+  delete $$parsed_obj{TagX}{$_};
 }
-my $ser = Dumper($obj); use Data::Dumper;
-eval "\$obj = do { $ser }";   ## XXX odd: other forms of eval don't work
-                              ## (return value of eval).
+my $ser = Dumper($parsed_obj);
+my $obj = do {
+    my $VAR1;
+    eval $ser // die "Cannot deserialize: $@";
+    $VAR1;
+};
 
 # This loop is to demonstrate the separation of parsing and evaluation.
 for my $args (
@@ -43,6 +47,7 @@ for my $args (
   }
   $tx->vars($symtab);
   $tx->out_handle( TagX::Output->new( IO::Scalar->new(\my $output) ) );
+  $obj->{TagX} = $tx;
   $obj->finalize;
 
   print $output;
