@@ -21,9 +21,7 @@ use constant TEMPLATE => <<'TEMPLATE';
 TEMPLATE
 
 my $template = IO::Scalar->new(\TEMPLATE);
-my $output;
-
-my $tx = Text::TagX->new($template, IO::Scalar->new( \$output));
+my $tx = Text::TagX->new($template);
 
 my $parsed_obj = $tx->get_parse_object;
 for (qw(input out_handle)) {
