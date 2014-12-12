@@ -45,8 +45,7 @@ for my $args (
   }
   $tx->vars($symtab);
   $tx->out_handle( TagX::Output->new( IO::Scalar->new(\my $output) ) );
-  $obj->{TagX} = $tx;
-  $obj->finalize;
+  $obj->finalize($tx);
 
   print $output;
 }
