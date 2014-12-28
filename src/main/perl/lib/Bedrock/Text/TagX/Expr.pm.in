@@ -34,6 +34,7 @@ BEGIN {
 use UNIVERSAL;
 use TagX::Log;
 use Scalar::Util qw(looks_like_number);
+use Data::Dumper;
 use Cwd;
 
 my $Verbose;
@@ -79,7 +80,8 @@ my %STRING_CMP = ( '--gt'   => sub { return $_[0] gt $_[1]; },
                    '--re'  => sub { 
 		     my ($lhs, $rhs) = @_;
 		     my $re = ($rhs =~ /^qr/) ? eval $rhs : eval "qr/\$rhs/";
-		     return $lhs =~ /$re/;
+		     
+		     return $lhs =~ /$re/ ? (1, eval { my %cg = %+; \%cg; }) : undef;
 		   }
                  );
 
@@ -149,25 +151,30 @@ sub new {
     }
   }
   elsif ( $op_or_lhs =~ /^--(not|defined|exists|array|scalar|object)$/i ) {
-    die "Unary operator `$op_or_lhs' requires a single argument: found ",
-    $nargs - 1, " instead.\n"
-    unless $nargs == 2;
+    die "Unary operator `$op_or_lhs' requires a single argument: found ", $nargs - 1, " instead.\n"
+      unless $nargs == 2;
+
     my $rhs = shift @_;
+
     die "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n"
-    unless ref($rhs);
+      unless ref($rhs);
+
     @{$self} = ( $op_or_lhs, $rhs );
   }
   else {
     die "Token `$op_or_lhs' is not a valid unary operator.\n";
   }
+
   $self;
 }
 
 sub verbose {
   my $self = shift;
+
   if (@_) {
     $Verbose = shift;
   }
+  
   $Verbose;
 }
 
@@ -176,13 +183,14 @@ sub eval {
   my ( $l, $op, $r );
 
   my @args = @{$self};
-  &log_message( undef,
-                "$self: begin eval with @{[scalar(@args)]} items: (@args)" )
-  if $Verbose;
+  &log_message( undef, "$self: begin eval with @{[scalar(@args)]} items: (@args)" )
+    if $Verbose;
 
   $l = shift @args;
+
   if ( defined($l) && ref($l) ) {
-    &log_message( undef, "LHS [$l] is an object" ) if $Verbose;
+    &log_message( undef, "LHS [$l] is an object" ) 
+      if $Verbose;
     if ( @args > 0 ) {
 
       # binary operators
@@ -191,7 +199,8 @@ sub eval {
 	unless $op =~ /^(--(eq|ne|gt|ge|lt|le|re|or|and|ref|file)|[\+\.\-\*\/])$/i;
 
       $op = lc($1);
-      &log_message( undef, "op is [$op]" ) if $Verbose;
+      &log_message( undef, "op is [$op]" ) 
+	if $Verbose;
 
       if ( $op =~ /^[\+\-\.\*\/]$/ ) {
         $l->verbose(1) 
@@ -206,8 +215,10 @@ sub eval {
 
         do {
           $l = shift @args;
-          $l->verbose(1) 
+        
+	  $l->verbose(1) 
 	    if $Verbose;
+
           my $str2 = $l->eval(@_);
 
           for ($op) {
@@ -263,123 +274,188 @@ sub eval {
             };
           }
 
-          $l->verbose(0) if $Verbose;
-          $op = shift @args if @args > 1;
+          $l->verbose(0) 
+	    if $Verbose;
+ 
+         $op = shift @args 
+	   if @args > 1;
+
         } while ( @args > 0 );
+
         return $str;
       }
       else {
         $r = shift @args;
-        $l->verbose(1) if $Verbose;
+
+        $l->verbose(1) 
+	  if $Verbose;
+
         my $lval = $l->eval(@_);
-        $l->verbose(0) if $Verbose;
-        $r->verbose(1) if $Verbose;
+
+        $l->verbose(0) 
+	  if $Verbose;
+
+        $r->verbose(1) 
+	  if $Verbose;
+
         my $rval = $r->eval(@_);
-        $r->verbose(0) if $Verbose;
+
+        $r->verbose(0)
+	  if $Verbose;
+
         &log_message( undef, "RHS: [$rval]" )
-        if $Verbose;
+	  if $Verbose;
 
         my $result;
-        eval {
-          if ( looks_like_number($lval) && looks_like_number($rval) )
-          {
-            &log_message( undef, "result: " . $NUMBER_CMP{$op}( $lval, $rval ) )
-            if $Verbose;
 
+        eval {
+          if ( looks_like_number($lval) && looks_like_number($rval) ) {
+            &log_message( undef, "result: " . $NUMBER_CMP{$op}( $lval, $rval ) )
+	      if $Verbose;
+	    
             $result = $NUMBER_CMP{$op}( $lval, $rval );
           }
           else {
             &log_message( undef, "result: " . $STRING_CMP{$op}( $lval, $rval ) )
-            if $Verbose;
-            $result = $STRING_CMP{$op}( $lval, $rval );
+	      if $Verbose;
+	    
+	    my $cg;
+            ($result, $cg) = $STRING_CMP{$op}( $lval, $rval );
+
+	    # grab capture group from regular expression if op is --re
+ 	    if ( $result && $op --eq '--re' ) {
+	      map { $_[0]->{$_} = $cg->{$_};} keys %{$cg};
+	    }
           }
         };
 
-        die
-"internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$@\n"
-        if $@;
+        die "internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$@\n"
+	  if $@;
+
         return $result;
       }
     }
     else {
-      $l->verbose(1) if $Verbose;
+      $l->verbose(1) 
+	if $Verbose;
+
       my $v = $l->eval(@_);
-      $l->verbose(0) if $Verbose;
+
+      $l->verbose(0) 
+	if $Verbose;
+
       return $v;
     }
   }
   elsif ( $l && $l =~ /^--(not|defined|array|scalar|object|exists)$/oi ) {
-    &log_message( undef, "LHS [$l] is an operator" ) if $Verbose;
+    &log_message( undef, "LHS [$l] is an operator" ) 
+      if $Verbose;
 
     # unary operators
     $op = lc($l);
     $l  = shift @args;
+
     &log_message( undef, "Argument to unary(`op') operator is [$l]" )
-    if $Verbose;
+      if $Verbose;
+
     if ( $op eq '--exists' ) {
       die "Invalid argument for `--exists' operator.\n"
-      unless &UNIVERSAL::isa( $l, 'TagX::Term::Var' );
-      $l->verbose(1) if $Verbose;
+	unless &UNIVERSAL::isa( $l, 'TagX::Term::Var' );
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $exists = $l->exists(@_);
-      $l->verbose(0) if $Verbose;
+
+      $l->verbose(0) 
+	if $Verbose;
+
       return $exists;
     }
     elsif ( $op eq '--defined' ) {
       die "Invalid argument for `--defined' operator.\n"
-      unless &UNIVERSAL::isa( $l, 'TagX::Term::Var' );
-      $l->verbose(1) if $Verbose;
+	unless &UNIVERSAL::isa( $l, 'TagX::Term::Var' );
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $defined = $l->defined(@_);
-      $l->verbose(0) if $Verbose;
+
+      $l->verbose(0) 
+	if $Verbose;
+
       return $defined;
     }
     elsif ( $op eq '--array' ) {
       die "invalid argument for unary(`$op') operator.\n"
-      unless $l->can('eval');
-      $l->verbose(1) if $Verbose;
+	unless $l->can('eval');
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $value = $l->eval(@_);
-      $l->verbose(0) if $Verbose;
-      &log_message( undef,
-                    "Argument to unary(`op') operator evaluated to [$value]" )
-      if $Verbose;
+ 
+     $l->verbose(0) 
+       if $Verbose;
+
+      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
+	if $Verbose;
+
       return ref($value) =~ /array/i ? 1 : 0;
     }
     elsif ( $op eq '--scalar' ) {
       die "invalid argument for unary(`$op') operator.\n"
-      unless $l->can('eval');
-      $l->verbose(1) if $Verbose;
+	unless $l->can('eval');
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $value = $l->eval(@_);
-      $l->verbose(0) if $Verbose;
-      &log_message( undef,
-                    "Argument to unary(`op') operator evaluated to [$value]" )
-      if $Verbose;
+
+      $l->verbose(0) 
+	if $Verbose;
+
+      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
+	if $Verbose;
+
       return ref($value) =~ /scalar/i ? 1 : 0;
     }
     elsif ( $op eq '--object' ) {
       die "invalid argument for unary(`$op') operator.\n"
-      unless $l->can('eval');
-      $l->verbose(1) if $Verbose;
+	unless $l->can('eval');
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $value = $l->eval(@_);
-      $l->verbose(0) if $Verbose;
-      &log_message( undef,
-                    "Argument to unary(`op') operator evaluated to [$value]" )
-      if $Verbose;
+
+      $l->verbose(0) 
+	if $Verbose;
+
+      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
+	if $Verbose;
+
       return ref($value) =~ /hash/i ? 1 : 0;
     }
     else {
       die "invalid argument for unary(`$op') operator.\n"
-      unless $l->can('eval');
-      $l->verbose(1) if $Verbose;
+	unless $l->can('eval');
+
+      $l->verbose(1) 
+	if $Verbose;
+
       my $value = $l->eval(@_);
-      $l->verbose(0) if $Verbose;
-      &log_message( undef,
-                    "Argument to unary(`op') operator evaluated to [$value]" )
-      if $Verbose;
+
+      $l->verbose(0)
+	if $Verbose;
+
+      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
+	if $Verbose;
+
       return defined($value) && $value ? 0 : 1;
     }
   }
   else {
-    my @caller = caller;
-    warn "Caller is (@caller)";
     die "unsupported unary operator: $l\n";
   }
 }
