@@ -976,14 +976,35 @@ sub create_temp_login_session {
   my $self = tied( %{$obj} );
 
   my $username = shift;
-  my $minutes = shift || 15;
-  my $seconds = 60;
+  my $time = shift || '15m';
+  my $recycle = shift;
 
-  if ( $minutes =~/(s|m)$/ ) {
-    $seconds = (lc($1) eq 'm') ? 60 : 1;
+  # calculate expiry in seconds
+  my $seconds;
+
+  if ( $time =~/^(\d+)([smdh])?$/i ) {
+    $time = $1;
+    my $unit = lc($2);
+
+    if ( $unit eq 'm' ) {
+      $seconds = $time * 60;
+    }
+    elsif ( $unit eq 's' ) {
+      $seconds = $time;
+    }
+    elsif ( $unit eq 'h' ) {
+      $seconds = $time * 60 * 60;
+    }
+    elsif ( $unit eq 'd' ) {
+      $seconds = $time * 24 * 60 * 60;
+    }
+    else {
+      $seconds = $time;
+    }
   }
-
-  $seconds *= $minutes;
+  else {
+    die "invalid expiry time\n";
+  }
 
   my ($verbose) = @{$self}{qw(verbose)};
   &log_message( undef, "Attempting to create temporary log-in session for user: $username" )
@@ -993,31 +1014,47 @@ sub create_temp_login_session {
   $self->{config}->{cookie}->{expiry_secs} = $default_expiry; 
 
   # Create a new session id for the user
-  my $session = $self->newSessionID;
-
+  my $session;
   # Delete the `new_session' flag
   delete $self->{'new_session'};
 
-  $self->UPDATE_LOGIN_SESSION(
-			      config   => $self->{config},
-			      username => $username,
-			      login_id => $session
-			     );
+  my $data;
+  
+  if ( $recycle ) {
+    # do we have an active session for this user? If so, then use this token
+    eval {
+      $data = $self->FETCH_LOGIN_SESSION_BY_USERNAME(
+						     config   => $self->{config},
+						     username => $username
+						    );
+      $session = $data->[5];
+    };
+  }
 
-  my $data = $self->FETCH_LOGIN_SESSION(
-					config   => $self->{config},
-					login_id => $session
+  if ( $@ || ! $session ) {
+    $session = $self->newSessionID;
 
-				       );
+    $self->UPDATE_LOGIN_SESSION(
+				config   => $self->{config},
+				username => $username,
+				login_id => $session
+			       );
+
+    $data = $self->FETCH_LOGIN_SESSION(
+				       config   => $self->{config},
+				       login_id => $session
+				      );
+  }
 
   $self->init_session( $data );
 
+  # this resets the expiry time
   $self->STORE_LOGIN_SESSION(
 			     session  => $session,
 			     expires  => $seconds,
 			     data     => $data,
 			     username => $username,
-			     config   => $self->{config},
+			     config   => $self->{config}
 			    );
 
   $self->UPDATE_LOGIN_SESSION(
