@@ -1,0 +1,110 @@
+<sink><try>
+
+  <pebbledef:set_error_message>
+
+    <null:error $ARGV.[1]>
+    <null:error $error.split('\\|')>
+
+    <if $error.[1]>
+      <null $result.set('msg', $error.[1])>
+    <else>
+      <null $result.set('msg', $error.[0])>
+    </if>
+    
+    <null $header.set('Status', $ARGV.[0])>
+  </pebbledef>
+  
+  <null:path_info --default=$env.PATH_INFO $env.BEDROCK_PATH_INFO>
+  
+  <if $env.REQUEST_URI --re '^/(?<api_name\>[^/]*)/?'></if>
+  
+  <hash:result status ok>
+
+  <if $config.mode --eq 'prod'>
+    <unless $env.SERVER_PROTOCOL --re 'HTTPS'>
+      <raise '505|non-SSL transport'>
+    </unless>
+  <else>
+    <include --optional --file=$api_name.format('%s/pod.inc')>
+  </if>
+
+  <include --optional --file=$api_name.format('%s/init.inc')>
+
+<!-- GET -->
+  <if $env.REQUEST_METHOD --eq 'GET'>
+    <include --optional --file=$api_name.format('%s/GET.inc')>
+  
+<!-- PUT -->
+  <elseif $env.REQUEST_METHOD --eq 'PUT'>
+    <if $input.PUTDATA>
+      <null:data --json $input.PUTDATA>
+    <else>
+      <null:data $input>
+    </if>
+  
+    <include --optional --file=$api_name.format('%s/PUT.inc')>
+  
+<!-- POST -->
+  <elseif $env.REQUEST_METHOD --eq 'POST'>
+    <if $input.POSTDATA>
+      <null:data --json $input.POSTDATA>
+    <else>
+      <null:data $input>
+    </if>
+
+    <include --optional --file=$api_name.format('%s/POST.inc')>
+
+<!-- DELETE -->
+  <elseif $env.REQUEST_METHOD --eq 'DELETE'>
+    <include --optional --file=$api_name.format('%s/DELETE.inc')>
+
+<!-- PATCH -->
+  <elseif $env.REQUEST_METHOD --eq 'PATCH'>
+    <include --optional --file=$api_name.format('%s/PATCH.inc')>
+
+  <else>
+    <raise "400">
+  </if>  
+
+  <include --optional --file=$api_name.format('%s/finalize.inc')>
+ 
+<catch '400'>
+  <pebble:set_error_message 400 $@>
+  
+  <null $result.set('status', 'error', 'status_text', 'BAD REQUEST', 'env', $env)>
+
+<catch 'invalid session|401'>
+  <pebble:set_error_message 401 $@>
+
+  <null $result.set('status', 'error', 'status_text', 'UNAUTHORIZED', 'result', $@)>
+
+<catch '403'>
+  <pebble:set_error_message 403 $@>
+  <null $result.set('status', 'error', 'status_text', 'FORBIDDEN', 'env', $env)>
+ 
+<catch '404'>
+  <pebble:set_error_message 404 $@>
+
+  <null $header.set('Status', 404)>
+  <null $result.set('status', 'error', 'status_text', 'NOT FOUND', 'env', $env)>
+  
+<catch '405'>
+  <pebble:set_error_message 405 $@>
+
+  <null $header.set('Allow', 'GET,PUT,POST,DELETE,PATCH')>
+  <null $result.set('status', 'error', 'status_text', 'NOT ACCEPTABLE', 'env', $env)> 
+
+<catch '505'>
+  <pebble:set_error_message 505 $@>
+
+  <null $result.set('status', 'error', 'status_text', 'HTTP VERSION NOT SUPPORTED', 'env', $env)>
+
+<catch>
+  <null $header.set('Status', 500)>
+  <null $result.set('status',      'error', 
+                    'status_text', 'INTERNAL SERVER ERROR',
+		    'msg',          $@,
+                    'input',        $input,
+                    'env',          $env)>
+
+</try></sink><var --json --pretty $result>
