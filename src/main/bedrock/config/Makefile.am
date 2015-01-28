@@ -10,6 +10,7 @@ CONFIG = \
     tagx.xml.in \
     tagx_apps.xml.in \
     perl_bedrock.conf.in \
+    bedrock-rest-framework.conf.in \
     startup.pl.in
 
 GCONFIG = $(CONFIG:.in=)
