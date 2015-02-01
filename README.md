@@ -5,11 +5,14 @@ See [http://twiki.openbedrock.net]() for more helpful hints.
 # Overview
 
 Bedrock is a server side web development framework that can be used
-with Apache web servers. It allows HTML programmers to create dynamic
-web pages through the use of a small set of HTML-like tags. Bedrock is
-an enabling technology that glues together HTML pages and dynamic data
-(HTML form data, data from databases, and system services) to create
-web applications.
+with Apache web servers. It allows full stack web developers to create
+dynamic web pages through the use of a small set of HTML-like
+tags. Bedrock is an enabling technology that glues together HTML pages
+and dynamic data (HTML form data, data from databases, and system
+services) to create web applications.
+
+Developers can extend Bedrock in interesting ways through the use of
+Perl plugins.
 
 Bedrock differs significantly from most web application development
 environments that either generate HTML pages as output (e.g. CGIs,
@@ -19,7 +22,8 @@ pages from object oriented components.
 
 Although Bedrock has grown to include many features, some of which are
 not found in other web application environments, some interesting and
-robust applications can be built with only 7 Bedrock tags:
+robust applications can be built with only 7 Bedrock tags and the
+built-in objects *$input*, *$header*, *$session*, and *$config*:
 
     <if>
     <null>
@@ -29,10 +33,13 @@ robust applications can be built with only 7 Bedrock tags:
     <sqlconnect>
     <foreach>
 
-At the time of writing (2013-12-08), the project is being cleaned up
-after a long period of inactivity. Version 1.6.4 was released in 2001,
-and since then most production environments have been running a
-variation of that version, usually with minor modifications.
+# History
+
+Starting in December of 2013 the project has been revived and
+continues to be improved after a long period of inactivity. Version
+1.6.4 was released in 2001, and since then most production
+environments have been running a variation of that version, usually
+with minor modifications.
 
 Such modifications were tagged in CVS as version 1.6.5.
 
