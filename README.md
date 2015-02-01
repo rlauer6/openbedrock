@@ -23,8 +23,9 @@ pages from object oriented components.
 Although Bedrock has grown to include many features, some of which are
 not found in other web application environments, some interesting and
 robust applications can be built with only 7 Bedrock tags and the
-built-in objects *$input*, *$header*, *$session*, and *$config*:
+built-in objects **$input**, **$header**, **$session**, and **$config**:
 
+```
     <if>
     <null>
     <var>
@@ -32,10 +33,16 @@ built-in objects *$input*, *$header*, *$session*, and *$config*:
     <sql>
     <sqlconnect>
     <foreach>
+```
+
+# More Information
+
+* [Bedrock Wiki](http://twiki.openbedrock.net)
+* [Bedrock Blog](http://openbedrock.blogspot.com)
 
 # History
 
-Starting in December of 2013 the project has been revived and
+Starting in December of 2013 the open source project has been revived and
 continues to be improved after a long period of inactivity. Version
 1.6.4 was released in 2001, and since then most production
 environments have been running a variation of that version, usually
@@ -87,6 +94,9 @@ using Perl 5.8.8, but any 5.8.x+ features that are used should be
 conditional. This means that Bedrock should work with versions of Perl prior
 to 5.8.x, as well.
 
+*This information may be a bit dated.*
+
+```
     Prerequisite        Version    Required By     URI
     ------------        ---------  -----------     ------------------------------
     Perl 5              >= 5.004   all             ftp://ftp.cpan.org/pub/CPAN/src/perl-5.8.8.tar.gz
@@ -108,6 +118,7 @@ to 5.8.x, as well.
     --------            
     HTML::Scrubber      ???        BLM::Startup::Input  http://cpan.perl.org/modules/by-module/HTML
     IPC::Shareable      ???        Bedrock::Apache::Bedrock http://cpan.perl.org/modules/by-module/IPC
+```
 
 If you're installing Bedrock from a Debian `.deb` file or a RedHat
 `.rpm` file, you should have success letting the package managers pull
@@ -171,7 +182,7 @@ Installing Bedrock __should be__ a simple 2-step process.
 # Creating a persistent Session Database
 
 Bedrock implements persistent user sessions using an application
-plugin called BLM::Startup::UserSession.  The reference implementation
+plugin called **BLM::Startup::UserSession**.  The reference implementation
 installed by Bedrock uses a MySQL database to persist user data.
 
 There are also implementations using PostgreSQL and SQLLite.
