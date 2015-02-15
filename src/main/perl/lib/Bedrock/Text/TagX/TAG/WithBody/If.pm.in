@@ -35,6 +35,7 @@ use TagX::Log;
 use TagX::TAG::WithBody;
 use Scalar::Util qw(looks_like_number);
 use Cwd;
+use Data::Dumper;
 
 @ISA = qw (TagX::TAG::WithBody);
 
@@ -94,17 +95,34 @@ sub closure {
 }
 
 sub evaluate {
-  if ( @_ == 1 ) {
-    return $_[0];
+  my $self = shift;
+  my ($args, $context) = @_;
+
+  if ( @{$args} == 1 ) {
+    return $args->[0];
   }
-  elsif ( @_ == 2 ) {
+  elsif ( @{$args} == 2 ) {
 
     # unary op
-    my ( $op, $v ) = @_;
+    my ( $op, $v ) = @{$args};
 
     for ($op) {
       $_ eq '--not'    and return not $v;
-      $_ eq '--exists' and return defined($v);
+      if ( $_ eq '--exists' ) {
+	my $what = $self->{'__argv'}->[1];
+
+	if ( UNIVERSAL::isa($what, 'TagX::Term::Var') ) {
+
+	  return (defined $what->exists(@{$context}) ? 1 : 0);
+	}
+	elsif ( ref($what) ) {
+	  return 1;
+	}
+	else {
+	  return defined $v;
+	}
+      }
+
       $_ eq '--object' and return UNIVERSAL::isa( $v, 'HASH' );
       $_ eq '--hash'   and return UNIVERSAL::isa( $v, 'HASH' );
       $_ eq '--blm'    and return ref($v) =~ /blm/i;
@@ -114,8 +132,8 @@ sub evaluate {
       die "invalid unary operator in `if/else' statement: $_\n";
     }
   }
-  elsif ( @_ == 3 ) {
-    my ( $lhs, $cond, $rhs ) = @_;
+  elsif ( @{$args} == 3 ) {
+    my ( $lhs, $cond, $rhs ) = @{$args};
     my $ref = ref($lhs);
 
     for ( lc($cond) ) {
@@ -166,7 +184,7 @@ sub evaluate {
     }
   }
   else {
-    die "invalid number of args(@{[scalar(@_)]}) to `if/else' statement.\n(@_)";
+    die 'invalid number of args(' . scalar(@{$args}) . " to 'if/else' statement.\n" . join(",", @{$args});
   }
 }
 
@@ -174,6 +192,7 @@ sub finalize {
   my ( $self, $tx, @context ) = @_;
 
   my %options;
+
   my @argv = $self->parse_options( \%options, @context );
   my $verbose = $self->verbose;
 
@@ -193,7 +212,7 @@ sub finalize {
     return;
   }
 
-  my ($v, $cg) = &evaluate(@argv);
+  my ($v, $cg) = $self->evaluate(\@argv, \@context);
 
   map { $context[0]->{$_} = $cg->{$_};} keys %{$cg}
     if $v;
