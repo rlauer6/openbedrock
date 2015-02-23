@@ -148,11 +148,11 @@ B<Example of overriding one of the HTML construction methods...>
 These HTML construction methods are described in more detail later in
 this documentation.
 
-The MySQL table should conform to certain conventions.  It is assumed
+I<The MySQL table should conform to certain conventions.  It is assumed
 to have an indexed (unique) field named C<id> which is defined as an
-C<auto_increment field>.
+C<auto_increment field>.>
 
-Your class which sub classes C<BLM::IndexedTableHandler> should be
+Your class, which sub classes C<BLM::IndexedTableHandler>, should be
 named such that the suffix is the table name.  The program assumes the
 actual MySQL table name is lower cased.  So, in the C<SYNOPSIS> above,
 assuming we have an example table named C<foo> that looks something
@@ -165,28 +165,49 @@ like:
    email varchar(64)
   );
 
-...and assuming I pass a handle to an open database to the Foo
+...and assuming I pass a handle to an open database to C<BLM:Foo>
 constructor, I would get a whole lot of stuff necessary for building a
 typical Bedrock application for free!
 
   <sqlconnect --data-source="dbi:mysql:bedrock_site" --username="fred" --password="flintstone" --db="dbi">
 
   <plugin:Foo $dbi>
-  <null $Foo.set('lname', 'Lollabrickada', 'fname', 'Gina', 'email', 'gina@bedrock.com')>
+  <null $Foo.set('lname', 'Lollabrickada', 'fname', 'Gina', 'email', 'gina@openbedrock.com')>
   <null $Foo.save()>
 
-Update the record...
-
-  <null $Foo.set('fname', 'Geena')>
+  <null $Foo.reset()>
+  <null $Foo.set('lname', 'Lollabrickada', 'fname', 'Geena', 'email', 'geena@openbedrock.com')>
   <null $Foo.save()>
 
-Return a list of all records in table C<foo>...
+Update a record...
+
+  <null $Foo.set('email', 'geena123@openbedrock.com')>
+  <null $Foo.save()>
+
+Return a list of all records in table C<foo>. I<Note that the
+C<find()> method returns a list of C<BLM::IndexedTableHandler> objects
+suitable for use in the same way you used the original object.  If you
+want just a hash reference of the fields of the record, you can use
+the C<asref()> method of an object or a record set.>
 
   <null --define-var="foo_list" $Foo.find()> 
 
-Find a record in table C<foo> where the C<lname> field start with 'Lolla'...
+Just show the database columns...
 
-  <null --define-var="Foo" $Foo.find('lname', 'Lolla')>
+  <trace --outptut $foo_list.asref()>
+
+Return a list of records in table C<foo> where the C<lname> field starts with 'Lolla'...
+
+   <null --define-var="lollas" $Foo.find('lname', 'Lolla')>
+
+Find a record in table C<foo> where the C<lname> field exactly matched 'Lolla'...
+
+   <null --define-var="lolla" $Foo.find_unique('lname', 'Lolla')>
+
+Return a list of records in table C<foo> where the C<lname> field exactly matched 'Lolla'...
+
+   <null --define-var="lollas" $Foo.find(1, 'lname', 'Lolla')>
+
 
 =head1 DOCUMENTATION
 
@@ -266,50 +287,35 @@ referenced in the Bedrock example below.
 
 Now create the Application Plugin perl module.
 
+  use strict;
+  use warnings;
+
+  package BLM::Foo;
+
+  use vars qw(@ISA);
+
+  use BLM::IndexedTableHandler;
+
+  @ISA = qw(BLM::IndexedTableHandler);
+
   package BLM::Startup::Example;
   
   use vars qw(@ISA);
-  use strict;
-  use Bedrock::Hash;
+    
+  use Bedrock::Application::Plugin;
   
-  # - My example BLM::IndexedTableHandler for handling the 'foo' table
-  use BLM::Foo;
+  @ISA = qw(Bedrock::Application::Plugin);
   
-  @ISA = qw(Bedrock::Hash);
-  
-  sub TIEHASH {
-    my ( $class, $ctx, $config ) = @_;
-  
-    my $self = bless {}, $class;
-    $self->{ctx}    = $ctx;
-    $self->{config} = $config;
-
-    # mysql_client_found_rows allows up the UPDATE statement to return
-    # true if it updates a row that has no changes.  Ex: update
-    # mytable set x=1 where x=1
-
-     if ($config->{data_source}) {
-       $self->{dbi} = DBI->connect($config->{data_source}.":mysql_client_found_rows=1",
-                                   $config->{username}, 
-                                   $config->{password}, 
-                                   { PrintError => 1, 
-                                     RaiseError => (exists $config->{raise_error}) || 0
-                                   }
-                                  );
-     }
-    $self;
-  }
-
   # - factory method for creating Foo handlers
   sub foo {
       my $self = shift;
   
-      return BLM::Foo->new($self->{dbi}, @_);
+      return BLM::Foo->new($self->dbi, @_);
   }
   
   1;
 
-Again, this perl module should be installed somewhere where perl will
+Again, this Perl module should be installed somewhere where Perl will
 find the module when you web applicaion is executing.
 
   $ cp Example.pm /var/www/vhosts/www.mysite.com/perl5/BLM/Startup/Example.pm
@@ -532,7 +538,13 @@ documentation for the C<html_form_body()> method.
 =head2 new
 
  new( dbi, id, config, table-name )
+ new( dbi, id, table-name )
  new( dbi, { id => id, table_name => table-name, config => config, lock => 0 |1  })
+
+Polymorphims run amok, but pick your poison...these are unambiquous
+signatures. My preference in Bedrock is...
+
+  <plugin:IndexedTableHandler $dbi 'table-name'>
 
 =over 5
 
@@ -596,21 +608,38 @@ for the give C<id>.  You should commit the record to release the lock.>
 sub new {
     my $this = shift;
     my $class = ref($this) || $this;
-    my $dbi = shift;
     my $self = bless {}, $class;
+
+    my $dbi = shift;
     
     my ( $id, $config, $table_name );
 
+    # new(id, config)
+    # new(id, table-name)
+    # new(id, config, table-name)
     unless ( ref($_[0]) ) {
-     ($id, $config, $table_name) = @_;
+      if ( @_ == 2 ) {
+	if ( ref($_[1]) ) {
+	  ($id, $config) = @_;
+	}
+	else {
+	  ($id, $table_name) = @_;
+	}
+      }
+      else {
+	($id, $config, $table_name) = @_;
+      }
     }
+    # new( dbi, hash-ref )
     else {
       my $opts = shift;
-
-      $id = $opts->{id};
-      $config = $opts->{config};
-      $table_name = $opts->{'table_name'};
+      ($id, $config, $table_name) = @{$opts}{qw/id config table_name/};
       $self->lock( $opts->{lock} );
+    }
+
+    if ( $id ) {
+      die "id must be integer, not [$id]\n"
+	unless $id =~/^\d+$/;
     }
 
     if ( ref($dbi) ) {
@@ -621,7 +650,7 @@ sub new {
 	die "usage: BLM::IndexedTableHandler->new( dbi, ...)\n"
 	  unless $dbi && ref($dbi) =~/DBI/;
 
-	($id, $config, $table_name) = @{$ref}{qw/id config table/};
+	($id, $config, $table_name) = @{$ref}{qw/id config table_name/};
       }
     }
     
@@ -632,7 +661,12 @@ sub new {
 
     $table_name = $table_name || lc($2) or die "Unable to determine table name.";
 
-    $self->{_config} = $config || {};
+    # validate config object
+    unless ( ref($config) && $config->{tables} ) {
+      $config = {};
+    }
+
+    $self->{_config} = $config;
     $self->{_table} = $table_name;
     $self->{_dbi} = $self->{_db} = $dbi;
 
@@ -814,14 +848,80 @@ sub _delete {
 
 =pod
 
+=head2 null
+
+ null( column, ... )
+ null( array-ref )
+
+Sets the specified column (or columns) to NULL (undef).  Pass a list
+of column names or an array reference of column names.
+
+=cut
+
+sub null {
+  my $self = shift;
+
+  my @list = ref($_[0]) ? @{$_[0]} : @_;
+
+  my @fields = $self->get_fields();
+
+  foreach my $column_name ( @list) {
+    if ( $self->is_field($column_name) ) {
+      $self->{$column_name} = undef;
+    }
+  }
+}
+
+=pod
+
+=head2 is_null
+
+ is_null( field-name )
+
+Returns true if the field is NULL, false if it is not NULL.  Not that
+the empty string is NOT a NULL value.
+
+Example:
+
+  <if $contact.is_null('username')>
+    ...
+  </if>
+
+=cut
+
+sub is_null {
+  my $self = shift;
+  my $field = shift;
+
+  return ! defined $self->{$field};
+}
+
+=pod
+
+=head2 is_field
+
+ is_field( name )
+
+Returns true if C<name> is a column in the table.  Returns false if it is not.
+
+=cut
+
+sub is_field {
+  my $self = shift;
+  my $field = shift;
+
+  return exists $self->get_table_dir->{$field};
+}
+
+=pod
+
 =head2 reset
 
  reset
 
-Clears all of the columns in the object.
+Clears (sets columns to NULL) all of the columns in the object.
 
 =cut
-
 
 sub reset {
   my $self = shift;
@@ -1037,8 +1137,9 @@ Sets the field name(s) to the specified value(s).
 
   set($input)
 
-Calling C<set> with the C<$input> object as the parameter (or in general a hash) will
-result in the field names for your table being set from the hash.  That is to say...
+Calling C<set> with the C<$input> object as the parameter (or in
+general a hash) will result in the field names for your table being
+set from the hash.  That is to say...
 
   <null $player.set($input)>
 
@@ -1614,22 +1715,25 @@ sub search {
 
   find( id )
 
-Returns the row in the table with an C<id> = to the specified id.
+Returns a C<BLM::IndexedTableHandler> object representing the row in
+the table with an C<id> equal to the specified id.
 
   find ( field, value )
 
-Returns an array of hash references to row objects that match the field and 
+Returns an array of C<BLM::IndexedTableHandler> objects that B<start with> the 
 value passed.
 
   find()
 
-Return all rows (up to C<max_rows>) in table.
+Returns an array of C<BLM::IndexedTableHandler> objects.  The number
+of elements in the array is controlled by the current C<max_rows>
+setting.  For all rows, set C<max_rows> to 0.
 
   find( match-flag, field, value, ...)
 
-Returns an array of hash references to row objects that match the
+Returns an array of C<BLM::IndexedTableHandler> objects that match the
 fields and values passed.  Each C<match-flag> is is either 0,
-indicating B<non-exact match> or 1, indicating B<exact match>.
+indicating B<non-exact match> (starts with) or 1, indicating B<exact match>.
 
 =over 5
 
@@ -1649,13 +1753,15 @@ value of the column specifed in C<field> to search for
 
 =head3 Example - Return all rows.
 
+  <null $player.max_rows()>
   <null --define-var="players" $player.find()>
 
-Returns all rows in table.  Typically this is used for relatively
-small tables, hence, a maximum value of 50 is used to limit the number
-of elements returned.
+Returns all rows in the table.  Typically this is used for relatively
+small tables.  B<By default a maximum value of 50> is used to limit
+the number of elements returned.
 
-If you B<really> want to return more rows, then set C<max_rows>.
+If you B<really> want to return more rows, then use the C<max_rows()>
+method to control the number of row to return.
 
   <null $player.max_rows(100)>
 
@@ -1671,18 +1777,17 @@ For an unlimited number...
 
  <null --define-var="players" $player.find('fname', 'Jo')>
 
-Would return all an array of player objects where the field F<fname> is like Jo%
+Would return an array of player objects where the field F<fname> is like Jo%
 
 I<Note:> This method will always return an array even if there is only 1 row that matches
 the criteria.
 
 =head3 Example - Return rows based on matching more than 1 field.
 
- <null --define-var="players" $player.find(1, 'position', 1. 0, 'lname', 'R')>
+ <null --define-var="players" $player.find(1, 'position', 1, 0, 'lname', 'R')>
 
 Would return all of the records where the C<position> column was
 B<equal> to 1 and the last name of the player started with 'R'.
-
 
 =cut
 
@@ -1747,7 +1852,18 @@ sub fields {
   return Bedrock::Array->new( $self->get_fields() );
 }
 
-# returns an array containing the column names.
+=pod
+
+=head2 get_fields
+
+Returns a list of field names.  Note that in the Bedrock context
+returning lists and array references are equivalent, since Bedrock
+will promote lists to Bedrock array objects.  When using this method
+in the Perl context it will return a list.  Use C<get_field_list()> if
+you want an array reference.
+
+=cut
+
 sub get_fields {
   @{$_[0]->{_field_list}};
 }
