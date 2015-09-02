@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -45,6 +44,7 @@ use constant DECLINED     => Apache2::Const::DECLINED;
 use constant REDIRECT     => Apache2::Const::REDIRECT;
 
 use Bedrock::Handler;
+use CGI::Cookie;
 use Data::Dumper;
 use File::Basename;
 use IO::File;
@@ -112,24 +112,24 @@ be found at F<@libdir@/bedrock/cgi-bin/bedrock-session-files.cgi>.
 sub handler {
   my $r = shift;
 
-  $r && $r->log->info( "Apache::SessionFiles started.");
-
-  $r && $r->log->debug( sprintf( "[%s]: request file.....[%s] " , (caller(0))[3], $r->filename ) );
-  $r && $r->log->debug( sprintf( "[%s]: URI..............[%s] " , (caller(0))[3], $r->uri ) );
-  $r && $r->log->debug( sprintf( "[%s]: PATH_INFO........[%s] " , (caller(0))[3], $ENV{PATH_INFO} ) );
-  $r && $r->log->debug( sprintf( "[%s]: PATH_TRANSLATED..[%s] " , (caller(0))[3], $ENV{PATH_TRANSLATED} ) );
-  $r && $r->log->debug( sprintf( "[%s]: HTTP_COOKIE......[%s] " , (caller(0))[3], $ENV{HTTP_COOKIE} ) );
-  $r && $r->log->debug( sprintf( "[%s]: content_type.....[%s] " , (caller(0))[3], $r->content_type ) );
+  $r->log->debug( "Apache::SessionFiles started.");
+  $r->log->debug( sprintf( "[%s]: request file.....[%s] " , (caller(0))[3], $r->filename ) );
+  $r->log->debug( sprintf( "[%s]: URI..............[%s] " , (caller(0))[3], $r->uri ) );
+  $r->log->debug( sprintf( "[%s]: PATH_INFO........[%s] " , (caller(0))[3], $ENV{PATH_INFO} ) );
+  $r->log->debug( sprintf( "[%s]: PATH_TRANSLATED..[%s] " , (caller(0))[3], $ENV{PATH_TRANSLATED} ) );
+  $r->log->debug( sprintf( "[%s]: HTTP_COOKIE......[%s] " , (caller(0))[3], $ENV{HTTP_COOKIE} ) );
+  $r->log->debug( sprintf( "[%s]: content_type.....[%s] " , (caller(0))[3], $r->content_type ) );
 
   # filename (however actual file will exist under user's session directory)
   my ($name, $path, $ext) = fileparse( ($r->filename || 'index.html'), qr/\.([^.]*)$/ );
-  
-  unless ( $ENV{HTTP_COOKIE} =~/session=([0-9a-f]+)$/ ) {
-    $r && $r->log->error("ERROR: No session found.");
+
+  # get the session cookie so we know where to look for the file
+  my $session = get_session_cookie($r);
+
+  unless ( $session ) {
+    $r->log->error("ERROR: No session found.");
     return NOT_FOUND;
   }
-
-  my $session = $1;
 
   my $conf = eval {
     my $bedrock_handler = Bedrock::Handler->new( $r );
@@ -143,15 +143,16 @@ sub handler {
 
   my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
 
-  $r && $r->log->debug( sprintf( "[%s]: SESSION_DIR......[%s] " , (caller(0))[3], $conf->{SESSION_DIR} ) );
-  $r && $r->log->debug( sprintf( "[%s]: session..........[%s] " , (caller(0))[3], $session ) );
-  $r && $r->log->debug( sprintf( "[%s]: filename.........[%s] " , (caller(0))[3], $filename ) );
+  $r->log->debug( sprintf( "[%s]: SESSION_DIR......[%s] " , (caller(0))[3], $conf->{SESSION_DIR} ) );
+  $r->log->debug( sprintf( "[%s]: session..........[%s] " , (caller(0))[3], $session ) );
+  $r->log->debug( sprintf( "[%s]: filename.........[%s] " , (caller(0))[3], $filename ) );
 
   unless ( -e $filename ) {
-    $r && $r->log->error("FILE NOT FOUND: [$filename]");
+    $r->log->error("FILE NOT FOUND: [$filename]");
     return NOT_FOUND;
   }
   elsif ( -r $filename ) {
+    $r->log->info("FILE FOUND: [$filename]");
   }
   else {
     return FORBIDDEN;
@@ -169,6 +170,28 @@ sub handler {
   close $fh;
 
   return OK;
+}
+
+# parse out the session cookie from the HTTP_COOKIEs
+sub get_session_cookie {
+  my $r = shift;
+
+  my %cookies;
+  my $session;
+
+  eval {
+    %cookies = CGI::Cookie->parse($ENV{HTTP_COOKIE});
+    $r->log->debug('Cookies ' . Dumper [\%cookies] );
+  };
+  
+  if ( $@ ) {
+    $r->log->error(sprintf("ERROR parsing cookies: [%s]\n%s\n", $ENV{HTTP_COOKIE}, $@));
+  }
+  else {
+    $session = $cookies{session}->value;
+  }
+
+  return $session;
 }
 
 =pod
