@@ -23,18 +23,19 @@
 
 package Bedrock::Iterator;
 
-use Bedrock::BedrockJSON;
-
 sub new {
-  my $proto = shift;
-  my $class = ref($proto) || $proto;
+  my $class = shift;
+  $class = ref($class) || $class;
+
   my $array = shift;
   my $self  = bless { 'array' => $array, 'cur' => 0 }, $class;
+
   $self;
 }
 
 sub pos {
   my $self = shift;
+
   $self->{'cur'} = @{ $self->{'array'} }
   if $self->{'cur'} > @{ $self->{'array'} };
   $self->{'cur'};
@@ -76,10 +77,13 @@ sub valid {
 package Bedrock::Array;
 
 use strict;
+
+use Bedrock::BedrockJSON;
+use Bedrock::XML;
+
+use Scalar::Util qw/reftype/;
 use Tie::Array;
 use XML::Simple;
-
-use Bedrock::XML;
 
 BEGIN {
   use Exporter ();
@@ -89,47 +93,100 @@ BEGIN {
 
 sub TIEARRAY {
   my $class = shift;
+
   my $self = bless [], $class;
   push @{$self}, @_ if @_ > 0;
   $self;
 }
 
+sub bedrock_xml {
+  my $self = CORE::shift;
+
+  return Bedrock::XML::writeXML($self);
+}
+
+sub devolve {
+  my $this = CORE::shift;
+
+  if ( ref($this) =~ /^(HASH|ARRAY)$/ ) {
+    return $this;
+  }
+  elsif ( ref($this) =~ /Bedrock::Hash/ ) {
+    my $that = {};
+    foreach ( keys %$this ) {
+      $that->{$_} = devolve( $this->{$_} );
+    }
+    return $that;
+  }
+  elsif ( ref($this) =~ /Bedrock::Array/ ) {
+    my $that = [];
+    foreach (@$this) {
+      push @$that, devolve($_);
+    }
+    return $that;
+  }
+  else {
+    return $this;
+  }
+}
+
+sub get { $_[0]->[ $_[1] + 0 ]; }
+
+sub grep {
+  my $self    = CORE::shift;
+  my $pattern = CORE::shift;
+
+  my $re = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
+
+  die "Invalid pattern - $@ "
+    if $@;
+
+  my @found = grep { $_ =~ $re } @$self;
+
+  return Bedrock::Array->new(@found);
+}
+
+sub isEmpty { @{ $_[0] } > 0 ? 0 : 1 }
+
+sub iterator { Bedrock::Iterator->new( $_[0] ) }
+
+sub join { join( $_[1] || '', @{ $_[0] } ) }
+
+sub json {
+  my $self = CORE::shift;
+
+  return Bedrock::JSON::encode( $self->devolve );
+}
+
+sub length { scalar( @{ $_[0] } ) }
+
+sub list {
+  my $array = CORE::shift;
+
+  if ( @_ ) {
+    $array = CORE::shift;
+  }
+
+  die "not an an array ref\n"
+    unless ref($array) && reftype($array) eq 'ARRAY';
+
+  return @$array;
+}
+
+
 sub new {
-  my $proto = shift;
-  my $class = ref($proto) || $proto;
+  my $class = shift;
+  $class = ref($class) || $class;
+
   my $self  = bless [], $class;
   tie @{$self}, $class, @_;
+
   $self;
 }
 
-sub sort {
-  my $self = shift;
-  my ( $sort_dir, $sort_type ) = @_;
-
-  $sort_dir  = $sort_dir  || 'asc';
-  $sort_type = $sort_type || 'alpha';
-
-  my @unsorted;
-
-  if ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^alpha/ ) ) {
-    @unsorted = sort { $a cmp $b } @{$self};
-  }
-  elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^alpha/ ) ) {
-    @unsorted = sort { $b cmp $a } @{$self};
-  }
-  elsif ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^num/ ) ) {
-    @unsorted = sort { $a <=> $b } @{$self};
-  }
-  elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^num/ ) ) {
-    @unsorted = sort { $b <=> $a } @{$self};
-  }
-
-  return Bedrock::Array->new(@unsorted);
-}
-
 sub map {
-  my $self    = shift;
-  my $fmt_str = shift;
+  my $self    = CORE::shift;
+  my $fmt_str = CORE::shift;
 
   my @parms = @_;
 
@@ -142,82 +199,8 @@ sub map {
     sprintf( $fmt_str, @{ { value => $_, index => $index++ } }{@parms} );
   }
 
-  return wantarray ? Bedrock::Array->new(@out) : join( '', @out );
+  return wantarray ? Bedrock::Array->new(@out) : CORE::join( '', @out );
 }
-
-sub set {
-  my $self = shift;
-  my ( $index, $value ) = @_;
-  my $old = $self->[$index];
-  $self->[$index] = $value;
-  $old;
-}
-
-sub get { $_[0]->[ $_[1] + 0 ]; }
-
-sub length { scalar( @{ $_[0] } ) }
-
-sub pop {
-  my $a = shift;
-  if ( @_ > 0 ) {
-    my $count = shift;
-    $count--;
-    my @a;
-    for ( 0 .. $count ) {
-      unshift @a, CORE::pop @{$a};
-    }
-    return Bedrock::Array->new(@a);
-  }
-  else {
-    return CORE::pop @{$a};
-  }
-}
-
-sub unshift {
-  my $self = CORE::shift;
-
-  unshift @{$self}, @_;
-}
-
-sub splice {
-  my $self = shift;
-  my $offset = shift || 0;
-
-  # Passing args to splice as splice @{$self}, @_ wouldn't work
-  # Need to shift the offset and length out of the args and then invoke
-  # splice() with explicit args as show below
-
-  if ( @_ == 0 ) {
-    return Bedrock::Array->new( splice @{$self}, $offset );
-  }
-  elsif ( @_ == 1 ) {
-    my $length = shift;
-    return Bedrock::Array->new( splice @{$self}, $offset, $length );
-  }
-  else {
-    my $length = shift;
-    return Bedrock::Array->new( splice @{$self}, $offset, $length, @_ );
-  }
-}
-
-sub join { join( $_[1] || '', @{ $_[0] } ) }
-
-sub list {
-  my $array = shift;
-
-  if ( @_ ) {
-    $array = shift;
-  }
-
-  die "not an an array ref\n"
-    unless UNIVERSAL::isa($array, 'ARRAY');
-
-  return @$array;
-}
-
-sub isEmpty { @{ $_[0] } > 0 ? 0 : 1 }
-
-sub iterator { Bedrock::Iterator->new( $_[0] ) }
 
 sub matches {
   my ($self, $str, $flags) = @_;
@@ -247,68 +230,49 @@ sub matches {
   return Bedrock::Array->new( @result );
 }
 
-sub grep {
-  my $self    = shift;
-  my $pattern = shift;
-
-  my $re      = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
-
-  die "Invalid pattern - $@ "
-    if $@;
-
-  my @found = grep { $_ =~ $re } @$self;
-
-  return Bedrock::Array->new(@found);
-}
-
-sub devolve {
-  my $this = shift;
-
-  if ( ref($this) =~ /^(HASH|ARRAY)$/ ) {
-    return $this;
-  }
-  elsif ( ref($this) =~ /Bedrock::Hash/ ) {
-    my $that = {};
-    foreach ( keys %$this ) {
-      $that->{$_} = devolve( $this->{$_} );
+sub pop {
+  my $a = CORE::shift;
+  if ( @_ > 0 ) {
+    my $count = CORE::shift;
+    $count--;
+    my @a;
+    for ( 0 .. $count ) {
+      CORE::unshift @a, CORE::pop @{$a};
     }
-    return $that;
-  }
-  elsif ( ref($this) =~ /Bedrock::Array/ ) {
-    my $that = [];
-    foreach (@$this) {
-      push @$that, devolve($_);
-    }
-    return $that;
+    return Bedrock::Array->new(@a);
   }
   else {
-    return $this;
+    return CORE::pop @{$a};
   }
 }
 
-sub json {
-  my $self = shift;
+sub push { my $a = CORE::shift; CORE::push @{$a}, @_ }
 
-  return Bedrock::JSON::encode( $self->devolve );
+sub set {
+  my $self = CORE::shift;
+
+  my ( $index, $value ) = @_;
+
+  my $old = $self->[$index];
+  $self->[$index] = $value;
+  $old;
 }
 
-sub push { my $a = shift; CORE::push @{$a}, @_ }
+sub recordset {
+  my $obj = CORE::shift;
 
-sub bedrock_xml {
-  my $self = shift;
-
-  return Bedrock::XML::writeXML($self);
+  return Bedrock::RecordSet->new( $obj );
 }
 
-sub xml {
-  my $self    = shift;
-  my %options = @_;
+sub reverse {
+  my $self = CORE::shift;
 
-  return XMLout( $self, %options );
+  return Bedrock::Array->new( CORE::reverse @$self );
 }
 
 sub shift {
-  my $a = shift;
+  my $a = CORE::shift;
+
   if ( @_ > 0 ) {
     my $count = CORE::shift;
     $count--;
@@ -321,18 +285,75 @@ sub shift {
   else {
     return CORE::shift @{$a};
   }
-
 }
 
-sub recordset {
-  my $obj = CORE::shift;
+sub sort {
+  my $self = CORE::shift;
+  my ( $sort_dir, $sort_type ) = @_;
 
-  return Bedrock::RecordSet->new( $obj );
+  $sort_dir = 'asc' if $sort_dir eq '+';
+  $sort_dir = 'desc' if $sort_dir eq '-';
+
+  $sort_dir  = $sort_dir  || 'asc';
+  $sort_type = $sort_type || 'alpha';
+
+  my @sorted_list;
+
+  if ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^alpha/ ) ) {
+    @sorted_list = sort { $a cmp $b } @{$self};
+  }
+  elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^alpha/ ) ) {
+    @sorted_list = sort { $b cmp $a } @{$self};
+  }
+  elsif ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^num/ ) ) {
+    @sorted_list = sort { $a <=> $b } @{$self};
+  }
+  elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^num/ ) ) {
+    @sorted_list = sort { $b <=> $a } @{$self};
+  }
+
+  return Bedrock::Array->new(@sorted_list);
+}
+
+sub splice {
+  my $self = CORE::shift;
+  my $offset = CORE::shift || 0;
+
+  # Passing args to splice as splice @{$self}, @_ wouldn't work
+  # Need to shift the offset and length out of the args and then invoke
+  # splice() with explicit args as show below
+
+  if ( @_ == 0 ) {
+    return Bedrock::Array->new( splice @{$self}, $offset );
+  }
+  elsif ( @_ == 1 ) {
+    my $length = CORE::shift;
+    return Bedrock::Array->new( splice @{$self}, $offset, $length );
+  }
+  else {
+    my $length = CORE::shift;
+    return Bedrock::Array->new( splice @{$self}, $offset, $length, @_ );
+  }
+}
+
+sub unshift {
+  my $self = CORE::shift;
+
+  CORE::unshift @{$self}, @_;
+}
+
+sub xml {
+  my $self = CORE::shift;
+  my %options = @_;
+
+  return XMLout( $self, %options );
 }
 
 1;
 
 package Bedrock::Array::Reference;
+
+use Scalar::Util qw/reftype/;
 
 our @ISA = qw(Bedrock::Array);
 
@@ -349,7 +370,8 @@ sub new {
   my $ref = shift;
 
   die "Not an ARRAY reference - " . ref($ref)
-  unless UNIVERSAL::isa( $ref, 'ARRAY' );
+    unless ref($ref) && reftype($ref) eq 'ARRAY';
+
   my $self = [];
 
   return tie @{$self}, $class, $ref;
@@ -360,17 +382,19 @@ sub new {
 
 package Bedrock::RecordSet;
 
+use Scalar::Util qw/reftype/;
+
 our @ISA = qw(Bedrock::Array::Reference);
 
 sub new {
-  my $proto = shift;
-  my $class = ref($proto) || $proto;
+  my $class = shift;
+  $class = ref($class) || $class;
 
-  my $ref = UNIVERSAL::isa( $_[0], 'ARRAY') ? shift : \@_;
+  my $ref = (ref($_[0]) && reftype($_[0]) eq 'ARRAY') ? shift : [ @_ ];
 
   foreach ( @{$ref} ) {
     die "invalid element type: must be hash reference - not [$_]\n"
-      unless UNIVERSAL::isa( $_, 'HASH' );
+      unless ref($_) && reftype($_) eq 'HASH';
   }
 
   my $self = [];
@@ -401,21 +425,21 @@ sub sort {
 
   my @sorted_array;
 
-  my $sort_cmd = "\@sorted_array = sort { " . join("||", @sort_string) . ' } @{$array};';
+  my $sort_cmd = "\@sorted_array = sort { " . CORE::join("||", @sort_string) . ' } @{$array};';
 
   eval "$sort_cmd";
 
   die "error sorting: $@\n"
     if $@;
 
-  return new Bedrock::RecordSet( \@sorted_array );
+  return Bedrock::RecordSet->new( \@sorted_array );
 }
 
 sub STORE {
   my $obj = shift;
 
   die "invalid element type: must be hash reference\n"
-    unless UNIVERSAL::isa( $_[1], 'HASH' );
+    unless ref($_[1]) && reftype($_[1]) eq  'HASH';
 
   my $self = tied(@{$obj});
   $self->SUPER::STORE( @_ );
@@ -426,7 +450,7 @@ sub PUSH {
 
   foreach ( @_ ) {
     die "invalid element type: must be hash reference"
-      unless UNIVERSAL::isa( $_, 'HASH' );
+      unless ref($_) && reftype($_) eq  'HASH';
   }
 
   my $self = tied(@{$obj});
@@ -436,16 +460,16 @@ sub PUSH {
 sub push {
   my $self = shift;
 
-  if ( UNIVERSAL::isa( $_[0], 'ARRAY' ) ) {
+  if ( ref($_[0]) && reftype($_[0]) eq 'ARRAY' ) {
     foreach ( @{$_[0]} ) {
       $self->SUPER::push( $_ );
     }
   }
-  elsif ( UNIVERSAL::isa( $_[0], 'HASH') ) {
-    $self->SUPER::push( new Bedrock::Hash( %{$_[0]} ) );
+  elsif ( ref($_[0]) && reftype($_[0]) eq 'HASH' ) {
+    $self->SUPER::push( Bedrock::Hash->new( %{$_[0]} ) );
   }
   else {
-    $self->SUPER::push( new Bedrock::Hash( @_ ) );
+    $self->SUPER::push( Bedrock::Hash->new( @_ ) );
   }
 }
 
