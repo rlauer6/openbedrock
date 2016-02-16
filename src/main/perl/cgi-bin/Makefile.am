@@ -64,7 +64,9 @@ bedrock.cgi.1: bedrock.cgi.in
 install-data-hook:
 	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
 	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
+	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-autocomplete.cgi || true;
 
 uninstall-hook:
 	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
 	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-docs.cgi || true;
+	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-autocomplete.cgi || true;
