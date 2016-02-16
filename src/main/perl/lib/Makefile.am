@@ -64,6 +64,7 @@ perl5bedrockapachelib_DATA = \
     Bedrock/Apache/bedrock_sh.pl \
     Bedrock/Apache/Request_cgi.pm \
     Bedrock/Apache/Request_shell.pm \
+    Bedrock/Apache/BedrockAutocomplete.pm \
     Bedrock/Apache/BedrockSessionFiles.pm \
     Bedrock/Apache/BedrockDocs.pm \
     Bedrock/Apache/BedrockModPerl.pm
