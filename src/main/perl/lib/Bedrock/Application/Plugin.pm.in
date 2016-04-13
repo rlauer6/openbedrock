@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -23,12 +22,10 @@
 
 package Bedrock::Application::Plugin;
 
-use DBI;
-
-use TagX::Log;
-
 use strict;
 use warnings;
+
+use TagX::Log;
 
 use parent qw/Bedrock::Hash/;
 
@@ -63,14 +60,12 @@ provide the basic plumbing for your typical Bedrock Application Plugin
 
  sub init_plugin {
    my $self = shift;
-   
-   # your initialization code goes here...for example...connect to a database
-   eval {
-     my $dbi = DBI->connect( @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/} );
-     $self->dbi($dbi);
-   };
 
-  return $@ ? 0 : 1;
+   $self->SUPER::init_plugin;
+
+   # your code goes here...
+
+   return 1;
  }
 
  sub hello_world {
@@ -119,7 +114,7 @@ behavior, make sure you call the parentE<039>s C<init_plugin()> method.
  sub init_plugin {
    my $self = shift;
   
-   $self->SUPER::init_plugin();
+   $self->SUPER::init_plugin;
    ...
  }
 
@@ -140,8 +135,14 @@ The C<session()> method returns the session object.  Setting a value
 in the returned session object will set the value in the userE<039>s
 session.
 
+In your plugin:
+
  my $session = $self->session();
  $session->set('foo', 'bar');
+
+...then in your Bedrock page:
+
+ <var $session.foo>
 
 =item * Configuration access
 
@@ -180,9 +181,7 @@ sub TIEHASH {
   
   # keep in mind this object may not exist because it is not pre-bound
   $self->input( $self->context->{INPUT} );
-  
-  $self->session( $self->context->{SESSION} );
-  
+
   die "plugin $class failed to initialize properly\n"
     unless $self->init_plugin;
 
@@ -330,16 +329,50 @@ sub global_config {
 
 You can implement an initialization routine which is called when
 Bedrock creates your object.  At the point at which this method is
-called you have access to both the PluginE<039>s configuration object
-and the context object via the C<config()> and C<context()> methods.
+called you have access to the PluginE<039>s configuration object
+(C<config()>), the session object (C<session()>), the header object
+(C<header>), and the context object (C<context()>).
 
 Your initialization method should return true if successful.
 
+=head3 Opening a database connection
+
 The default C<init_plugin()> method will look in your PluginE<039>s
 C<config> object for database parameters C<DBI_DSN, DBI_USER,
-DBI_PASS> and attempt to connect to the database for you.  If
-successful, you can use the C<dbi> method to fetch the database
-handle.
+DBI_PASS, RaiseError, PrintError, AutoCommit>, and attempt to connect
+to the database for you.  If successful, you can use the C<dbi> method
+to fetch the database handle.
+
+  <object>
+    <scalar name="binding">foo</scalar>
+    <scalar name="module">BLM::Startup::Foo</scalar>
+
+    <object name="config">
+      <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
+      <scalar name="DBI_USER">fred</scalar>
+      <scalar name="DBI_PASS">flintstone</scalar>
+      <scalar name="RaiseError">1</scalar>
+      <scalar name="PrintError">1</scalar>
+      <scalar name="AutoCommit">1</scalar>
+    </object>
+
+  </object>
+
+=head3 Log::Log4perl
+
+You can define a C<Log::Log4perl> configuration object which will be
+initialized by the default C<init_plugin()> method.  Define an object
+named C<log4perl> that contains a valid C<Log::Log4perl>
+configuration.
+
+  <object name="log4perl">
+   <scalar name="log4perl.rootLogger">DEBUG, LOGFILE</scalar>
+   <scalar name="log4perl.appender.LOGFILE">Log::Log4perl::Appender::File</scalar>
+   <scalar name="log4perl.appender.LOGFILE.filename">/var/log/myerrs.log</scalar>
+   <scalar name="log4perl.appender.LOGFILE.mode">append</scalar>
+   <scalar name="log4perl.appender.LOGFILE.layout">PatternLayout</scalar>
+   <scalar name="log4perl.appender.LOGFILE.layout.ConversionPattern">[%r] %F %L %c - %m%n</scalar>
+ </object>
 
 =cut
 
@@ -347,19 +380,51 @@ sub init_plugin {
   my $self = shift;
 
   if ( $self->config->{DBI_DSN} ) {
-    $self->dbi( 
-	       DBI->connect( 
-			    @{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, 
-			    {
-			     RaiseError => 1, PrintError => 1
-			    }
-			   )
-	      );
+    require DBI;
+
+    my $options = {
+		   RaiseError => defined $self->config->{RaiseError} ? $self->config->{RaiseError} : 1,
+		   PrintError => defined $self->config->{PrintError} ? $self->config->{PrintError} : 1,
+		   AutoCommit => defined $self->config->{AutoCommit} ? $self->config->{AutoCommit} : 1
+		  };
+    
+    $self->dbi(DBI->connect(@{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, $options));
+  }
+
+  if ( $self->config->{log4perl} && ref($self->config->{log4perl}) ) {
+    require Log::Log4perl;
+    Log::Log4perl->init({ %{$self->config->{log4perl}} });
   }
 
   return 1;
 }
 
+=pod
+
+=head get_logger
+
+ get_logger( category )
+
+Returns a C<Log::Log4perl> logger.
+
+  <null:logger $foo.get_logger()>
+  <null $logger.info("test message")>
+
+Keep in mind that you write to the page log by writing to STDERR in
+your application plugin or just use the C<E<lt>traceE<gt>> tag in your
+page to add dump info to your page log.
+
+ <trace $foo>
+
+Note that without the C<--output> option, the output is ONLY sent to
+the page log and not to the final output page, so this is another way
+to produce log information.
+
+=cut
+
+sub get_logger {
+  $_[0]->config->{log4perl} ? Log::Log4perl::get_logger($_[1] ? $_[1] : ()) : undef;
+}
 
 =pod
 
@@ -374,7 +439,7 @@ it was never instantiated by Bedrock.
 
 If you have an C<$input> object you want to share, go ahead and set it,
 however a better practice is to have your methods accept the argument
-from the web developer.
+from the Bedrock page.
 
  <null $my_object.my_method($input)>
 
@@ -420,8 +485,6 @@ my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
 		     &MSG_SYSERROR => q(MSG_SYSERROR),
 		     &MSG_FATAL    => q(MSG_FATAL)
 		   );
-
-use Data::Dumper;
 
 sub _log {
   my $level = shift;
@@ -524,6 +587,22 @@ sub session {
   return $_[0]->context->{SESSION};
 }
 
+=pod
+
+=head2 header
+
+ header()
+
+Returns the C<BLM::Startup::Header> object.
+
+=cut
+
+sub header {
+  return $_[0]->context->{HEADER};
+}
+
+=cut
+
 # fix compatibility issue with previous versions of Bedrock.
 sub FETCH {
   return $_[1] eq 'config' ? $_[0]->{__config} : $_[0]->{$_[1]};
@@ -534,7 +613,7 @@ sub FETCH {
 
 =head1 AUTHOR
 
-Rob Lauer - rlauer@signatureinfo.com
+Rob Lauer - rlauer6@comcast.net
 
 =head1 SEE ALSO
 
