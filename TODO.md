@@ -1,5 +1,4 @@
-
-# The Bedrock 32 TODO List
+# The Bedrock 3 TODO List
 
 ## Benchmark
 
