@@ -31,6 +31,11 @@ sub bedrock_load_tests {
     close $fh;
     from_json($json, {  relaxed => 1 });
   };
+
+  die "invalid JSON in test spec: $@"
+    if $@;
+
+  $json;
 }
 
 sub bedrock_run_tests {
