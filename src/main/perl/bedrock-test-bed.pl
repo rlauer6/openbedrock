@@ -18,24 +18,37 @@ sub bedrock {
 
   $tx->param(%param);
 
-  return ( input => $text, error => $tx->output, output => $output );
+  eval {
+    $tx->output;
+  };
+  
+  return ( input => $text, error => $@, output => $output );
 }
 
 sub bedrock_load_tests {
-  $file = sprintf("t/%s.txt", shift);
+  my $file = shift;
+  my $use_yaml = shift;
 
-  my $json = eval {
-    local $/ = undef;
-    open (my $fh, "<" . $file) or die "can't open $file";
-    $json = <$fh>;
-    close $fh;
-    from_json($json, {  relaxed => 1 });
-  };
+  $file = sprintf("t/%s.txt", $file);
+  my $tests;
 
-  die "invalid JSON in test spec: $@"
-    if $@;
+  if ( $use_yaml ) {
+    $tests = [LoadFile($file)];
+  }
+  else {
+    $tests = eval {
+      local $/ = undef;
+      open (my $fh, "<" . $file) or die "can't open $file";
+      $tests = <$fh>;
+      close $fh;
+      from_json($tests, {  relaxed => 1 });
+    };
+    
+    die "invalid JSON in test spec: $@"
+      if $@;
+  }
 
-  $json;
+  $tests;
 }
 
 sub bedrock_run_tests {
@@ -43,19 +56,56 @@ sub bedrock_run_tests {
 
   foreach my $t (@{$tests}) {
     my %r = bedrock($t->{test}, %{$t->{param}});
+
+    # are we looking for an error
+    if ( $t->{error} ) {
+      $r{output} = $r{error};
+      $t->{result} = $t->{error};
+    }
+
+    my $op = $t->{op} || 'is';
+
+    if ( ref($op) ) {
+      $op = 'cmp_ok';
+    }
+
+    my $success;
     
-    for ( $t->{test_if}) {
-      /^eq/ && do {
-	ok($r{output} eq $t->{result}, $t->{name});
-      };
-      
-      /^ne/ && do {
-	ok($r{output} ne $t->{result}, $t->{name});
+    for ($op) {
+      /^is$/ && do {
+	$success = is($r{output}, $t->{result}, $t->{name});
       };
 
-      note(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, scalar(@{$r{error}}))) if @{$r{error}};
+      /^isnt$/ && do {
+	$success = is($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^like$/ && do {
+	$success = like($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^unlike$/ && do {
+	$success = unlike($r{output}, $t->{result}, $t->{name});
+      };
+      
+      /^is_deeply/ && do {
+	$success = is_deeply($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^cmp_ok/ && do {
+	$success = cmp_ok($r{output}, $t->{op}->{cmp_ok}, $t->{result}, $t->{name});
+      };
+
+      unless ( $success ) {
+	if ( $r{error} ) {
+	  note(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error}));
+	}
+	else {
+	  note(sprintf("[%s]:[%s]\n", @r{qw/input output/}));
+	}
+      }
+
     }
-    
   }
 }
 
