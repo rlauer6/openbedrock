@@ -225,9 +225,10 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/Hitcounter.pm \
     BLM/Startup/Input.pm \
     BLM/Startup/MySQLSession.pm \
-    BLM/Startup/SQLiteSession.pm \
-    BLM/Startup/PostgreSQLSession.pm \
+    BLM/Startup/OAuth2.pm \
     BLM/Startup/Output.pm \
+    BLM/Startup/PostgreSQLSession.pm \
+    BLM/Startup/SQLiteSession.pm \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \
     BLM/Startup/SQLSession.pm \

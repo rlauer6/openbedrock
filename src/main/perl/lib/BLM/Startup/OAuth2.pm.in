@@ -1,0 +1,830 @@
+package OAuth2::Exception;
+
+sub new {
+  my $class = shift;
+  $class = ref($class) || $class;
+
+  bless { @_ }, $class;
+}
+
+package BLM::Startup::OAuth2;
+
+use warnings;
+use strict;
+
+use Bedrock::Hash;
+use Data::Dumper;
+use Net::OAuth2::Profile::WebServer;
+use Net::OAuth2::AccessToken;
+use JSON;
+use Scalar::Util qw/reftype/;
+
+use parent qw/Bedrock::Application::Plugin/;
+
+=pod
+
+=head1 PUBLIC
+
+C<$oauth2>
+
+=head1 SYNOPSIS
+
+ <!-- Create a Net::OAuth2::Profile::WebServer object -->
+ <if $session.get('oauth2.app')>
+   <null:auth $oauth2.auth($session.get('oauth2.app'))>
+ <else>
+   <null:auth $oauth2.auth($oauth2.get_config_value('default_application'))>
+ </if>
+
+ <!-- Do we have an access token? If not, get one from session or possibly use the code returned from the end point -->
+ <if $session.get($session.get('oauth2.app'))>
+   <null:token $oauth2.thaw_session()>
+ <elsif $input.code>
+   <null:token $oauth2.get_access_token($input.code, $auth)> 
+ <else>
+   <!-- Looks like we need to redirect the browser to get autorized, presumably it returns to this page -->
+   <null $header.location($oauth2.authorize())>
+ </if>
+
+ <if $token>
+   Proceed to use your API...you have an access token
+ </if>
+
+=head1 DESCRIPTION
+
+Implements an OAuth2 plugin that allows you to interact with an OAuth2
+server for acquiring access tokens and authorizing access.  For
+details on how this magic works, see L</HOW IT WORKS>.  Under the
+covers, this plugin uses C<Net::OAuth2::Profile::WebServer> so you
+may find some insight there as well. You are highly encouraged to
+carefully ready the documentation unless you are very familiar with
+how OAuth2 authentication operates.
+
+=head1 CONFIGURATION
+
+Your application plugin needs to be configured based on the specific
+OAuth2 service you happen to be using. Each service (Google, Facebook,
+etc) has it's own configuration requirements.  Here's what a Google
+configuration might look like for a class that subclasses
+C<BLM::Startup::OAuth2>.
+
+ <object>
+  <scalar name="binding">google</scalar>
+  <scalar name="module">BLM::Startup::Google</scalar>
+ 
+  <object name="config">
+   <scalar name="auth_provider_x509_cert_url">https://www.googleapis.com/oauth2/v1/certs</scalar>
+   <scalar name="auth_uri">https://accounts.google.com/o/oauth2/auth</scalar>
+ 
+   <!-- save tokens to session -->
+   <scalar name="use_session">yes</scalar>
+ 
+   <!-- throw exceptions when we tokens are expired or invalid -->
+   <scalar name="use_exceptions">yes</scalar>
+
+   <!-- used directly to instantiate Net::OAuth2::Profile::WebServer --> 
+   <scalar name="client_id">YOUR CLIENT ID</scalar>
+   <scalar name="client_secret">YOUR CLIENT SECRET</scalar>
+   <scalar name="project_id">your-project-id</scalar>
+   <scalar name="site">https://accounts.google.com</scalar>
+   <scalar name="authorize_path">/o/oauth2/auth</scalar>
+   <scalar name="access_token_path">/o/oauth2/token</scalar>
+   <scalar name="refresh_token_path">/o/oauth2/token</scalar>
+ 
+   <scalar name="token_uri">https://accounts.google.com/o/oauth2/token</scalar>
+   <scalar name="api_key">YOUR API KEY</scalar>
+ 
+   <scalar name="domain">YOUR SERVER DOMAIN</scalar>
+
+   <!-- BLM::Startup::Google specific values -->
+   <object name="google.plus">
+     <scalar name="end_point">https://www.googleapis.com/plus/v1/people</scalar>
+     <array name="scope">
+       <scalar>profile</scalar>
+     </array>
+     <scalar name="redirect_uri">google.roc</scalar>
+   </object>
+ 
+   <object name="google.drive">
+     <scalar name="end_point">https://www.googleapis.com/drive/v2</scalar>
+     <scalar name="upload_end_point">https://www.googleapis.com/upload/drive/v3</scalar>
+ 
+     <array name="scope">
+       <scalar>https://www.googleapis.com/auth/drive.install</scalar>
+       <scalar>https://www.googleapis.com/auth/drive.file</scalar>
+     </array>
+     <scalar name="redirect_uri">google.roc</scalar>
+   </object>
+
+  </object>
+
+ </object>
+
+These values are used to instantiate the
+C<Net::OAuth2::Profile::WebServer> object.  The C<use_session>
+configuration value controls storing tokens to your Bedrock session.
+
+=over 5
+
+=item use_session
+
+Set this value to B<yes> to let the plugin know you want to use the
+session object to store the token and other information regarding the
+application. This will allow you to reuse the access token from page to
+page to access the OAuth2 server.  See L</thaw_session>.
+
+=back
+
+=head1 METHODS
+
+=cut
+
+
+=pod
+
+=head2 redirect_uri
+
+ redirect_uri( application )
+
+Build and return the application redirect URI.  The URI is built using
+your domain, the HTTP protocol in use, and from the C<redirect_uri>
+vlaue defined in your plugin's configuration object for that application.
+
+This URI may need to match one of the valid redirect URIs allowed by
+the OAuth2 server.  Some services (Google for example) require that
+you register these URIs before they can be used in order to create a
+more secure environment.
+
+=cut
+
+
+sub redirect_uri {
+  my $self = shift;
+  my $app = shift;
+
+  my $redirect_uri = lc(sprintf("%s://%s/%s", $self->protocol, $self->host, $self->config->{$app}->{redirect_uri}));
+}
+
+
+=pod
+
+=head2 auth
+
+ auth( [application] )
+
+C<application> specifies one of the applications defined in the
+plugin's configuration file.  Returns a
+C<Net::OAuth2::Profile::WebServer> object that can be used in later
+method calls where needed. This value can also be retrieved by passing
+no arguments, once this method is called with an application value.
+
+ <null:auth $oauth2.auth()>
+
+=cut
+
+sub auth {
+  my $self = shift;
+  my $app = shift;
+  
+  if ( $app ) {
+    die "no such application defined in the configuration file"
+      unless defined $self->config->{$app} && ref($self->config->{$app});
+
+    my $redirect_uri = $self->redirect_uri($app);
+    
+    $self->{_auth} = Net::OAuth2::Profile::WebServer->new(
+							  client_id          => $self->config->{client_id},
+							  client_secret      => $self->config->{client_secret},
+							  site               => $self->config->{site},
+							  authorize_path     => $self->config->{authorize_path},
+							  access_token_path  => $self->config->{access_token_path},
+							  refresh_token_path => $self->config->{refresh_token_path},
+							  scope              => $self->scope($self->config->{$app}->{scope}),
+							  redirect_uri       => $redirect_uri
+							 );
+    $self->application($app);
+  }
+  
+  return $self->{_auth};
+}
+
+=pod
+
+=head2 thaw_session
+
+ thaw_session( [auth], [auth-session] )
+
+Returns an access token that can be used for subsequent API calls.
+Creates the token from a session object that was created using the
+C<freeze_session()> method.
+
+=over 5
+
+=item auth (optional)
+
+A C<Net::OAuth2::Profile::WebServer> object. If not provided, then the
+last valid object will be retrieved using the C<auth()> method.  Sets
+the default access token. The default access token can be retrieved
+using the C<get_access_token()> method.
+
+=item auth-session (optional)
+
+A session object created using the C<freeze_session()> method. If no
+object is provided, the method will attempt to find one in the current
+persistent session store using the C<session()> method if you have set
+C<use_session> to B<yes> in the configuration object of this plugin.
+
+ <object>
+   <scalar name="binding">oauth2</scalar>
+   <scalar name="module">BLM::Startup::OAuth2</scalar>
+   
+   <object name="config">
+     <scalar name="use_session">yes</scalar>
+   </object>
+ </object>
+
+
+Don't confuse C<auth-session> with Bedrock's persistent session store.
+
+=back
+
+=cut
+
+sub thaw_session {
+  my $self = shift;
+  my $auth = shift || $self->auth;
+  my $auth_session = shift;
+
+  unless ( $auth_session ) {
+    if ( $self->application && $self->session->{$self->application} ) {
+      die new OAuth2::Exception( error => 'no session' )
+	unless $self->config->{use_session} =~/y/;
+
+      $auth_session = $self->session->{$self->application};
+    }
+  }
+
+  my $token = Net::OAuth2::AccessToken->session_thaw($auth_session, profile => $auth );
+
+  $self->{_access_token} = $token->expired ? undef : $token;
+}
+
+=pod
+
+=head2 freeze_session
+
+ freeze_session( [access-token], [app] )
+
+Returns a frozen access token, suitable for storage in your persistent
+session.  You can use this token on subsequent Bedrock pages by
+thawing this value using the C<thaw_session()> method.
+
+  <null:frozen_token $oauth2.freeze_session($oauth2.get_access_token(), 'google.drive')>
+
+...then later
+
+  <null:token $oauth2.thaw_session()>
+
+Note that the default behavior is to use the currently defined access
+token and the default application as defined in your configuration
+object as arguments to this method.  The token is rewritten to Bedrock's
+persistent session if you've set C<use_session> to B<yes>.
+
+ <object>
+   <scalar name="binding">oauth2</scalar>
+   <scalar name="module">BLM::Startup::OAuth2</scalar>
+   
+   <object name="config">
+     <scalar name="default_application">google.drive</scalar>
+     <scalar name="use_session">yes</scalar>
+   </object>
+ </object>
+
+=cut
+
+sub freeze_session {
+  my $self = shift;
+  my $access_token = shift || $self->get_access_token;
+  my $app = shift || $self->application;
+
+  my $frozen_session = $access_token->session_freeze;
+
+  if ( $app && $self->config->{use_session} =~/y/i ) {
+    $self->session->{$app} = $frozen_session;
+  }
+
+  $frozen_session;
+}
+
+=pod
+
+=head2 create_access_token
+
+ create_access_token( [auth], options )
+
+Returns a C<Net::OAuth2::AccessToken> object.  Use this method if you
+have a refresh token. C<auth> is a C<Net::OAuth2::Profile::WebServer>
+object or if you do not provid this argument the default C<auth>
+object is used. C<options> is a hash of options (not a reference).
+
+ <null:token $oauth2.create_access_token( 'refresh_token', $refresh_token )>
+
+ <null:token $oauth2.create_access_token( $auth, 'refresh_token', $refresh_token )>
+
+=cut
+
+sub create_access_token {
+  my $self = shift;
+  my $auth;
+
+  if ( ref($_[0]) && $_[0]->isa('Net::OAuth2::Profile::WebServer') ) {
+    $auth = shift;
+  }
+
+  $auth = $auth || $self->auth;
+
+  my %options = @_;
+
+  return Net::OAuth2::AccessToken->new( profile => $auth, %options);
+}
+
+=pod
+
+=head2 get_access_token
+
+ access_token( code, [auth] )
+
+Creates a new C<Net::OAuth2::AccessToken> object by exchanging the
+C<code> you received from the OAuth2 end point for an access token.
+Uses the current C<Net::OAuth2::Profile::WebServer> object by calling
+the C<auth()> method if C<auth> is not provided.
+
+=cut
+
+sub get_access_token {
+  my $self = shift;
+  my $code = shift;
+  my $auth = shift || $self->auth;
+  
+  if ( defined $code ) {
+    $self->{_access_token} = $auth->get_access_token($code);
+  }
+  
+  return (ref($self->{_access_token}) && ! $self->{_access_token}->expired) ? $self->{_access_token} : undef;
+}
+
+=pod
+
+=head2 json_response
+
+ json_response( response ) 
+
+Returns a Bedrock hash by decoding an C<HTTP::Response object> that is
+supposed to contain a JSON string.
+
+If the response does not contain a valid JSON string or the response
+code is not '200', then this method will throw an C<OAuth2::Exception>.
+You should examine the C<error> and C<error_description> members of
+the exception object for more details.
+
+You might consider subclassing this method to provide your own custom
+exceptions or at least trap the exceptions thrown by this method.
+
+=cut
+
+sub json_response {
+  my $self = shift;
+  my $response = shift;
+
+  my $json_response;
+
+  unless ( ref($response) && $response->isa('HTTP::Response') ) {
+    die new OAuth2::Exception(error => 'not a valid response', error_description => 'ref: [' . ref($response) . ']');
+  }
+
+  my $e = new OAuth2::Exception;
+
+  if ( $response->is_success ) {
+    if ( $response->header('Content-Type') ne 'application/json' ) {
+      $e->{warning} = 'content may not be JSON. Content-Type: [' . $response->header('Content-Type') . ']';
+    }
+
+    $json_response = eval {
+      from_json($response->decoded_content);
+    };
+
+    if ($@) {
+      @{$e}{qw/error error_description content response/} = ( 
+							     'unable to parse JSON',
+							     $@,
+							     $response->decoded_content,
+							     $response
+							    );
+    }
+  }
+  else {
+    @{$e}{qw/error error_descripton content response/} = ($response->code, $response->message, $response->decoded_content, $response);
+  }
+  
+  die if exists $e->{error};
+
+  return Bedrock::Hash->new($json_response ? %$json_response : ());
+}
+
+
+=pod
+
+=head2 authorize
+
+ authorize( [auth] )
+
+Returns the authorization URL that you should redirect the browser to
+in order authorize access to the service.  The service should return
+an authorization code that you can exchange for an access token.  Uses
+the default C<Net::OAuth2::Profile::WebServer> object if none is
+passed.
+
+=cut
+
+sub authorize {
+  my $self = shift;
+  my $auth = shift || $self->auth;
+  my %options = @_;
+
+  my $url = $auth->authorize( %options );
+
+  return $url;
+}
+
+=pod
+
+=head1 MISCELLANEOUS METHODS
+
+=cut
+
+
+=pod
+
+=head2 application
+
+ application( application )
+
+Sets the default application.  This value is used to identify a copy
+of your frozen access token in Bedrock's session if you have set the
+C<use_session> value in the configuration object to B<yes>.  The value
+for application can be any string.
+
+Consider that you may have multiple tokens you are using for multiple
+APIs.  By using this method you can switch between tokens when thawing
+them from Bedrock's session.
+
+=cut
+
+sub application {
+  my $self = shift;
+
+  if ( @_ ) {
+    $self->{_application} = $_[0];
+    if ( $self->config->{use_session} =~/y/i ) {
+      $self->session->{'oauth2.app'} = $self->{_application};
+    }
+  }
+
+  return $self->{_application};
+}
+
+=pod
+
+=head2 init_plugin
+
+Override of C<Bedrock::Application::Plugin>'s plugin initialization
+method.  First calls the parent's C<init_plugin()> method,
+(C<Bedrock::Application::Plugin::init_plugin()>), then just sets the
+default OAuth2 application value as defined by your
+C<default_application> value in the configuration object.  This will
+be used as the key to store the token information.  For example, if
+your default application name is I<google.plus>, then your session
+will look like this if you have an access token.
+
+  {
+    firstname => *** Undefined ***
+    google.plus => {
+      auto_refresh => (1)
+      expires_at => (1460641262)
+      net_oauth2_version => (0.63)
+      access_token => (ya29..xAIuHRTg_WFrtU7rbG2BD8pdCqxrZ49-er6-aqOSHCdGAAqZ79H2i0ZtBxF_0gHyVt0)
+      token_type => (Bearer)
+      }
+    lastname => *** Undefined ***
+    expiry_secs => (3600)
+    username => ()
+    email => *** Undefined ***
+    session => (c9ac29db977f6bdb36465f8ac5ac429d)
+    oauth2.app => (google.plus)
+    google.authorizaton => {
+      code => (4/4AD1OyuZ5uMuqdlNjIuf_xQy7MSVHH_8XF3X7HxN-mY)
+      }
+    }
+
+=cut
+
+sub init_plugin {
+  my $self = shift;
+
+  $self->SUPER::init_plugin();
+
+  if ( defined $self->config->{default_application} ) {
+    $self->application($self->config->{default_application});
+  }
+
+  1;
+}
+
+=pod
+
+=head2 get_config_value
+
+ get_config_value( key )
+
+Convenience routine to retrieve a key form the plugin's configuration
+object. You can also access the configuration object directly.
+
+ <null:some_key $oauth2.get_config_value('some_key')>
+
+...or
+
+ <null:oauth2_config $oauth2.config()>
+ <null:some_key $oauth2_config.some_key>
+
+=cut
+
+sub get_config_value {
+  my $self = shift;
+
+  my $config = $self->config();
+
+  if ( @_ == 1) {
+    return $config->{$_[0]};
+  }
+  elsif ( @_ == 2 ) {
+    $config->{$_[0]} = $_[1];
+    return $_[1];
+  }
+  else {
+    return $config;
+  }
+}
+
+=pod
+
+=head2 protocol
+
+ protocol()
+
+Returns the current web server protocol (extracted from
+C<SERVER_PROTOCOL>).
+
+=cut
+
+sub protocol {
+  my $self = shift;
+  my $proto = $ENV{SERVER_PROTOCOL};
+
+  $proto =~/^(HTTPS?)/i;
+
+  return lc($1 || 'HTTP');
+}
+
+=pod
+
+=head2 host
+
+Returns the current C<HTTP_HOST> value from the environment.
+
+=cut
+
+sub host {
+  return $ENV{HTTP_HOST};
+}
+
+=pod
+
+=head2 scope
+
+ scope( scope )
+
+C<scope> is the authorization scope being requested. This should
+either be a scalar or an array.  Arrays are joined with a space (' ')
+to create the returned scalar.
+
+This method is only necessary to create the canonical scope value, it
+does not do anything more than that.  It is used internally, and may
+not be useful otherwise.
+
+=cut
+
+sub scope {
+  my $self = shift;
+  my $scope = shift;
+
+  return ( ref($scope) && reftype($scope) eq 'ARRAY' ) ? join(" ", @$scope) : $scope;
+}
+
+=pod
+
+=head1 HOW IT WORKS
+
+Below is a short tutorial to help put this plugin into context. The
+use case for OAuth2 implemented in this plugin using the
+C<Net::OAuth2::Profile::WebServer> module is a desire to utilize
+services (access to a user's files on their Google Drive for example)
+as a third-party application.  The user is a subscriber to say
+Facebook or Google and utilizes some of their services.  As a
+third-party application you wish to consume services of the service on
+behalf of that user. The module negotiates the process of a having the
+user granting you access to those services and the process of you
+being provided access by the service provider.
+
+There are are many sites on the interwebs that can
+help you understand how OAuth2 works.  Google it
+(L</http://www.google.com/search?q=oauth2>) for more details.
+
+=over 5
+
+=item 1. Request authorization
+
+You request authorization by having the user visit the OAuth2 server's
+authorization end point (L</authorize>).  Note this plugin is an
+implementation based on C<Net::OAuth2::Profile::WebServer> which
+implements OAuth2 in a web server context.  The user must be
+redirected to the OAuth2 authorization end point so the user can
+authorize access.
+
+This may or may not result in the user interacting with that end
+point.  Some OAuth2 services (Google, for example) only require that
+the user verify access the first time authorization is requested.
+This means, that while you still may need to redirect the browser to
+the authorization end point if your access token is expired or you
+don't have one yet, the server may respond immediately with a B<code>
+that you can exchange for an access token.  The experience for the
+user is a short delay while the browser makes the round trip back to
+the redirect URI that we set in the initial instantiation of the
+C<Net::OAuth2::Profile::WebServer> object.
+
+As you may have realized by now, since you may need to redirect the
+browser, you'll need to keep track of the fact that the user just
+requested this page (the page from which you are redirecting them).
+It's all well and good if you can directly tell the OAuth2 server to
+come right back to that page (C<redirect_uri>, but some
+implementations are strict about what you can specify for your redirect
+URI.  They may want you to specify one or more I<validated> URIs.  In
+that case you might want to implement one controller page that keeps
+track of where you need to go once you get back from the OAuth2
+server.
+
+Imagine this flow:
+
+=over 5
+
+=item 1. User requests F<a.roc>
+
+We need to get an access token to perform some action with the OAuth2
+service, so we seek authorization from the user by redirecting to the
+OAuth2 server's end point.
+
+=item 2. User authorizes access
+
+The user authenticates with the service (if they are not currently
+authenticated) and authorizes your application's access to the
+resources describe in the C<scope> arguments. Assuming your
+application has been granted access, the OAuth2 server issues a code
+(presented in the query string of the redirect URI) and returns back
+to our redirect URI, let's call it F<controller.roc>.
+
+=item 3. F<controller.roc> exchanges the returned code for an access token
+
+F<controller.roc> somehow magically (by saving the originating URI in
+the session?) knows that F<a.roc> was trying to get an access token,
+saves the access token to a persistent session and redirects the
+browser back to F<a.roc>.
+
+ <if $input.code>
+   <null:token $oauth2.get_access_token($input.code, $auth)>
+   <null $session.set($oauth2.application(), $oauth2.freeze_session())>
+   <null $header.location($session.get('app.redirect'))>
+ </if>
+
+=back
+
+That flow can be simplified by embedding the controller in a plugin
+that subclasses this one, with methods which would allow you determine
+if you had a token, set the location header and make calls using the
+access token.  This plugin however, implements just enough of the
+protocol so that you can perform the 3 steps above by using a
+persistent session to store information about the flow and your access
+token.  A method that implements the above controller logic might look
+like this:
+
+   sub get_google_token {
+     my $self = shift;
+     my $app = shift;
+   
+     my $token;
+   
+     my $auth = $self->auth($app);
+
+     # see if we have a token in our session that we can thaw
+     if ( $self->session->{$app} ) {
+       $token = $self->thaw_session();
+     }
+   
+     unless ( $token ) {
+       # keep track of from whence we came
+       $self->session->{'google.redirect'} = $ENV{REQUEST_URI};
+       $self->context->header->location($self->redirect_uri($app));
+   
+       if ( $self->config->{use_exceptions} =~/yes/i ) {
+         die new Google::Exception(
+   				error => 'Unauthorized', 
+   				status => 401,
+   				error_description => "No token available, redirecting",
+   				redirect_uri => $self->redirect_uri($app),
+   				request_uri => $ENV{REQUEST_URI}
+   			       );
+       }
+     }
+   
+    return $token;
+  }
+
+The L</SYNOPSIS> shows how to implement similar logic in Bedrock.
+
+=item 2. Use the returned I<code> to get an access token
+
+Using the returned code, you request an access token from the OAuth2
+server (L</get_access_token>).  Here's where you should save the token
+(L</freeze_session>) to a persistent session for later use.
+
+=item 3. Use the access token to make calls to the OAuth2 server
+
+ <null:response $token.get($api_url)>
+
+Before using the token, you probably should make sure it has not
+expired.
+
+ <if --not $token.expired() >
+   <null:response $token.get($api_url)>
+ <else>
+   <raise "access token expired">
+ </if>
+
+If the token has expired, you might decide to raise an exception that
+will be trapped so you can do the dance again to get a fresh token.
+Alternately, you can get a fresh access
+token by using a I<refresh token> if in fact you are holding one.
+
+ <if $token.expired>
+   <null $token.refresh()>
+ </if>
+
+=item 4. Refresh access tokens if necessary
+
+Refresh tokens are used to bypass the initial authorization step and
+get a fresh access token. You presumably might have received a refresh
+token at some point in the past, most likely the first time the user
+authorized your application.  You can now use that refresh token via
+the L</create_access_token> method to get a new access token.
+
+Google's authorization process for example, can give you a refresh
+token B<if you set the query variable C<access_type=offline>>
+when you first authorize the application.  You then must B<securely>
+store the refresh token to long term storage and subsequently use that
+to retrieve new access tokens in the future.
+
+Keep in mind that although I<refresh tokens> are longer lived, they
+can also be expired by the OAuth2 server and/or blacklisted requiring
+that you re-authorize your application.
+
+I<Using refresh tokens is not necessarily considered secure.> As you
+implement your interface to an OAuth2 server, you may have an option
+to use a refresh token or proceed without one.  Each OAuth2
+implementation has its own set of rules and idiosyncracies that need
+to be considered.
+
+=back
+
+=head1 SEE OTHER
+
+You really should read the documentation for these modules to
+understand more about the methods available and the arguments they
+accept.
+
+C<Net::OAuth2::Profile::WebServer>, C<Net::OAuth2::AccessToken>, C<Net::OAuth2::Profile>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+1;
