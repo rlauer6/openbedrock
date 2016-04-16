@@ -6,8 +6,9 @@ SUBDIRS = lib \
           .
 
 TESTS = \
+  t/flush.txt \
   t/if.txt \
-  t/null.txt 
+  t/null.txt
 
 # each test is represented by a .txt (YAML) file we create a symbolic
 # link for eacth .txt file of the form t/test.t to the generic
