@@ -2,6 +2,7 @@
 
 use IO::Scalar;
 use JSON;
+use YAML::Syck;
 
 sub bedrock {
   my $text = shift;
@@ -88,23 +89,19 @@ sub bedrock_run_tests {
 	$success = unlike($r{output}, $t->{result}, $t->{name});
       };
       
-      /^is_deeply/ && do {
-	$success = is_deeply($r{output}, $t->{result}, $t->{name});
-      };
-
       /^cmp_ok/ && do {
 	$success = cmp_ok($r{output}, $t->{op}->{cmp_ok}, $t->{result}, $t->{name});
       };
 
       unless ( $success ) {
 	if ( $r{error} ) {
-	  note(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error}));
+	  diag(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error}));
 	}
 	else {
+	  note(sprintf("%s", $t->{comment})) if defined $t->{comment};
 	  note(sprintf("[%s]:[%s]\n", @r{qw/input output/}));
 	}
       }
-
     }
   }
 }

@@ -3,7 +3,6 @@ use warnings;
 
 use Test::More;
 use File::Basename;
-use YAML::Syck;
 
 require "bedrock-test-bed.pl";
 
