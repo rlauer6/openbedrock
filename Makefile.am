@@ -31,7 +31,7 @@ FILES = \
     README.Apache \
     COPYING \
     ChangeLog \
-    TODO
+    TODO.md
 
 dist_doc_DATA = $(FILES)
 
