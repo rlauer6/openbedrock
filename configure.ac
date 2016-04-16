@@ -87,6 +87,12 @@ if test -z "$RMDIR"; then
     AC_MSG_ERROR([rmdir not found])
 fi
 
+AC_PATH_PROG([PROVE], [prove])
+
+if test -z "$PROVE" ; then 
+  AC_MSG_ERROR([prove not found?])
+fi
+
 dnl ...for Debian layouts, we use a2ensite to enable a virtual host
 AC_PATH_PROG([A2ENSITE],
         [a2ensite])
@@ -200,6 +206,7 @@ ads_PERL_MODULE([XML::Parser], [REQUIRED])
 
 # Optional Perl modules
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
+ads_PERL_MODULE([Net::OAuth2::Profile::WebServer],  [OPTIONAL])
 
 dnl +---------------------+
 dnl |  Autotools Output.  |
@@ -426,6 +433,7 @@ __poor_mans_expand_file_name () {
     unset _tmp_name
     return 0;
 }
+
 
 dnl show user a summary of the configured options
 printf "\n"
