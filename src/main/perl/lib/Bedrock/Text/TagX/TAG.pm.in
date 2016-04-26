@@ -34,6 +34,8 @@ BEGIN {
 use TagX::Log;
 use TagX::Parser;
 use Bedrock::BedrockJSON;
+use Data::Dumper;
+use Scalar::Util qw/reftype/;
 
 sub decode_json_string {
   shift if ref($_[0]);
@@ -120,10 +122,7 @@ sub __save_option {
   }
 }
 
-#
-# Parse Tag options, and return an array of parsed options. Takes an array reference to populate
-# the options, and the string to parse. Returns the array reference
-#
+
 sub tagOptions_as_array {
   my $self = shift;
 
@@ -178,33 +177,36 @@ sub options {
     my $optstring = shift;
 
     $self->{'__optstring'} = $optstring;
-    $self->{'__argv'}      = [];
+    $self->{'__argv'} = [];
+
     my %generic = ( 'verbose' => undef );
 
     # parse the options into an array
-    $self->{'__options'} =
-    &tagOptions_as_array( $self, $self->{'__argv'}, $optstring, \%generic );
+    $self->{'__options'} = &tagOptions_as_array( $self, $self->{'__argv'}, $optstring, \%generic );
 
-    map { $self->{ '__' . $_ } = $generic{$_} if defined $generic{$_} }
-    keys %generic;
+    map { $self->{ '__' . $_ } = $generic{$_} if defined $generic{$_} } keys %generic;
 
     my $verbose = defined( $self->{'__verbose'} ) ? $self->{'__verbose'} : 0;
 
     if ( $verbose > 1 ) {
-      my $str =
-      "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
+      my $str = "Option string is\n\t$optstring\n  Resolved to\n\t@{$self->{'__argv'}}\n";
       $str .= " Option types:\n\t@{$self->{'__term_type'}}\n";
       $str .= " Options are\n";
+
       for my $key ( sort keys %{ $self->{'__options'} } ) {
         $str .= "\t$key => [" . $self->{'__options'}->{$key} . "]\n";
       }
+
       $str .= "  Generic options are\n";
+
       for my $key ( sort keys %generic ) {
         $str .= "\t$key => [" . $generic{$key} . "]";
       }
+
       &log_message( $self, "$str\n" );
     }
   }
+
   $self->{'__options'};
 }
 
@@ -298,28 +300,50 @@ sub get_name {
 
 sub parse_tag_name {
   my $self = shift;
-
-  return {} 
-    unless $_[0] && $_[0] =~ /^:/;
-
   my $tag = shift;
 
-  # allow plugin:MIME::Lite, e.g.
-  $tag =~ s/::/~~/g;
-  my ( undef, $type, $name ) = split ":", $tag;
+  my $tagtype = { type=> '', name => '' };
 
-  $type =~ s/~~/::/g
-    if $type;
+  if ( $tag &&  $tag =~/^:/ ) {
+    if ( $tag =~/^:\s+/ ) {
+      die "missing variable name of class after ':'\n";
+    }
 
-  $name =~ s/~~/::/g
-    if $name;
+    # <plugin:name:class>
+    # <plugin:class>
 
-  if ($name) {
-    return { type => $type, name => $name };
+    if ( ref($self) =~/plugin$/i ) {
+      if ($tag =~/^:([^:]+):([^:].+)$/ ) {
+	@{$tagtype}{qw/type name/} = ($2,$1);
+      }
+      else {
+	$tag =~/^:(.*)$/;
+	$tagtype->{name} = $tagtype->{type} = $1;
+      }
+    }
+    # <null:type:name>
+    # <null:name>
+    elsif ( ref($self) =~/null$/i ) {
+      if ($tag =~/^:([^:]+):([^:].+)$/ ) {
+	my ($type, $name) = ($1, $2);
+	if ( $type =~/^(hash|var|object|array)$/ ) {
+	  @{$tagtype}{qw/type name/} = ($type, $name);
+	}
+	else {
+	  die "invalid type ($type)\n";
+	}
+      }
+      else {
+	$tagtype->{name} = (split /:/, $tag)[1];
+      }
+    }
+    # <tag:name>
+    else {
+      $tagtype->{name} = (split /:/, $tag)[1];
+    }
   }
-  else {
-    return { name => $type };
-  }
+
+  return $tagtype;
 }
 
 # dump_options(\%options)
@@ -479,6 +503,51 @@ sub parse_options {
   }
 
   return $self->eval_args( $optref, @_ );
+}
+
+# load an I/0 handler that supports <null>, <sink>, <var>, tags
+# <var --xml $foo>
+#
+# io_handler( $tx, 'XML', 'Bedrock::XML::Handler')
+#
+sub io_handler {
+  my $self = shift;
+  my $tx = shift;
+  my $handler_name = shift;
+  my $options = shift;
+
+  my $default_handler = 'Bedrock::' . $handler_name . '::Handler';
+
+  my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+  my $handler_config = $config->{$handler_name} ? $config->{$handler_name} : {};
+
+  if ( ref($options) && reftype($options) eq 'HASH' ) {
+
+    foreach my $c (qw/in out/) {
+      my $in_or_out = $options->{$c};
+      if ( $in_or_out ) {
+	$handler_config->{$c} = exists $handler_config->{$c} ? $handler_config->{$c} : {};
+	my $config_in_or_out = $handler_config->{$c};
+	map { $config_in_or_out->{$_} = $in_or_out->{$_}; } keys %$in_or_out;
+	$handler_config->{$c} = $config_in_or_out;
+      }
+    }
+  }
+
+  my $handler = $config->{$handler_name}->{handler} || $default_handler;
+ 
+  eval "require $handler;";
+  
+  die "could not load $handler_name: [$handler]\n$@\n"
+    if $@;
+
+  my $io_handler;
+
+  eval "\$io_handler = $handler->new(\$handler_config);";
+
+  die "$@\n" if $@;
+
+  return $io_handler;
 }
 
 #
