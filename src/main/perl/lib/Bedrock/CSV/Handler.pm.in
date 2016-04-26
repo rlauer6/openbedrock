@@ -1,0 +1,87 @@
+package Bedrock::CSV::Handler;
+
+use strict;
+use warnings;
+
+use parent qw/Bedrock::Serializer/;
+use Role::Tiny::With;
+with 'Bedrock::Serializer';
+
+use Text::CSV_XS;
+use Scalar::Util qw/reftype/;
+use Data::Dumper;
+use IO::Scalar;
+
+sub new {
+  my $class = shift;
+  $class = ref($class) || $class;
+
+  my $self = $class->SUPER::new(@_);
+
+  my $config = $self->config;
+
+  my %options = map { $_ ? %{$_} : ()} @{$config}{qw/in out/};
+  delete $options{print_column_names};
+
+  $self->{_csv} = Text::CSV_XS->new(keys %options ? \%options : ())
+    or die "Cannot use CSV: ".Text::CSV_XS->error_diag ();
+
+  $self->csv->eol ("\r\n");
+
+  return $self;
+}
+
+sub deserialize {
+  my $self = shift;
+  
+  my @out_data;
+
+  if (ref($data) && reftype($data) eq 'ARRAY') {
+    foreach (@$data) {
+       $self->csv->parse($_) or die $self->csv->error_diag;
+       push @out_data, [$self->csv->fields()];
+     }
+  }
+  else {
+    $self->csv->parse($data) or die $self->csv->error_diag;
+    push @out_data, [ $self->csv->fields() ];
+  }
+
+  return \@out_data;
+}
+
+sub csv {
+  my $self = shift;
+
+  $self->{_csv};
+}
+
+sub serialize {
+  my $self = shift;
+
+  my $out_data = "";
+  my $fd = IO::Scalar->new(\$out_data);
+
+  if ( ref($data) && reftype($data) eq 'ARRAY' ) {
+    unless ( ref( $data->[0]) && reftype($data->[0]) eq 'HASH') {
+      die "object must be an array of hashes\n";
+    }
+
+    if ($self->options->{print_column_names}) {
+      $self->csv->print($fd, [ keys %{$data->[0]}]);
+    }
+
+    foreach ( @{$data} ) {
+      $self->csv->print($fd, [ values %{$_} ]) or die $self->csv->error_diag;
+    }
+
+    $fd->close;
+  }
+  else {
+    die "object must be an array of hashes\n";
+  }
+
+  return $out_data;
+}
+
+1;
