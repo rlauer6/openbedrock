@@ -41,7 +41,9 @@ use TagX::Log;
 use TagX::TAG::NoBody;
 use Text::URLEncode;
 
-use XML::Simple;
+use Scalar::Util qw/reftype/;
+use Data::Dumper;
+
 use MIME::Base64;
 
 @ISA = qw (TagX::TAG::NoBody);
@@ -75,7 +77,8 @@ sub create_label {
       create_xhtml_element( 'label', $attributes->{'value'} . '&nbsp;',
                             "for", $attributes->{'id'} );
 
-  } else {
+  }
+  else {
     return
       create_xhtml_element( 'label', $attributes->{'name'} . '&nbsp;',
                             "for", $attributes->{'id'} );
@@ -189,7 +192,7 @@ sub finalize {
                   'file=s'         => undef,
                   'format=s'       => undef,
                   'group'          => undef,
-                              'handle=s'       => undef,
+                  'handle=s'       => undef,
                   'htmlencode'     => undef,
                   'img=s'          => undef,
                   'json'           => undef,
@@ -208,13 +211,15 @@ sub finalize {
                   'select=s'       => undef,
                   'select-group=s' => undef,
                   'serialize'      => undef,
+                  'serializer=s'   => undef,
                   'table=s'        => undef,
                   'textarea=s'     => undef,
                   'text=s'         => undef,
                   'toggle=s'       => undef,
                   'ul=s'           => undef,
                   'urlencode'      => undef,
-                  'xml'            => undef
+                  'xml'            => undef,
+		  'yaml'           => undef
                 );
 
   my $verbose = $self->verbose;
@@ -286,66 +291,72 @@ sub finalize {
   }
 
   if ( defined $options{'bedrock-xml'} ) {
-    if (    UNIVERSAL::isa( $value, 'ARRAY' )
-            || UNIVERSAL::isa( $value, 'HASH' ) ) {
-      $value = Bedrock::XML::writeXML($value);
-    } else {
-      die "Invalid type for use with --bedrock-xml\n";
-    }
+    my $handler = $self->io_handler( $tx, 'BedrockXML');
+    $value = $handler->serialize($value, { @argv } );
+  }
+  elsif ( defined( $options{'json'} ) ) {
+    my $handler = $self->io_handler( $tx, 'JSON');
+    $value = $handler->serialize($value, { @argv, exists $options{pretty} ? (pretty => $options{pretty}) : () } );
   }
   if ( defined $options{'xml'} ) {
-    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-    die "no XML options defined in tagx.xml\n"
-      unless exists $config->{'XML'};
-
-    my $options = $config->{'XML'}->{'out'}->devolve;
-    &log_message( $self, "XML:out options " . Bedrock::Dump::compact($options) )
-      if $verbose;
-
-    if ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
-      $value = { $config->{RootName} => $value };
-    }
-
-    $value = XMLout( $value, %{$options} );
-  } elsif ( defined( $options{'format'} ) ) {
+    my $handler = $self->io_handler( $tx, 'XML');
+    $value = $handler->serialize($value, { @argv });
+  }
+  elsif ( defined $options{'yaml'} ) {
+    my $handler = $self->io_handler( $tx, 'YAML');
+    $value = $handler->serialize($value, { @argv });
+  }
+  elsif ( defined $options{'serializer'} ) {
+    my $handler = $self->io_handler( $tx, $options{serializer}, { 'out' => { @argv }  });
+    $value = $handler->serialize($value, { @argv });
+  }
+  elsif ( defined( $options{'format'} ) ) {
     $value = sprintf $options{'format'}, $value;
-  } elsif ( defined( $options{'decode'} ) ) {
+  }
+  elsif ( defined( $options{'decode'} ) ) {
     &log_message( $self, "decode using " . $options{'decode'} ) if $verbose;
     my $obj = Bedrock::JSON::decode( $options{'decode'} );
     if ( exists $obj->{$value} ) {
       $value = $obj->{$value};
-    } elsif ( exists $obj->{default} ) {
+    }
+    elsif ( exists $obj->{default} ) {
       $value = $obj->{default};
-    } else {
+    }
+    else {
       $value = undef;
     }
-  } elsif ( defined( $options{'toggle'} ) ) {
+  }
+  elsif ( defined( $options{'toggle'} ) ) {
     my ( $a, $b ) = split /\s*,\s*/, $options{'toggle'};
     $value = ( $value eq $a ) ? $b : $a;
-  } elsif ( exists $options{'anchor'} ) {
+  }
+  elsif ( exists $options{'anchor'} ) {
     my $attributes = get_json_attributes( 'anchor', \%options );
     register_widget( $widgets, 'anchor', $attributes );
     unless ( $attributes->{'href'} || @argv == 0 ) {
       $attributes->{'href'} = shift @argv;
     }
     $value = create_xhtml_element( 'a', $value, %{$attributes} );
-  } elsif ( exists $options{'img'} ) {
+  }
+  elsif ( exists $options{'img'} ) {
     my $attributes = get_json_attributes( 'img', \%options );
     register_widget( $widgets, 'img', $attributes );
     unless ( $attributes->{'src'} ) {
       $attributes->{'src'} = $value;
     }
     $value = create_xhtml_element( 'img', undef, %{$attributes} );
-  } elsif ( ($tag_type) =
-            map { exists $options{$_} ? $_ : () }
-            qw(address blockquote code div  p pre span textarea)
-          ) {
+  }
+  elsif ( ($tag_type) =
+	  map { exists $options{$_} ? $_ : () }
+	  qw(address blockquote code div  p pre span textarea)
+	) {
     my $attributes = get_json_attributes( $tag_type, \%options );
     register_widget( $widgets, $tag_type, $attributes );
     $value = create_xhtml_element( $tag_type, $value, %{$attributes} );
-  } elsif ( ($tag_type) =
-            map { exists $options{$_} ? $_ : () } qw(radio checkbox)
-          ) {
+  }
+  elsif ( ($tag_type) =
+	  map { exists $options{$_} ? $_ : () } qw(radio checkbox)
+	) {
     my $attributes = get_json_attributes( $tag_type, \%options );
 
     &log_message( $self,
@@ -372,18 +383,21 @@ sub finalize {
 
         # ignore already captured $value
         $value = shift @argv;
-      } else {
+      }
+      else {
         $attributes->{'value'} = $value;
         $value = shift @argv;
       }
 
       if ( $attributes->{'name'} ) {
         shift @argv;
-      } else {
+      }
+      else {
         $attributes->{'name'} = shift @argv;
       }
       $attributes->{'label'} = shift @argv unless $attributes->{'label'};
-    } elsif ( defined $value ) {
+    }
+    elsif ( defined $value ) {
       $attributes->{'value'} = $value;
       $value = undef;
     }
@@ -406,7 +420,7 @@ sub finalize {
 
     die
       "usage: <var --$tag_type value default-value name label> or <var --$tag_type=JSON-STRING \$input.name>\n"
-        unless ( defined $attributes->{'name'} && exists $attributes->{'value'} );
+      unless ( defined $attributes->{'name'} && exists $attributes->{'value'} );
 
     if ( UNIVERSAL::isa( $value, 'HASH' ) ) {
       $value = $value->{ $attributes->{'name'} };
@@ -415,7 +429,8 @@ sub finalize {
     if ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
       $attributes->{checked} = 'checked'
         if ( grep { /$attributes->{value}/ } @$value );
-    } else {
+    }
+    else {
       $attributes->{checked} = 'checked' if $value eq $attributes->{value};
     }
 
@@ -462,7 +477,7 @@ sub finalize {
 
       die
         "scalar argument to --select must be JSON string that evaluates to an array\n"
-          unless UNIVERSAL::isa( $value, 'ARRAY' );
+	unless UNIVERSAL::isa( $value, 'ARRAY' );
     }
 
     if ( UNIVERSAL::isa( $cur_selected, 'HASH' ) ) {
@@ -483,11 +498,13 @@ sub finalize {
             $item = { attributes => $key,
                       text       => $text
                     };
-          } else {
+          }
+	  else {
             die
               "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
           }
-        } else {
+        }
+	else {
           $item = { attributes => { value => $key },
                     text       => $text
                   };
@@ -498,7 +515,8 @@ sub finalize {
           unless ( UNIVERSAL::isa( $cur_selected, 'ARRAY' ) ) {
             $item->{'attributes'}->{'selected'} = 'selected'
               if $cur_selected eq $item->{'attributes'}->{'value'};
-          } else {              # multiple select box
+          }
+	  else {		# multiple select box
             $item->{'attributes'}->{'selected'} = 'selected'
               if grep { /$item->{'attributes'}->{'value'}/ } @$cur_selected;
           }
@@ -506,7 +524,8 @@ sub finalize {
 
         push @options, $item;
       }
-    } else {
+    }
+    else {
       die "usage: <var --select=attributes value default-value name label\n";
     }
 
@@ -552,7 +571,7 @@ sub finalize {
 
       die
         "scalar argument to --select-group must be JSON string that evaluates to a hash\n"
-          unless UNIVERSAL::isa( $value, 'HASH' );
+	unless UNIVERSAL::isa( $value, 'HASH' );
     }
 
     # { "foo"  : [ {value : 1}, "this",     {value: 2}, "that"]
@@ -584,11 +603,13 @@ sub finalize {
               $item = { attributes => $key,
                         text       => $text,
                       };
-            } else {
+            }
+	    else {
               die
                 "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
             }
-          } else {
+          }
+	  else {
             $item = { attributes => { value => $key },
                       text       => $text,
                     };
@@ -599,7 +620,8 @@ sub finalize {
             unless ( UNIVERSAL::isa( $cur_selected, 'ARRAY' ) ) {
               $item->{'attributes'}->{'selected'} = 'selected'
                 if $cur_selected eq $item->{'attributes'}->{'value'};
-            } else {            # multiple select box
+            }
+	    else {		# multiple select box
               $item->{'attributes'}->{'selected'} = 'selected'
                 if grep { /$item->{'attributes'}->{'value'}/ } @$cur_selected;
             }
@@ -610,7 +632,8 @@ sub finalize {
         $this_group->{'group'} = \@options;
         push @opt_group, $this_group;
       }
-    } else {
+    }
+    else {
       die "usage: <var --select=attributes value default-value name label\n";
     }
 
@@ -639,9 +662,10 @@ sub finalize {
                                            %$attributes
                                           );
 
-  } elsif ( ($tag_type) =
-            map { exists $options{$_} ? $_ : () } qw(button submit text file)
-          ) {
+  }
+  elsif ( ($tag_type) =
+	  map { exists $options{$_} ? $_ : () } qw(button submit text file)
+	) {
 
     my $attributes = get_json_attributes( $tag_type, \%options );
 
@@ -649,12 +673,14 @@ sub finalize {
       $attributes->{'value'} = $value;
       if ( exists $attributes->{'name'} ) {
         shift @argv;
-      } else {
+      }
+      else {
         $attributes->{'name'} = shift @argv;
       }
 
       $attributes->{'label'} = shift @argv unless $attributes->{'label'};
-    } elsif ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
+    }
+    elsif ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
       die "usage: <var --$tag_type\[=json-attributes] value name label>\n";
     }
 
@@ -686,7 +712,8 @@ sub finalize {
 
     $value = create_label( $attributes, \%options );
     $value .= create_xhtml_element( 'input', undef, %$attributes );
-  } elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(ol ul) ) {
+  }
+  elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(ol ul) ) {
     my $attributes = get_json_attributes( $tag_type, \%options );
     register_widget( $widgets, $tag_type, $attributes );
 
@@ -698,14 +725,7 @@ sub finalize {
                                          @$value ),
                                    %{$attributes}
                                  );
-  } elsif ( defined( $options{'json'} ) ) {
-    if ( ref($value) ) {
-       $value = Bedrock::JSON::encode($value, $options{pretty} || 0);
-    } else {
-      die "Can't use --json on a scalar object.";
-    }
   }
-
   # <var --columns= --table array>
   elsif ( ( exists $options{'table'} ) && UNIVERSAL::isa( $value, 'ARRAY' ) ) {
 
@@ -725,9 +745,11 @@ sub finalize {
 
         die "possible invalid JSON string: $@\n"
           if $@;
-      } elsif ( UNIVERSAL::isa( $options{'columns'}, 'ARRAY' ) ) {
+      }
+      elsif ( UNIVERSAL::isa( $options{'columns'}, 'ARRAY' ) ) {
         @column_headers = @{ $options{'columns'} };
-      } elsif ( !ref( $options{'columns'} ) ) {
+      }
+      elsif ( !ref( $options{'columns'} ) ) {
         @column_headers = split /[,|]+/, $options{'columns'};
       }
 
@@ -743,7 +765,8 @@ sub finalize {
         $header_attributes = $column_headers[2];
         @column_headers    = @{ $column_headers[0] };
       }
-    } else {
+    }
+    else {
       @column_headers =
         UNIVERSAL::isa( $value->[0], 'HASH' ) ? keys %{ $value->[0] } : ();
     }
@@ -774,7 +797,8 @@ sub finalize {
                                                              $row;
                                                            }
                                                           );
-                                    } else {
+                                    }
+				    else {
                                       undef;
                                     }
                                   }
@@ -798,8 +822,8 @@ sub finalize {
                                                                       # ...in which case we'll slice the hash that way to get the values for the columns.
                                                                       my @cell_values =
                                                                         ref($row) =~ /array/i ? @$row
-                                                                          : ( ( @column_headers > 0 ) ? @{$row}{@column_headers}
-                                                                              : values %$row );
+									: ( ( @column_headers > 0 ) ? @{$row}{@column_headers}
+									    : values %$row );
                                                                       foreach (@cell_values) {
                                                                         $text .=
                                                                           create_xhtml_element( 'td', $_, %{$column_attributes} );
@@ -814,11 +838,14 @@ sub finalize {
                                  );
 
     &log_message( $self, "error: " . $@ ) if $@;
-  } elsif ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
+  }
+  elsif ( UNIVERSAL::isa( $value, 'ARRAY' ) ) {
     $value = join( $delimiter, @$value );
-  } elsif ( UNIVERSAL::isa( $value, 'HASH' ) ) {
+  }
+  elsif ( UNIVERSAL::isa( $value, 'HASH' ) ) {
     $value = join( $delimiter, %$value );
-  } elsif ( UNIVERSAL::isa( $value, 'Tie::Scalar' ) ) {
+  }
+  elsif ( UNIVERSAL::isa( $value, 'Tie::Scalar' ) ) {
     $value = $$value;
   }
 
@@ -828,7 +855,8 @@ sub finalize {
     $value =~ s/\x3e/&gt;/g;
     $value =~ s/\x22/&quot;/g;
     &log_message( $self, "HTMLEncoded to <$value>" ) if $verbose;
-  } elsif ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
+  }
+  elsif ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
     &Text::URLEncode::encode($value);
     &log_message( $self, "URLEncoded to <$value>" ) if $verbose;
   }
@@ -858,7 +886,8 @@ sub get_json_attributes {
 
     die "possibly an invalid JSON string: " . $options_val . "\n"
       if $@;
-  } elsif ( UNIVERSAL::isa( $options_val, 'HASH' ) ) {
+  }
+  elsif ( UNIVERSAL::isa( $options_val, 'HASH' ) ) {
     $attributes = $options_val;
   }
 
@@ -873,7 +902,8 @@ sub is_simple_object {
       return 0 if ref($_);
     }
     return 1;
-  } elsif ( ref($obj) =~ /(object|hash)/i ) {
+  }
+  elsif ( ref($obj) =~ /(object|hash)/i ) {
     foreach ( keys %$obj ) {
       return 0 if ref( $obj->{$_} );
     }
@@ -893,7 +923,7 @@ Output the value of a Bedrock expression.
 
 =head1 SYNTAX
 
-  <var [options] [object | result of method call | expression]>
+<var [options] [object | result of method call | expression]>
 
 =head1 DESCRIPTION
 
@@ -905,16 +935,17 @@ is encountered.
 
 =head1 OPTIONS
 
- --base64
- --bedrock-xml
- --default
- --delimiter
- --format
- --htmlencode
- --json
- --pretty
- --urlencode
- --xml
+--base64
+--bedrock-xml
+--default
+--delimiter
+--format
+--htmlencode
+--json
+--pretty
+--urlencode
+--xml
+--yaml
 
 =over 5
 
@@ -922,7 +953,7 @@ is encountered.
 
 Encode the arguments as base64 before output.
 
- <var --base64 $foo>
+<var --base64 $foo>
 
 =item  --bedrock-xml
 
@@ -933,7 +964,7 @@ Output the Bedrock XML representation of the object.
 Output the value of the C<--default> option if the value of variable
 is undefined.
 
- <var --default="none" $foo>
+<var --default="none" $foo>
 
 =item --delimiter=s
 
@@ -942,18 +973,18 @@ before they are output.
 
 default: ''
 
- <null:foo Fred Wilma Barney Betty>
- <var --delimiter=', ' $foo>
+<null:foo Fred Wilma Barney Betty>
+<var --delimiter=', ' $foo>
 
- <null:hash:foo Fred Wilma Barney Betty>
- <var --delimiter=', ' $foo>
+<null:hash:foo Fred Wilma Barney Betty>
+<var --delimiter=', ' $foo>
 
 =item --format=s
 
 Use the value of the scalar as input to the sprintf function using the
 value of the C<--format> option as the format string.
 
-  <var --format="%5.2f" $foo>
+<var --format="%5.2f" $foo>
 
 =item  --htmlencode
 
@@ -973,8 +1004,8 @@ URL encode the string before output.
 
 =item --xml
 
-Output the object or array as an XML object. XML support is provided
-by the perl module C<XML::Simple>.
+Output the object or array as an XML object. Default XML support is provided
+by the Perl module C<XML::Simple>.
 
 The default options sent to XMLout can be configured in F<tagx.xml> as
 an object named XML and represents the options that you would send to
@@ -982,21 +1013,24 @@ the perl module C<XML::Simple> to control the behaviour of XML conversions.
 
 A sensible default configuration is shown below:
 
- <object name="XML">
-   <object name="out">
-     <scalar name="NoAttr">1</scalar>
-     <scalar name="KeepRoot">0</scalar>
-     <scalar name="RootName">response</scalar>
-     <scalar name="NoSort">1</scalar>
-     <array name="KeyAttr"></array>
-     <scalar name="XMLDecl">1</scalar>
-     <scalar name="NoEscape">1</scalar>
-   </object>
-   <object name="in">
-     <scalar name="NoAttr">0</scalar>
-     <scalar name="KeepRoot">1</scalar>
-     <array name="KeyAttr"></array>
-   </object>
+  <object name="XML">
+    <object name="out">
+      <scalar name="NoAttr">1</scalar>
+      <scalar name="KeepRoot">0</scalar>
+      <scalar name="RootName">response</scalar>
+      <scalar name="NoSort">1</scalar>
+      <array name="KeyAttr"></array>
+        <scalar name="XMLDecl">1</scalar>
+        <scalar name="NoEscape">1</scalar>
+      </array>
+    </object>
+
+    <object name="in">
+      <scalar name="NoAttr">0</scalar>
+      <scalar name="KeepRoot">1</scalar>
+      <array name="KeyAttr"></array>
+    </object>
+  </object>
 
 While this provides something passable as an XML document it may not
 be exactly what you were looking for.  As shown above the options
@@ -1009,7 +1043,7 @@ want to change either the defaults or the behaviour on a case by case
 basis. You can do the latter by dynamically altering the configuration
 using the C<XML> method of the C<$config> object.
 
- <null $config.XML('out', 'XMLDecl', 0)>
+<null $config.XML('out', 'XMLDecl', 0)>
 
 The first argument to the C<XML> method is either the string 'in' or
 'out' which indicates which set of options you are about to set.
@@ -1030,8 +1064,25 @@ object.>
 
   <null $header.content_type('application/xml')><var --xml $xml>
 
-see perldoc C<XML::Simple> for more details regarding options that you
+If you want to dynamically pass options for outputting your XML, you
+can pass key/value pairs as additional arguments to the
+C<E<lt>varE<gt>> tag.
+
+
+  <var --xml $foo KeepRoot 1 NoAttr 1>
+
+See perldoc C<XML::Simple> for more details regarding options that you
 can use to control XML parsing.
+
+=item --yaml
+
+In a similar vein as the C<--xml> option, the C<--yaml> option can be
+used to serialize your Bedrock objects in YAML format.
+
+ <var --yaml $foo>
+
+You can pass additional options for parsing YAML as arguments to the
+C<E<lt>varE<gt>> tag.
 
 =back
 
@@ -1043,13 +1094,13 @@ name (C<$name>), the result of a method call (C<$foo.bar()>), or an
 expression.  BedrockE<039>s expression parsing requires that you use
 parentheses.  Parentheses can be nested. Some examples of expressions:
 
-  ($foo + "-" + $bar)
+ ($foo + "-" + $bar)
 
-  ($foo --eq "foo")
+ ($foo --eq "foo")
 
-  (5 + 6)
+ (5 + 6)
 
-  ($foo.bar + " is a foobar")
+ ($foo.bar + " is a foobar")
 
 The use cases for this tag include:
 
@@ -1062,7 +1113,7 @@ Output the value of a method call of an object:
  <var $input.get("foo")>
 
 Dump an array or hash (equivalent to C<array.join(' ')> )
-
+ 
  <var $input.keys()>
 
  <var $input>
@@ -1071,9 +1122,9 @@ In Bedrock 1 (during the Stone Age) using the C<E<lt>varE<gt>> tag on
 arrays or objects was undefined.  In Bedrock 2 the values are output
 as a space delimited list.
 
-  <var $array> <=> <var $array.join(' ')>
+ <var $array> <=> <var $array.join(' ')>
 
-  <var $hash> <=> <foreach $hash><var $_.key> <var $_.value></foreach>
+ <var $hash> <=> <foreach $hash><var $_.key> <var $_.value></foreach>
 
 Translate the value of an expression:
 
@@ -1091,11 +1142,11 @@ Translate the value of an expression:
 
 =item * Output the value of a variable or a default
 
-  <var --default="Please enter a value" $input.fname>
+ <var --default="Please enter a value" $input.fname>
 
 =item * Format a value on output
 
-  <var --format="%5.2f" $input.cost>
+ <var --format="%5.2f" $input.cost>
 
 =item * Output an array as a JSON string
 
@@ -1130,11 +1181,10 @@ JSON string that represents a hash.  For example:
 
 Outputs a value based on two alternatives, alternating between the two.
 
-  <var $foo --toggle="a,b">
+ <var $foo --toggle="a,b">
 
 If C<$foo> = 'a', then Bedrock will output 'b', else if C<$foo> is 'b'
 Bedrock will output 'a'
-
 
 =back
 
@@ -1165,8 +1215,8 @@ attributes possible for that HTML tag.  For example consider the
 C<E<lt>ulE<gt>> tag:
 
  <ul style="color:red;margin-top:5px;" id="fruits">
-   <li>Apples</li>
-   <li>Pears</li>
+  <li>Apples</li>
+  <li>Pears</li>
  </ul>
 
 Here we have two elements being set; C<style> and C<id>.  The Bedrock
@@ -1178,8 +1228,7 @@ Note that the argument to the widget option C<--ul> is a JSON string
 where the hash contains key/value pairs of the C<ul> attributes you
 want to set.  Of course, TIMTOWTDI:
 
- <hash:ul style color:red;margin-top:5px 
-          id    fruits>
+ <hash:ul style color:red;margin-top:5px id fruits>
  <array:fruits Apples Pears>
 
  <var --ul=$ul $fruits>
@@ -1193,8 +1242,9 @@ automatically create a unique C<id> for each widget it creates.
 You can inspect the last widget id created using the variable
 C<$__widgets.__last_widget_id>.
 
-  <var --ul Apples Pears>
-  The id for the the <code>ul</code> was <var $__widgets.__last_widget_id>
+ <var --ul Apples Pears>
+
+ The id for the the <code>ul</code> was <var $__widgets.__last_widget_id>
 
 Frameworks can be a good thing, but the perl way (and BedrockE<039>s) is
 that I<There Is More Than One To Do IT> (TIMTOWTDI).
@@ -1251,9 +1301,9 @@ represents a HASH of attributes to apply to the HTML element.
 
 ...would be equivalent to:
 
-  <label for="text_1">Last Name </label>
-  <input type="text" name="text_1" size="40" maxlength="60" \
-         value="<var $input.text_1>">
+ <label for="text_1">Last Name </label>
+ <input type="text" name="text_1" size="40" maxlength="60" \
+        value="<var $input.text_1>">
 
 =item value
 
@@ -1278,12 +1328,12 @@ The text value that should be used to label the form element.  Bedrock
 will automatically add a label element to each form element.  You can
 prevent Bedrock from doing this by including the C<--no-label> option.
 
-  <var --radio "Apple" $input.fruit fruit>
+ <var --radio "Apple" $input.fruit fruit>
 
 Would result in an HTML construction:
 
-  <input type="radio" value="Apple" name="fruit" id="radio_1"/>
-  <label for="radio_1">Apple</label>
+ <input type="radio" value="Apple" name="fruit" id="radio_1"/>
+ <label for="radio_1">Apple</label>
 
 If you do not provide a label value, Bedrock will use as the label
 value the widgetE<039>s C<value> argument for I<checkbox> and I<radios> or
@@ -1304,19 +1354,19 @@ missing parameters and create labels for your form elements.
 
 Create a set of radio buttons:
 
-  <var --radio='{name:"fruit",value:"Apple"}' '' $input.fruit>
-  <var --radio='{name:"fruit",value:"Pear"}'  '' $input.fruit>
+ <var --radio='{name:"fruit",value:"Apple"}' '' $input.fruit>
+ <var --radio='{name:"fruit",value:"Pear"}'  '' $input.fruit>
 
 For checkboxes and radio buttons if you do not provide a label, the
 label will be taken from the C<value> the radio or checkbox element.
 
-  <var --radio Apple $input.fruit fruit >
-  <var --radio Pear $input.fruit fruit >
+ <var --radio Apple $input.fruit fruit >
+ <var --radio Pear $input.fruit fruit >
 
 You can create checkbox or radio "groups" by using the --group option.
 
-  <var --radio Apples $input.fruit fruit >
-  <foreach Pears Bananas Oranges>
+ <var --radio Apples $input.fruit fruit >
+ <foreach Pears Bananas Oranges>
   <var ---group --radio $_ $input.fruit></foreach>
 
 The elementE<039>s C<name> for grouped objects will be taken from the most
@@ -1324,7 +1374,7 @@ recent widget created if one is not provided.  If the widget element being creat
 different than the last widget created and the C<--group> option is
 used, then a new name will be created.  Thus, this can be a valid construction:
 
-  <foreach Apples Pears Bananas Oranges>
+ <foreach Apples Pears Bananas Oranges>
   <var ---group --radio $_ $input.fruit></foreach>
 
 ...as long as the last widget constructed was not a radio.
@@ -1338,21 +1388,21 @@ used, then a new name will be created.  Thus, this can be a valid construction:
 Creates a button with a default handler for submitting the form.  The
 argument to the button is the value of the button text.
 
-  <var --button[=attributes] value name>
+ <var --button[=attributes] value name>
 
 Example:
 
-  <var --button "Click-Me">
+ <var --button "Click-Me">
 
 The default handler simply submits the form.
 
-  onClick='javascript: this.form.submit();'
+ onClick='javascript: this.form.submit();'
 
 You can turn off the association of a handler with the button by
 either providing your own C<onClick> handler or providing the
 C<--no-handler> option.
 
-  <var --no-handler --button "I'm a Do Nothing Button">
+ <var --no-handler --button "I'm a Do Nothing Button">
 
 =item checkbox
 
@@ -1360,27 +1410,27 @@ C<--no-handler> option.
 
 Creates a checkbox or radio element.
 
-  <var --checkbox[=attributes] value default-value name label>
+ <var --checkbox[=attributes] value default-value name label>
 
 Examples:
 
-  <var --checkbox='{name:"foo", value:1}' $input.foo>
+ <var --checkbox='{name:"foo", value:1}' $input.foo>
 
-  <var --checkbox foo 1 $input.foo>
+ <var --checkbox foo 1 $input.foo>
 
-  <var --checkbox=$attributes $input.foo>
+ <var --checkbox=$attributes $input.foo>
 
 =item file
 
 Create an upload file form element.
 
-  <var --file[=attributes] default-value name label>
+ <var --file[=attributes] default-value name label>
 
 =item select
 
 Create a simple select element.
 
-  <var --select[=attributes] value default-value name label>
+ <var --select[=attributes] value default-value name label>
 
 C<value> is either a JSON string that evaluates to an array or a Bedrock array.
 
@@ -1390,47 +1440,46 @@ where the second item in the tuple is a hash that is interpreted to be
 the attributes (including the value of the option) to be applied to
 the option tag.
 
-  <var --select '["this", 1, "that", 2]' $input.foo foo>
+ <var --select '["this", 1, "that", 2]' $input.foo foo>
 
-  <var --select '["this", {value:1, style:"color:green;"},"that", 2]' 
-                $input>
+ <var --select '["this", {value:1, style:"color:green;"},"that", 2]' $input>
 
 =item select-group
 
 Creates a 'grouped' select box where items are grouped under headings.
 
-  <var --select-group[=attributes] value default-value name label>
+ <var --select-group[=attributes] value default-value name label>
 
 C<value> is a JSON string that evaluates to a hash or a Bedrock hash.
 
 The hash keys are the labels used for each menu group, the values are
 arrays as required by the C<--select> widget.
-
-  <var --select-group '{ Fruits : [ "Apple", 1, "Pear"], 
-                         Veggie : [ "Peas", 3, "Carrots", 4 ]
-                       }' $input.food food>
+ 
+ <var --select-group 
+  '{ Fruits : [ "Apple", 1, "Pear"], Veggie : [ "Peas", 3, "Carrots", 4 ]}' $input.food food>
 
 The HTML element is constructed using the C<E<lt>optgroupE<gt>> tags.  When rendered groups are
 indented under a label similar to the menus below.
 
-  Fruits
-    Apple
-    Pear
-  Veggies
-    Peas
-    Carrots
+ Fruits
+ Apple
+ Pear
+ Veggies
+ Peas
+ Carrots
 
 =item submit
 
 Creates a submit button.
 
-  <var --submit[=attributes] value name>
+ <var --submit[=attributes] value name>
 
 =item textarea
 
 Creates a textarea form element.
 
-  <var --textarea[=attributes] default-value name label>
+ <var --textarea[=attributes] default-value name label>
+
 =item text
 
 
@@ -1468,11 +1517,11 @@ C<ol>, C<ul>, and the C<table> widgets somewhat useful.
 
 Create an link object.
 
-  <var --anchor[=attributes] value link>
+ <var --anchor[=attributes] value link>
 
 Example:
 
-  <var --anchor Google http://www.google.com>
+ <var --anchor Google http://www.google.com>
 
 =item blockquote
 
@@ -1488,7 +1537,7 @@ Example:
 
 Create a block object.
 
-  <var --div[=attributes] value>
+ <var --div[=attributes] value>
 
 =item ol
 
@@ -1498,11 +1547,11 @@ See L<ul>
 
 Create an image tag.
 
-  <var --img[=attributes] image-path>
+ <var --img[=attributes] image-path>
 
 =item table
 
-  <var --table[=attributes] value>
+ <var --table[=attributes] value>
 
 Use C<--table> to quickly dump an array of arrays that represent the
 rows and columns of a table.  
@@ -1513,23 +1562,23 @@ returns an array of hashes representing a result set.  If no
 C<--columns> option is present the widget constructor will use the
 hash keys a column names.
 
-  <hash:foo red 1 blue 2 green 3>
-  <array:foo_array $foo $foo $foo>
-  <var --table $foo_array>
+ <hash:foo red 1 blue 2 green 3>
+ <array:foo_array $foo $foo $foo>
+ <var --table $foo_array>
   
-  <sink:flintstones --json>
-    [
-     ["fred", "flintstone","fflintstone@openbedrock.net"],
-     ["barney" "rubble", "brubble@openbedrock.net"]
-    ]
-  </sink>
+ <sink:flintstones --json>
+ [
+  ["fred", "flintstone","fflintstone@openbedrock.net"],
+  ["barney" "rubble", "brubble@openbedrock.net"]
+ ]
+ </sink>
   
-  <var --table $flintstones>
+ <var --table $flintstones>
 
 Add table headers using the C<--columns option>
 
-  <var --columns='["First Name", "Last Name", "E-Mail"]' --table $foo_array>
-  <var --table $foo_array>
+ <var --columns='["First Name", "Last Name", "E-Mail"]' --table $foo_array>
+ <var --table $foo_array>
 
 The C<--columns> option can be any of:
 
@@ -1537,16 +1586,16 @@ The C<--columns> option can be any of:
 
 =item an array object
 
-  <array:headers this that "the other">
-  <var --table --columns=$headers $foo>
+ <array:headers this that "the other">
+ <var --table --columns=$headers $foo>
 
 =item an JSON string representing an array
 
-  <var --table --columns='["this", "that", "the other"]' $foo>
+ <var --table --columns='["this", "that", "the other"]' $foo>
 
 =item a comma, space or pipe delimited string
 
-  <var --table --columns="this,that,the&nbsp;other" $foo>
+ <var --table --columns="this,that,the&nbsp;other" $foo>
 
 =back
 
@@ -1555,23 +1604,21 @@ Attributes for the cells of the table (C<td>) and each header element
 object when specifiying a JSON string as argument for the C<--columns>
 option.
 
- <var --table --columns='[ [ "this", "that", "the other" ], 
-                           { valign : "top", 
-                             class  : "foo" 
-                           }, 
-                           { align  : "left" }
-                         ]' $foo>
+ <var --table 
+      --columns='[["this","that","the other"], 
+                  {valign:"top",class:"foo"},
+                  {align:"left";}]' $foo>
 
 =item ul
 
 Creates an HTML C<ul> element from an array.
 
-  <var --ul[=attributes] value>
+ <var --ul[=attributes] value>
 
 Examples:
 
-  <array:pepboyz manny moe jack>
-  <var --ul $pepboyz>
+ <array:pepboyz manny moe jack>
+ <var --ul $pepboyz>
 
 You can specify attributes such as styles by setting the C<--ul>
 option to a hash or JSON string.
@@ -1610,7 +1657,7 @@ Align a string within a string of a given width.
 
 B<direction> is C<left>, C<center> or C<right>.
 
-  <var $foo.align('center', 80)>
+ <var $foo.align('center', 80)>
 
 =head2 align_center(width)
 
@@ -1648,19 +1695,19 @@ an odd number of values, the last value is considered the default
 value to use in the event the scalar does not equal any of the give
 keys.
 
-  <var $answer.decode(0, "No", 1, "Yes", "Maybe")>
+ <var $answer.decode(0, "No", 1, "Yes", "Maybe")>
 
 =head2 eq(value) I<deprecated>
 
 Returns 1 if the scalar is equal to this value.
 
-  <if $foo.eq(4.3)> 
+ <if $foo.eq(4.3)> 
 
 =head2 format(format string)
 
 Formats the scalar according to the C<printf> like format string.
 
-  <var $screen.format("/index.roc?screen=%s")>
+ <var $screen.format("/index.roc?screen=%s")>
 
 =head2 format_time([format string])
 
@@ -1669,7 +1716,7 @@ formats the time according to the optional format string (see perl
 C<strftime>).  If no format string is give, the method returns the
 time as a C<ctime> value.
 
-  <var $time.format_time()>
+ <var $time.format_time()>
 
 =head2 ge(value) I<deprecated>
 
@@ -1712,9 +1759,9 @@ Returns 1 if string of length > 0.
 Considers the scalar to be a JSON string and returns the appropriate
 Bedrock object.
 
-  <null:bar '{red : 1, blue : 2}'>
+ <null:bar '{red : 1, blue : 2}'>
 
-  <null:foo $bar.json()>
+ <null:foo $bar.json()>
 
 The above example creates a Bedrock hash.
 
@@ -1779,34 +1826,31 @@ value indicate the regular expression matched.
 
 Examples:
 
-  ---- scalar, no grouping
-  <null:bar "Robert">
-  <null:results $bar.matches("qr/[rb][^ ]/i")>
-  <trace --compact --output $results>
+ ---- scalar, no grouping
+ <null:bar "Robert">
+ <null:results $bar.matches("qr/[rb][^ ]/i")>
+ <trace --compact --output $results>
   
-  ---- scalar, grouping
-  <null:results $bar.matches("([rb][^ ])", "i")>
-  <trace --compact --output $results>
+ ---- scalar, grouping
+ <null:results $bar.matches("([rb][^ ])", "i")>
+ <trace --compact --output $results>
   
-  ---- scalar, grouping, global
-  <null:results $bar.matches("([rb][^ ])", "ig")>
-  <trace --compact --output $results>
+ ---- scalar, grouping, global
+ <null:results $bar.matches("([rb][^ ])", "ig")>
+ <trace --compact --output $results>
 
 ...would result in 
 
-  ---- scalar, no grouping
-  
-  .[0] = (1)
-  
-  
-  ---- scalar, grouping
-  .[0] = (Ro)
-  
-  
-  ---- scalar, grouping, global
-  .[0] = (Ro)
-  .[1] = (be)
-  .[2] = (rt)
+ ---- scalar, no grouping
+ .[0] = (1)
+ 
+ ---- scalar, grouping
+ .[0] = (Ro)
+    
+ ---- scalar, grouping, global
+ .[0] = (Ro)
+ .[1] = (be)
+ .[2] = (rt)
 
 I<Note: that if you want to use a quoted regexp and the B<g> flag, you
 should pass the flag as the second argument.>
