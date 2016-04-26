@@ -19,6 +19,10 @@ perl5bedrocktexttagxtagwithbodyiflibdir   = $(perl5libdir)/Bedrock/Text/TagX/TAG
 perl5bedrocktexttagxtagwithbodylooplibdir = $(perl5libdir)/Bedrock/Text/TagX/TAG/WithBody/Loop
 perl5bedrocktexttagxtermlibdir 		  = $(perl5libdir)/Bedrock/Text/TagX/Term
 perl5bedrockxmllibdir          		  = $(perl5libdir)/Bedrock/XML
+perl5bedrockyamllibdir         		  = $(perl5libdir)/Bedrock/YAML
+perl5bedrockcsvlibdir         		  = $(perl5libdir)/Bedrock/CSV
+perl5bedrockbedrockxmllibdir     	  = $(perl5libdir)/Bedrock/BedrockXML
+perl5bedrockjsonlibdir         		  = $(perl5libdir)/Bedrock/JSON
 perl5bedrockxmlcontainerlibdir 		  = $(perl5libdir)/Bedrock/XML/Container
 
 perl5blmlibdir                    = $(perl5libdir)/BLM
@@ -27,6 +31,11 @@ perl5blmindexedtablehandlerlibdir = $(perl5libdir)/BLM/IndexedTableHandler
 perl5blmstartuplibdir 	          = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir      = $(perl5libdir)/BLM/Startup/Session
 
+perl5testlibdir                   = $(perl5libdir)/Test
+perl5testlib_DATA = \
+    Test/Bedrock.pm
+
+TEST_BEDROCK=$(perl5testlib_DATA:.pm=.pm.in)
 
 perl5lib_DATA = \
     Bedrock.pm \
@@ -48,6 +57,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BedrockJSON.pm \
     Bedrock/Log.pm \
     Bedrock/Plugin.pm \
+    Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
     Bedrock/Template.pm
 
@@ -178,9 +188,30 @@ perl5bedrocktexttagxtermlib_DATA = \
 BEDROCK_TEXT_TAGX_TERM=$(perl5bedrocktexttagxtermlib_DATA:.pm=.pm.in)
 
 perl5bedrockxmllib_DATA = \
-    Bedrock/XML/Container.pm
+    Bedrock/XML/Container.pm \
+    Bedrock/XML/Handler.pm
 
 BEDROCK_XML=$(perl5bedrockxmllib_DATA:.pm=.pm.in)
+
+perl5bedrockyamllib_DATA = \
+    Bedrock/YAML/Handler.pm
+
+BEDROCK_YAML=$(perl5bedrockyamllib_DATA:.pm=.pm.in)
+
+perl5bedrockcsvlib_DATA = \
+    Bedrock/CSV/Handler.pm
+
+BEDROCK_CSV=$(perl5bedrockcsvlib_DATA:.pm=.pm.in)
+
+perl5bedrockbedrockxmllib_DATA = \
+    Bedrock/BedrockXML/Handler.pm
+
+BEDROCK_BEDROCKXML=$(perl5bedrockbedrockxmllib_DATA:.pm=.pm.in)
+
+perl5bedrockjsonlib_DATA = \
+    Bedrock/JSON/Handler.pm
+
+BEDROCK_JSON=$(perl5bedrockjsonlib_DATA:.pm=.pm.in)
 
 perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \
@@ -261,11 +292,16 @@ dist_noinst_DATA = \
     $(BEDROCK_TEXT_TAGX_TAG_WITHBODY_LOOP) \
     $(BEDROCK_TEXT_TAGX_TERM) \
     $(BEDROCK_XML) \
+    $(BEDROCK_YAML) \
+    $(BEDROCK_CSV) \
+    $(BEDROCK_BEDROCKXML) \
+    $(BEDROCK_JSON) \
     $(BEDROCK_XML_CONTAINER) \
     $(BLM_INDEXEDTABLEHANDLER) \
     $(BLM) \
     $(BLM_STARTUP) \
-    $(BLM_STARTUP_SESSION)
+    $(BLM_STARTUP_SESSION) \
+    $(TEST_BEDROCK)
 
 @do_subst_command@
 
@@ -286,3 +322,6 @@ $(TIDY): %.in.tdy : %
 clean-local:
 	find . -name '*.pm' -exec rm {} \;
 	rm -rf *.tdy
+
+test:
+	$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t
