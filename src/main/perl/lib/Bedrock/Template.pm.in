@@ -1,5 +1,3 @@
-package Bedrock::Template;
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -20,28 +18,68 @@ package Bedrock::Template;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+# provides a mimimal context object for Bedrock
+package Faux::Context;
+
+use strict;
+use warnings;
+
+sub new {
+  my $class = shift;
+  my $outhandle = shift;
+
+  my $self = { @_ };
+
+  bless $self, ref($class) || $class;
+
+  $self->{outhandle} = $outhandle;
+
+  $self;
+}
+
+sub print {
+  my $self = shift;
+
+  if ( ref($self->{outhandle}) && $self->{outhandle}->can('print') ) {
+    $self->{outhandle}->print(@_);
+  }
+}
+
+sub close {
+  my $self = shift;
+
+  if ( ref($self->{outhandle}) && $self->{outhandle}->can('close') ) {
+    $self->{outhandle}->close(@_);
+  }
+}
+
+package Bedrock::Template;
+
 use Bedrock;
-use Text::TagX;
+use Bedrock::BedrockConfig;
 
 use IO::Scalar;
+use Scalar::Util qw/reftype/;
+use Text::TagX;
+use Data::Dumper;
 
 =pod
 
 =head1 PUBLIC
 
-C<Bedrock::Template> - Bedrock perl templating
+C<Bedrock::Template> - Bedrock templating with Perl
 
 =head1 SYNOPSIS
 
- my $bedrock_template = new Bedrock::Template( "<var \$foo>", foo => "bar" )
+ my $bedrock_template = Bedrock::Template->new( q{<var $foo>}, foo => "bar" )
 
- $bedrock_template->parse;
+ print $bedrock_template->parse;
 
 =head1 DESCRIPTION
 
-Provides a programmatic interface to Bedrock templating.  Although you
+Provides a OO Perl interface to Bedrock templating.  Although you
 might not get all the "goodies" of Bedrock on the web or Bedrock
-shell, you get enough to make programattic templating tempting and fun!
+shell, you get enough to make templating tempting and fun!
 
 WeE<039>ve all wanted to be able to do this...
 
@@ -58,23 +96,43 @@ WeE<039>ve all wanted to be able to do this...
 
  my $customer = $sth->fetchrow_hashref;
 
- my $bedrock_template = new Bedrock::Template( $message,
-					       customer => $customer
-                                             );
+ my $bedrock_template = Bedrock::Template->new($message, customer => $customer;
 
  $message = $bedrock_template->parse;
 
- if ( $customer->{email} ) {
-   my $msg = MIME::Lite->new(
-                             From     => 'your_programmer@some_company.com',
-			     To       =>  $customer->{email},
-			     Subject  => "A notification of some sort...",
-			     Type     => 'text/html',
-			     Data     => $message
+ my $msg = MIME::Lite->new(
+                           From     => 'your_programmer@some_company.com',
+                           To       =>  $customer->{email},
+			   Subject  => "A notification of some sort...",
+			   Type     => 'text/html',
+			   Data     => $message
 			  );
 
    $msg->send('smtp', 'localhost');
  }
+
+=head1 DETAILS
+
+The C<Bedrock::Template> class gives you access to Bedrock templating.
+You can do most everything using this class that the using Bedrock on
+the web or the Bedrock shell environments can do, including using
+plugins.  To configure the Bedrock templating environment you can use
+the default F<tagx.xml> file or provide a C<Bedrock::Config> object
+when you instantiate the class.
+
+=head2 Errors
+
+Errors generated in parsing the template are presented as an exception
+object (C<TagX::Error>).  The object has two methods you can use to
+determine the error.
+
+  my $text = eval {
+    $template->parse;
+  };
+  
+  if ( $@ ) {
+    printf("error: %s at line: %d\n", $@->mesg, $@->line);
+  }
 
 =head1 METHODS
 
@@ -90,9 +148,30 @@ Instantiates a Bedrock templating object.
 
 The Bedrock text to parse.
 
-=item param => value
+=item key => value
 
 A list of parameters to use for templating.  The can be scalars, object, or arrays.
+
+=back
+
+ new( options )
+
+Pass a hash reference with the keys listed below.
+
+=over 5
+
+=item text
+
+Bedrock template to parse.
+
+=item param
+
+Hash reference of objects used by your template.
+
+=item CONFIG
+
+This should be a Bedrock configuration object.  The system
+configuration object is provided by default (F<tagx.xml>).
 
 =back
 
@@ -104,14 +183,71 @@ sub new {
   my $self = {};
   bless $self, $class;
 
-  $self->text( shift );
-  
-  my %args = @_;
+  if ( ref($_[0]) && reftype($_[0]) eq 'HASH') {
+    my $args = shift;
 
-  $self->{_param} = \%args;
+    $self->text($args->{text}) if exists $args->{text};
+    $self->param($args->{param}) if exists $args->{param};
+    $self->config($args->{CONFIG}) if exists $args->{CONFIG};
+  }
+  else {
+    $self->text(shift);
+    $self->param({ @_ });
+  }
+  
+  unless ($self->config) {
+    $self->config(Bedrock::Config->new('@libdir@/bedrock/config/tagx.xml'));
+  }
 
   return $self;
 }
+
+
+=pod
+
+=head2 config
+
+Sets or returns the configuration object used by the Bedrock parser.
+Typically this is the deserialized version of Bedrock's configuration
+file - F<tagx.xml>.  This is passed to Bedrock when your template is
+parsed.  If no configuration object is found, the C<parse> method will
+use Bedrock's default F<tagx.xml>.
+
+=cut
+
+sub config {
+  my $self = shift;
+
+  if ( @_ )  {
+    $self->{_config} = shift;
+  }
+
+  return $self->{_config};
+}
+
+=pod
+
+=head2 param
+
+ param( [parameters] )
+
+Sets or returns a hash reference containing key/value pairs that
+represent data or objects that will be used by the template.
+
+ $self->param({foo => $bar, baz => [1..10], $session});
+
+=cut
+
+sub param {
+  my $self = shift;
+
+  if ( @_ ) {
+    $self->{_param} = shift;
+  }
+
+  return $self->{_param};
+}
+
 
 =pod
 
@@ -120,20 +256,19 @@ sub new {
  text( text )
  text( text-ref )
 
-Set a new Bedrock string to parse.  Can be either a scalar or reference to a scalar.
+Sets or returns the Bedrock template string to parse.  C<text> can be
+either a scalar or a reference to a scalar.  Returns a reference to
+the string or undef if no string is currently set.
 
 =cut
 
 sub text {
   my $self = shift;
-  my $text = shift;
 
-  my $ref = $text;
-
-  $ref = \$text 
-    unless ref( $text );
-
-  $self->{_text} = $ref;
+  if ( @_ ) {
+    my $text = shift;
+    $self->{_text} = ref($text) ? $text : \$text;
+  }
 
   return $self->{_text};
 }
@@ -144,19 +279,17 @@ sub text {
 
  parse( [text], param => value, ... )
 
-Returns the parsed and templated string.  Parameters are merged with
-those passed in the constructor.
+Returns the results of passing the text and parameters to Bedrock's
+parser. Parameters sent by this method are merged with those passed
+in the constructor or those passed in the C<param()> method.
 
 Example:
 
-  my %params = ( 
-                foo => bar,
-                baz => buz
-               );
+  my %params = (foo => bar, baz => buz);
 
   my $text =<<eom;
   foos are really <var $foo>
-  and baz is really <var $baz>
+  and baz is really a <var $baz>
   eom
 
   $bedrock_template = Bedrock::Template->new( $text, %params );
@@ -180,27 +313,29 @@ can pass the text to parse.
 sub parse {
   my $self = shift;
   my $text = shift;
+
   my %args = @_;
 
-  $self->{_param} = $self->{_param} || {};
+  my $param = $self->param() || {};
 
-  map { $self->{_param}->{$_} = $args{$_} } keys %args;
+  map { $param->{$_} = $args{$_} } keys %args;
 
-  $self->text( $text )
-    if $text;
+  $self->text($text) if $text;
 
-  my $output;
+  my $output = "";
   my $tx = Text::TagX->new( 
-			   IO::Scalar->new( $self->{_text} ), 
-			   IO::Scalar->new( \$output)
+			   IO::Scalar->new($self->text),
+			   Faux::Context->new(IO::Scalar->new(\$output), CONFIG => $self->config)
 			  );
 
-  $tx->param( $self->{_param} ? %{$self->{_param}} : () );
+  $tx->param($param);
  
-  my $error = $tx->output;
-
-  die @{$error}
-    if @{$error};
+  my $error = eval {
+    $tx->output;
+  };
+  
+  die $tx->error
+    if ( $@ );
 
   return $output;
 }
