@@ -21,14 +21,16 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+
 package TagX::TAG::WithBody::Sink;
 
 use strict;
+use warnings;
+
 use Bedrock::Hash;
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
-use XML::Simple;
-use XML::Parser;
+use Data::Dumper;
 
 BEGIN {
   use Exporter ();
@@ -67,11 +69,15 @@ sub evolve {
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'define-var=s' => undef,
-                  'htmlencode'   => undef,
-                  'htmldecode'   => undef,
-                  'json'         => undef,
-                  'xml'          => undef
+  my %options = (
+		 'bedrock-xml'  => undef,
+		 'define-var=s' => undef,
+		 'htmlencode'   => undef,
+		 'htmldecode'   => undef,
+		 'json'         => undef,
+		 'serializer=s' => undef,
+		 'xml'          => undef,
+		 'yaml'         => undef
                 );
 
   my @argv = $self->parse_options( \%options, @context );
@@ -87,7 +93,7 @@ sub finalize {
   }
 
   die "Use only one of --HTMLEncode or --HTMLDecode here.\n"
-  if $options{'htmlencode'} and $options{'htmldecode'};
+    if $options{'htmlencode'} and $options{'htmldecode'};
 
   # Create a frame for output. Note very carefully that we assign the frame
   # to a lexical variable. Hence the destructor for the frame is not invoked
@@ -107,6 +113,7 @@ sub finalize {
   &log_message( $self, "Exited <SINK> block" ) if $verbose;
 
   my $data = $tx->out_handle->frame_data;
+
   if ( $options{'htmlencode'} ) {
     $data =~ s/\x26/\&amp;/g;
     $data =~ s/\x3c/\&lt;/g;
@@ -120,43 +127,48 @@ sub finalize {
     &log_message( $self, "HTMLDecoded to <$data>" ) if $verbose > 1;
   }
   elsif ( $options{'json'} ) {
-    $data = Bedrock::JSON::decode($data);
+    my $handler = $self->io_handler( $tx, 'JSON');
+    $data = $handler->deserialize($data, { @argv });
   }
   elsif ( $options{'xml'} ) {
-    my $config  = $tx->out_handle->{Handle}->{'CONFIG'};
-    my $options = $config->{XML}->{in}->devolve;
-    my $xml     = XML::Simple->new( %{$options} );
-
     # see if --xml in context of a file handle output
-    if ( @argv == 1 ) {
-      die
-"Use the --xml option of <sink> to decode XML to a Bedrock object.  If you wanted to write XML use <var --xml>.";
-    }
+    die "Use the --xml option of <sink> to deserialize XML to a Bedrock object.  If you wanted to write XML use <var --xml>."
+      if @argv == 1;
 
-    # sinking xml to a variable?
-    else {
+    my $handler = $self->io_handler( $tx, 'XML');
+    $data = $handler->deserialize($data, { @argv });
+  }
+  elsif ( $options{'bedrock-xml'} ) {
+    # see if --bedrock-xml in context of a file handle output
+    die "Use the --xml option of <sink> to deserialize Bedrock XML to a Bedrock object.  If you wanted to write XML use <var --xml>."
+      if @argv == 1;
 
-      # XMLin ?
-      $data = $xml->XMLin($data);
-    }
+    my $handler = $self->io_handler( $tx, 'BedrockXML');
+    $data = $handler->deserialize($data, { @argv });
+  }
+  elsif ( $options{'yaml'} ) {
+    # see if --yaml in context of a file handle output
+    die "Use the --yaml option of <sink> to deserialize YAML to a Bedrock object.  If you wanted to write YAML use <var --yaml>."
+      if @argv == 1;
+
+    my $handler = $self->io_handler( $tx, 'YAML');
+    $data = $handler->deserialize($data, { @argv });
+  }
+  elsif ( $options{'serializer'} ) {
+    my $handler = $self->io_handler( $tx, $options{serializer});
+    $data = $handler->deserialize($data, { @argv });
   }
 
+  # <sink:foo $fd> probably does not make any sense, so we EITHER
+  # store the data to a variable or write the data to a handle
   if ( exists $options{'define-var'} ) {
-    &log_message( $self,
-                  "Assigning contents of <SINK> to $options{'define-var'}" )
-    if $verbose;
+    &log_message( $self, "Assigning contents of <SINK> to $options{'define-var'}" )
+      if $verbose;
     $tx->param( $options{'define-var'} => $data );
   }
-
-  # Expect a single argument which should be a handle to which we print
-  # the frame contents to
-  if ( @argv == 1 ) {
+  elsif ( @argv == 1) {
     my $fd = shift @argv;
-
-    # make sure unbuffered i/o
-    my $old_handle = select $fd;
-    $| = 1;
-    select $old_handle;
+    select((select($fd), $|=1)[0]); # make handle unbuffered
     print $fd $data;
   }
 
@@ -194,6 +206,7 @@ been previously opened.
  --htmldecode
  --json 
  --xml
+ --yaml
 
 =over 5
 
@@ -219,6 +232,13 @@ into a Bedrock object or array.
 The content of the E<lt>sinkE<gt> block is considered to be an XML
 string.  Bedrock will convert it into a Bedrock object or array.
 I<See the E<lt>varE<gt> tag for details regarding XML conversions in
+Bedrock.>
+
+=item --yaml
+
+The content of the E<lt>sinkE<gt> block is considered to be a YAML
+string.  Bedrock will convert it into a Bedrock object or array.
+I<See the E<lt>varE<gt> tag for details regarding YAML conversions in
 Bedrock.>
 
 =item handle
