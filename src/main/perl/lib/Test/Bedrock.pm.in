@@ -1,0 +1,790 @@
+#!@PERLRUN@
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+package Faux::ApacheHandler;
+
+sub new {
+  bless {}, shift;
+}
+
+sub content_type {
+}
+
+package Faux::Context;
+
+use Bedrock;
+use Bedrock::Log;
+use TagX::Log;
+
+# we need to provide Text::TagX with a context object if we want
+# certain behaviors in Bedrock. This is also a convenient place to start a
+# test logger as well.
+sub new {
+  my $class = shift;
+  my $outhandle = shift;
+
+  # everything else should be a hash of options
+  my $self = { @_ };
+
+  bless $self, ref($class) || $class;
+
+  $self->{outhandle} = $outhandle;
+
+  my $logdir = $self->{LOGDIR} ? $self->{LOGDIR} : '/tmp';
+  my $logfile = $self->{LOGFILE} || sprintf("%s/bedrock-test.log", $logdir);
+
+  $self->{CONFIG}->{LOGDIR} = $logdir;
+  $self->{APACHE_HANDLER} = Faux::ApacheHandler->new;
+
+  Bedrock::Log::StartLogger(
+			    LOGDIR     => $self->{CONFIG}->{'LOGDIR'},
+			    LOGLEVEL   => $self->{CONFIG}->{'LOGLEVEL'},
+			    LOGFORMAT  => $self->{CONFIG}->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
+			    LOGFILE    => $self->{CONFIG}->{'LOGFILE'} || 'bedrock.log'
+			   );
+
+  TagX::Log::start_logger(LOG_FILE => $logfile);
+
+  $self;
+}
+
+sub cgi_header_in {
+}
+
+sub send_http_header {
+}
+
+sub getCookieValue {
+}
+
+sub cgi_header_out {
+}
+
+sub print {
+  my $self = shift;
+  $self->{outhandle}->print(@_);
+}
+
+sub close {
+  my $self = shift;
+  $self->{outhandle}->close(@_);
+}
+
+package Test::Bedrock;
+
+use Bedrock::BedrockConfig;
+use IO::Scalar;
+use JSON;
+use Scalar::Util qw/reftype/;
+use Symbol;
+use Test::More;
+use YAML::Syck;
+
+use vars qw/@ISA @EXPORT_OK/;
+
+@ISA = qw/Exporter/;
+
+@EXPORT_OK = qw/load run config bedrock/;
+
+=pod
+
+=head1 PUBLIC
+
+C<Test::Bedrock>
+
+=head1 SYNOPSIS
+
+ use Test::Bedrock qw/run config load/;
+
+=head1 DESCRIPTION
+
+C<Test::Bedrock> implements a testing framework built using Bedrock
+templating and C<Test::More>.  C<Test::Bedrock> can be use to create
+unit tests for just about anything, it is not just a framework for
+testing Bedrock applications.  Think of C<Test::Bedrock> as a
+templating language's attempt to create a testing language, driven by
+configuration files.
+
+Create a file in YAML format.  Define at least a key named C<test> and
+one named C<result>.
+
+ $ cat > foo-test-yml
+ ---
+ test: <null:foo 1><var $foo>
+ result: 1
+
+Create a test harness...
+
+ $ cat > foo-test.t
+ use strict;
+ use warnings;
+ 
+ use lib '/usr/lib/bedrock/perl5';
+
+ use Test::Bedrock qw/run/;
+ 
+ run 'foo-test.yaml';
+ ^D
+
+Run the test...
+
+ $ prove foo-test.t
+
+=head1 SUBROUTINES
+
+C<Test::Bedrock> can export three subroutines described below.  In
+most cases, you may only need to import the C<run> subroutine.
+
+=pod
+
+=head2 run
+
+ run( tests, [options] )
+
+Executes a set of tests within the C<Test::More> framework, comparing
+the expected result with the output from the Bedrock snippet.
+
+=over 5
+
+=item tests
+
+C<tests> can be the name of a test file or a reference to an array of
+hashes that represent a test.  See explanation below.
+
+=item options
+
+=over 10
+
+=item name
+
+Name that will be used as part of the log file for this snippet.
+You'll typically want to pass the name portion of the YAML file that
+contains the snippet, although this name is up to you.  If you do not
+pass a name, the a name will be fabricated by using the template:
+C<bedrock-test_{PID}>.
+
+=item config
+
+Your own configuration file (typically your incarnation of
+F<tagx.xml>).  Defaults to the Bedrock configuration file.  You can
+load your own configuration file and any additional Bedrock XML files
+that represent valid configuration objects by specifying the
+C<BEDROCK_CONFIG_PATH> in the environment prior to running your tests.
+
+ $ BEDROCK_CONFIG_PATH=/var/www/vhosts/config prove foo-test.pl
+
+=item logdir
+
+Specifies the directory for the test log.  Defaults to F</tmp>.  The
+test log file will be file named using the template:
+
+ {logdir}/bedrock-test_{name}.log
+
+=item plan
+
+Total number of tests in your plan.  Defaults to the number of tests
+in the array or file.
+
+=back
+
+=back
+
+A test is represented by a hash that contains at least a C<test> and C<result> key.  Example:
+
+ {
+   test => '<null:foo 1><var $foo>',
+   result => 1
+ }
+
+=over 5
+
+=item name
+
+The name of the test. This will be reported on the TAP output.
+
+=item test
+
+The Bedrock snippet to execute.
+
+=item result
+
+The output that should be expected by executing the Bedrock snippet.
+For the C<like> or C<unlike> operations, you can use a regular
+expression as the result to compare.  Example:
+
+ /hello world/i
+ /^\s*hello world\s*$/si
+
+=item op
+
+The C<Test::More> operation to use for comparing the ouput of the
+snippet to the result.  Valid values are:
+
+=over 10
+
+=item is
+
+=item isnt
+
+=item like
+
+=item unlike
+
+=back
+
+=item error
+
+If the C<error> key is set instead of the C<result> key, the test will
+use the exception thrown by Bedrock as the result to compare against
+the C<error> key.
+
+=item comment
+
+A comment regarding the test.  Not currently used, but may be helpful
+in documenting your tests.
+
+=back
+
+Tests are typically stored in a YAML file as an array of tests.  Here's an example:
+
+ ---
+ name: <plugin>
+ comment: test to see if the plugin tag instantiates a Bedrock object of the proper class
+ test: |-
+   <plugin:MIME::Lite><if $MIMELite --ref "MIME::Lite">1<else>0</if>
+ result: 1
+ ---
+ name: '<plugin --define-var="name">'
+ comment: test to see if the plugin can be named
+ test: |-
+   <plugin:MIME::Lite --define-var="mime_lite">
+   <if $mime_lite --ref "MIME::Lite">1<else>0</if>
+ result: 1
+
+=cut
+
+# interprets and runs the test configurations
+sub run {
+  my $tests = shift;
+
+  my %options = @_;
+  
+  my $name = $options{name};
+  my $config = $options{config} || config();
+  my $logdir = $options{logdir};
+  my $logfile = $options{logfile};
+
+  unless (ref($tests)) {
+    $tests = load($tests, %options);
+    
+    die "could not load [$tests]\n"
+      unless ref($tests);
+  }
+
+  unless ( ref($tests) && reftype($tests) eq 'ARRAY') {
+    die "test object is not an array\n";
+  }
+
+  plan tests => exists $options{plan} ? $options{plan} : scalar(@{$tests});
+
+  foreach my $t (@{$tests}) {
+    check_test($t);
+
+    my %r = bedrock($t->{test}, name => $name, param => $t->{param}, config => $config, logfile => $logfile, logdir => $logdir);
+
+    # are we looking for an error
+    if ( $t->{error} ) {
+      $r{output} = $r{error};
+      $t->{result} = $t->{error};
+    }
+
+    my $op = $t->{op} || 'is';
+
+    if ( ref($op) ) {
+      $op = 'cmp_ok';
+    }
+
+    my $success;
+    
+    for ($op) {
+      /^is$/ && do {
+	$success = is($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^isnt$/ && do {
+	$success = isnt($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^like$/ && do {
+	$success = like($r{output}, $t->{result}, $t->{name});
+      };
+
+      /^unlike$/ && do {
+	$success = unlike($r{output}, $t->{result}, $t->{name});
+      };
+      
+      /^cmp_ok/ && do {
+	$success = cmp_ok($r{output}, $t->{op}->{cmp_ok}, $t->{result}, $t->{name});
+      };
+
+      unless ( $success ) {
+	if ( $r{error} ) {
+	  diag(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error}));
+	}
+	else {
+	  note(sprintf("%s", $t->{comment})) if defined $t->{comment};
+	  note(sprintf("[%s]:[%s]\n", @r{qw/input output/}));
+	}
+      }
+    }
+  }
+}
+
+=pod
+
+=head2 config
+
+ config( path )
+
+Returns Bedrock's configuration object.  Pass the path to the
+configuration directory which contains your F<tagx.xml>, and possibly
+other Bedrock XML configuration files.  If the directory contains a
+F<config.d>, F<startup>, or F<plugin> directory then these will be
+recursed into as well to create the final merged Bedrock configuration
+object.
+
+The default configuration path is F<@libdir@/bedrock/config>.
+
+Note that your snippets I<can in fact> use your Application Plugins
+(BLMs)! As long as they are properly configured and you
+provide the path to your configuration files, the test harness will
+create I<a Bedrock environment suitable for executing your BLMs>. 
+
+=cut
+
+sub config {
+  my $bedrock_config_path = shift;
+
+  $bedrock_config_path = $bedrock_config_path || $ENV{BEDROCK_CONFIG_PATH};
+  $bedrock_config_path = $bedrock_config_path || '@libdir@/bedrock/config';
+
+  my $config = Bedrock::Config->new( $bedrock_config_path . '/tagx.xml');
+
+  foreach my $path ( $bedrock_config_path . '.d' ) {
+    next unless -d $path;
+
+    local (*CONFIG_FILES);
+    opendir CONFIG_FILES, "$path";
+
+    while ( my $file = readdir CONFIG_FILES ) {
+      next unless $file =~ /\.xml$/ && $file !~ /^(tagx|tagx_apps)\.xml$/;
+
+      my $this_config = eval {
+	 Bedrock::Config->newFromXML( $path . '/' . $file );
+       };
+
+      $config = merge_config( $this_config, $config );
+    }
+
+    closedir CONFIG_FILES;
+  }
+
+  # look for module configs
+  my @module_paths;
+
+  foreach ( qw/startup plugin/ ) {
+    push @module_paths, $bedrock_config_path . ".d/" . $_
+      if -d $bedrock_config_path . ".d/" . $_;
+  }
+
+  foreach my $path ( @module_paths ) {
+    local (*CONFIG_FILES);
+    opendir CONFIG_FILES, "$path";
+
+    while ( my $file = readdir CONFIG_FILES ) {
+      next unless $file =~ /\.xml$/;
+
+      my $this_module_config = Bedrock::Config->newFromXML( $path . '/' . $file );
+      $config = merge_modules( { MODULES => [ $this_module_config ] }, $config );
+    }
+
+    closedir CONFIG_FILES;
+  }
+
+  $config;
+}
+
+=pod
+
+=head2 load
+
+ load( file, [options] )
+
+Loads the tests from either a YAML or JSON formatted file. See
+L</run_tests> documentation for a description of the what a test
+object should like.
+
+=over 5
+
+=item file
+
+Fully qualifed path to the YAML or JSON file to load.  If the file's
+extension is C<.yml> or C<.yaml> it will be considered to be a YAML
+file.
+
+=item options
+
+Options to pass to the C<load> subroutine.
+
+=over 10
+
+=item yaml
+
+Boolean that indicates the file is in YAML format.
+
+=back
+
+=back
+
+=cut
+
+# loads the t/{file}.txt file
+sub load {
+  my $file = shift;
+  my %options = @_;
+
+  if ( $file =~/\.ya?ml$/ ) {
+    $options{yaml} = 1;
+  }
+
+  my $tests = eval {
+    if ( exists $options{yaml} && $options{yaml}) {
+      [LoadFile($file)];
+    }
+    else {
+      local $/ = undef;
+      open (my $fh, "<" . $file) or die "can't open $file";
+      my $tests = <$fh>;
+      close $fh;
+      from_json($tests, {  relaxed => 1 });
+    }
+  };
+    
+  die "unable to load test file [$file]: $@"
+    if $@;
+
+  $tests;
+}
+
+=pod
+
+=head2 bedrock
+
+ bedrock(snippet, options)
+
+I<This method is run internally by C<run_tests> and you should not
+need to execute this directly.> Executes a Bedrock snippet. C<options>
+is hash of options described below.
+
+=over 5
+
+=item param
+
+Hash of parameters to pass to Bedrock for use when it executes your
+snippet.
+
+=item name
+
+Name that will be used as part of the log file for this snippet.  You
+typically want to pass the name portion of the YAML file that contains
+the snippet, although this name is up to you.  If you do not pass a
+name, the a name will be fabricated as using the template:
+C<bedrock-test_{PID}>.
+
+=item config
+
+Your own configuration file (typically your incarnation of
+F<tagx.xml>).  Defaults to the Bedrock configuration file.  You can
+load your own configuration file and any additional Bedrock XML files
+that represent configuration files by specifying the
+C<BEDROCK_CONFIG_PATH> in the environment prior to running your tests.
+
+ $ BEDROCK_CONFIG_PATH=/var/www/vhosts/config prove foo-test.pl
+
+=item logdir
+
+Speficies the directory for the tests logs.  Defaults to F</tmp>.
+
+=back
+
+Returns a hash containing:
+
+=over 5
+
+=item input
+
+The Bedrock snippet to execute.
+
+=item output
+
+The output after the Bedrock snippet has been parsed.
+
+=item error
+
+Bedrock's error object.
+
+=back
+
+=cut
+
+sub bedrock {
+  my $text = shift;
+
+  my %options = @_;
+  my %param = $options{param} ? %{$options{param}} : ();
+  
+  require Text::TagX;
+
+  my $logdir = $options{logdir} || '/tmp';
+
+  if ( $options{name} && ! $options{logfile} ) {
+    $options{logfile} = $options{logfile} || sprintf("%s/bedrock-test_%s.log", $logdir, $options{name} ? $options{name} : $$);
+  }
+
+  my $output = '';
+  my $ctx = Faux::Context->new(
+			       IO::Scalar->new(\$output), 
+			       CONFIG    => $options{config},
+			       LOGDIR    => $options{logdir},
+			       LOGFILE   => $options{logfile}
+			      );
+    
+  my $tx = Text::TagX->new(IO::Scalar->new(\$text), $ctx);
+
+  $tx->param(%param, env => \%ENV, config => $options{config});
+
+  load_startup_modules( $tx, CONFIG => $options{config}, CONTEXT => $ctx);
+
+  my $e = eval {
+    $tx->output;
+  };
+
+  return ( input => $text, error => $@, output => $output );
+}
+
+sub check_test {
+  my $test = shift;
+
+  die "no test key found in test\n"
+    unless exists $test->{test};
+
+  die "no result or error key found in test\n"
+    unless exists $test->{result} || exists $test->{error};
+}
+
+sub require_module {
+  my $modfile = shift;
+  
+  $modfile =~ s!::!/!g;
+  $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+  
+  require $modfile;
+}
+
+sub bind_module {
+  my %options = @_;
+
+  require_module( $options{module} );
+      
+  my $obj;
+
+  if ( $options{type} eq 'hash' or $options{type} eq 'object' ) {
+    $obj = bless {}, $options{module};
+    tie %{$obj}, $options{module}, $options{context}, $options{config};
+  }
+  elsif ( $options{type} eq 'array' ) {
+    $obj = bless [], $options{module};
+    tie @{$obj}, $options{module}, $options{context}, $options{config};
+  }
+  elsif ( $options{type} eq 'handle' ) {
+    $obj = bless gensym, $options{module};
+    tie *{$obj}, $options{module}, $options{context}, $options{config};
+  }
+
+  my $func = tied(%{$obj});
+  $func->can('init_plugin') && $func->init_plugin( $options{context}, $options{config} );
+
+  return $obj;
+}
+
+sub merge_modules {
+  my ( $config, $dest_config) = @_;
+
+  # no modules in source or config
+  unless ( @{$dest_config->{MODULES}} ) {
+    $dest_config->{MODULES} = $config->{MODULES}
+      if exists $config->{MODULES};
+  }
+  elsif ( exists $config->{MODULES} && reftype($config->{MODULES}) eq 'ARRAY' ) {
+    # get the binding names for existing modules as these should be
+    # unique and use these to create a hash of all module configurations
+    my %modules;
+    map { $modules{$_->{binding}} = $_; } @{$dest_config->{MODULES}};
+    
+    # possibly overrwite modules from source
+    map { $modules{$_->{binding}} = $_; } @{$config->{MODULES}};
+    
+    $dest_config->{MODULES} = [ values %modules ];
+  }
+
+  return $dest_config;
+}
+
+sub merge_config {
+  my ( $config, $dest_config ) = @_;
+
+  # merge source-config with master
+  map { $dest_config->{$_} = $config->{$_} unless $_ eq 'MODULES'; } keys %$config;
+
+  # merge modules separately
+  $dest_config = merge_modules( $config, $dest_config );
+
+  return $dest_config;
+}
+
+# load_startup_modules($tx, CONFIG => $config, CONTEXT => $ctx)
+#
+# loads startup BLMs, including Header/Session modules
+sub load_startup_modules {
+  my $tx = shift;
+  my %options = @_;
+
+  my $config = $options{CONFIG};
+  my $ctx = $options{CONTEXT};
+
+  # load generic startup BLMs
+  my $modules = $config->{'MODULES'};
+  return unless ref($modules) && reftype($modules) eq 'ARRAY';
+
+  # add plugin PATHs
+  if ( $config->{PLUGIN_PATH} ) {
+    my @plugin_inc = split /:/, $config->{PLUGIN_PATH};
+
+    foreach my $path (@plugin_inc) {
+      push @INC, $path
+      unless grep { /$path/ } @INC;
+    }
+  }
+
+  foreach my $modconf (@{$modules}) {
+    # no binding?
+    next unless defined $modconf->{'binding'};
+
+    my $pre_bound_binding;
+
+    # only for HEADER/SESSION objects
+    if ( exists $modconf->{header} && $modconf->{header} =~/^y/i) {
+      $pre_bound_binding = 'HEADER'
+    }
+    elsif ( exists $modconf->{session} && $modconf->{session} =~/y/i) {
+      $pre_bound_binding = 'SESSION';
+    }
+    
+    if ( $pre_bound_binding ) {
+      # Bind the module
+      my $obj = bind_module(
+			    module  => $modconf->{'module'},
+			    type    => $modconf->{'type'} || 'hash',
+			    context => $ctx,
+			    config  => $modconf->{'config'}
+			   );
+      
+      
+      # add the object to Bedrock' top frame (symbol table)
+      $tx->param( $modconf->{'binding'} => $obj );
+
+      # tagX wants to know who the header and session object are
+      $tx->options( $pre_bound_binding => $obj );
+
+      # ...so does the context object which can be used by Bedrock::CGI
+      $ctx->{$pre_bound_binding} = $obj;
+    }
+    else {
+      # bind a subroutine to the binding name so the constructor gets
+      # invoked ONLY if the variable is accessed from the script.
+      $tx->param( $modconf->{'binding'},
+		  sub {
+		    my $obj;
+		    
+		    my $modfile = $modconf->{'module'};
+		    $modfile =~ s!::!/!g;
+		    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+		    
+		    require $modfile;
+
+		    my $type = $modconf->{'type'} || 'hash';
+		    
+		    if ( $type eq 'hash' or $type eq 'object' ) {
+		      $obj = bless {}, $modconf->{'module'};
+		      tie %{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+		    }
+		    elsif ( $type eq 'array' ) {
+		      $obj = bless [], $modconf->{'module'};
+		      tie @{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+		    }
+		    elsif ( $type eq 'handle' ) {
+		      $obj = bless gensym, $modconf->{'module'};
+		      tie *{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+		    }
+		    
+		    $obj;
+		  }
+		);
+    }
+  }
+}
+
+=pod
+
+=head1 TESTING TRICKS
+
+The test framework give you access to Bedrock's configuration object
+as well as the shell enviroment via the C<$config> and C<$env>
+objects.  Accordingly, you can use these to modify test behaviors
+when they are executed.
+
+ $ DBI_DSN=dbi:Oracle:NAME_TEST prove foo-test.t
+
+=head1 SEE OTHER
+
+C<Text::TagX>, C<Test::More>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+1;
