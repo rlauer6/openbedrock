@@ -1,0 +1,169 @@
+#!/bin/bash
+
+# NOTES:
+
+# To release the Bedrock RPM
+# 
+# 1) build the RPM
+#     
+#     ./build bump
+#     ./build build
+# 
+# 2) copy the RPM file to openbedrock.org
+# 
+#     $ scp $(ls -1rt ~/.rpm/RPMS/noarch/bedrock*.rpm | tail -1) ec2-user@openbedrock.org:
+#     $ scp $(ls -1rt bedrock*.tar.gz | tail -1) ec2-user@openbedrock.org:
+#     $ ssh ec2-user@openbedrock.org
+#     Last login: Wed Apr 13 12:40:02 2016 from ip-10-0-1-208.ec2.internal
+#     
+#            __|  __|_  )
+#            _|  (     /   Amazon Linux AMI
+#           ___|\___|___|
+#     
+#     https://aws.amazon.com/amazon-linux-ami/2015.09-release-notes/
+#     39 package(s) needed for security, out of 83 available
+#     Run "sudo yum update" to apply all updates.
+#     Amazon Linux version 2016.03 is available.
+#     [ec2-user@ip-10-0-2-230 ~]$ sudo cp bedrock-2.4.1-18.noarch.rpm /var/www/vhosts/bedrock-repos/html/pub/bedrock/noarch/
+#     [ec2-user@ip-10-0-2-230 ~]$ sudo createrepo /var/www/vhosts/bedrock-repos/html/pub/bedrock/
+#     [ec2-user@ip-10-0-2-230 ~]$ sudo cp ~/bedrock-2.4.1-snapshot.tar.gz \
+#                                  /var/www/vhosts/www.openbedrock.net/htdocs/bedrock-repo/bedrock-2.4.1-18-snapshot.tar.gz
+# 
+# 3) edit the wiki and declar a new version
+
+# help()
+#
+# help!
+#
+help() {
+    echo "$0 [options] [command]"
+    echo ""
+    echo "  Options"
+    echo "  -------"
+    echo "    -h, --help                   - help"
+    echo ""
+    echo "  Commands"
+    echo "  --------"
+    echo "    build                        - build RPM"
+    echo "    bump                         - bump minor revision"
+    echo "    bump release                 - bump minor release"
+    echo "    deploy                       - deploy RPM"
+    echo "    unbump                       - restore last version number"
+    echo ""
+    echo " Examples:"
+    echo " ---------"
+
+    return 0
+}
+
+# +-------------------------+
+# | MAIN SCRIPT STARTS HERE |
+# +-------------------------+
+
+# -a => allow short optins (-), -o {options} -l {long options}
+OPTS=$(getopt -a -o h -l help -- "$@")
+
+if [[ $? -ne 0 ]]; then
+    help;
+    exit $?
+fi
+
+eval set -- "$OPTS"
+
+while [ $# -gt 0 ]; do
+
+    case "$1" in
+
+	-h | --help)
+	    shift;
+	    help;
+	    exit 0;
+	    ;;
+
+	* )
+	    shift;
+	    break;
+	    ;;
+    esac
+done
+
+case "$1" in 
+
+    '?')
+	help;
+	exit 0;
+	;;
+
+    unbump)
+	if test -e "bedrock-build~"; then
+	    mv bedrock-build~ bedrock-build
+	fi
+	cat bedrock-build
+	;;
+
+    # bump release number (not version, just release)
+    bump)
+	shift;
+	PROJECT_RELEASE=$(cat bedrock-build)
+        if test -z "$1"; then
+ 	    PROJECT_RELEASE=$(echo "$PROJECT_RELEASE 0.01+n" | dc -)
+	else
+	    if [ "$1" = "release" ]; then
+ 		PROJECT_RELEASE=$(echo "$PROJECT_RELEASE 1+n" | dc -)
+	    else
+		echo "huh?"
+		exit;
+	    fi
+	fi
+	mv bedrock-build bedrock-build~
+	echo "$PROJECT_RELEASE" > bedrock-build
+	echo "$PROJECT_RELEASE"
+	;;
+
+    # build from latest tag
+    build)
+	make maintainer-clean
+	./bootstrap
+	./configure --prefix=/usr
+	make && make dist
+	tarball=$(ls -1rt *.tar.gz | tail -1)
+	[ -e "$tarball" ] && rpmbuild -tb $tarball
+	;;
+
+    deploy)
+	topdir=$(perl -n -e '/^%_topdir/ && print ((split / /)[1]);' ~/.rpmmacros)
+	set -x
+	if test -d "$topdir"; then
+            bedrock_rpm=$(ls -1rt ${topdir}/RPMS/noarch/bedrock*.rpm | tail -1)
+
+	    if test -n "$bedrock_rpm"; then
+
+		repo=$(mktemp -d)
+		mkdir ${repo}/noarch
+
+		BUCKET=openbedrock-repo
+		
+                # if we successfully built some RPM, create a
+                # temporary repo and sync with AWS S3 repo
+		cp "$bedrock_rpm" ${repo}/noarch
+		    
+                # get all the .rpm files from the S3 bucket and
+                # recreate the repo
+		createrepo $repo
+		    
+                # sync local repo with S3 bucket, make it PUBLIC
+                PERMISSION="--grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers"
+		aws s3 sync --recursive --include="*" ${repo} s3://$BUCKET/ $PERMISSION
+		aws s3 ls s3://$BUCKET/
+
+                # cleanup local copy of repo
+		test -n "$repo" && rm -rf $repo
+	    fi
+	fi
+	;;
+
+    *)
+	exit 0;
+	;;
+esac
+
