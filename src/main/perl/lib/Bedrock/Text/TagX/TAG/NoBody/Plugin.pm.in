@@ -42,7 +42,9 @@ use Bedrock::Plugin;
 
 sub finalize {
   my ( $self, $tx, @context ) = @_;
+
   my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+
   my %options = ( 'define-var=s'    => undef,
                   'dir-prefix=s'    => undef,
                   'define-plugin=s' => undef,
@@ -56,21 +58,27 @@ sub finalize {
 
   $options{'define-var'} = '_' unless defined $options{'define-var'};
 
-  my $tag_opts = $self->parse_tag_name( shift @argv );
+  my $tag_name = shift @argv;
+  my $tag_opts = $self->parse_tag_name($tag_name);
+  my $name;
+  my $class;
 
-  my $class = $tag_opts->{type}         || $tag_opts->{name};
-  my $name  = $options{'define-plugin'} || $tag_opts->{name};
+  if ( exists $options{'define-plugin'} ) {
+    $name = $options{'define-plugin'};
+    $class = $tag_opts->{name} || $tag_opts->{type};
+  }
+  else {
+    $name = $tag_opts->{name};
+    $class = $tag_opts->{type};
+    $name =~ s/:://g;
+  }
 
-  $name =~ s/:://g;
-
-  unless ($name) {
-    $name = $class;
-    if ( exists $tx->{'VARS'}->{$class} ) {
-      &log_message( undef,
-                    "WARNING: Default name \$class already in use.\n" .
-                    "You probably want to use --define-var to assign an object name."
-                  );
-    }
+  if ( exists $tx->{'VARS'}->{$name} ) {
+    &log_message( undef, "WARNING: plugin name: \$name conflicts with existing variable.\n");
+  }
+  
+  if ( exists $tx->{'VARS'}->{$options{'define-var'}} ) {
+    &log_message( undef, "WARNING: return variable name: ", $options{'define-var'} . " conflicts with existing variable.\n");
   }
 
   # still undecided about this
@@ -99,7 +107,7 @@ sub finalize {
       if $verbose;
   }
   else {
-    die "Could not load module: $class\n";
+    die "Could not load module: [$class]. Check your syntax [<plugin$tag_name>] or your plugin path.\n";
   }
 
   my $obj;
@@ -204,30 +212,38 @@ objects or snippets of HTML for assembling your page.
 
 =item --define-var
 
-Name of the object that will hold the return value of the Plugin
+Name of the object that will hold the return value of the Plugin's
 initialization function.  If not supplied the value will be returned
 in C<$_>.
 
 =item --define-plugin
 
 Name of the object that will be instantiated as the given Plugin.
-If not supplied the object will have the same name as the Plugin.
+If not supplied the object will have the same name as the Plugin.  Some examples:
+
+ <plugin:Mail>  <=> <plugin:Mail --define-plugin="Mail">
+
+ <plugin:BLM::Mail> <=> <plugin:BLM::Mail --define-plugin="BLMMail">
+
+I<By convention, you we don't use the full package name when
+specifying the plugin, although you are more than welcome to do that
+if you would like.>
 
 =item --tie
 
 Forces the plugin to tie the plugin class rather than invoking a
-C<new()> method.  Some perl classes are designed to be tied, while
+C<new()> method.  Some Perl classes are designed to be tied, while
 others may expect (by convention) that you instantiate them using a
-C<new()> method.  This option forces a tie even if the perl class
+C<new()> method.  This option forces a tie even if the Perl class
 contains a C<new()> method.
 
 =back
 
 =head1 NOTES
 
-Plugins are just perl modules that have implement a C<new()> method.
-Bedrock will pass any of the argument in the tag to the C<new()>
-constructor.
+Plugins are just Perl modules that have implemented a C<new()> method
+or ones that can be C<tie>'d.  Bedrock will pass any of the argument
+in the tag to the C<new()> constructor.
 
 You can also subclass the Perl C<Bedrock::Plugin> class.  Typically a
 plugin will look something like this:
@@ -235,16 +251,13 @@ plugin will look something like this:
  package BLM::Foo;
 
  use strict;
+ use warnings;
 
- use vars qw(@ISA);
-
- use Bedrock::Plugin;
+ use parent qw/Bedrock::Plugin/;
 
  use Bedrock::Hash;
  use Bedrock::Array;
-
- @ISA = qw( Bedrock::Hash Bedrock::Plugin );
-
+ 
  sub init_plugin {
    my $self = shift;
    my @args = @_;
@@ -288,7 +301,12 @@ module.
 
 =item Plugin location
 
-Plugins should be placed in a location where perl will find them.
+Plugins should be placed in a location where Perl will find them.
+They should be part of the C<BLM> namespace.
+
+ package BLM::Foo;
+
+I<In case you are wondering - C<BLM> = Bedrock Loadable Module.>
 
 If you are running Bedrock as a CGI, you probably want to make sure
 the the C<perl.INC> file points to a directory that contains your
@@ -302,10 +320,11 @@ You can also set the configuration variable C<PLUGIN_PATH> in F<tagx.xml>.
 
  <scalar name="PLUGIN_PATH">/var/www/vhosts/mysite.com/share/perl5</scalar>
 
+
 =item Retrieving plugin options
 
-Options you might pass to the plugin (e.g. --define-var) can be retrieved
-using the C<options()> method> if youE<039>ve subclassed
+Options you might pass to the plugin (e.g. --define-var) can be
+retrieved using the C<options()> method> if youE<039>ve subclassed
 C<Bedrock::Plugin>
 
 =back
@@ -338,7 +357,6 @@ Example. Assume method C<bar()> returns an array.
 
  <array:bar --expand-args $Foo.bar()>
 
-
 Example. Assume method c<bas()> returns a hash reference.
 
  <plugin:Foo>
@@ -349,7 +367,6 @@ Example. Assume method c<bas()> returns a hash reference.
 
 C<Bedrock::Plugin>, C<Bedrock::Application::Plugin>, C<E<lt>pebbleE<gt>>, 
 C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, 
-
 
 =cut
 
