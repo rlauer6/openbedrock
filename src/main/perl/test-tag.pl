@@ -1,18 +1,9 @@
 use strict;
 use warnings;
 
-use Test::More;
 use File::Basename;
+use Test::Bedrock qw/run/;
 
-require "bedrock-test-bed.pl";
+my ($name, $path, $ext) = fileparse($0, qr/(\.[^.])*/);
 
-my ($name) = fileparse($0, qr/(\.[^.])*/);
-
-my $tests = bedrock_load_tests($name, 'yaml');
-
-plan tests => 1+scalar(@{$tests});
-
-use_ok('Text::TagX');
-
-bedrock_run_tests($tests);
-
+run(sprintf("t/%s.txt", $name), yaml => 1);
