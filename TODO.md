@@ -7,7 +7,8 @@ Create some benchmarks to set the state for optimizing Bedrock.
 
 ## Create a test suite
 
-Create a test suite for Bedrock, preferably based on Test::More
+Create a test suite for Bedrock, preferably based on Test::More.  This
+is currently a work in progress!
 
 ## Move some features to separate packages
 
@@ -27,7 +28,10 @@ years.
 ## Create a continuous integration build script
 
 Re-write the build-bedrock-rpm script formerly used in the CVS
-distribution.
+distribution.  This is currently a work in progress! A basic build
+script has been created.
+
+    $ ./build -h
 
 ## Re-implement the Bedrock parser
 
