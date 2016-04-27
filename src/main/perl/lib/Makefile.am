@@ -18,11 +18,8 @@ perl5bedrocktexttagxtagwithbodylibdir 	  = $(perl5libdir)/Bedrock/Text/TagX/TAG/
 perl5bedrocktexttagxtagwithbodyiflibdir   = $(perl5libdir)/Bedrock/Text/TagX/TAG/WithBody/If
 perl5bedrocktexttagxtagwithbodylooplibdir = $(perl5libdir)/Bedrock/Text/TagX/TAG/WithBody/Loop
 perl5bedrocktexttagxtermlibdir 		  = $(perl5libdir)/Bedrock/Text/TagX/Term
-perl5bedrockxmllibdir          		  = $(perl5libdir)/Bedrock/XML
-perl5bedrockyamllibdir         		  = $(perl5libdir)/Bedrock/YAML
-perl5bedrockcsvlibdir         		  = $(perl5libdir)/Bedrock/CSV
-perl5bedrockbedrockxmllibdir     	  = $(perl5libdir)/Bedrock/BedrockXML
-perl5bedrockjsonlibdir         		  = $(perl5libdir)/Bedrock/JSON
+perl5bedrockserializerlibdir         	  = $(perl5libdir)/Bedrock/Serializer
+perl5bedrockxmllibdir			  = $(perl5libdir)/Bedrock/XML
 perl5bedrockxmlcontainerlibdir 		  = $(perl5libdir)/Bedrock/XML/Container
 
 perl5blmlibdir                    = $(perl5libdir)/BLM
@@ -188,30 +185,16 @@ perl5bedrocktexttagxtermlib_DATA = \
 BEDROCK_TEXT_TAGX_TERM=$(perl5bedrocktexttagxtermlib_DATA:.pm=.pm.in)
 
 perl5bedrockxmllib_DATA = \
-    Bedrock/XML/Container.pm \
-    Bedrock/XML/Handler.pm
+    Bedrock/XML/Container.pm
 
 BEDROCK_XML=$(perl5bedrockxmllib_DATA:.pm=.pm.in)
 
-perl5bedrockyamllib_DATA = \
-    Bedrock/YAML/Handler.pm
-
-BEDROCK_YAML=$(perl5bedrockyamllib_DATA:.pm=.pm.in)
-
-perl5bedrockcsvlib_DATA = \
-    Bedrock/CSV/Handler.pm
-
-BEDROCK_CSV=$(perl5bedrockcsvlib_DATA:.pm=.pm.in)
-
-perl5bedrockbedrockxmllib_DATA = \
-    Bedrock/BedrockXML/Handler.pm
-
-BEDROCK_BEDROCKXML=$(perl5bedrockbedrockxmllib_DATA:.pm=.pm.in)
-
-perl5bedrockjsonlib_DATA = \
-    Bedrock/JSON/Handler.pm
-
-BEDROCK_JSON=$(perl5bedrockjsonlib_DATA:.pm=.pm.in)
+perl5bedrockserializerlib_DATA = \
+    Bedrock/Serializer/CSV.pm         \
+    Bedrock/Serializer/BedrockXML.pm  \
+    Bedrock/Serializer/JSON.pm        \
+    Bedrock/Serializer/XML.pm         \
+    Bedrock/Serializer/YAML.pm
 
 perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \
