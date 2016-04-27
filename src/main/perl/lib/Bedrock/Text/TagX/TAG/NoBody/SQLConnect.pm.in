@@ -55,96 +55,94 @@ sub finalize {
                   'username=s'    => undef,
                   'password=s'    => undef
                 );
+
   my @argv = $self->parse_options( \%options, @context );
   my $verbose = $self->verbose;
 
   my $config  = $tx->out_handle->{Handle}->{'CONFIG'};
-  my $dbnames = $config->{'_dbnames'};
+  my $dbnames = $config->dbnames();
 
-  $self->dump_options( \%options ) if $verbose;
+  $self->dump_options( \%options ) 
+    if $verbose;
 
-  die "Specify the DSN using `--data-source' option or as argument, not both.\n"
-  if exists $options{'data-source'} and @argv;
+  die "Specify the DSN using the `--data-source' option or as argument, but not both.\n"
+    if exists $options{'data-source'} and @argv;
 
   my $dsn;
 
   foreach (qw/db data-source username password/) {
-    die "option --" . $_ . " specified and it has no value!\n"
-    if ( exists $options{$_} && ( !defined $options{$_} || !$options{$_} ) );
+    die "option --" . $_ . " requires a value.\n"
+      if ( exists $options{$_} && ( !defined $options{$_} || !$options{$_} ) );
   }
 
-  if ( length( $options{'data-source'} ) ) {
+  if ( exists $options{'data-source'} ) {
     $dsn = $options{'data-source'};
   }
   elsif (@argv) {
     $dsn = "@argv";
   }
-  elsif ( length( $options{dsn} ) && defined $dbnames ) {
-    if ( &UNIVERSAL::isa( $dbnames, 'HASH' )
-         && exists $dbnames->{ $options{dsn} } )
-    {
-      $dsn               = $dbnames->{ $options{dsn} }->{DBI_DSN};
-      $options{username} = $dbnames->{ $options{dsn} }->{DBI_USER};
-      $options{password} = $dbnames->{ $options{dsn} }->{DBI_PASS};
+  elsif ( exists $options{dsn} && ref($dbnames) ) {
+    if ( exists $dbnames->{$options{dsn}} ) {
+      $dsn = $dbnames->{$options{dsn}}->{DBI_DSN};
+      $options{username} = $dbnames->{$options{dsn}}->{DBI_USER};
+      $options{password} = $dbnames->{$options{dsn}}->{DBI_PASS};
     }
     else {
       die "No named connection '" . $options{dsn} . "' found.\n";
     }
   }
-  elsif ( length( $ENV{'DBI_DSN'} ) ) {
-    $dsn = $ENV{'DBI_DSN'};
+  elsif ( exists $ENV{DBI_DSN} ) {
+    $dsn = $ENV{DBI_DSN};
     $options{username} = $options{username} || $ENV{DBI_USER};
     $options{password} = $options{password} || $ENV{DBI_PASS};
   }
-  elsif ( $config->{DBI_DSN} ) {
+  elsif ( exists $config->{DBI_DSN} ) {
     &log_message( $self, "DSN will be taken from configuration..." )
-    if $verbose;
+      if $verbose;
     $dsn = $config->{DBI_DSN};
     $options{username} = $options{username} || $config->{DBI_USER};
     $options{password} = $options{password} || $config->{DBI_PASS};
-    &log_message( $self,
-                  "DSN: $dsn username: "
-                  . $options{username}
-                  . " password: "
-                  . $options{password}
-                ) if $verbose;
+    &log_message( $self, "DSN: $dsn username: " . $options{username} . " password: " . $options{password})
+      if $verbose;
   }
-
-  die "Data source not specified.\n" unless length($dsn);
-
-  $tx->{'DB'} = {} unless exists $tx->{'DB'};
+  
+  die "Data source not specified.\n" 
+    unless $dsn;
+  
+  $tx->{'DB'} = {} 
+    unless exists $tx->{'DB'};
 
   &log_message( $self, "deprecated use of --dbname, use --db instead." );
-  my $name = $options{'dbname'} || $options{'db'};
-  if ( length($name) ) {
-    die
-    "Cannot assign database connection to `$name': variable already exists.\n"
-    if exists $tx->{'VARS'}->{$name};
-  }
-  else {
-    $name = &ANONYMOUS;
-  }
 
+  my $name = $options{'dbname'} || $options{'db'};
+  die "Cannot assign database connection to `$name': variable already exists.\n"
+    if $name && exists $tx->{'VARS'}->{$name};
+
+  $name = &ANONYMOUS;
+  
   if ( exists $tx->{'DB'}->{$name} ) {
-    &log_message( $self,
-                  "Disconnecting previous DB connection named ($name)\n" )
-    if $verbose;
+    &log_message( $self, "Disconnecting previous DB connection named ($name)\n" )
+      if $verbose;
     $tx->{'DB'}->{$name}->disconnect;
+
     delete $tx->{'DB'}->{$name};
     delete $tx->{'VARS'}->{$name};
   }
+  
+  my $dbh = DBI->connect( $dsn, @options{qw(username password)},
+			  {
+			   'AutoCommit' => $options{AutoCommit},
+			   'PrintError' => $options{PrintError},
+			   'RaiseError' => $options{RaiseError},
+			   'ChopBlanks' => $options{ChopBlanks}
+			  }
+			);
 
-  my $dbh = DBI->connect( $dsn,
-                          @options{qw(username password)},
-                          { 'AutoCommit' => $options{AutoCommit},
-                            'PrintError' => $options{PrintError},
-                            'RaiseError' => $options{RaiseError},
-                            'ChopBlanks' => $options{ChopBlanks}
-                          }
-                        );
-  die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+  die "Unable to connect to database: ", $DBI::errstr, "\n"
+    unless $dbh;
 
-  &log_message( $self, "Connected to database, handle = <$dbh>\n" ) if $verbose;
+  &log_message( $self, "Connected to database, handle = <$dbh>\n" ) 
+    if $verbose;
 
   $tx->{'DB'}->{$name} = $dbh;
   $tx->{'VARS'}->{$name} = $dbh unless $name eq &ANONYMOUS;
@@ -158,7 +156,7 @@ Connect to a database source.
 
 =head1 SYNTAX
 
-  <sqlconnect [options] [data-source]>
+ <sqlconnect [options] [data-source]>
 
 =head2 data-source
 
@@ -190,14 +188,14 @@ Example:
 
  <sqlconnect --dsn="sales">
 
-...then in F<data-soures.xml>
+...then in F<data-sources.xml>
 
  <object>
-   <object name="sales">
-     <scalar name="DBI_DSN">dbi:Oracle:sales_prod</scalar>
-     <scalar name="DBI_USER">zig</scalar>
-     <scalar name="DBI_PASS">ziglar</scalar>
-   </object>
+  <object name="sales">
+   <scalar name="DBI_DSN">dbi:Oracle:sales_prod</scalar>
+   <scalar name="DBI_USER">zig</scalar>
+   <scalar name="DBI_PASS">ziglar</scalar>
+  </object>
  </object>
 
 =item --data-source
@@ -208,8 +206,8 @@ C<dbi:database-type:database-name>
 
 Example:
 
-  dbi:Oracle:name_devl
-  dbi:mysql:bedrock
+ dbi:Oracle:name_devl
+ dbi:mysql:bedrock
 
 =item --db
 
@@ -243,7 +241,7 @@ Raise an error if an SQL statement results in an error.
 
 =head1 NOTES
 
-Bedrock's database layer is implemented using the perl C<DBI> module.
+Bedrock's database layer is implemented using the Perl C<DBI> module.
 For more information regarding the behavior of C<DBI> see C<perldoc
 DBI>.
 
@@ -260,8 +258,9 @@ C<DBI_PASS>). If Bedrock still can't find a data-source it will throw an
 exception.
 
 The configuration object is initially read from F<tagx.xml> so you
-could specify those variable there.  You can alternately set them in your
-Bedrock page by invoking the C<set> method of the C<$config> object.
+could specify those variables there.  You can alternately set them in
+your Bedrock page by invoking the C<set> method of the C<$config>
+object.
 
  <null $config.set('DBI_DSN', 'dbi:mysql:bedrock')>
  <null $config.set('DBI_USER', 'fred')>
@@ -274,35 +273,36 @@ configuration file.
  <null $config.merge("bedrock-connect.xml")>
 
 Yet another way, would be to create a directory specific configuration
-in F<tagx_apps.xml> which is merged with the system configuration when Bedrock serves a page from the 
-directory specified as one of the keys in F<tagx_apps.xml> file. 
+in F<tagx_apps.xml> which is merged with the system configuration when
+Bedrock serves a page from the directory specified as one of the keys
+in F<tagx_apps.xml> file.
 
  <object>
-   <object name="/accounting">
-     <scalar name="DBI_DSN">dbi:Oracle:name_devl</scalar>
-     <scalar name="DBI_USER">ACCTN</scalar>
-     <scalar name="DBI_PASS">ACCTN</scalar>
-   </object>
+  <object name="/accounting">
+   <scalar name="DBI_DSN">dbi:Oracle:name_devl</scalar>
+   <scalar name="DBI_USER">ACCTN</scalar>
+   <scalar name="DBI_PASS">ACCTN</scalar>
+  </object>
  </object>
 
 As discussed previously, you can force Bedrock to export configuration
 variables to the environment using the C<export_env="yes"> attribute
 of a Bedrock XML C<E<lt>scalarE<gt>> tag.
 
-  <scalar export_env="yes"  name="DBI_DSN">dbi:mysql:bedrock;host=localhost</scalar>
-  <scalar export_env="yes"  name="DBI_USER">fred</scalar>
-  <scalar export_env="yes"  name="DBI_PASS">bedrock</scalar>
+ <scalar export_env="yes"  name="DBI_DSN">dbi:mysql:bedrock;host=localhost</scalar>
+ <scalar export_env="yes"  name="DBI_USER">fred</scalar>
+ <scalar export_env="yes"  name="DBI_PASS">bedrock</scalar>
 
 I<Even though DBI and Bedrock support this, exporting usernames and
 passwords is probably not something you want to do.>
 
 =head1 EXAMPLE
 
-  <sqlconnect --data-source="dbi:Oracle:name_devl"  --username="srch" --password="srch">
+ <sqlconnect --data-source="dbi:Oracle:name_devl"  --username="srch" --password="srch">
 
-  <sqlselect "select * from custmr where acct < 999">
-   <var $ACCT> <var $NAME><br>
-  </sqlselect>
+ <sqlselect "select * from custmr where acct < 999">
+  <var $ACCT> <var $NAME><br>
+ </sqlselect>
 
 =head1 SEE ALSO
 
