@@ -24,125 +24,95 @@
 package Bedrock::Config;
 
 use strict;
+use warnings;
 
 BEGIN {
   use Exporter ();
-  use vars qw ($VERSION @ISA);
+  use vars qw ($VERSION);
 }
 
 use IO::File;
 use File::Basename;
 
-use Bedrock::Hash;
 use Bedrock::XML;
 use Bedrock::Dump;
+use Data::Dumper;
+use Scalar::Util qw/reftype/;
 
-@ISA = qw (Bedrock::Hash);
+use parent qw/Bedrock::Hash/;
 
-# ******************************************************************************
-# Note: 'warn' is used instead of a logging function in this
-#        module, since this function may be called prior to logging being
-#        configured - Bedrock::Config is used to get logging configuration thus
-#        its premature to assume logging is available.
-# ******************************************************************************
+# Note: 'warn' is used instead of a logging function in this module,
+# since this function may be called prior to logging being configured
+# - Bedrock::Config is used to get configuration information, which
+# includes logging configuration thus its premature to assume logging
+# is available.
 
-sub _load {
-  my $self = shift;
-  my $fd   = shift;
 
-  my ( @keys, $line, $var, $value, $include_file );
-  while ( $line = <$fd> ) {
-    chomp $line;
-    for ($line) {
-
-      # Skip comments
-      /^\s*\#/ and last;
-
-      # kick out comments on the same line as a var defn.
-      s/\s*\#.*//;
-
-      # End of subobject
-      /^\s*\}/ and return;
-
-      # Definition of a variable
-      /^\s*(\w+)\s*(.*)$/oi and do {
-        ( $var, $value ) = ( $1, $2 );
-        push @keys, $var unless exists $self->{$var};
-        if ( $value =~ /^\s*\{\s*$/oi ) {
-
-          # Begin subobject
-          $self->{$var} = $self->new($fd);
-        }
-        else {
-
-          # var definition
-          $self->{$var} = $value;
-        }
-        last;
-      };
-
-      # file inclusion directive
-      /^<include\s+(\S+)\s*>$/oi and do {
-        $include_file = $1;
-        my $newObj = $self->new($include_file);
-        my ( $key, $value );
-        while ( ( $key, $value ) = each %{$newObj} ) {
-          push @keys, $key unless exists $self->{$key};
-          $self->{$key} = $value;
-        }
-        last;
-      };
-
-      # begin environment export
-      /^<export_env>$/oi and do {
-        my $env = $self->new($fd)->flatten;
-        my ( $key, $value );
-        while ( ( $key, $value ) = each %{$env} ) {
-          next if ref($value);
-          $key =~ s!^/!!o;
-          $key =~ s!/!_!g;
-          $ENV{$key} = $value;
-        }
-        last;
-      };
-
-      # end environment export
-      m!^</export_env>$!oi and return;
-
-      # Skip line if no match with above
-    }
-  }
-  $fd->close;
-}
-
-sub _interp_vars {
-  my $self = shift;
-  for my $key ( keys %{$self} ) {
-    $self->{$key} =~ s/(?<!\\)\~(\w+)/$self->{$1}/g;
-  }
-}
-
-sub newFromXML {
+sub new {
   my $class = shift;
-  bless Bedrock::XML->new(shift), $class;
+  $class = ref($class) || $class;
+
+  my $file = shift;
+
+  die "[$file] - only .xml files are supported as Bedrock configuration files.\n"
+    if $file && $file !~/\.xml$/i;
+  
+  my $self = $file ? Bedrock::XML->new(&_locate_file($file)) : {};
+
+  return bless $self, $class;
 }
+
+# misnamed
+sub newFromXML {
+  warn "deprecated: no need to use this! use new() instead.\n";
+  &new;
+}
+
+sub newFromString {
+  my $class = shift;
+  $class = ref($class) || $class;
+  my $self = Bedrock::XML->newFromString(shift);
+
+  bless $self, $class;
+}
+
+sub dbnames {
+  my $self = shift;
+
+  if ( @_ ) {
+    $self->{'_dbnames'} = shift;
+  }
+
+  $self->{'_dbnames'};
+}
+
+=pod
+
+=head2 _locate_file
+
+ _locate_file( file )
+
+=cut
 
 sub _locate_file {
   my $file = shift;
 
   if ( $file =~ m!/! ) {
-
     # No search for config file if filename specified with path
-    die "_locate_file: Config file $file not found" unless -e $file;
+
+    die "_locate_file: Config file $file not found"
+      unless -e $file;
+
     die "_locate_file: Cannot open config file $file for reading."
-    unless -r $file;
+      unless -r $file;
+
     return $file;
   }
   elsif ( -e $file ) {
-
-    # look for file in current dir
+    # file exists in current directory, but can we read it?
     die "_locate_file: Cannot open config file $file for reading."
-    unless -r $file;
+      unless -r $file;
+
     return $file;
   }
   else {
@@ -160,83 +130,119 @@ sub _locate_file {
     for my $dir ( @search_paths ) {
       my $fullpath = $dir . '/' . $file;
       next unless -e $fullpath;
+
+      # found it but it's unreadable
       die "_locate_file: Cannot open config file $fullpath for reading."
-      unless -r $fullpath;
-        return $fullpath;
+	unless -r $fullpath;
+
+      # found it
+      return $fullpath;
     }
 
     die "_locate_file: Could not locate $file in " . join(':', @search_paths);
   }
 }
 
-sub new {
-  my $proto = shift;
-  my $class = ref($proto) || $proto;
-  my $self  = bless $class->SUPER::new, $class;
-  return $self unless @_ > 0;
+sub merge_config {
+  my ($self, $config) = @_;
 
-  my $fd = shift;
-  unless ( ref($fd) ) {
-    my $file = $fd;
-    return Bedrock::Config->newFromXML( &_locate_file($file) )
-    if $file =~ /\.xml$/i;
-    if ( $file =~ m!/! ) {
-      my $dir = dirname($file);
-      if ( $ENV{'BEDROCK_CONFIG_PATH'} ) {
-        $ENV{'BEDROCK_CONFIG_PATH'} = $dir . ':' . $ENV{'BEDROCK_CONFIG_PATH'};
-      }
-      else {
-        $ENV{'BEDROCK_CONFIG_PATH'} = $dir;
-      }
-    }
-    $fd = IO::File->new( &_locate_file($file) );
-    die "$self: Unable to open $file: $!\n" unless $fd;
+  # merge source-config with master
+  map { $self->{$_} = $config->{$_} unless $_ eq 'MODULES'; } keys %$config;
+
+  # merge modules separately
+  $self->merge_modules($config);
+
+  return $self;
+}
+
+sub merge_modules {
+  my ($self, $config) = @_;
+
+  # no modules in source or config
+  unless ( @{$self->{MODULES}} ) {
+    $self->{MODULES} = $config->{MODULES}
+      if exists $config->{MODULES};
   }
-  $self->_load($fd);
-  $self->_interp_vars;
-  $self;
+  elsif ( exists $config->{MODULES} && @{$config->{MODULES}} ) {
+    # get the binding names for existing modules as these should be
+    # unique and use these to create a hash of all module configurations
+    my %modules;
+    map { $modules{$_->{binding}} = $_; } @{$self->{MODULES}};
+    
+    # possible overrwite modules from source
+    map { $modules{$_->{binding}} = $_; } @{$config->{MODULES}};
+    
+    $self->{MODULES} = [ values %modules ];
+  }
+
+  return $self;
+}
+
+sub merge {
+  my $self = shift;
+  my $file = shift;
+
+  if ( -s $file ) {
+    my $config = Bedrock::XML->new($file);
+    $self->merge_config($config);
+  }
+
+  return $self;
 }
 
 sub XML {
   my $self = shift;
-  my $dir  = shift;    # 'in', 'out'
+  my $in_out = shift;
+
+  warn "$self::XML() has been deprecated, consider using <var --xml>\n";
 
   die "Usage: \$config.XML('in|out', option, value, ...)"
-  unless $dir =~ /^(in|out)$/;
+    unless $in_out =~ /^(in|out)$/;
 
   die "XML config object not set in tagx.xml"
-  unless $self->{XML}->{$dir};
+    unless $self->{XML}->{$in_out};
 
   if ( @_ == 1 || @_ % 2 ) {
-    return $self->{XML}->{$dir}->{ $_[0] };
+    return $self->{XML}->{$in_out}->{ $_[0] };
   }
   else {
-    my $config = $self->{XML}->{$dir};
+    my $config = $self->{XML}->{$in_out};
     my $last;
     my %options = @_;
+
     while ( my ( $opt, $value ) = each %options ) {
       $last = $config->{$opt};
       $config->{$opt} = $value;
     }
+
     return $last;
   }
 }
 
+=pod
+
+=head2 get_module_config
+
+Returns a startup module's configuration object.
+
+=cut
+
 sub get_module_config {
-  my $self        = shift;
-  my $module_name = shift;
+  my ($self, $module_name) = @_;
 
   my $modules = $self->{MODULES};
+  my $config;
 
-  return undef unless $modules && ref($modules) =~ /array/i && @$modules;
-
-  foreach (@$modules) {
-    if ( $_->{module} =~ /$module_name/i ) {
-      return $_->{config};
+  if ( reftype($modules) eq 'ARRAY') {
+    foreach (@$modules) {
+      if ( $_->{module} =~ /$module_name/i ) {
+	$config = $_->{config};
+	last;
+      }
     }
   }
-
-  return undef;
+  
+  return $config;
 }
 
 1;
