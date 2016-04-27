@@ -196,6 +196,8 @@ perl5bedrockserializerlib_DATA = \
     Bedrock/Serializer/XML.pm         \
     Bedrock/Serializer/YAML.pm
 
+BEDROCK_SERIALIZER = $(perl5bedrockserializerlib_DATA:.pm=.pm.in)
+
 perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \
     Bedrock/XML/Container/Object.pm \
@@ -275,10 +277,7 @@ dist_noinst_DATA = \
     $(BEDROCK_TEXT_TAGX_TAG_WITHBODY_LOOP) \
     $(BEDROCK_TEXT_TAGX_TERM) \
     $(BEDROCK_XML) \
-    $(BEDROCK_YAML) \
-    $(BEDROCK_CSV) \
-    $(BEDROCK_BEDROCKXML) \
-    $(BEDROCK_JSON) \
+    $(BEDROCK_SERIALIZER) \
     $(BEDROCK_XML_CONTAINER) \
     $(BLM_INDEXEDTABLEHANDLER) \
     $(BLM) \
