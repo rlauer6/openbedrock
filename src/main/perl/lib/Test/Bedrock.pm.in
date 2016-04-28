@@ -29,7 +29,13 @@ sub new {
   bless {}, shift;
 }
 
-sub content_type {
+sub AUTOLOAD {
+}
+
+sub log {
+  my $self = shift;
+  print STDERR @_;
+  return $self;
 }
 
 package Faux::Context;
@@ -95,6 +101,8 @@ sub close {
 package Test::Bedrock;
 
 use Bedrock::BedrockConfig;
+use Bedrock::Handler;
+
 use IO::Scalar;
 use JSON;
 use Scalar::Util qw/reftype/;
@@ -387,53 +395,11 @@ create I<a Bedrock environment suitable for executing your BLMs>.
 sub config {
   my $bedrock_config_path = shift;
 
-  $bedrock_config_path = $bedrock_config_path || $ENV{BEDROCK_CONFIG_PATH};
   $bedrock_config_path = $bedrock_config_path || '@libdir@/bedrock/config';
 
-  my $config = Bedrock::Config->new( $bedrock_config_path . '/tagx.xml');
+  $ENV{BEDROCK_CONFIG_PATH} = $ENV{BEDROCK_CONFIG_PATH} || $bedrock_config_path;
 
-  foreach my $path ( $bedrock_config_path . '.d' ) {
-    next unless -d $path;
-
-    local (*CONFIG_FILES);
-    opendir CONFIG_FILES, "$path";
-
-    while ( my $file = readdir CONFIG_FILES ) {
-      next unless $file =~ /\.xml$/ && $file !~ /^(tagx|tagx_apps)\.xml$/;
-
-      my $this_config = eval {
-	 Bedrock::Config->newFromXML( $path . '/' . $file );
-       };
-
-      $config = merge_config( $this_config, $config );
-    }
-
-    closedir CONFIG_FILES;
-  }
-
-  # look for module configs
-  my @module_paths;
-
-  foreach ( qw/startup plugin/ ) {
-    push @module_paths, $bedrock_config_path . ".d/" . $_
-      if -d $bedrock_config_path . ".d/" . $_;
-  }
-
-  foreach my $path ( @module_paths ) {
-    local (*CONFIG_FILES);
-    opendir CONFIG_FILES, "$path";
-
-    while ( my $file = readdir CONFIG_FILES ) {
-      next unless $file =~ /\.xml$/;
-
-      my $this_module_config = Bedrock::Config->newFromXML( $path . '/' . $file );
-      $config = merge_modules( { MODULES => [ $this_module_config ] }, $config );
-    }
-
-    closedir CONFIG_FILES;
-  }
-
-  $config;
+  return Bedrock::Handler->new(Faux::ApacheHandler->new)->config;
 }
 
 =pod
@@ -637,41 +603,6 @@ sub bind_module {
   $func->can('init_plugin') && $func->init_plugin( $options{context}, $options{config} );
 
   return $obj;
-}
-
-sub merge_modules {
-  my ( $config, $dest_config) = @_;
-
-  # no modules in source or config
-  unless ( @{$dest_config->{MODULES}} ) {
-    $dest_config->{MODULES} = $config->{MODULES}
-      if exists $config->{MODULES};
-  }
-  elsif ( exists $config->{MODULES} && reftype($config->{MODULES}) eq 'ARRAY' ) {
-    # get the binding names for existing modules as these should be
-    # unique and use these to create a hash of all module configurations
-    my %modules;
-    map { $modules{$_->{binding}} = $_; } @{$dest_config->{MODULES}};
-    
-    # possibly overrwite modules from source
-    map { $modules{$_->{binding}} = $_; } @{$config->{MODULES}};
-    
-    $dest_config->{MODULES} = [ values %modules ];
-  }
-
-  return $dest_config;
-}
-
-sub merge_config {
-  my ( $config, $dest_config ) = @_;
-
-  # merge source-config with master
-  map { $dest_config->{$_} = $config->{$_} unless $_ eq 'MODULES'; } keys %$config;
-
-  # merge modules separately
-  $dest_config = merge_modules( $config, $dest_config );
-
-  return $dest_config;
 }
 
 # load_startup_modules($tx, CONFIG => $config, CONTEXT => $ctx)
