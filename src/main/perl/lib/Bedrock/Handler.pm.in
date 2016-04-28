@@ -22,7 +22,6 @@ package Bedrock::Handler;
 
 use strict;
 use warnings;
-use Data::Dumper;
 
 use vars qw/@ISA @EXPORT_OK %EXPORT_TAGS/;
 
@@ -44,15 +43,20 @@ use constant REDIRECT     => Apache2::Const::REDIRECT;
 use Cwd qw/realpath fastcwd/;
 use File::Basename;
 use Bedrock::BedrockConfig;
+use Data::Dumper;
 
-my %BEDROCK_CONFIG_CACHE;
 my $MOD_PERL;
+my %BEDROCK_CONFIG_CACHE;
 
+# Note on cacheing...
 # so the thought here, is smoke 'em if you got em...if this succeeds,
 # great, if not, well too bad, we'll fall back and Bedrock will work
 # anyway.  It's experimental and unclear how much cacheing configs
 # aids in startup time.  My sense is it could be significant for more
-# trafficked sites.
+# trafficked sites and for sites with a lot of configuration files
+# that need to be merged.  OTOH, deserialization of the cached
+# configuration in not free.
+
 if ( $ENV{BEDROCK_CACHE_CONFIG} ) {
   eval {
     require IPC::Shareable;
@@ -68,8 +72,7 @@ if ( $ENV{BEDROCK_CACHE_CONFIG} ) {
 
   # this happens way before logging, so let's at least give someone a
   # clue that their attempt at cacheing the config did not succeed
-
-  warn "caching not successful: $@\n";
+  warn "cacheing not successful: $@\n";
 }
 
 =pod
@@ -85,7 +88,7 @@ C<Bedrock::Handler> - common Bedrock handler methods
 =head1 DESCRIPTION
 
 Class to be used to provide some helper functions for writing Bedrock
-Apache handlers.  Performs a common set of initialization activities
+request handlers.  Performs a common set of initialization activities
 like creating Bedrock's configuration environment from the various
 configuration files that are supported by Bedrock.
 
@@ -93,7 +96,7 @@ configuration files that are supported by Bedrock.
 
 =head2 new
 
- new( apache-request-object )
+ new( request-object )
 
 Creates a new instance of a Bedrock handler object.
 
@@ -103,20 +106,23 @@ sub new {
   my ($class, $r)  = @_;
   my $self = bless {}, $class;
 
-  $self->{_pwd} = fastcwd();
-  $self->{_config_files_processed} = [];
+  $self->pwd(fastcwd());
+  $self->config_files_processed([]);
 
-  $self->apache_handler($r);
+  $self->request_handler($r);
 
   $MOD_PERL = exists $ENV{MOD_PERL};
 
   $self->init_request;
 
-  eval { $self->{_config} = $self->get_config; };
+  eval { $self->load_config; };
 
+  # sometimes one .xml files is malformed, helpful to know how far we
+  # got loading the configuration files
   if ( $@ ) {
-    $@ .= "<br>\nconfig files processed:<br>\n" . join("<br>\n", @{$self->{_config_files_processed}})
-      if defined $self->{_config_files_processed} && @{$self->{_config_files_processed}};
+    $r->log_error("error loading configuration files: $@");
+    $r->log_error("procesed the following files: \n" . join("\n", $self->config_files_processed));
+
     die $@;
   }
 
@@ -125,7 +131,8 @@ sub new {
 
 sub init_request {
   my $self = shift;
-  my $r = $self->apache_handler;
+
+  my $r = $self->request_handler;
   
   #
   # under mod_perl naked directory requests are passed along prior to
@@ -148,12 +155,12 @@ sub init_request {
   };
 
   # Parse for the URI components
-  @{$self}{qw/uri_name uri_dir/} = fileparse( $r->uri )
-    if $r->uri;
+  if ( $r->uri ) {
+    @{$self}{qw/uri_name uri_dir/} = fileparse($r->uri);
+  }
 
-  if ( defined $r->filename ) {
-    @{$self}{qw/filename path/} = fileparse( $r->filename )
-      if $r->filename;
+  if ( $r->filename ) {
+    @{$self}{qw/filename path/} = fileparse( $r->filename );
   }
   
   { 
@@ -172,7 +179,6 @@ sub init_request {
   }
 }
 
-
 sub is_mod_perl {
   return $MOD_PERL;
 }
@@ -188,13 +194,16 @@ Set or get the Apache request handler.
 =cut
 
 sub apache_handler {
-  my ($self, $r) = @_;
-
-  $self->{_apache_handler} = $r
-    if defined $r;
+  my $self = shift;
+  
+  if ( @_ ) {
+    $self->{_apache_handler} = shift;
+  }
 
   return $self->{_apache_handler};
 }
+
+sub request_handler { goto &apache_handler; }
 
 sub _log {
   my $who = (caller(2) =~/Bedrock::Handler/) ? 3 : 2;
@@ -204,7 +213,7 @@ sub _log {
   my $level = $_[2];
   my (undef, undef, $line, $caller) = caller($who);
   
-  $_[0]->{_apache_handler}->log->$level( $caller . '[' . $line . ']: ' . $_[1] );
+  $_[0]->request_handler->log->$level( $caller . '[' . $line . ']: ' . $_[1] );
 }
 
 =pod
@@ -230,9 +239,9 @@ sub log_debug { _log(@_, 'debug') };
 
 =pod
 
-=head2 get_config
+=head2 laod_config
 
- get_config()
+ laod_config()
 
 Returns Bedrock's configuration object.  Note that the hash that is
 returned is the fully exploded configuration environment for Bedrock.
@@ -241,29 +250,43 @@ enabled.  See L<CONFIGURATION CACHEING>
 
 =cut
 
-sub get_config {
+sub load_config {
   my $self = shift;
   
-  return $self->{_config}
-    if exists $self->{_config};
+  my $config = $self->config;
 
-  no warnings 'uninitialized';
+  unless ( $config ) {
+    my $key = $ENV{SERVER_NAME} . ':' . $self->get_uri_dir;
 
-  my $key = $ENV{SERVER_NAME} . ':' . $self->get_uri_dir;
+    if ( $ENV{BEDROCK_CACHE_CONFIG} && $ENV{BEDROCK_CACHE_CONFIG} =~/(yes|y|on)/i ) {
 
-  if ( $ENV{BEDROCK_CACHE_CONFIG} && $ENV{BEDROCK_CACHE_CONFIG} =~/(yes|y|on)/i ) {
-    
-    if ( exists $BEDROCK_CONFIG_CACHE{$key} ) {
-      $self->{_config} = Bedrock::Config->newFromString( $BEDROCK_CONFIG_CACHE{$key} );
+      if ( exists $BEDROCK_CONFIG_CACHE{$key} ) {
+	$config = Bedrock::Config->newFromString($BEDROCK_CONFIG_CACHE{$key});
+	$config->{BEDROCK_CACHE_LOADED} = time;
+      }
     }
+    
+    unless ($config) {
+      $config = $self->get_bedrock_config;
+    }
+    
+    $BEDROCK_CONFIG_CACHE{$key} = Bedrock::XML::writeXML($config); # this might fail ungracefully
+
+    $self->config($config);
   }
   
-  unless ( exists $self->{_config} ) {
-    $self->{_config}  = $self->get_bedrock_config;
+  return $config;
+}
+
+sub get_config { goto &load_config; }
+
+sub config {
+  my $self = shift;
+
+  if ( @_ ) {
+    $self->{_config} = shift;
   }
 
-  $BEDROCK_CONFIG_CACHE{$key} = Bedrock::XML::writeXML( $self->{_config} ); # this might fail ungracefully
-  
   return $self->{_config};
 }
 
@@ -273,8 +296,16 @@ sub get_config {
 
 =cut
 
-sub get_uri_dir {
-  defined $_[0]->{uri_dir} || '';
+sub get_uri_dir { goto &uri_dir; }
+
+sub uri_dir { 
+  my $self = shift;
+
+  if ( @_) {
+    $self->{uri_dir} = shift;
+  }
+
+  $self->{uri_dir} || '';
 }
 
 =pod
@@ -286,8 +317,9 @@ sub get_uri_dir {
 sub restore_dir {
   my $self = shift;
   
-  chdir $self->{_pwd}
-    if exists $self->{_pwd};
+  if ( $self->pwd ) {
+    chdir $self->pwd;
+  }
 }
 
 =pod
@@ -340,8 +372,19 @@ the master F<tagx.xml> file
 sub get_bedrock_config {
   my $self = shift;
 
-  my $bedrock_config_path = realpath($ENV{BEDROCK_CONFIG_PATH});
-  my $config_path = realpath($ENV{CONFIG_PATH});
+  my $bedrock_config_path = realpath($ENV{BEDROCK_CONFIG_PATH})
+    if $ENV{BEDROCK_CONFIG_PATH};
+
+  unless ( $bedrock_config_path) {
+    $self->log_warn("No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.");
+  }
+
+  my $config_path = realpath($ENV{CONFIG_PATH})
+    if $ENV{CONFIG_PATH};
+
+  unless ( $config_path ) {
+    $self->log_warn("No CONFIG_PATH found.");
+  }
 
   my $conf = eval {
     Bedrock::Config->new($bedrock_config_path . '/tagx.xml');
@@ -349,6 +392,7 @@ sub get_bedrock_config {
 
   # it's probably okay, not to find this, but only if you have your
   # own tagx.xml somewhere, so let's at least warn
+
   if ( $@ ) {
     $self->log_warn(sprintf("error reading %s/tagx.xml -\n %s\n", $bedrock_config_path, $@));
   }
@@ -369,8 +413,6 @@ sub get_bedrock_config {
     $self->config_files_processed($xml_file);
     $db_conf = $db_conf->merge($xml_file);
   }
-
-  $conf->dbnames($db_conf);
 
   # look for a tagx.xml that will be used with or instead of Bedrock's tagx.xml
   if ( defined $config_path && -r $config_path . '/tagx.xml' ) {
@@ -393,6 +435,8 @@ sub get_bedrock_config {
     }
   }
   
+  $conf->dbnames($db_conf);
+
   die "No or empty 'tagx.xml' found in BEDROCK_CONFIG_PATH:[$bedrock_config_path] or CONFIG_PATH:[$config_path]\n"
     unless $conf && keys %$conf;
 
@@ -456,9 +500,8 @@ sub get_bedrock_config {
 
   # note that configurations above could have overridden APP_CONFIG
   # These are directory level configurations (tagx_apps.xml)
-  my @app_conf_files;
-  push @app_conf_files, $conf->{'APP_CONFIG'} 
-    if $conf->{'APP_CONFIG'};
+  my @app_conf_files = $conf->{'APP_CONFIG'} 
+    if $conf->{'APP_CONFIG'} && -s $conf->{'APP_CONFIG'};
 
   # in case we have directory specific configuration files...
   my $dir = $self->get_uri_dir;
@@ -470,8 +513,8 @@ sub get_bedrock_config {
 
   foreach my $dir_conffile (@app_conf_files) {
     # Load the config file
-    my $dir_conf = Bedrock::Config->new($dir_conffile);
     $self->config_files_processed( $dir_conffile );
+    my $dir_conf = Bedrock::Config->new($dir_conffile);
 
     my $dir_path = '/';
     my %dirconfs;
@@ -498,6 +541,27 @@ sub get_bedrock_config {
 
   # And voila! we have the merged config
   $conf;
+}
+
+
+sub pwd {
+  my $self = shift;
+
+  if (@_) {
+    $self->{_pwd} = shift;
+  }
+
+  return $self->{_pwd};
+}
+
+sub config_files_processed {
+  my $self = shift;
+
+  if ( @_ ) {
+    push @{$self->{_config_files_processed}}, @_;
+  }
+
+  return @{$self->{_config_files_processed}};
 }
 
 =pod
