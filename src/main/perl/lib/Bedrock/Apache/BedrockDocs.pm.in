@@ -23,7 +23,6 @@
 package Apache::BedrockDocs;
 
 use strict;
-
 use warnings;
 
 BEGIN {
@@ -65,16 +64,11 @@ sub show_pod {
   my $html = _show_pod( $file, $bedrock_handler->get_config );
 
   if ( $html ) {
-      output( $bedrock_handler->{_apache_handler}, $html );
+    output( $bedrock_handler->request_handler, $html );
   }
   else {
-    $bedrock_handler->{_apache_handler}->cgi_header_out('Location', sprintf(
-									    "http://%s/%s/%s\n\n",
-									    $bedrock_handler->get_bedrock_admin_dir, 
-									    $ENV{HTTP_HOST}, 
-									    $return_url
-									   )
-						      );
+    my $url = sprintf("http://%s/%s/%s\n\n", $bedrock_handler->get_bedrock_admin_dir, $ENV{HTTP_HOST}, $return_url);
+    $bedrock_handler->request_handler->cgi_header_out('Location', $url);
   }
 
   return OK;
@@ -85,13 +79,16 @@ sub _show_pod {
   my ($file, $conf) = @_;
 
   my $bedrock_admin_dir = $conf->{BEDROCK_ADMIN_DIR} || '/bedrock';
-  my $outfile           = tmpnam;
+  my $outfile = tmpnam;
 
-  &pod2html( '--infile', $file,
-	     '--outfile', $outfile,
-	     '--cachedir', File::Spec->tmpdir(),
-	     $conf->{BEDROCK_POD_CSS_URL} ? "--css=" . $conf->{BEDROCK_POD_CSS_URL} : ()
-	   );
+  my %options = (
+		 '--infile'   => $file,
+		 '--outfile'  => $outfile,
+		 '--cachedir' => File::Spec->tmpdir(),
+		 $conf->{BEDROCK_POD_CSS_URL} ? ("--css" => $conf->{BEDROCK_POD_CSS_URL}) : ()
+		);
+
+  &pod2html(%options);
 
   # in the off chance somebody puts the stupid Bedrock images some place else
   my $image_url = $conf->{BEDROCK_IMAGE_URL} || "/bedrock/img";
@@ -375,38 +372,29 @@ sub handler {
 
   my $bedrock_handler = init_bedrock_handler( $r );
 
-  return OK
-    unless $bedrock_handler;
+  unless ($bedrock_handler) {
+    return OK;
+  }
 
-  my $conf = $bedrock_handler->get_config;
-  $conf->{BEDROCK_IMAGE_URL} = $conf->{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
+  my $conf = $bedrock_handler->config();
 
   unless ( $conf->{ALLOW_BEDROCK_INFO} =~ /(yes|docs)/i ) {
-    
-    $r && $r->log->error(  sprintf( 
-				   "[%s]: bedrock admin directory request denied by configuration!",
-				   (caller(0))[3]
-				  )
-			);
+    $r && $r->log->error(sprintf( "[%s]: bedrock admin directory request denied by configuration.", (caller(0))[3]));
     return FORBIDDEN;
   }
     
   $r->content_type('text/html');
 
-  $r && $r->log->debug(
-		       sprintf( "[%s]: bedrock admin directory request: [%s]",
-				(caller(0))[3],
-				$ENV{SCRIPT_NAME} )
-		      );
+  $r && $r->log->debug(sprintf( "[%s]: bedrock admin directory request: [%s]", (caller(0))[3], $ENV{SCRIPT_NAME}));
 
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
+
   my $uri = $r->uri;
   $uri =~ s/^$bedrock_admin_dir//;
 
   my $html;
 
   for ( $uri ) {
-
     /plugins\/?(.*?)$/ && do {
       my $file = "$1";
       my @blm_listing = get_all_blms();
@@ -620,9 +608,13 @@ eot
 
     /^\/(env|config)\/?$/ && do {
       my $doc = $1;
+      my $Environment = (exists $conf->{ALLOW_BEDROCK_ENV_INFO} && $conf->{ALLOW_BEDROCK_ENV_INFO} =~/^y/i) ? \%ENV : { ALLOW_BEDROCK_ENV_INFO => $conf->{ALLOW_BEDROCK_ENV_INFO} || "undefined" };
 
-      my %vars = ( env    => [ 'Environment',   \%ENV ],
-                   config => [ 'Configuration', $conf ] );
+      my $Configuration = (exists $conf->{ALLOW_BEDROCK_CONFIG_INFO} && $conf->{ALLOW_BEDROCK_CONFIG_INFO} =~/^y/i) ? $conf : { ALLOW_BEDROCK_CONFIG_INFO => $conf->{ALLOW_BEDROCK_CONFIG_INFO} || "undefined" };
+      my %vars = ( 
+		  env    => [ 'Environment',   $Environment ],
+		  config => [ 'Configuration', $Configuration ]
+		 );
 
       $html = head( title      => "Bedrock " . $vars{$doc}->[0],
 		    stylesheet => $conf->{BEDROCK_POD_CSS_URL},
@@ -633,10 +625,7 @@ eot
 
       foreach ( sort keys %{ $vars{$doc}->[1] } ) {
         my $val = $vars{$doc}->[1]->{$_};
-        my $string_val =
-        ref($val)
-        ? '<pre class="configref">' . Bedrock::Dump::compact($val) . '</pre>'
-        : '<code class="configvar">' . $val . '</code>';
+        my $string_val =  ref($val)  ? '<pre class="configref">' . Bedrock::Dump::compact($val) . '</pre>' : '<code class="configvar">' . $val . '</code>';
         $html .= <<eot;
 <tr>
   <th valign="top" align="right"><code>$_</code>&nbsp;</th>
