@@ -232,17 +232,13 @@ perl5blmlib_DATA = \
 BLM=$(perl5blmlib_DATA:.pm=.pm.in)
 
 perl5blmstartuplib_DATA = \
-    BLM/Startup/Bedrock.pm \
     BLM/Startup/Config.pm \
     BLM/Startup/Cookie.pm \
     BLM/Startup/Env.pm \
-    BLM/Startup/Forum.pm \
     BLM/Startup/Header.pm \
-    BLM/Startup/Hitcounter.pm \
     BLM/Startup/Input.pm \
     BLM/Startup/MySQLSession.pm \
     BLM/Startup/OAuth2.pm \
-    BLM/Startup/Output.pm \
     BLM/Startup/PostgreSQLSession.pm \
     BLM/Startup/SQLiteSession.pm \
     BLM/Startup/Session.pm \
@@ -251,12 +247,6 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/UserSession.pm 
 
 BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
-
-perl5blmstartupsessionlib_DATA = \
-    BLM/Startup/Session/GDBM.pm \
-    BLM/Startup/Session/SDBM.pm
-
-BLM_STARTUP_SESSION=$(perl5blmstartupsessionlib_DATA:.pm=.pm.in)
 
 dist_noinst_DATA = \
     Bedrock.pm.in \
@@ -282,7 +272,6 @@ dist_noinst_DATA = \
     $(BLM_INDEXEDTABLEHANDLER) \
     $(BLM) \
     $(BLM_STARTUP) \
-    $(BLM_STARTUP_SESSION) \
     $(TEST_BEDROCK)
 
 @do_subst_command@
