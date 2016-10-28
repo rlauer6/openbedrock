@@ -51,6 +51,9 @@ use IO::File;
 
 use vars qw/%ENV/;
 
+# cache the configuration file
+our $BEDROCK_CONFIG;
+
 =pod
 
 =head1 NAME
@@ -60,10 +63,16 @@ C<Apache::BedrockSessionFiles>
 =head1 DESCRIPTION
 
 Implements an Apache handler that serves files from a Bedrock session
-directory.  This is typically used when a web developer wants to serve
+directory.  This is typically used when a web application wishes to serve
 a private file to a user, or make a file available for only a short
-period of time.  In other words, the URL would be useless to anyone
-else since the session is specfic to a single browser instance.
+period of time to a specfic user session.  A typical URI for this type
+of asset might look like:
+
+  /session/foo.html
+
+In other words, the asset would be protected since the same URL would
+not access the asset for anyone other than the requestor since it is
+specific to their session.
 
 =head1 NOTES
 
@@ -74,8 +83,9 @@ redirects the user to the appropriate URI.
  <null $session.copy2session('single-use.pdf')>
  <null $header.see_other('/session/single-use.pdf')>
 
-I<Files in session directories are automatically removed when the
-session expires.>
+I<Files in session directories are inaccessible after when the session
+expires.  Session directories are typically cleaned up at some point
+after the sessions have expired.>
 
 =head1 Setting Up the Apache Handler
 
@@ -130,15 +140,21 @@ sub handler {
     $r->log->error("ERROR: No session found.");
     return NOT_FOUND;
   }
+  
+  my $conf;
 
-  my $conf = eval {
-    my $bedrock_handler = Bedrock::Handler->new( $r );
-    $bedrock_handler->get_config();
-  };
+  unless ( defined $BEDROCK_CONFIG ) {
+    $conf = eval {
+      my $bedrock_handler = Bedrock::Handler->new( $r );
+      $bedrock_handler->get_config();
+    };
+    
+    if ( $@ ) {
+      $r->log->debug( sprintf( "ERROR: %s ", $@) );
+      return NOT_FOUND;
+    }
 
-  if ( $@ ) {
-    $r->log->debug( sprintf( "ERROR: %s ", $@) );
-    return NOT_FOUND;
+    $BEDROCK_CONFIG = $conf;
   }
 
   my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
@@ -187,7 +203,7 @@ sub get_session_cookie {
   if ( $@ ) {
     $r->log->error(sprintf("ERROR parsing cookies: [%s]\n%s\n", $ENV{HTTP_COOKIE}, $@));
   }
-  else {
+  elsif (exists $cookies{session} ) {
     $session = $cookies{session}->value;
   }
 
