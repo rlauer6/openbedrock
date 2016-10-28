@@ -1073,6 +1073,26 @@ sub create_temp_login_session {
   $session;
 }
 
+
+=pod
+
+=head3 create_session_dir
+
+ create_session_dir([sub-dir])
+
+Creates a session directory with a corresponding subdirectory if
+requested. Session directories are subdirectories that are identified
+by the session cookie value and typically used in conjunction with
+C<Apache::BedrockSessionFiles>.
+
+Your F<tagx.xml> file should define a C<SESSION_DIR> value that
+provides the root for the session directory.
+
+ <scalar name="SESSION_DIR">/var/www/vhosts/mydomain.com/session</scalar>
+
+
+=cut
+
 sub create_session_dir {
   my $obj     = shift;
   my $sub_dir = shift;
@@ -1081,7 +1101,7 @@ sub create_session_dir {
 
   my $session_id = $self->{'session'};
 
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+  my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
   my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
 
   die "No SESSION_DIR defined.\n"
@@ -1090,16 +1110,16 @@ sub create_session_dir {
   $session_dir .= "/$session_id";
 
   unless ( -d "$session_dir/$sub_dir" ) {
-    &log_message( undef, "creating directory $session_dir/$sub_dir" )
-    if $verbose;
+    &log_message(undef, "creating directory $session_dir/$sub_dir")
+      if $verbose;
 
     eval { mkpath("$session_dir/$sub_dir"); };
 
-    &log_message( undef, "Unable to create $session_dir/$sub_dir\n$@\n" )
-    if $@;
+    if ( $@ ) {
+      &log_message(undef, "Unable to create $session_dir/$sub_dir\n$@\n");
+      die "Unable to create $session_dir/$sub_dir\n";
+    }
 
-    die "Unable to create $session_dir/$sub_dir\n"
-    if $@;
   }
 
   return "$session_dir/$sub_dir";
@@ -1130,39 +1150,62 @@ sub cleanup_session_dir {
   return $cleanup_flag =~/y/i;
 }
 
+
+=pod
+
+=head2 create_session_tempfile
+
+ create_session_tempfile(template, options)
+
+Creates a temporary file in the current session directory.
+
+ <null $session.create_session_tempfile('fooXXXX', 'SUFFIX', '.html')>
+
+=over 5
+
+=item template
+
+Template to use for file creation (see C<tempfile>). Use at least 4 X's.
+
+=item options
+
+=over 10
+
+=item DIR
+
+Sub directory under the C<session> directory to create.
+
+=item SUFFIX
+
+Suffix (extension).
+
+=back
+
+=back
+
+=cut
+
 sub create_session_tempfile {
   my $obj      = shift;
   my $template = shift;
   my %options  = @_;
 
-  my $self       = tied( %{$obj} );
-  my $session_id = $self->{'session'};
-
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
-
-  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
-
-  die "No SESSION_DIR defined.\n"
-  unless $session_dir;
-
-  $session_dir .= "/$session_id";
-
-  $obj->create_session_dir($session_dir)
-  unless -d $session_dir;
-
-  my %local_options;
-
-  if ( $options{DIR} ) {
-    $session_dir .= $options{DIR};
-  }
-
-  $local_options{DIR} = $session_dir;
-  $local_options{SUFFIX} = $options{SUFFIX} if exists $options{SUFFIX};
-
-  my ( $fh, $filename ) = tempfile( $template, %local_options );
-
-  return Bedrock::Array->new( $fh, $filename );
+  return Bedrock::Array->new(tempfile($template, DIR => $obj->create_session_dir($options{DIR}), SUFFIX => $options{SUFFIX}));
 }
+
+
+=pod
+
+=head2 copy2session
+
+ copy2session(path)
+
+Copies the file indicated by C<path> to the session directory.  Throws
+an exception of the file does not exist, is empty or is unreadable. If
+the path is the name of a file, it is assumed to be in the document
+root.
+
+=cut
 
 sub copy2session {
   my ($obj, $file ) = @_;
@@ -1174,7 +1217,7 @@ sub copy2session {
 
   my ($name, $path, $ext) = fileparse( $file, qr/.[^.]*$/ );
 
-  unless ( $path ) {
+  if ( $path eq './' ) {
     $file = $ENV{DOCUMENT_ROOT} . '/' . $file;
   }
 
