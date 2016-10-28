@@ -1,0 +1,631 @@
+
+# ident "@(#) $Header: /archive/cvsroot/bedrock/src/main/perl/lib/BLM/Startup/BaseSession.pm.in,v 1.1 2013/09/11 18:11:15 laytonax Exp $
+# ident "@(#)        $Name:  $"
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package BLM::Startup::BaseSession;
+use parent qw(Bedrock::Hash);
+
+use strict;
+
+BEGIN {
+  use Exporter ();
+  use vars qw($VERSION @ISA);
+  $VERSION = do { my @r = ( q$Revision: 1.1 $ =~ /\d+/g ); sprintf "%d." . "%02d" x $#r, @r };
+}
+
+use Carp;
+use Digest::MD5;
+use POSIX qw(strftime);
+use File::Path;
+use File::Temp qw/tempfile/;
+use Data::Dumper;
+
+use Bedrock::XML;
+use TagX::Log;
+
+# +---------------------------------------------------------------+
+# | ->CONNECT( %options )                                         |
+# |                                                               |
+# | config      => config object from tagx.xml                    |
+# |                                                               |
+# | Purpose: perform any database connection ritual required.     |
+# |          This method will be called when the session object   |
+# |          is instantiated.                                     |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub CONNECT {
+  my $self    = shift;
+  my %options = @_;
+}
+
+# +---------------------------------------------------------------+
+# | ->DISCONNECT( %options )                                      |
+# |                                                               |
+# | config => configuration object                                |
+# |                                                               |
+# | Purpose: perform any database disconnect ritual required.     |
+# |          This function will be called from the DESTROY        |
+# |          method of the session object.                        |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub DISCONNECT {
+  my $self    = shift;
+  my %options = @_;
+}
+
+# +---------------------------------------------------------------+
+# | ->FETCH_SESSION( %options )                                   |
+# |                                                               |
+# | config   => configuration object                              |
+# | session  => username                                          |
+# |                                                               |
+# | Purpose: This function retrieves the session data based on a  |
+# |          session identifier.                                  |
+# | Returns: reference to session data if successful              |
+# +---------------------------------------------------------------+
+sub FETCH_SESSION {
+  my $self    = shift;
+  my %options = @_;
+}
+
+# +---------------------------------------------------------------+
+# | ->STORE_SESSION( %options )                                   |
+# |                                                               |
+# | session => session-id                                         |
+# | new     => 1 indicates that the session is new                |
+# | expires => expiry-time                                        |
+# | data    => ref(session-data)                                  |
+# | config  => configuration object                               |
+# | verbose => 0/1                                                |
+# |                                                               |
+# | Purpose: This function is called prior to destruction of the  |
+# |          session object to give the implementation a chance   |
+# |          to save the session data.                            |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+sub STORE_SESSION {
+  my $self    = shift;
+  my %options = @_;
+}
+
+# +---------------------------------------------------------------+
+# | ->KILL_SESSION( %options )                                    |
+# |                                                               |
+# | session => session-id                                         |
+# | config  => configuration object                               |
+# |                                                               |
+# | Purpose: delete a session from table                          |
+# | Returns: 1 if delete is successful                            |
+# +---------------------------------------------------------------+
+sub KILL_SESSION {
+  my $self    = shift;
+  my %options = @_;
+}
+
+
+sub clear {
+  my $obj = shift;
+  %{$obj} = ();
+}
+
+sub kill_session {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+
+  my ( $verbose, $ctx, $config, $session ) =
+  @{$self}{qw(verbose ctx config session)};
+
+  $self->{data} = {};
+
+  unless ( $config->{'cookieless_sessions'} ) {
+
+    # Delete the cookie
+    $self->cookie( $self->{'name'},
+                   'value'   => 'killed',
+                   'expires' => -864000
+                 );
+    $self->send_cookie;
+  }
+
+  $self->KILL_SESSION( session => $session,
+                       config  => $config );
+}
+
+sub create_session_dir {
+  my $obj     = shift;
+  my $sub_dir = shift;
+
+  my $self = tied( %{$obj} );
+
+  my $session_id = $self->{'session'};
+
+  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
+
+  die "No SESSION_DIR defined.\n"
+  unless $session_dir;
+
+  $session_dir .= "/$session_id";
+
+  unless ( -d "$session_dir/$sub_dir" ) {
+    &log_message( undef, "creating directory $session_dir/$sub_dir" )
+    if $verbose;
+
+    eval { mkpath("$session_dir/$sub_dir"); };
+
+    &log_message( undef, "Unable to create $session_dir/$sub_dir\n$@\n" )
+    if $@;
+
+    die "Unable to create $session_dir/$sub_dir\n"
+    if $@;
+  }
+
+  return "$session_dir/$sub_dir";
+}
+
+sub cleanup_session_dir {
+  my $self = shift;
+
+  my @args = 'cleanup_sesion_dir';
+
+  if ( @_ > 0 ) {
+    push @args, $_[0] ? 'yes' : 'no';
+  }
+
+  return $self->config(@args);
+}
+
+sub create_session_tempfile {
+  my $obj      = shift;
+  my $template = shift;
+  my %options  = @_;
+
+  my $self       = tied( %{$obj} );
+  my $session_id = $self->{'session'};
+
+  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+
+  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
+
+  die "No SESSION_DIR defined.\n"
+  unless $session_dir;
+
+  $session_dir .= "/$session_id";
+
+  $obj->create_session_dir($session_dir)
+  unless -d $session_dir;
+
+  my %local_options;
+
+  if ( $options{DIR} ) {
+    $session_dir .= $options{DIR};
+  }
+
+  $local_options{DIR} = $session_dir;
+  $local_options{SUFFIX} = $options{SUFFIX} if exists $options{SUFFIX};
+
+  my ( $fh, $filename ) = tempfile( $template, %local_options );
+
+  return Bedrock::Array->new( $fh, $filename );
+}
+
+sub config {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+
+  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+
+  if ( @_ > 1 ) {
+    $config->{ $_[0] } = $_[1];
+  }
+  else {
+    return $config->{ $_[0] };
+  }
+}
+
+sub cookieless_session {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+
+  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+
+  # don't allow someone to access a stale session
+  $self->SESSION_CLEANUP( config => $self->{config} );
+
+  my $id = shift;
+  $self->{'new_session'} = 0 if $id;
+  $self->{'session'} = $id || $self->{'session'};
+  $self->readData($id);
+
+  $config->{'cookieless_sessions'} = 1;
+
+# kill the cookie if cookies are enabled, since on instantiation,
+# UserSession ($session) will create a cookie
+  $self->cookie( $self->{'name'},
+                 'value'   => 'killed',
+                 'expires' => -864000
+               );
+
+  $self->send_cookie;
+}
+
+sub cookie {
+  my $self = shift;
+  my $name = shift;
+
+  $self->{'cookies'} = {} unless $self->{'cookies'};
+  $self->{'cookies'}->{$name} = {} unless $self->{'cookies'}->{$name};
+  my $cref = $self->{'cookies'}->{$name};
+  if ( ref( $_[0] ) ) {
+    for my $param ( keys %{ $_[0] } ) {
+      $cref->{$param} = $_[0]->{$param};
+    }
+  }
+  else {
+    my %args = @_;
+    for my $param ( keys %args ) {
+      $cref->{$param} = $args{$param};
+    }
+  }
+}
+
+sub digest {
+  my $md5 = Digest::MD5->new;
+  $md5->add(
+        sprintf( "%012d:%20s:%08d:%.10f", time, $ENV{REMOTE_ADDR}, $$, rand ) );
+  $md5->hexdigest;
+}
+
+sub send_cookie {
+  my $self = shift;
+  return unless $self->{'cookies'};
+
+  my $config = $self->{'config'};
+  my ( $cref, $header );
+
+  for my $name ( keys %{ $self->{'cookies'} } ) {
+    $cref   = $self->{'cookies'}->{$name};
+    $header = $name . '=' . $cref->{'value'} . '; ';
+
+    $header .= 'path='
+    . ( $cref->{'path'} || $config->{'cookie'}->{'path'} || '/' ) . '; ';
+
+    my $domain = $config->{'cookie'}->{'domain'};
+    $header .= 'domain=' . $domain . '; ' if length($domain);
+
+    if ( exists $cref->{'expires'} ) {
+      my $expiry = POSIX::strftime( "%a, %d-%b-%Y %T GMT",
+                                    gmtime( time + $cref->{'expires'} ) );
+      $header .= 'expires=' . $expiry . '; ';
+    }
+
+    $self->{'ctx'}->cgi_header_out( 'Set-Cookie', $header );
+    &log_message( undef, "Set cookie header: [Set-Cookie => $header]" )
+    if $self->{'verbose'} > 1;
+  }
+}
+
+sub startSession {
+  my ( $self, $config ) = @_;
+
+  $self->{'config'} = $config;
+  $self->CONNECT( config => $config );
+}
+
+
+sub newSessionID {
+  my $self = shift;
+
+  my $config = $self->{'config'};
+  my $ctx    = $self->{'ctx'};
+  my $id     = $self->{'session'} = &digest;
+
+  my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400;
+  $self->{'expires'} = $secs;
+
+  unless ( $config->{'cookieless_sessions'} ) {
+
+    # Set the cookie header
+    $self->cookie( $self->{'name'},
+                   'value'   => $id,
+                   'expires' => $secs
+                 );
+    $self->send_cookie;
+  }
+
+  $id;
+}
+
+sub newSession {
+  my $self = shift;
+
+  $self->newSessionID;
+  $self->{'new_session'} = 1;
+  $self->{'data'} = { 'prefs' => {} };
+  $self->{'session'};
+}
+
+sub init_session {
+  my ($self,$aref) = @_;
+
+  my ($verbose) = @{$self}{qw(verbose)};
+
+  if ( $aref ) {
+    &log_message(
+      undef,
+      "Initializing session\n" .
+      "username = ($aref->[0])\n" .
+      "firstname = ($aref->[1])\n".
+      "lastname = ($aref->[2])\n" .
+      "email = ($aref->[3])"
+    ) if $verbose;
+
+    &log_message( undef, "Session prefs are\n$aref->[4]" )
+      if $verbose > 1;
+
+    my $data = {};
+
+    @{$data}{qw(username firstname lastname email)} =
+    ( @{$aref}[ 0, 1, 2, 3 ] );
+
+    $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[4] )
+      if length( $aref->[4] );
+
+    $data->{'prefs'} = {} unless $data->{'prefs'};
+
+    $self->{'data'} = $data;
+  }
+  else {
+    &log_message( undef, "Initializing new session" ) if $verbose;
+    $self->newSession;
+  }
+}
+
+#
+# `session' is stored under $self
+# `username', `password', `firstname', `lastname', `email' if stored under $self->{'data'}
+# `new_session' is set to 1 if no previous session info found for user
+# Other than these are stored under $self->{'data'}->{'prefs'}
+#
+sub readData {
+  my ( $self, $id ) = @_;
+
+  my ( $config, $verbose ) = @{$self}{qw(config verbose)};
+
+  &log_message( undef, "Reading data for session [$id]" ) if $verbose;
+  my $aref = $self->FETCH_SESSION(
+          config  => $config,
+          session => $id
+        );
+
+  unless ( $aref ) {
+    &log_message( undef, "Unable to read data for session [$id]" )
+      if $verbose;
+    return;
+  }
+
+  my $secs = $config->{'cookie'}->{'expiry_secs'} || 86400;
+
+  unless ( $config->{'cookieless_sessions'} ) {
+    $self->cookie( $self->{'name'},
+                   'value'   => $id,
+                   'expires' => $secs
+                 );
+    $self->send_cookie;
+  }
+
+  $self->{'expires'} = $secs;
+
+  $self->{'session'} = $id;
+
+  $self->init_session($aref);
+
+  $self->{'session'};
+}
+
+
+sub TIEHASH {
+  my ( $class, $ctx, $config ) = @_;
+
+  # What is the name of the session variable being used?
+  my $name = $config->{'param'};
+  die "$class->TIEHASH(): `param' not set in config\n" unless $name;
+
+  # Create session object
+  my $self = bless {}, $class;
+  $self->{'ctx'}    = $ctx;
+  $self->{'name'}   = $name;
+  $self->{'config'} = $config;
+
+  my $verbose = $self->{'verbose'} = $config->{'verbose'};
+
+  # Initialize session
+  $self->startSession($config);
+
+  # Check for an existing session
+  my $id = $config->{'cookieless_sessions'} ? $ctx->getInputValue($name) : $ctx->getCookieValue($name);
+
+  # Get the session data only if a session exists
+  if ( defined($id) ) {
+    &log_message( undef, "Read user's session: [$id]" ) if $verbose;
+    my $session = $self->readData($id);
+
+    &log_message( undef, "User has session [$session]" )
+      if $session and $verbose;
+
+    return $self if $session;
+  }
+
+  # everything failed -- need to create a new session
+  my $session = $self->newSession;
+  &log_message( undef, "User does not have anonymous session or login session -- using [$session]" ) if $verbose;
+
+  $self->{'data'}->{'prefs'}->{expiry_secs} = $self->{'config'}->{'cookie'}->{'expiry_secs'};
+
+  # And return the session object
+  $self;
+}
+
+sub FETCH {
+  my ( $self, $key ) = @_;
+  if ( $key eq 'session' ) { return $self->{$key} }
+  elsif ( $key =~ /^(username|firstname|lastname|email|config)$/ ) {
+    return $self->{'data'}->{$key};
+  }
+  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) {
+    $self->{'data'}->{'prefs'}->{$key};
+  }
+  else { return $self->{'config'}->{'default_prefs'}->{$key} }
+}
+
+# Just store the value in the session and return the value
+sub STORE {
+  my ( $self, $key, $value ) = @_;
+  if ( $key =~ /^(session|username)$/ ) {
+    die "Cannot set `$key': attribute is read-only.\n";
+  }
+  elsif ( $key eq 'password' ) {
+    die "Cannot set `password': Use `change_password()' instead.\n";
+  }
+  elsif ( $key =~ /^(firstname|lastname|email)$/ ) {
+    die
+    "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
+    unless $self->{'data'}->{'username'};
+    die "Cannot store empty string in `$key'.\n"
+    if $key =~ /^(firstname|lastname)$/ and length($value) == 0;
+    &log_message( undef, "Storing [$key] = [$value]" ) if $self->{'verbose'};
+    return $self->{'data'}->{$key} = $value;
+  }
+  else {
+    &log_message( undef, "Stored [$key] = [$value] into prefs" )
+    if $self->{'verbose'};
+    return $self->{'data'}->{'prefs'}->{$key} = $value;
+  }
+}
+
+# Invoked to loop over the properties of the session
+sub FIRSTKEY {
+  my $self = shift;
+
+  delete $self->{'keys'};
+
+  my $k = { 'session'   => $self->{'session'},
+            'username'  => $self->{'data'}->{'username'},
+            'firstname' => $self->{'data'}->{'firstname'},
+            'lastname'  => $self->{'data'}->{'lastname'},
+            'email'     => $self->{'data'}->{'email'}
+          };
+
+  my %keys;
+  @keys{
+    keys %{ $self->{'data'}->{'prefs'} },
+    keys %{ $self->{'config'}->{'default_prefs'} }
+  }
+  = ();
+  for my $key ( keys %keys ) {
+    if ( exists $self->{'data'}->{'prefs'}->{$key} ) {
+      $k->{$key} = $self->{'data'}->{'prefs'}->{$key};
+    }
+    else {
+      $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
+    }
+  }
+  $self->{'keys'} = $k;
+  each %{ $self->{'keys'} };
+}
+
+sub NEXTKEY {
+  each %{ shift->{'keys'} };
+}
+
+sub EXISTS {
+  my ( $self, $key ) = @_;
+  if ( $key eq 'session' ) { return 1 }
+  elsif ( $key =~ /^(username|password|firstname|lastname|email)$/ ) {
+    return exists $self->{'data'}->{$key};
+  }
+  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { return 1 }
+  else { exists $self->{'config'}->{'default_prefs'}->{$key} }
+}
+
+sub DELETE {
+  my ( $self, $key ) = @_;
+  if ( $key =~ /^(session|username|firstname|lastname|email|password)$/ ) {
+    die "Cannot delete `$key': illegal operation.\n";
+  }
+  else {
+    return delete $self->{'data'}->{'prefs'}->{$key};
+  }
+}
+
+sub CLEAR {
+  my $self = shift;
+  %{ $self->{'data'}->{'prefs'} } = ();
+}
+
+sub closeBLM {
+  my $obj  = shift;
+  my $self = tied( %{$obj} );
+
+  my ( $verbose, $session ) = @{$self}{qw(verbose session)};
+
+  my $prefs = $self->{data}->{prefs};
+
+  # this is a very implementation specific session rule that says, if
+  # there is no session, then if there is a 'default_prefs' set in the
+  # session configuration, then map that to the session data...
+  $prefs = $self->{config}->{default_prefs} if keys %{$prefs} == 0;
+
+  my $xml = Bedrock::XML::writeXMLString($prefs);
+  &log_message( undef, "Saving session [" . $session . "] data\n$xml" )
+    if $verbose > 1;
+
+  # there are certain situations where Bedrock may call closeBLM() more than once
+  # if that happens, we don't want to alter the object since the second call will fail
+  # because the prefs object was already converted to XML...so we create a clone
+  # object that is written to the database
+  my $data = {};
+  map { $data->{$_} =  $self->{data}->{$_} unless $_ eq 'prefs'; } keys %{$self->{data}};
+  $data->{prefs} = $xml;
+
+  $self->STORE_SESSION( verbose => $verbose,
+                        session => $session,
+                        data    => $data,
+                        expires => $self->{expires},
+                        new     => $self->{new_session},
+                        config  => $self->{config}
+                      );
+}
+
+1;
+
+# $Log: BaseSession.pm.in,v $
+# Revision 1.1  2013/09/11 18:11:15  laytonax
+# Refactor of BLM::Startup::RedisSession:
+#
+#   - Non-redis functionality bubbles up to a new base class: BaseSession,
+#   - Redis-specifics are all that are left in RedisSession,
+#   - We now use a package-scoped variable to maintain persistent connections in a mod_perl context
+#   - Updates to Makefile.am to accomodate.
+#
+#
