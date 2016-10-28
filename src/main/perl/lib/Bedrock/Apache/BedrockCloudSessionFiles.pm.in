@@ -1,0 +1,125 @@
+#!@PERL@ -w
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package Apache::BedrockCloudSessionFiles;
+
+use strict;
+use warnings;
+
+BEGIN {
+  require Apache2::compat if $ENV{MOD_PERL};
+}
+
+use parent qw/Apache::BedrockSessionFiles/;
+
+use aws_lib qw/:aws :s3 :aws_vars/;
+
+use Apache2::Const -compile => qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
+use Data::Dumper;
+use File::Basename;
+
+use constant NOT_FOUND    => Apache2::Const::NOT_FOUND;
+use constant OK           => Apache2::Const::OK;
+
+# +------------------------------+
+# | mod_perl HANDLER STARTS HERE |
+# +------------------------------+
+
+sub handler {
+  my $r = shift;
+
+  # because we leverage BedrockSessionFiles we may find it
+  # cached...see below where we deliberately do not remove the file
+  # after serving it up
+  my $retcode = $r->SUPER::handler;
+
+  return $retcode unless $retcode == NOT_FOUND;
+
+  # get the session cookie so we know where to look for the file
+  my $session = Apache::BedrockSessionFiles::get_session_cookie($r);
+
+  unless ( $session ) {
+    $r->log->error("ERROR: No session found.");
+    return NOT_FOUND;
+  }
+
+  my $conf = $Apache::BedrockSessionFiles::BEDROCK_CONFIG;
+
+  # filename (however actual file will exist under user's session directory)
+  my ($name, $path, $ext) = fileparse( ($r->filename || 'index.html'), qr/\.([^.]*)$/ );
+  my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
+
+  if ( exists $conf->{cloud_session} ) {
+
+    get_aws_config('/etc/amazon');
+
+    $r->log->info(sprintf("[%s]: cloud_session.........[%s] ",(caller(0))[3], Dumper [ $session, $AWS_ACCESS_KEY_ID, $AWS_SECRET_ACCESS_KEY, $conf->{cloud_session}]));
+
+    my $bucket = $conf->{cloud_session}->{bucket};
+    my $session_dir = $conf->{cloud_session}->{session_dir};
+    my $prefix = sprintf("%s/%s", $session_dir, $session);
+    
+    my $result = cp_from_s3(bucket => $bucket, key => "$name$ext", prefix => $prefix, filename => $filename );
+    $r->log->info( sprintf( "[%s]: result.........[%s] " , (caller(0))[3], Dumper [ $result ] ) );
+
+    return NOT_FOUND unless $result && -e $filename;
+
+    my $fh = IO::File->new("<$filename");
+    send_file($r, $fh);
+  }
+  else {
+    return NOT_FOUND;
+  }
+
+  return OK;
+}
+
+
+sub send_file {
+  my $r = shift;
+  my $fh = shift;
+
+  $r->send_http_header;
+  
+  my $buffer;
+
+  while (read($fh, $buffer, 4096) ) {
+    print $buffer;
+  }
+
+  close $fh;
+}
+
+
+=pod
+
+=head1 SEE OTHER
+
+C<Bedrock::Handler>, C<Bedrock::Apache::Request_cgi>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+1;
+
