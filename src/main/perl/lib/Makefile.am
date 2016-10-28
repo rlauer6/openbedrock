@@ -73,6 +73,7 @@ perl5bedrockapachelib_DATA = \
     Bedrock/Apache/Request_shell.pm \
     Bedrock/Apache/BedrockAutocomplete.pm \
     Bedrock/Apache/BedrockSessionFiles.pm \
+    Bedrock/Apache/BedrockCloudSessionFiles.pm \
     Bedrock/Apache/BedrockDocs.pm \
     Bedrock/Apache/BedrockModPerl.pm
 
@@ -232,6 +233,7 @@ perl5blmlib_DATA = \
 BLM=$(perl5blmlib_DATA:.pm=.pm.in)
 
 perl5blmstartuplib_DATA = \
+    BLM/Startup/BaseSession.pm \
     BLM/Startup/Config.pm \
     BLM/Startup/Cookie.pm \
     BLM/Startup/Env.pm \
@@ -240,6 +242,7 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/MySQLSession.pm \
     BLM/Startup/OAuth2.pm \
     BLM/Startup/PostgreSQLSession.pm \
+    BLM/Startup/RedisSession.pm \
     BLM/Startup/SQLiteSession.pm \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \
