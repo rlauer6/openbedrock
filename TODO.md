@@ -4,11 +4,15 @@
 
 Create some benchmarks to set the state for optimizing Bedrock.
 
-
 ## Create a test suite
 
 Create a test suite for Bedrock, preferably based on Test::More.  This
 is currently a work in progress!
+
+```
+$ cd src/main/perl
+$ make test
+```
 
 ## Move some features to separate packages
 
@@ -123,7 +127,7 @@ Turns out that the way Bedrock parses a tag creates a bit of a
 problem since by the time a tag implementation is invoked, the parser
 has done some magic on this line and essentially created a bunch of
 evaluated arguments in @argv.  The tag implementation typically then
-calls `$sefl->parse_options()' as below:
+calls `$self->parse_options()' as below:
 
     my %options = ('verbosity-level=s'	=> undef,
                    'htmlencode'         => undef
