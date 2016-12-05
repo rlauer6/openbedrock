@@ -4,7 +4,7 @@ dnl +-------------------------+
 dnl |  Autotools Boilerplate  |
 dnl +-------------------------+
 
-AC_INIT([bedrock], [2.4.1-snapshot], [rlauer6@comcast.net])
+AC_INIT([bedrock], [2.4.1], [rlauer6@comcast.net])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -17,7 +17,6 @@ AC_CONFIG_MACRO_DIR([autotools])
 
 dnl Turn on all Automake warnings and report them as errors
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
-
 
 DFLT_MAINTAINER="rlauer6@comcast.net"
 AC_SUBST([DFLT_MAINTAINER])
