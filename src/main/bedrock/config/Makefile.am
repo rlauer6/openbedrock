@@ -8,6 +8,7 @@ VERSION = @VERSION@
 
 CONFIG = \
     tagx.xml.in \
+    mysql-session.xml.in \
     tagx_apps.xml.in \
     perl_bedrock.conf.in \
     bedrock-rest-framework.conf.in \
