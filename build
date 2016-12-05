@@ -2,35 +2,20 @@
 
 # NOTES:
 
-# To release the Bedrock RPM
+# To release the Bedrock RPMs
 # 
-# 1) build the RPM
+# 1) build the RPMs
 #     
 #     ./build bump
 #     ./build build
 # 
-# 2) copy the RPM file to openbedrock.org
+# 2) build and deply a new repo
 # 
-#     $ scp $(ls -1rt ~/.rpm/RPMS/noarch/bedrock*.rpm | tail -1) ec2-user@openbedrock.org:
-#     $ scp $(ls -1rt bedrock*.tar.gz | tail -1) ec2-user@openbedrock.org:
-#     $ ssh ec2-user@openbedrock.org
-#     Last login: Wed Apr 13 12:40:02 2016 from ip-10-0-1-208.ec2.internal
-#     
-#            __|  __|_  )
-#            _|  (     /   Amazon Linux AMI
-#           ___|\___|___|
-#     
-#     https://aws.amazon.com/amazon-linux-ami/2015.09-release-notes/
-#     39 package(s) needed for security, out of 83 available
-#     Run "sudo yum update" to apply all updates.
-#     Amazon Linux version 2016.03 is available.
-#     [ec2-user@ip-10-0-2-230 ~]$ sudo cp bedrock-2.4.1-18.noarch.rpm /var/www/vhosts/bedrock-repos/html/pub/bedrock/noarch/
-#     [ec2-user@ip-10-0-2-230 ~]$ sudo createrepo /var/www/vhosts/bedrock-repos/html/pub/bedrock/
-#     [ec2-user@ip-10-0-2-230 ~]$ sudo cp ~/bedrock-2.4.1-snapshot.tar.gz \
-#                                  /var/www/vhosts/www.openbedrock.net/htdocs/bedrock-repo/bedrock-2.4.1-18-snapshot.tar.gz
-# 
-# 3) edit the wiki and declar a new version
+#     ./build deploy
+#
+# 3) edit the wiki and declare a new version
 
+#
 # help()
 #
 # help!
@@ -50,8 +35,6 @@ help() {
     echo "    deploy                       - deploy RPM"
     echo "    unbump                       - restore last version number"
     echo ""
-    echo " Examples:"
-    echo " ---------"
 
     return 0
 }
@@ -127,12 +110,13 @@ case "$1" in
 	./configure --prefix=/usr
 	make && make dist
 	tarball=$(ls -1rt *.tar.gz | tail -1)
-	[ -e "$tarball" ] && rpmbuild -tb $tarball
+	[ -e "$tarball" ] && rpmbuild -tb $tarball --sign
 	;;
 
     deploy)
 	topdir=$(perl -n -e '/^%_topdir/ && print ((split / /)[1]);' ~/.rpmmacros)
 	set -x
+
 	if test -d "$topdir"; then
             bedrock_rpm=$(ls -1rt ${topdir}/RPMS/noarch/bedrock*.rpm | tail -1)
 	    bedrock_version=$(echo $bedrock_rpm | perl -np -e 's/.*?\-(\d+\..*)\.noarch.rpm/$1/;') 
@@ -146,9 +130,9 @@ case "$1" in
 		
                 # if we successfully built some RPM, create a
                 # temporary repo and sync with AWS S3 repo
-		cp ${topdir}/RPMS/noarch/*$bedrock_version*rpm ${repo}/noarch
-
-#		cp "$bedrock_rpm" ${repo}/noarch
+		for a in ${topdir}/RPMS/noarch/*$bedrock_version*rpm; do
+		    cp $a ${repo}/noarch
+		done
 		    
                 # get all the .rpm files from the S3 bucket and
                 # recreate the repo
@@ -158,6 +142,32 @@ case "$1" in
                 PERMISSION="--grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers"
 		aws s3 sync --recursive --include="*" ${repo} s3://$BUCKET/ $PERMISSION
 		aws s3 ls s3://$BUCKET/
+
+		# export the GPG key to make sure it always stays in sync
+		gpg -a --export OpenBedrock > RPM-GPG-KEY-openbedrock.org
+		aws s3 cp RPM-GPG-KEY-openbedrock.org s3://openbedrock-repo/ $PERMISSION
+
+		# bedrock.repo
+		cat <<EOF  >/tmp/bedrock.repo
+[bedrock]
+name=bedrock
+enabled=1
+gpgcheck=1
+gpgkey=http://openbedrock-repo.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedrock.org
+baseurl=http://openbedrock-repo.s3-website-us-east-1.amazonaws.com
+EOF
+		aws s3 cp /tmp/bedrock.repo s3://openbedrock-repo/ $PERMISSION
+
+		cat <<EOF >/tmp/bedrock-startup.sh
+#!/bin/bash
+
+yum update -y
+wget -q http://openbedrock-repo.s3-website-us-east-1.amazonaws.com/bedrock.repo -O /etc/yum.repos.d/bedrock.repo
+yum install -y bedrock-openbedrock
+service httpd restart
+chkconfig on
+EOF
+		aws s3 cp /tmp/bedrock-startup.sh s3://openbedrock-repo/ $PERMISSION
 
                 # cleanup local copy of repo
 		test -n "$repo" && rm -rf $repo
@@ -169,4 +179,3 @@ case "$1" in
 	exit 0;
 	;;
 esac
-
