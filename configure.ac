@@ -268,6 +268,7 @@ AX_DISTCHECK_HACK
 do_subst_command='do_subst = sed \
   -e '"'"'s,[@]PACKAGE[@],$(PACKAGE),g'"'"' \
   -e '"'"'s,[@]VERSION[@],$(VERSION),g'"'"' \
+  -e '"'"'s,[@]BEDROCK_RELEASE[@],$(BEDROCK_RELEASE),g'"'"' \
   -e '"'"'s,[@]PATH_SEPARATOR[@],$(PATH_SEPARATOR),g'"'"' \
   -e '"'"'s,[@]configure_input[@],Generated from $@.in; do not edit by hand.,g'"'"' \
   -e "s,[@]BUILD_DATE[@],$$(date '"'"'+%Y-%m-%d %H:%M:%S'"'"'),g" \
