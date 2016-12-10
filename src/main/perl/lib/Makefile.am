@@ -1,6 +1,6 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
 PERL = @PERL@
-
+BEDROCK_RELEASE = @BEDROCK_RELEASE@
 perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
