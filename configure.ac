@@ -97,6 +97,7 @@ AC_PATH_PROG([A2ENSITE],
         [a2ensite])
 
 apache_layout=Debian
+
 AC_ARG_WITH(
         [apache-layout],[  --with-apache-layout=LAYOUT      apache layout style (Debian or RedHat), default=Debian],
         [
@@ -243,6 +244,8 @@ AC_SUBST([perl5_pkgvdatadir], ["\${datadir}/${PACKAGE}-${VERSION}/perl5"])
 AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
 
 AX_DISTCHECK_HACK
+
+RPM_BUILD_MODE
 
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
