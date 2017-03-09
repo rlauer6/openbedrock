@@ -89,7 +89,7 @@ fi
 AC_PATH_PROG([PROVE], [prove])
 
 if test -z "$PROVE" ; then 
-  AC_MSG_ERROR([prove not found?])
+  AC_MSG_WARN([prove not found?])
 fi
 
 dnl ...for Debian layouts, we use a2ensite to enable a virtual host
@@ -169,8 +169,8 @@ dnl
 ads_PERL_MODULE([Apache2::Const], [OPTIONAL])
 ads_PERL_MODULE([AppConfig], [OPTIONAL])
 ads_PERL_MODULE([Carp], [OPTIONAL])
-ads_PERL_MODULE([Crypt::CBC])
-ads_PERL_MODULE([Crypt::DES])
+ads_PERL_MODULE([Crypt::CBC], [OPTIONAL])
+ads_PERL_MODULE([Crypt::DES], [OPTIONAL])
 ads_PERL_MODULE([CGI], [OPTIONAL], [3.15])
 ads_PERL_MODULE([Cwd],  [OPTIONAL])
 ads_PERL_MODULE([DBI], [OPTIONAL], [1.13])
