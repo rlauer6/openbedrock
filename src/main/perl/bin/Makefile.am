@@ -2,7 +2,13 @@ SUBDIRS = .
 
 perl5_pkglibdir = @perl5_pkglibdir@
 
-PERL = @PERL@
+perlrun = @PERL@
+
+if RPM_BUILD_MODE
+perlwc = \#
+else
+perlwc = @PERL@ -wc
+endif
 
 @do_subst_command@
 
@@ -25,7 +31,7 @@ man1_MANS = $(G1MANPAGES)
 
 $(GPERLSCRIPTS): % : %.in 
 	$(do_subst) $< > $@
-	perl -wc -I $(abs_builddir)/../lib $@
+	$(perlwc) -I $(abs_builddir)/../lib $@
 
 CLEANFILES = $(GPERLSCRIPTS) $(GMANPAGES)
 
