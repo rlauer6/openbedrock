@@ -44,8 +44,16 @@ help() {
     return 0
 }
 
-create_website() {
-		cat <<EOF >/tmp/index.html
+create_website_files() {
+    if ! test -d "$1"; then
+	return
+    fi
+
+    gpg -a --export OpenBedrock > $1/RPM-GPG-KEY-openbedrock.org
+
+    cp src/main/bedrock/img/bedrock.png $1/bedrock.png
+
+    cat <<EOF >$1/index.html
 <html>
 <body>
 <a href="http://twiki.openbedrock.net"><img src="bedrock.png"></a>
@@ -70,7 +78,7 @@ baseurl=http://${BUCKET}.s3-website-us-east-1.amazonaws.com
 EOF
 
 
-		cat <<EOF  >/tmp/bedrock.repo
+    cat <<EOF  >$1/bedrock.repo
 [bedrock]
 name=bedrock
 enabled=1
@@ -79,7 +87,7 @@ gpgkey=http://${BUCKET}.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedro
 baseurl=http://${BUCKET}.s3-website-us-east-1.amazonaws.com
 EOF
 
-		cat <<EOF >/tmp/bedrock-startup.sh
+    cat <<EOF >$1/bedrock-startup.sh
 #!/bin/bash
 
 yum update -y
@@ -96,12 +104,14 @@ EOF
 # | MAIN SCRIPT STARTS HERE |
 # +-------------------------+
 
+BUCKET=repo.openbedrock.net
+
 # set an environment variable (NOSIGN) to anything if you don't want
 # to sign the packages.
 test -z "$NOSIGN" && SIGN='--sign'
 
 # -a => allow short optins (-), -o {options} -l {long options}
-OPTS=$(getopt -a -o hb:xr -l help,no-sign,rpm-mode -- "$@")
+OPTS=$(getopt -a -o hb:xr -l help,no-sign,rpm-mode,basedir -- "$@")
 
 if [[ $? -ne 0 ]]; then
     help;
@@ -117,7 +127,7 @@ while [ $# -gt 0 ]; do
 	-h | --help)
 	    shift;
 	    help;
-	    exit 0;
+	    exit -1;
 	    ;;
 	
 	-x | --no-sign)
@@ -129,7 +139,8 @@ while [ $# -gt 0 ]; do
 	    RPM_MODE='--enable-rpm-build-mode'
 	    shift;
 	    ;;
-	-b)
+
+	-b | --basedir)
 	    shift;
 	    basedir="$1"
 	    shift;
@@ -142,7 +153,25 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-test -z "$basedir" && basedir="/tmp"
+if test -z "$basedir"; then
+    basedir="$HOME"
+    if ! test -s "$HOME/.rpmmacros"; then
+	echo "error: no .rpmmacros found!"
+	exit -1;
+    fi
+
+    topdir=$(perl -n -e '/^%_topdir/ && print ((split / /)[1]);' $basedir/.rpmmacros)
+
+    if test -z "$topdir"; then
+	echo "no %_topdir in .rpmmacros defined!"
+	exit -1;
+    fi
+
+    if ! test -d "$topdir"; then
+	echo "%_topdir ($topdir) does not exist!"
+	exit -1;
+    fi
+fi
 
 case "$1" in 
 
@@ -187,81 +216,43 @@ case "$1" in
 	[ -e "$tarball" ] && rpmbuild -tb $tarball $SIGN
 	;;
 
-    createrepo)
+    createrepo | deploy)
 	repo=$(mktemp -d)
 	mkdir ${repo}/noarch
-	topdir="$basedir/rpmbuild"
 	
-	if test -d "$topdir"; then
-	    bedrock_rpm=$(ls -1rt ${topdir}/RPMS/noarch/bedrock-website-*.rpm | tail -1)
-	    bedrock_version=$(echo $bedrock_rpm | perl -np -e 's/.*?\-(\d+\..*)\.noarch.rpm/$1/;') 
+	bedrock_rpm=$(ls -1rt ${topdir}/RPMS/noarch/bedrock-website-*.rpm | tail -1)
+	if test -z "$bedrock_rpm"; then
+	    echo "no rpms found!"
+	    exit -1;
+	fi
+
+	bedrock_version=$(echo $bedrock_rpm | perl -np -e 's/.*?\-(\d+\..*)\.noarch.rpm/$1/;') 
 	    
-	    for a in ${topdir}/RPMS/noarch/*$bedrock_version*rpm; do
-		cp $a ${repo}/noarch
-	    done
+	for a in ${topdir}/RPMS/noarch/*$bedrock_version*rpm; do
+	    ./rpm-sign OpenBedrock OpenBedrock $a
+	    cp $a ${repo}/noarch
+	done
 	
-	    createrepo $repo
-	    
-	    create_website
-	    mkdir $basedir/yum-repo
-	    cp -r $repo/* $basedir/yum-repo
-	    cp src/main/bedrock/img/bedrock.png $basedir/yum-repo
-	    cp /tmp/index.html $basedir/yum-repo/
-	    cp /tmp/bedrock.repo $basedir/yum-repo
-	    cp /tmp/bedrock-startup.sh $basedir/yum-repo
-	    
-	else
-	    echo "No directory $topdir"
+	createrepo $repo
+	
+	create_website_files $repo
+
+	mkdir $basedir/yum-repo
+
+	cp -r $repo/* $basedir/yum-repo
+
+	if [ "$1" = "createrepo" ]; then
 	    exit 0;
 	fi
-	;;
-    
-    deploy)
-	topdir=$(perl -n -e '/^%_topdir/ && print ((split / /)[1]);' ~/.rpmmacros)
+
 	set -x
+	
+        # sync local repo with S3 bucket, make it PUBLIC
+        PERMISSION="--grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers"
+	aws s3 sync  --include="*" ${repo} s3://$BUCKET/ $PERMISSION
 
-	if test -d "$topdir"; then
-	    bedrock_rpm=$(ls -1rt ${topdir}/RPMS/noarch/bedrock-website-*.rpm | tail -1)
-	    bedrock_version=$(echo $bedrock_rpm | perl -np -e 's/.*?\-(\d+\..*)\.noarch.rpm/$1/;') 
-
-	    if test -n "$bedrock_rpm"; then
-
-		repo=$(mktemp -d)
-		mkdir ${repo}/noarch
-
-		BUCKET=repo.openbedrock.net
-		
-                # if we successfully built some RPM, create a
-                # temporary repo and sync with AWS S3 repo
-		for a in ${topdir}/RPMS/noarch/*$bedrock_version*rpm; do
-		    cp $a ${repo}/noarch
-		done
-		
-                # get all the .rpm files from the S3 bucket and
-                # recreate the repo
-		createrepo $repo
-		
-                # sync local repo with S3 bucket, make it PUBLIC
-                PERMISSION="--grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers"
-		aws s3 sync  --include="*" ${repo} s3://$BUCKET/ $PERMISSION
-		aws s3 ls s3://$BUCKET/
-
-		# export the GPG key to make sure it always stays in sync
-		gpg -a --export OpenBedrock > RPM-GPG-KEY-openbedrock.org
-		aws s3 cp RPM-GPG-KEY-openbedrock.org s3://${BUCKET}/ $PERMISSION
-
-		aws s3 cp src/main/bedrock/img/bedrock.png s3://${BUCKET}/ $PERMISSION
-		
-		create_website
-
-		aws s3 cp /tmp/index.html s3://$BUCKET/ $PERMISSION
-		aws s3 cp /tmp/bedrock.repo s3://$BUCKET/ $PERMISSION
-		aws s3 cp /tmp/bedrock-startup.sh s3://$BUCKET/ $PERMISSION
-
-                # cleanup local copy of repo
-		test -n "$repo" && rm -rf $repo
-	    fi
-	fi
+        # cleanup local copy of repo
+	test -n "$repo" && rm -rf $repo
 	;;
 
     *)
