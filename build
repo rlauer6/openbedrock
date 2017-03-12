@@ -5,6 +5,8 @@
 # To release the Bedrock RPMs perform all of these steps.  You need to
 # bump, build AND deploy!  They are separate steps because you may not
 # want to deploy until you are have tested and updated documentation.
+#
+# 'deploy' means create a repo and update the Bedrock repo site.
 # 
 # 1) build the RPMs
 #     
@@ -23,32 +25,66 @@
 # help!
 #
 help() {
-    echo "$0 [options] [command]"
-    echo ""
-    echo "  Options"
-    echo "  -------"
-    echo "    -h, --help                   - help"
-    echo "    -x, --no-sign                - do not sign the RPM"
-    echo "    -r, --rpm-mode               - do not compile Perl"
-    echo "    -b, --basedir                - base directory"
-    echo ""
-    echo "  Commands"
-    echo "  --------"
-    echo "    build                        - build RPM"
-    echo "    bump                         - bump minor revision"
-    echo "    bump release                 - bump minor release"
-    echo "    deploy                       - deploy RPM"
-    echo "    unbump                       - restore last version number"
-    echo ""
+    cat <<EOF
+    $0 [options] [command]
+    
+Build the rpm files for the Bedock project.  Optionally deploy the
+rpms to the Bedrock repo website.
+    
+      Options
+      -------
+        -h, --help                   - help
+        -x, --no-sign                - do not sign the RPM
+        -r, --rpm-mode               - do not compile Perl during build
+        -b, --basedir                - base directory (default: \$HOME)
+    
+      Commands
+      --------
+        build                        - build and sign RPM (unless -x)
+        bump                         - bump minor revision
+        bump release                 - bump minor release
+        createrepo                   - stage a repo to \$basdedir/yum-repo
+        deploy                       - createrepo & deploy RPM
+        unbump                       - restore last version number
+
+Hints:
+
+1) Use the --rpm-mode (-r) option when you want to build the project
+   without checking the syntax of the Perl modules.  Without this
+   option your environment will need to have dependent Perl modules
+   installed.  -r is used primarily with an automated build process that
+   builds the project in a "pristine" environment.
+
+2) Use the --no-sign (-x) option if you're not interested in signing
+   the rpms.  You may not have access to Bedrock's private key.
+
+3) Use --basedir (-b) with the 'createrepo' or 'deploy' commands to
+   stage a the yum repository website to a directory named 'yum-repo'
+   below the directory specifed with this option.  The default is to
+   create a directory named 'yum-repo' in your \$HOME directory.
+
+4) To release a new version of Bedrock, bump the version, update the
+   NEWS, commit changes and push to the master branch.
+
+EOF
 
     return 0
 }
+
+
+# create the files that will define the http://repo.openbedrock.net
+# website.  Files are staged to $1
+#
+# - index.html
+# - bedrock-startup.sh
+# - bedrock.repo
 
 create_website_files() {
     if ! test -d "$1"; then
 	return
     fi
-
+    
+    # export public key, relies on ~./gnupg configuration (s3://openbedrock/gnupg.tar.gz)
     gpg -a --export OpenBedrock > $1/RPM-GPG-KEY-openbedrock.org
 
     cp src/main/bedrock/img/bedrock.png $1/bedrock.png
@@ -70,8 +106,8 @@ create_website_files() {
 name=bedrock
 enabled=1
 gpgcheck=1
-gpgkey=http://${BUCKET}.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedrock.org
-baseurl=http://${BUCKET}.s3-website-us-east-1.amazonaws.com
+gpgkey=http://${REPO_BUCKET}.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedrock.org
+baseurl=http://${REPO_BUCKET}.s3-website-us-east-1.amazonaws.com
 </pre>
 </body>
 </html>
@@ -83,15 +119,15 @@ EOF
 name=bedrock
 enabled=1
 gpgcheck=1
-gpgkey=http://${BUCKET}.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedrock.org
-baseurl=http://${BUCKET}.s3-website-us-east-1.amazonaws.com
+gpgkey=http://${REPO_BUCKET}.s3-website-us-east-1.amazonaws.com/RPM-GPG-KEY-openbedrock.org
+baseurl=http://${REPO_BUCKET}.s3-website-us-east-1.amazonaws.com
 EOF
 
     cat <<EOF >$1/bedrock-startup.sh
 #!/bin/bash
 
 yum update -y
-wget -q http://${BUCKET}.s3-website-us-east-1.amazonaws.com/bedrock.repo -O /etc/yum.repos.d/bedrock.repo
+wget -q http://${REPO_BUCKET}.s3-website-us-east-1.amazonaws.com/bedrock.repo -O /etc/yum.repos.d/bedrock.repo
 yum install -y bedrock-openbedrock
 service httpd restart
 chkconfig httpd on
@@ -104,11 +140,9 @@ EOF
 # | MAIN SCRIPT STARTS HERE |
 # +-------------------------+
 
-BUCKET=repo.openbedrock.net
+REPO_BUCKET=repo.openbedrock.net
 
-# set an environment variable (NOSIGN) to anything if you don't want
-# to sign the packages.
-test -z "$NOSIGN" && SIGN='--sign'
+SIGN='--sign'
 
 # -a => allow short optins (-), -o {options} -l {long options}
 OPTS=$(getopt -a -o hb:xr -l help,no-sign,rpm-mode,basedir -- "$@")
@@ -249,13 +283,14 @@ case "$1" in
 	
         # sync local repo with S3 bucket, make it PUBLIC
         PERMISSION="--grants read=uri=http://acs.amazonaws.com/groups/global/AllUsers"
-	aws s3 sync  --include="*" ${repo} s3://$BUCKET/ $PERMISSION
+	aws s3 sync  --include="*" ${repo} s3://$REPO_BUCKET/ $PERMISSION
 
         # cleanup local copy of repo
 	test -n "$repo" && rm -rf $repo
 	;;
 
     *)
+	help
 	exit 0;
 	;;
 esac
