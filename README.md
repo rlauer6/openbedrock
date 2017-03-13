@@ -17,8 +17,10 @@ Perl plugins.
 Bedrock differs significantly from most web application development
 environments that either generate HTML pages as output (e.g. CGIs,
 Servlets) or are themselves programs embedded within HTML pages
-(e.g. PHP, Mason, ASP, etc) by allowing the developer to assemble
-pages from object oriented components.
+(e.g. PHP, Mason, ASP, etc). By allowing the developer to assemble
+pages from object oriented components Bedrock allows front-end web
+developers and back-end developers to collaborate effectively using
+familiar, well documented interfaces.
 
 Although Bedrock has grown to include many features, some of which are
 not found in other web application environments, some interesting and
@@ -71,14 +73,18 @@ to 5.8.x, as well.
 
 # Packages
 
+## RedHat
+
 If you are using the `yum` repo to install Bedrock, dependencies
 should be handled for you.
 
-At one time a Debian package was available for Bedrock, however that
-has gone out of maintenance.  Volunteers welcome.  If you want to
-install Bedrock on Debian based system like Ubunutu, you should be
-able use `apt` to satisfy the Bedrock dependencies and install Bedrock
-in the standard Unix way:
+## Ubuntu/Debian
+
+At one time a Debian package was available for Bedrock, however the
+packaging scripts have gone out of maintenance.  Volunteers welcome.
+If you want to install Bedrock on Debian based system like Ubunutu,
+first satisfy the Bedrock Perl dependencies using `apt` and install
+Bedrock in the standard Unix way:
 
 ```
  $ ./configure --prefix=/usr
@@ -86,12 +92,12 @@ in the standard Unix way:
  $ sudo make install
 ```
 
+# Performance
+
 - Bedrock running as a CGI should work with no compatibility issues
 under Apache 1.x/2.x+
 
 - For increased performance use `mod_perl` with Apache 2.2.
-
-# Installing and Configuring a Bedrock Enabled Website
 
 # Creating a persistent Session Database
 
