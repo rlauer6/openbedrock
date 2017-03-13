@@ -6,7 +6,7 @@ SUBDIRS = \
     cgi-bin \
     .
 
-TESTS = \
+BEDROCK_TESTS = \
     t/flush.txt   \
     t/if.txt      \
     t/include.txt \
@@ -28,7 +28,7 @@ TESTS = \
 test:
 	test_dir=$$(mktemp -d); \
 	mkdir $$test_dir/t; \
-	for a in $(TESTS); do \
+	for a in $(BEDROCK_TESTS); do \
 	  test_file=$$(basename $$a .txt); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
