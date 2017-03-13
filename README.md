@@ -83,8 +83,39 @@ should be handled for you.
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.
 If you want to install Bedrock on Debian based system like Ubunutu,
-first satisfy the Bedrock Perl dependencies using `apt` and install
-Bedrock in the standard Unix way:
+first satisfy the Bedrock Perl dependencies using `apt`.  Here's a
+list (not guaranteed to be complete) of the packages you may need to
+install:
+
+Programs...
+
+* unzip
+* automake
+* autoconf
+* apache2
+* make
+
+Perl modules...
+
+* libapache2-mod-perl2-dev
+* libperl-AppConfig
+* libappconfig-perl
+* libcrypt-cbc-perl
+* libcrypt-des-perl
+* libcgi-pm-perl
+* libdbi-perl
+* libdate-calc-perl
+* libio-stringy-perl
+* libipc-shareable-perl
+* libjson-perl
+* libspreadsheet-parseexcel-perl
+* libtext-csv-xs-perl
+* libtie-ixhash-perl
+* libxml-simple-perl
+* librole-tiny-perl
+
+After satisfying dependencies, build and install Bedrock in the
+standard Unix way:
 
 ```
  $ ./configure --prefix=/usr
