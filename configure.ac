@@ -29,6 +29,9 @@ fi
 
 AC_SUBST([BEDROCK_RELEASE])
 
+# sets automake conditional RPM_BUILD_MODE, $rpm_build_mode
+RPM_BUILD_MODE
+
 dnl +------------------------+
 dnl |  Checks for programs.  |
 dnl +------------------------+
@@ -143,15 +146,14 @@ AC_SUBST([apache_sessiondir])
 dnl require /at least/ perl version 5.8.0
 ads_PROG_PERL([5.008000])
 
-# pod2man comes with perl, which the above verifies that we have. Not yet sure
-# if we can rely on that (distribution packaging may provide it in an optional
-# package, for instance), so we check for it explicitly here. We use pod2man
-# at build time to create some of our man pages.
+dnl pod2man comes with perl, which the above verifies that we have. Not yet sure
+dnl if we can rely on that (distribution packaging may provide it in an optional
+dnl package, for instance), so we check for it explicitly here. We use pod2man
+dnl at build time to create some of our man pages.
 AC_PATH_PROG([POD2MAN], [pod2man])
 if test -z "$POD2MAN"; then
     AC_MSG_ERROR([pod2man program not found])
 fi
-
 
 dnl +------------------------+
 dnl |  Checks for Libraries  |
@@ -166,45 +168,45 @@ dnl specifically /which/ version of Perl started shipping with each specific
 dnl module. These tests are cheap, so this should be a non-issue; it's
 dnl infinitely better than discovering an oversite at runtime.
 dnl
-# Required Perl modules
-ads_PERL_MODULE([Apache2::Const], [OPTIONAL])
-ads_PERL_MODULE([AppConfig], [OPTIONAL])
-ads_PERL_MODULE([Carp], [OPTIONAL])
-ads_PERL_MODULE([Crypt::CBC], [OPTIONAL])
-ads_PERL_MODULE([Crypt::DES], [OPTIONAL])
-ads_PERL_MODULE([CGI], [OPTIONAL], [3.15])
-ads_PERL_MODULE([Cwd],  [OPTIONAL])
-ads_PERL_MODULE([DBI], [OPTIONAL], [1.13])
-ads_PERL_MODULE([Date::Calc], [OPTIONAL], [4.3])
-ads_PERL_MODULE([Digest::SHA],[OPTIONAL])
-ads_PERL_MODULE([Fcntl],  [OPTIONAL])
-ads_PERL_MODULE([File::Basename],  [OPTIONAL])
-ads_PERL_MODULE([File::Copy],  [OPTIONAL])
-ads_PERL_MODULE([File::Path],  [OPTIONAL])
-ads_PERL_MODULE([File::Temp],  [OPTIONAL])
-ads_PERL_MODULE([File::Spec::Functions],  [OPTIONAL])
-ads_PERL_MODULE([Getopt::Long], [OPTIONAL])
-ads_PERL_MODULE([GDBM_File], [OPTIONAL], [1.03])
-ads_PERL_MODULE([IO::File], [OPTIONAL])
-ads_PERL_MODULE([IO::Handle], [OPTIONAL])
-#
-# IO::Scalar is from the IO-stringy package, available here:
-#     http://www.cpan.org/modules/by-module/IO/
-ads_PERL_MODULE([IO::Scalar], [OPTIONAL])
-ads_PERL_MODULE([IPC::Shareable], [OPTIONAL])
-ads_PERL_MODULE([Time::HiRes], [OPTIONAL])
-#
-ads_PERL_MODULE([JSON], [OPTIONAL])
-ads_PERL_MODULE([MIME::Base64], [OPTIONAL])
-ads_PERL_MODULE([Net::FTP], [OPTIONAL], [2.56])
-ads_PERL_MODULE([Net::SMTP], [OPTIONAL], [2.15])
-ads_PERL_MODULE([Spreadsheet::ParseExcel],[OPTIONAL])
-ads_PERL_MODULE([Text::CSV_XS],[OPTIONAL])
-ads_PERL_MODULE([Tie::IxHash], [OPTIONAL])
-ads_PERL_MODULE([XML::Simple], [OPTIONAL])
-ads_PERL_MODULE([XML::Parser], [OPTIONAL])
+dnl Required Perl modules
 
-# Optional Perl modules
+dnl disable module checking --enable-rpm-build-mode 
+AM_COND_IF([RPM_BUILD_MODE], [is_required="OPTIONAL"], [is_required="REQUIRED"])
+
+ads_PERL_MODULE([Apache2::Const], $is_required)
+ads_PERL_MODULE([AppConfig], $is_required)
+ads_PERL_MODULE([Carp], $is_required)
+ads_PERL_MODULE([Crypt::CBC], $is_required)
+ads_PERL_MODULE([Crypt::DES], $is_required)
+ads_PERL_MODULE([CGI], $is_required, [3.15])
+ads_PERL_MODULE([Cwd],  $is_required)
+ads_PERL_MODULE([DBI], $is_required, [1.13])
+ads_PERL_MODULE([Date::Calc], $is_required, [4.3])
+ads_PERL_MODULE([Digest::SHA],$is_required)
+ads_PERL_MODULE([Fcntl],  $is_required)
+ads_PERL_MODULE([File::Basename],  $is_required)
+ads_PERL_MODULE([File::Copy],  $is_required)
+ads_PERL_MODULE([File::Path],  $is_required)
+ads_PERL_MODULE([File::Temp],  $is_required)
+ads_PERL_MODULE([File::Spec::Functions],  $is_required)
+ads_PERL_MODULE([Getopt::Long], $is_required)
+ads_PERL_MODULE([GDBM_File], $is_required, [1.03])
+ads_PERL_MODULE([IO::File], $is_required)
+ads_PERL_MODULE([IO::Handle], $is_required)
+ads_PERL_MODULE([IO::Scalar], $is_required)
+ads_PERL_MODULE([IPC::Shareable], $is_required)
+ads_PERL_MODULE([Time::HiRes], $is_required)
+ads_PERL_MODULE([JSON], $is_required)
+ads_PERL_MODULE([MIME::Base64], $is_required)
+ads_PERL_MODULE([Net::FTP], $is_required, [2.56])
+ads_PERL_MODULE([Net::SMTP], $is_required, [2.15])
+ads_PERL_MODULE([Spreadsheet::ParseExcel],$is_required)
+ads_PERL_MODULE([Text::CSV_XS],$is_required)
+ads_PERL_MODULE([Tie::IxHash], $is_required)
+ads_PERL_MODULE([XML::Simple], $is_required)
+ads_PERL_MODULE([XML::Parser], $is_required)
+
+# These really are optional...
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
 ads_PERL_MODULE([Net::OAuth2::Profile::WebServer],  [OPTIONAL])
 
@@ -245,7 +247,6 @@ AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
 
 AX_DISTCHECK_HACK
 
-RPM_BUILD_MODE
 
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
