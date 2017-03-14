@@ -244,13 +244,13 @@ dnl FIXME: provide macro maintainer email address in error message
           eval "'""${PERL}""'" "'""-M${_tmp_perl_mod_name}""'" \
             "${ax_perl5_extra_includes_opt}" -wle "'"'
                my $modname = shift;
-               my $ver = "${modname}::VERSION";
+               my $ver = eval { "${modname}::VERSION"; };
                print $$ver if defined $$ver && length $$ver;
             '"'" "'""${_tmp_perl_mod_name}""'"
         )"
         if test $? -ne 0; then
 ]
-                AC_MSG_ERROR([[
+                AC_MSG_WARN([[
     Perl module ${_tmp_perl_mod_name} exists, but 'configure' was unable to
     test whether or not the module specifies a version number. This is likely
     a bug in the ${_tmp_macro_name} autoconf macro; please report this as a bug.
