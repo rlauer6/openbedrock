@@ -95,21 +95,21 @@ if test -z "$PROVE" ; then
   AC_MSG_WARN([prove not found?])
 fi
 
-dnl ...for Debian layouts, we use a2ensite to enable a virtual host
+apache_layout=Debian
+
+dnl ...for Debian layouts, we use a2ensite to enable a virtual host, a2enconf for configuations, etc.
 AC_PATH_PROG([A2ENSITE],
         [a2ensite])
 
-apache_layout=Debian
-
 AC_ARG_WITH(
-        [apache-layout],[  --with-apache-layout=LAYOUT      apache layout style (Debian or RedHat), default=Debian],
+        [apache-layout],[  --with-apache-layout=LAYOUT Apache layout style (Debian or RedHat), default=Debian],
         [
          case "$withval" in
 
            'Debian')
                      apache_layout="$withval"
                      if test -z "$A2ENSITE"; then
-                       AC_ERROR([Debian layout doubtful, no a2ensite?])
+                       AC_ERROR([Debian layout doubtful, no a2ensite? try: apt-get install apache2])
                      fi
                      ;;
           'RedHat')
@@ -126,12 +126,8 @@ AC_ARG_WITH(
 
 AC_SUBST([apache_layout])
 
-apache_default_htdocsdir=/var/www
+apache_default_htdocsdir=/var/www/html
 apache_default_sessiondir=/var/www/session
-
-if test "$apache_layout" = "RedHat"; then
-  apache_default_htdocsdir=/var/www/html
-fi
 
 AC_SUBST([apache_default_htdocsdir])
 
@@ -247,7 +243,6 @@ AC_SUBST([perl5_pkgvdatadir], ["\${datadir}/${PACKAGE}-${VERSION}/perl5"])
 AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
 
 AX_DISTCHECK_HACK
-
 
 ## The 'do_subst' Makefile var is the conventional name for manual
 ## filtering process that needs to be done at build time.
@@ -448,6 +443,8 @@ printf "                 User binaries: %s\n" "`__poor_mans_expand_file_name bin
 printf "               System binaries: %s\n" "`__poor_mans_expand_file_name sbindir`"
 printf "           Configuration files: %s\n" "`__poor_mans_expand_file_name sysconfdir`"
 printf "                  Manual pages: %s\n" "`__poor_mans_expand_file_name mandir`"
+printf "\n"
+printf "                 Apache Layout: %s\n" "`__poor_mans_expand_file_name apache_layout`"
 printf "\n"
 printf "                     pkglibdir: %s\n" "`__poor_mans_expand_file_name pkglibdir`"
 printf "                     cgibindir: %s\n" "`__poor_mans_expand_file_name cgibindir`"
