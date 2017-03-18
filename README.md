@@ -82,6 +82,10 @@ should be handled for you.
 
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.
+I'm going to try to resurrect the Debian packaging scripts and see if
+we get a first class package for Ubuntu users.  In the interim, try
+the `setup-ubuntu.sh` script or follow the instructions below.
+
 If you want to install Bedrock on Debian based system like Ubunutu,
 first satisfy the Bedrock Perl dependencies using `apt`.  Here's a
 list (not guaranteed to be complete) of the packages you may need to
