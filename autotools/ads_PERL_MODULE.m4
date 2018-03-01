@@ -153,6 +153,7 @@ AC_DEFUN([ads_PERL_MODULE], [
     _tmp_perl_mod_required_or_optional=$2
     if test -z "${_tmp_perl_mod_required_or_optional}"; then
         _tmp_perl_mod_required_or_optional='REQUIRED'  # dflt
+       ( ${ax_perldeps_disabled} || ${ax_deps_disabled} ) && _tmp_perl_mod_required_or_optional='OPTIONAL'  # dflt
     fi
     if test "${_tmp_perl_mod_required_or_optional}" = 'REQUIRED' ||
        test "${_tmp_perl_mod_required_or_optional}" = 'OPTIONAL'; then :; else

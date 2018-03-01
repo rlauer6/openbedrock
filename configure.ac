@@ -139,6 +139,13 @@ AC_ARG_WITH(
 
 AC_SUBST([apache_sessiondir])
 
+AC_PATH_PROG([PERL],
+	[perl])
+
+if test -z "$PERL" ; then 
+  AC_MSG_ERROR([perl not found?])
+fi
+
 perl5libdir=\${datadir}/perl5
 AC_ARG_WITH(
         [perl5libdir],[  --with-perl5libdir (defaults to [DATAROOTDIR]/perl5)],
