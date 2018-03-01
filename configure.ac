@@ -16,7 +16,7 @@ dnl proofing; as of may not be used yet...)
 AC_CONFIG_MACRO_DIR([autotools])
 
 dnl Turn on all Automake warnings and report them as errors
-AM_INIT_AUTOMAKE([-Wall -Werror foreign])
+AM_INIT_AUTOMAKE([-Wall foreign tar-ustar ])
 
 DFLT_MAINTAINER="rlauer6@comcast.net"
 AC_SUBST([DFLT_MAINTAINER])
