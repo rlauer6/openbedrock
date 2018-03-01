@@ -139,6 +139,22 @@ AC_ARG_WITH(
 
 AC_SUBST([apache_sessiondir])
 
+perl5libdir=\${datadir}/perl5
+AC_ARG_WITH(
+        [perl5libdir],[  --with-perl5libdir (defaults to [DATAROOTDIR]/perl5)],
+        [
+    if test "${withval}" = 'no'; then
+        true
+    elif test "$withval" = 'yes'; then
+        perl5libdir=$($PERL -MConfig -wle 'print $Config{sitelib};')
+    else
+        perl5libdir=$withval
+    fi
+        ]
+)
+
+AC_SUBST([perl5libdir])
+
 dnl require /at least/ perl version 5.8.0
 ads_PROG_PERL([5.008000])
 
@@ -166,42 +182,42 @@ dnl infinitely better than discovering an oversite at runtime.
 dnl
 dnl Required Perl modules
 
-dnl disable module checking --enable-rpm-build-mode 
-AM_COND_IF([RPM_BUILD_MODE], [is_required="OPTIONAL"], [is_required="REQUIRED"])
+dnl disable module checking --enable-rpmbuild-mode
+AX_RPMBUILD_CHECK
 
-ads_PERL_MODULE([Apache2::Const], $is_required)
-ads_PERL_MODULE([AppConfig], $is_required)
-ads_PERL_MODULE([Carp], $is_required)
-ads_PERL_MODULE([Crypt::CBC], $is_required)
-ads_PERL_MODULE([Crypt::DES], $is_required)
-ads_PERL_MODULE([CGI], $is_required, [3.15])
-ads_PERL_MODULE([Cwd],  $is_required)
-ads_PERL_MODULE([DBI], $is_required, [1.13])
-ads_PERL_MODULE([Date::Calc], $is_required, [4.3])
-ads_PERL_MODULE([Digest::SHA],$is_required)
-ads_PERL_MODULE([Fcntl],  $is_required)
-ads_PERL_MODULE([File::Basename],  $is_required)
-ads_PERL_MODULE([File::Copy], $is_required)
-ads_PERL_MODULE([File::Path], $is_required)
-ads_PERL_MODULE([File::Temp], $is_required)
-ads_PERL_MODULE([File::Spec::Functions],  $is_required)
-ads_PERL_MODULE([Getopt::Long], $is_required)
-ads_PERL_MODULE([GDBM_File], $is_required, [1.03])
-ads_PERL_MODULE([IO::File], $is_required)
-ads_PERL_MODULE([IO::Handle], $is_required)
-ads_PERL_MODULE([IO::Scalar], $is_required)
-ads_PERL_MODULE([IPC::Shareable], $is_required)
-ads_PERL_MODULE([Time::HiRes], $is_required)
-ads_PERL_MODULE([JSON], $is_required)
-ads_PERL_MODULE([MIME::Base64], $is_required)
-ads_PERL_MODULE([Net::FTP], $is_required, [2.56])
-ads_PERL_MODULE([Net::SMTP], $is_required, [2.15])
-ads_PERL_MODULE([Spreadsheet::ParseExcel],$is_required)
-ads_PERL_MODULE([Role::Tiny],$is_required)
-ads_PERL_MODULE([Text::CSV_XS],$is_required)
-ads_PERL_MODULE([Tie::IxHash], $is_required)
-ads_PERL_MODULE([XML::Simple], $is_required)
-ads_PERL_MODULE([XML::Parser], $is_required)
+ads_PERL_MODULE([Apache2::Const])
+ads_PERL_MODULE([AppConfig])
+ads_PERL_MODULE([Carp])
+ads_PERL_MODULE([Crypt::CBC])
+ads_PERL_MODULE([Crypt::DES])
+ads_PERL_MODULE([CGI], REQUIRED, [3.15])
+ads_PERL_MODULE([Cwd])
+ads_PERL_MODULE([DBI], REQUIRED, [1.13])
+ads_PERL_MODULE([Date::Calc], REQUIRED, [4.3])
+ads_PERL_MODULE([Digest::SHA],)
+ads_PERL_MODULE([Fcntl])
+ads_PERL_MODULE([File::Basename])
+ads_PERL_MODULE([File::Copy])
+ads_PERL_MODULE([File::Path])
+ads_PERL_MODULE([File::Temp])
+ads_PERL_MODULE([File::Spec::Functions])
+ads_PERL_MODULE([Getopt::Long])
+ads_PERL_MODULE([GDBM_File], REQUIRED, [1.03])
+ads_PERL_MODULE([IO::File])
+ads_PERL_MODULE([IO::Handle])
+ads_PERL_MODULE([IO::Scalar])
+ads_PERL_MODULE([IPC::Shareable])
+ads_PERL_MODULE([Time::HiRes])
+ads_PERL_MODULE([JSON])
+ads_PERL_MODULE([MIME::Base64])
+ads_PERL_MODULE([Net::FTP], REQUIRED, [2.56])
+ads_PERL_MODULE([Net::SMTP], REQUIRED, [2.15])
+ads_PERL_MODULE([Spreadsheet::ParseExcel])
+ads_PERL_MODULE([Role::Tiny],)
+ads_PERL_MODULE([Text::CSV_XS])
+ads_PERL_MODULE([Tie::IxHash])
+ads_PERL_MODULE([XML::Simple])
+ads_PERL_MODULE([XML::Parser])
 
 # These really are optional...
 ads_PERL_MODULE([Hash::Util],  [OPTIONAL])

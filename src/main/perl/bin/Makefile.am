@@ -4,7 +4,7 @@ perl5_pkglibdir = @perl5_pkglibdir@
 
 perlrun = @PERL@
 
-if RPM_BUILD_MODE
+if RPMBUILD_ENABLED
 perlwc = \#
 else
 perlwc = @PERL@ -wc
