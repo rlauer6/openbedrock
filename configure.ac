@@ -171,7 +171,6 @@ dnl +------------------------+
 dnl |  Checks for Libraries  |
 dnl +------------------------+
 
-
 dnl Perl Libs (3rd party)
 dnl ---------------------
 dnl Note that we test for some modules which are currently distributed along
@@ -182,8 +181,9 @@ dnl infinitely better than discovering an oversite at runtime.
 dnl
 dnl Required Perl modules
 
-dnl disable module checking --enable-rpmbuild-mode
+dnl disable module checking, perl compliation --enable-rpmbuild-mode --disable-perldeps
 AX_RPMBUILD_CHECK
+AX_PERLDEPS_CHECK
 
 ads_PERL_MODULE([Apache2::Const])
 ads_PERL_MODULE([AppConfig])
