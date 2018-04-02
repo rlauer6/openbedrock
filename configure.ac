@@ -1,10 +1,6 @@
-dnl Process this file with autoconf to produce a configure script. -*-Autoconf-*-
+dnl -*-Autoconf-*-
 
-dnl +-------------------------+
-dnl |  Autotools Boilerplate  |
-dnl +-------------------------+
-
-AC_INIT([bedrock], [2.4.1], [rlauer6@comcast.net])
+AC_INIT([bedrock], [2.4.2], [rlauer6@comcast.net])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])

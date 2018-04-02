@@ -1,6 +1,5 @@
 #!/usr/local/bin/perl -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,29 +24,29 @@ use strict;
 use Carp;
 use File::Basename;
 
-BEGIN
-{
-    my ($f, $d) = fileparse($0);
-    my $inc = $d . '/bedrock.INC';
-    if ( open( FILE, $inc ) ) {
-	while (<FILE>) {
-	    chomp;
-	    if ( s/^inc\s+//i ) {
-		unshift @INC, $_;
-	    } elsif ( s/config_path\s+//i ) {
-		$ENV{BEDROCK_CONFIG_PATH} = $_;
-		$ENV{CONFIG_PATH} = $_; # deprecated
-	    }
-	}
-	close FILE;
+BEGIN {
+  my ( $f, $d ) = fileparse($0);
+  my $inc = $d . '/bedrock.INC';
+  if ( open( FILE, $inc ) ) {
+    while (<FILE>) {
+      chomp;
+      if (s/^inc\s+//i) {
+        unshift @INC, $_;
+      }
+      elsif (s/config_path\s+//i) {
+        $ENV{BEDROCK_CONFIG_PATH} = $_;
+        $ENV{CONFIG_PATH}         = $_;    # deprecated
+      }
     }
+    close FILE;
+  }
 }
 
 use Bedrock;
 use Apache::Bedrock;
 use Apache::Request_shell;
 
-$SIG{TERM} = \&confess;
+$SIG{TERM}     = \&confess;
 $SIG{__WARN__} = \&Carp::cluck;
 my $code = &Apache::Bedrock::handler( Apache::Request_shell->new );
 die "Bedrock handler returned code: $code" if $code;

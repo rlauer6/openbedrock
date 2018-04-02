@@ -25,17 +25,19 @@ BEGIN {
 
 use strict;
 use warnings;
+
 no warnings qw/uninitialized/;
 
 use Apache2::Const -compile => qw(
-				   HTTP_UNSUPPORTED_MEDIA_TYPE 
-				   HTTP_UNAUTHORIZED 
-				   NOT_FOUND 
-				   OK 
-				   SERVER_ERROR 
-				   FORBIDDEN 
+				   HTTP_UNSUPPORTED_MEDIA_TYPE
+				   HTTP_UNAUTHORIZED
+				   NOT_FOUND
+				   OK
+				   SERVER_ERROR
+				   FORBIDDEN
 				   DECLINED REDIRECT :log
 				);
+
 use Apache2::Log;
 
 use APR::Const -compile => qw(:error SUCCESS);
@@ -81,7 +83,25 @@ C<Apache::Bedrock> - Apache handler for serving Bedrock pages.
 
 =head1 SYNOPSIS
 
+ <IfModule mod_perl.c>
+   PerlRequire /usr/lib/bedrock/config/startup.pl
+   AddHandler    perl-script .roc .jroc
+   PerlHandler   Apache::Bedrock
+ </IfModule>
+
+ use Apache::Bedrock;
+
+ &Apache::Bedrock::handler( new Apache::Request_cgi );
+
+ &Apache::Bedrock::handler( new Apache::Request_shell );
+
+I<See bedrock.cgi or bedrock.pl> if you want to see how this module can be used stand alone.>
+
 =head1 DESCRIPTION
+
+Handler for parsing Bedrock files.  Can be used with Apache as a
+mod_perl handler or in other configurations including a shell
+interpreter.
 
 =head1 METHODS
 
@@ -93,10 +113,10 @@ Parse a module name and 'require' it.  Used to load BLMs.
 
 sub require_module {
   my $modfile = shift;
-  
+
   $modfile =~ s!::!/!g;
   $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-  
+
   require $modfile;
 }
 
@@ -110,7 +130,7 @@ sub bind_module {
   my %args = @_;
 
   require_module( $args{module} );
-      
+
   my $obj;
 
   if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
@@ -126,8 +146,9 @@ sub bind_module {
     tie *{$obj}, $args{module}, $args{context}, $args{config};
   }
 
-  my $func = tied(%{$obj});
-  $func->can('init_plugin') && $func->init_plugin( $args{context}, $args{config} );
+  my $func = tied( %{$obj} );
+  $func->can('init_plugin')
+  && $func->init_plugin( $args{context}, $args{config} );
 
   return $obj;
 }
@@ -139,7 +160,7 @@ sub bind_module {
 =cut
 
 sub is_bedrock_shell {
-  return Scalar::Util::blessed($_[0]) eq 'Apache::Request_shell';
+  return Scalar::Util::blessed( $_[0] ) eq 'Apache::Request_shell';
 }
 
 =pod
@@ -152,16 +173,15 @@ sub is_mod_perl {
   return defined $ENV{MOD_PERL};
 }
 
-# +------------------------------+
-# | mod_perl HANDLER STARTS HERE |
-# +------------------------------+
+# +---------------------+
+# | HANDLER STARTS HERE |
+# +---------------------+
 
 sub handler {
   my $r = shift;
 
   # start HiRes timer
-  my $t0 = Benchmark->new if get_loglevel( $r ) eq 'debug';
-
+  my $t0 = Benchmark->new if get_loglevel($r) eq 'debug';
 
   # errors are handled in the init_bedrock_handler() subroutine
   my $bedrock_handler = init_bedrock_handler($r) or return OK;
@@ -169,58 +189,68 @@ sub handler {
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
 
-  # make sure that the LOG directories are present and writable, otherwise try /tmp
+# make sure that the LOG directories are present and writable, otherwise try /tmp
   foreach (qw(LOGDIR HTML_LOGDIR)) {
     unless ( -d $conf->{$_} && -w $conf->{$_} ) {
       $conf->{$_} = '/tmp';
     }
   }
 
-  $bedrock_handler->log_info( sprintf("Bedrock log directory is ..........[%s]", $conf->{LOGDIR})); 
-  $bedrock_handler->log_info( sprintf("Bedrock's HTML log directory is ...[%s]", $conf->{HTML_LOGDIR})); 
+  $bedrock_handler->log_info(
+        sprintf( "Bedrock log directory is ..........[%s]", $conf->{LOGDIR} ) );
+  $bedrock_handler->log_info(
+      sprintf( "Bedrock's HTML log directory is ...[%s]", $conf->{HTML_LOGDIR} )
+  );
 
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir; # typically /bedrock
+  my $bedrock_admin_dir =
+  $bedrock_handler->get_bedrock_admin_dir;    # typically /bedrock
 
   my $file = $bedrock_handler->{file};
 
-  if ( $file ) {
+  if ($file) {
+
     # check mime-type
-    unless ( $r->content_type =~/(text\/html|application\/json|text\/plain)/ ) {
-      $bedrock_handler->error( sprintf "content type: [%s] not supported\n", $r->content_type );
+    unless ( $r->content_type =~ /(text\/html|application\/json|text\/plain)/ )
+    {
+      $bedrock_handler->error( sprintf "content type: [%s] not supported\n",
+                               $r->content_type );
       return UNSUPPORTED;
     }
 
     unless ( -e $r->filename ) {
-      $bedrock_handler->error(  sprintf("file does not exist: [%s]", $file) );
+      $bedrock_handler->error( sprintf( "file does not exist: [%s]", $file ) );
       return NOT_FOUND;
     }
 
     unless ( -r $r->filename ) {
-      $bedrock_handler->error( sprintf("file permissions deny access: [%s]", $file) );
+      $bedrock_handler->error(
+                       sprintf( "file permissions deny access: [%s]", $file ) );
       return FORBIDDEN;
     }
   }
   else {
-    $bedrock_handler->error( sprintf("attempt to serve directory: [%s]", $r->uri) );
+    $bedrock_handler->error(
+                       sprintf( "attempt to serve directory: [%s]", $r->uri ) );
     return FORBIDDEN;
   }
 
   local ( $SIG{__DIE__}, $SIG{__WARN__} );
 
   # Shove the URI params in environment.
-  local ( $ENV{'BEDROCK_URI'} ) = $r->uri;
+  local ( $ENV{'BEDROCK_URI'} )     = $r->uri;
   local ( $ENV{'BEDROCK_URIDIR'} )  = $bedrock_handler->{uri_dir};
   local ( $ENV{'BEDROCK_URINAME'} ) = $bedrock_handler->{uri_name};
 
   # And the file params too.
-  local ( $ENV{'BEDROCK_FILE'} )         = $r->filename;
-  local ( $ENV{'BEDROCK_FILEDIR'} )      = $bedrock_handler->{path};
-  local ( $ENV{'BEDROCK_FILENAME'} )     = $bedrock_handler->{filename};
-  local ( $ENV{'BEDROCK_INCLUDE_DIR'} )  = $conf->{INCLUDE_DIR};
-  local ( $ENV{'BEDROCK_PEBBLE_DIR'} )   = $conf->{BEDROCK_PEBBLE_DIR};
-  local ( $ENV{'PEBBLE_DIR'} )           = $conf->{PEBBLE_DIR};
-  local ( $ENV{'BEDROCK_SESSION_DIR'} )  = $conf->{SESSION_DIR};
-  local ( $ENV{'BEDROCK_CONFIG_PATH'} )  = $conf->{BEDROCK_CONFIG_PATH} || $conf->{CONFIG_PATH} || $ENV{CONFIG_PATH};
+  local ( $ENV{'BEDROCK_FILE'} )        = $r->filename;
+  local ( $ENV{'BEDROCK_FILEDIR'} )     = $bedrock_handler->{path};
+  local ( $ENV{'BEDROCK_FILENAME'} )    = $bedrock_handler->{filename};
+  local ( $ENV{'BEDROCK_INCLUDE_DIR'} ) = $conf->{INCLUDE_DIR};
+  local ( $ENV{'BEDROCK_PEBBLE_DIR'} )  = $conf->{BEDROCK_PEBBLE_DIR};
+  local ( $ENV{'PEBBLE_DIR'} )          = $conf->{PEBBLE_DIR};
+  local ( $ENV{'BEDROCK_SESSION_DIR'} ) = $conf->{SESSION_DIR};
+  local ( $ENV{'BEDROCK_CONFIG_PATH'} ) =
+  $conf->{BEDROCK_CONFIG_PATH} || $conf->{CONFIG_PATH} || $ENV{CONFIG_PATH};
   local ( $ENV{'BEDROCK_LOG_DIR'} )      = $conf->{LOGDIR};
   local ( $ENV{'BEDROCK_HTML_LOG_DIR'} ) = $conf->{HTML_LOGDIR};
   local ( $ENV{'BEDROCK_LOG_FILE'} )     = $conf->{LOGFILE};
@@ -230,52 +260,57 @@ sub handler {
   my $app_dir = $bedrock_handler->{path};
 
   unless ( chdir $app_dir ) {
-    return $bedrock_handler->error( sprintf(" chdir(%s) failed: [%s]", $app_dir, $!) );
+    return $bedrock_handler->error(
+                           sprintf( " chdir(%s) failed: [%s]", $app_dir, $! ) );
   }
 
-  my $ctx = Bedrock::Context->new('APACHE_HANDLER' => $r, 'CONFIG' => $conf);
+  my $ctx = Bedrock::Context->new( 'APACHE_HANDLER' => $r, 'CONFIG' => $conf );
 
-  my $tx = Text::TagX->new($file, $ctx);
+  my $tx = Text::TagX->new( $file, $ctx );
 
   # set Bedrock HTML logging options
   my $log_prefix;
 
-  # the default is to create HTML page logs...but users can turn it off
-  unless ( $conf->{HTML_LOG} && $conf->{HTML_LOG} !~/^y/i ) {
+  # HTML_LOG: yes/no
+  if ( exists $conf->{HTML_LOG} || exists $conf->{HTML_LOGFILE} ) {
 
-    my $logfile_name = $bedrock_handler->{filename};
+    # we'll take anything that start with 'y' as yeah
+    if ( $conf->{HTML_LOG} =~ /^y/i || $conf->{HTML_LOGFILE} ) {
+      my $logfile_name = $conf->{HTML_LOGFILE} || $bedrock_handler->{filename};
 
-    # not sure this should ever happen, however if we've parsed the
-    # URI incorrectly (Bedrock CGI mainly) then let's do some belt &
-    # suspenders mitigation...
-    unless ( $logfile_name) {
-      $logfile_name = sprintf( "unparsable-filename-%s\n", scalar(localtime) );
-      $logfile_name =~s/[ :]/-/g;
+      # not sure this should ever happen, however if we've parsed the
+      # URI incorrectly (Bedrock CGI mainly) then let's do some belt &
+      # suspenders mitigation...
+      unless ($logfile_name) {
+        $logfile_name =
+        sprintf( "unparsable-filename-%s\n", scalar(localtime) );
+        $logfile_name =~ s/[ :]/-/g;
+      }
+
+      # The "page" log file should be {log-directory}/
+      $log_prefix = sprintf( "%s/%s",
+                          $conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp',
+                          $logfile_name );
     }
-
-    # The "page" log file should be {log-directory}/
-    $log_prefix = sprintf(
-			  "%s/%s", 
-			  $conf->{'HTML_LOGDIR'} || $conf->{'LOGDIR'} || '/tmp',
-			  $logfile_name
-			 );
   }
 
   $tx->options( BEDROCK_PEBBLE_DIR => $conf->{'BEDROCK_PEBBLE_DIR'},
-                LOG_MAXSIZE        => $conf->{'HTML_LOGMAXSIZE'} || $conf->{'LOG_MAXSIZE'} || 200000,
-                INCLUDE_DIR        => $conf->{INCLUDE_DIR} || ".",
-                LOG_PREFIX         => $log_prefix,
-		LOGFORMAT          => $conf->{LOGFORMAT} || '%t [%p] [%a]: %L ',
-                PEBBLE_DIR         => $conf->{'PEBBLE_DIR'},
-                ALLOW_SNIPPET_TAG  => $conf->{'ALLOW_SNIPPET_TAG'}
+                LOG_MAXSIZE        => $conf->{'HTML_LOGMAXSIZE'}
+                || $conf->{'LOG_MAXSIZE'}
+                || 200000,
+                INCLUDE_DIR => $conf->{INCLUDE_DIR} || ".",
+                LOG_PREFIX  => $log_prefix,
+                LOGFORMAT   => $conf->{LOGFORMAT}   || '%t [%p] [%a]: %L ',
+                PEBBLE_DIR  => $conf->{'PEBBLE_DIR'},
+                ALLOW_SNIPPET_TAG => $conf->{'ALLOW_SNIPPET_TAG'}
               );
 
-  
   # load generic startup BLMs
   my $modules = $conf->{'MODULES'};
 
-  unless ( $modules ) {
-    return $bedrock_handler->error( sprintf( "error in config file: MODULES is not defined." ) );
+  unless ($modules) {
+    return $bedrock_handler->error(
+                     sprintf("error in config file: MODULES is not defined.") );
   }
 
   # custom plugins
@@ -291,84 +326,91 @@ sub handler {
   # this simply allows us to record if we have encountered a HEADER or
   # SESSION module yet in order to avoid loading duplicate copies of
   # these
-  my %pre_bound = (HEADER => undef, SESSION => undef);
+  my %pre_bound = ( HEADER => undef, SESSION => undef );
 
   my @startup = @{$modules};
 
-  for ( my $idx=0; $idx<@startup; $idx++ ) {
+  for ( my $idx = 0 ; $idx < @startup ; $idx++ ) {
     my $modconf = $startup[$idx];
 
     unless ( defined $modconf->{'binding'} ) {
-      return $bedrock_handler->error(sprintf("error in config: `binding' not defined for MODULES->[%s]", $idx) );
+      return
+      $bedrock_handler->error(
+            sprintf( "error in config: `binding' not defined for MODULES->[%s]",
+                     $idx )
+      );
     }
 
     my $type = $modconf->{'type'} || 'hash';
 
     unless ( $type =~ /^(hash|array|handle|object)$/ ) {
-      return $bedrock_handler->error( sprintf("error in config: MODULES->[%s] defined with invalid `type'(%s)", $idx, $type) );
+      return
+      $bedrock_handler->error(
+           sprintf(
+               "error in config: MODULES->[%s] defined with invalid `type'(%s)",
+               $idx, $type
+           )
+      );
     }
-    
+
     # BLM specific configuration
     my $config = $modconf->{'config'};
 
-    if ( $modconf->{header} =~/^y/i || $modconf->{session} =~/^y/i ) {
+    if ( $modconf->{header} =~ /^y/i || $modconf->{session} =~ /^y/i ) {
+
       # must be either header or session
-      my $binding = (exists $modconf->{'header'}) ? 'HEADER' : 'SESSION';
-      
+      my $binding = ( exists $modconf->{'header'} ) ? 'HEADER' : 'SESSION';
+
       # Croak if more than one module tries to become pre-bound with same name
       if ( $pre_bound{$binding} ) {
 
-	if ( is_bedrock_shell($r) ) {
-	  print sprintf(
-			"[%s]: error in config: Multiple modules defined: (%s, %s)",
-			(caller(0))[3],
-			$pre_bound{$binding},
-			$modconf->{'binding'}
-		       );
-	  exit -1;
-	}
-	else {
-	  return $bedrock_handler->error(sprintf("error in config: Multiple modules defined: (%s, %s)", 
-						 $pre_bound{$binding}, 
-						 $modconf->{'binding'}
-						)
-					);
-	}
+        if ( is_bedrock_shell($r) ) {
+          print
+          sprintf( "[%s]: error in config: Multiple modules defined: (%s, %s)",
+                   ( caller(0) )[3],
+                   $pre_bound{$binding}, $modconf->{'binding'} );
+          exit -1;
+        }
+        else {
+          return
+          $bedrock_handler->error(
+                        sprintf(
+                          "error in config: Multiple modules defined: (%s, %s)",
+                          $pre_bound{$binding}, $modconf->{'binding'}
+                        )
+          );
+        }
       }
-      
+
       # Bind the module
       $pre_bound{$binding} = $modconf->{'binding'};
 
       my $obj = eval {
-	bind_module(
-		    module  => $modconf->{'module'},
-		    type    => $type,
-		    context => $ctx,
-		    config  => $config
-		   );
+        bind_module( module  => $modconf->{'module'},
+                     type    => $type,
+                     context => $ctx,
+                     config  => $config
+                   );
       };
-      
-      if ( $@ && exists $modconf->{abort_if_error} ) {
-	if ( is_bedrock_shell( $r ) ) {
-	  print sprintf("[%s]: could not bind %s ($@)",
-			(caller(0))[3],
-			$pre_bound{$binding},
-			$modconf->{'binding'}
-		       );
-	  exit -1;
-	}
-	else {
-	  $bedrock_handler->error( 
-				  sprintf("could not bind %s (%s",
-					  $pre_bound{$binding},
-					  $modconf->{'binding'},
-					  $@
-					 )
-				 );
-	  $r->content_type('text/html');
-	  $r->send_http_header;
 
-	  print <<eom;
+      if ( $@ && exists $modconf->{abort_if_error} ) {
+        if ( is_bedrock_shell($r) ) {
+          print sprintf( "[%s]: could not bind %s ($@)",
+                         ( caller(0) )[3],
+                         $pre_bound{$binding}, $modconf->{'binding'} );
+          exit -1;
+        }
+        else {
+          $bedrock_handler->error(
+                               sprintf(
+                                 "could not bind %s (%s",
+                                 $pre_bound{$binding}, $modconf->{'binding'}, $@
+                               )
+          );
+          $r->content_type('text/html');
+          $r->send_http_header;
+
+          print <<eom;
 <html>
 <head>
 <title>Bedrock Initialization Error</title>
@@ -381,71 +423,74 @@ $@
 </body>
 </html>
 eom
-	  return OK;
-	}
+          return OK;
+        }
       }
-      elsif ( $@ ) {
-	undef $obj;
+      elsif ($@) {
+        undef $obj;
       }
 
-      if ( $obj ) {
-	# add the object to Bedrock' top frame (symbol table)
-	$tx->param( $modconf->{'binding'} => $obj );
-	
-	# tagX wants to know who the header and session object are
-	$tx->options( $binding => $obj );
-	
-	# ...so does the context object which can be used by Bedrock::CGI
-	$ctx->{$binding} = $obj;
+      if ($obj) {
+
+        # add the object to Bedrock' top frame (symbol table)
+        $tx->param( $modconf->{'binding'} => $obj );
+
+        # tagX wants to know who the header and session object are
+        $tx->options( $binding => $obj );
+
+        # ...so does the context object which can be used by Bedrock::CGI
+        $ctx->{$binding} = $obj;
       }
       else {
-	$tx->param('error' => $@);
+        $tx->param( 'error' => $@ );
       }
     }
     else {
       # bind a subroutine to the binding name so the constructor gets
       # invoked ONLY if the variable is accessed from the script.
-      $tx->param( $modconf->{'binding'},
-		  sub {
-		    my $obj;
-		    
-		    my $modfile = $modconf->{'module'};
-		    $modfile =~ s!::!/!g;
-		    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-		    
-		    require $modfile;
-		    
-		    if ( $type eq 'hash' or $type eq 'object' ) {
-		      $obj = bless {}, $modconf->{'module'};
-		      tie %{$obj}, $modconf->{'module'}, $ctx, $config;
-		    }
-		    elsif ( $type eq 'array' ) {
-		      $obj = bless [], $modconf->{'module'};
-		      tie @{$obj}, $modconf->{'module'}, $ctx, $config;
-		    }
-		    elsif ( $type eq 'handle' ) {
-		      $obj = bless gensym, $modconf->{'module'};
-		      tie *{$obj}, $modconf->{'module'}, $ctx, $config;
-		    }
-		    
-		    $obj;
-		  }
-		);
+      $tx->param(
+        $modconf->{'binding'},
+        sub {
+          my $obj;
+
+          my $modfile = $modconf->{'module'};
+          $modfile =~ s!::!/!g;
+          $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+
+          require $modfile;
+
+          if ( $type eq 'hash' or $type eq 'object' ) {
+            $obj = bless {}, $modconf->{'module'};
+            tie %{$obj}, $modconf->{'module'}, $ctx, $config;
+          }
+          elsif ( $type eq 'array' ) {
+            $obj = bless [], $modconf->{'module'};
+            tie @{$obj}, $modconf->{'module'}, $ctx, $config;
+          }
+          elsif ( $type eq 'handle' ) {
+            $obj = bless gensym, $modconf->{'module'};
+            tie *{$obj}, $modconf->{'module'}, $ctx, $config;
+          }
+
+          $obj;
+        }
+      );
     }
   }
 
   # Croak if no header module
   unless ( $pre_bound{HEADER} ) {
-    return $bedrock_handler->error( sprintf( "error in config file: No header module" ) );
+    return $bedrock_handler->error(
+                            sprintf("error in config file: No header module") );
   }
 
-  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@');
+  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );
 
   eval { $tx->output };
 
-  if ( $@ ) {
-    if ( is_bedrock_shell( $r )) {
-      
+  if ($@) {
+    if ( is_bedrock_shell($r) ) {
+
       # output error to STDERR
       my $line = $tx->{'error'}->line;
       my $file = $tx->{'error'}->file;
@@ -460,7 +505,7 @@ eom
         open FILE, "<$file";
 
         die "Could not open source file " . $file
-	  unless $file;
+        unless $file;
         {
           local $/;
           $source = <FILE>;
@@ -472,64 +517,72 @@ eom
       my @lines;
 
       {
-	require IO::Scalar;
+        require IO::Scalar;
 
-	my $fd = IO::Scalar->new( \$source );
-	
-	while ( defined ( $_ = $fd->getline ) ) {
-	  chomp;
-	  push @lines, $_;
-	}
+        my $fd = IO::Scalar->new( \$source );
 
-	$fd->close;
+        while ( defined( $_ = $fd->getline ) ) {
+          chomp;
+          push @lines, $_;
+        }
+
+        $fd->close;
       }
 
       unless ( $@ =~ /^snippet/ ) {
-	$r->log_error( sprintf( "Error on line [%d] (%s) - %s", $line, $file, $@ ));
-	
-	# print the lines surrounding error
-	$r->log_error( sprintf( "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ] )) unless $line <= 1;
-	$r->log_error( sprintf( ">>[%3d] %s\n", $line,     $lines[ $line - 1 ] ));
-	$r->log_error( sprintf( "  [%3d] %s\n", $line + 1, $lines[ $line ] )) unless $line == @lines;
+        $r->log_error(
+                  sprintf( "Error on line [%d] (%s) - %s", $line, $file, $@ ) );
+
+        # print the lines surrounding error
+        $r->log_error(
+                     sprintf( "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ] ) )
+        unless $line <= 1;
+        $r->log_error( sprintf( ">>[%3d] %s\n", $line, $lines[ $line - 1 ] ) );
+        $r->log_error( sprintf( "  [%3d] %s\n", $line + 1, $lines[$line] ) )
+        unless $line == @lines;
       }
       else {
-	$r->log_error( "$@" );
+        $r->log_error("$@");
       }
     }
     else {
-      $bedrock_handler->log_error( 
-				  sprintf( "script [%s] with mime-type [%s] encountered the following error:",
-					   $bedrock_handler->{file},
-					   $r->content_type
-					 )
-				 );
+      $bedrock_handler->log_error(
+           sprintf(
+             "script [%s] with mime-type [%s] encountered the following error:",
+             $bedrock_handler->{file},
+             $r->content_type
+           )
+      );
 
-      $bedrock_handler->log_error( "$@" );
+      $bedrock_handler->log_error("$@");
 
-      my $error_location =  $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+      my $error_location =
+        $conf->{BEDROCK_ERROR_LOCATION}
+      ? $conf->{BEDROCK_ERROR_LOCATION}
+      : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
 
       # if we are serving up JSON content, then we need to return a
       # proper error code, not 200
-      if ( $r->content_type =~/json/ ) {
-	$bedrock_handler->restore_dir;
+      if ( $r->content_type =~ /json/ ) {
+        $bedrock_handler->restore_dir;
 
-	if ( is_mod_perl() ) {  
-	  $r->status( SERVER_ERROR );
-	}
-	else {
-	  $r->content_type('application/json');
-	  $r->cgi_header_out('Status', '500');
-	  $r->send_http_header;
-	}
+        if ( is_mod_perl() ) {
+          $r->status(SERVER_ERROR);
+        }
+        else {
+          $r->content_type('application/json');
+          $r->cgi_header_out( 'Status', '500' );
+          $r->send_http_header;
+        }
 
-	chomp $@;
-	print <<eom;
+        chomp $@;
+        print <<eom;
 { error : "$@" }
 eom
-	return OK;
+        return OK;
       }
       else {
-	$tx->show_error( $error_location );
+        $tx->show_error($error_location);
       }
     }
   }
@@ -544,16 +597,19 @@ eom
   # to the browser if a redirect header has been set.
   unless ( is_bedrock_shell($r) ) {
     if ( is_mod_perl() ) {
-      if ( exists ${ $r->err_headers_out }{Location} ||
-	   exists ${ $r->err_headers_out }{location} ) {
-	$r->status( Apache2::Const::REDIRECT )
+      if (    exists ${ $r->err_headers_out }{Location}
+           || exists ${ $r->err_headers_out }{location} )
+      {
+        $r->status(Apache2::Const::REDIRECT);
       }
-      
-      if ( exists ${ $r->err_headers_out }{Status} ||
-	   exists ${ $r->err_headers_out }{status} ) {
-	
-	my $status = ${ $r->err_headers_out }{status} || ${ $r->err_headers_out }{Status};
-	$r->status( $1 ) if $status =~/^\s*(\d+)/;
+
+      if (    exists ${ $r->err_headers_out }{Status}
+           || exists ${ $r->err_headers_out }{status} )
+      {
+
+        my $status =
+        ${ $r->err_headers_out }{status} || ${ $r->err_headers_out }{Status};
+        $r->status($1) if $status =~ /^\s*(\d+)/;
       }
     }
   }
@@ -561,9 +617,10 @@ eom
   # benchmark
   my $t1 = Benchmark->new;
 
-  if ( get_loglevel( $r) eq 'debug' ) {
-    $bedrock_handler->log_debug( "log level " . get_loglevel( $r ) );
-    $bedrock_handler->log_debug( "processing complete: " . timestr(timediff( $t1, $t0), 'all') );
+  if ( get_loglevel($r) eq 'debug' ) {
+    $bedrock_handler->log_debug( "log level " . get_loglevel($r) );
+    $bedrock_handler->log_debug(
+             "processing complete: " . timestr( timediff( $t1, $t0 ), 'all' ) );
   }
 
   return OK;
@@ -580,373 +637,3 @@ Rob Lauer - <rlauer6@comcast.net>
 
 =cut
 
-#
-# Revision 1.81  2013/10/30 16:57:47  rlauer
-# - code tidying
-#
-# Revision 1.80  2013/10/29 13:58:22  rlauer
-# - when binding a module in bind_module() look for an init_plugin() method to call to provide hook for developers
-#
-# Revision 1.79  2013/07/16 06:45:37  rlauer
-# - removed hard coded debug statement for benchmark
-# - instantiate timing object prior to usage
-#
-# Revision 1.78  2013/05/12 14:47:23  rlauer
-# - use $r->log_error for bedrock shell, not STDERR
-#
-# Revision 1.77  2013/05/10 15:15:42  rlauer
-# - Bedrock documentaion handler has been extracted and implemented in Apache::BedrockDocs
-# - common functionality for Bedrock framework handlers extracted to bedrock_handler_commoon.pm and Bedrock::Handler
-#   including much of the startup code that cached the configuration file.  That's all now buried in the Bedrock::Handler
-# - a lot of code clean-up
-# - extracted experimental Bedrock framework code
-#
-# Revision 1.76  2013/01/16 15:39:23  rlauer
-# - anchor regexp when looking for tags - (/^$tag/)
-#
-# Revision 1.75  2013/01/05 16:57:48  rlauer
-# - support for errors when content type is application/json
-#
-# Revision 1.74  2012/10/07 16:29:10  rlauer
-# - make sure .xml files are loaded in system, site order to allow local overrride of system configurations
-#
-# Revision 1.73  2012/08/18 13:40:31  lauerrc
-# - use full path for Bedrock's tagx.xml so we load this first
-#
-# Revision 1.72  2012/08/06 15:43:39  lauerrc
-# - support application/json as a mime-type for files we process as Bedrock files
-#
-# Revision 1.71  2012/07/31 20:19:03  lauerrc
-# - remove warn debug message
-#
-# Revision 1.70  2012/07/29 16:44:37  lauerrc
-# - filter modules in get_all_modules() based on regexp
-# - look for =pod or =head1 when deciding if module has pod since some modules are sloppy
-#
-# Revision 1.69  2012/07/18 13:39:58  lauerrc
-# - if config() method CONFIG_PATH should be BEDROCK_CONFIG_PATH - we weren't checking both locations since we were pushing the same
-#   directory twice
-#
-# Revision 1.68  2012/06/13 13:37:02  eutl420
-# - we now expose some additional pod for Bedrock modules (/bedrock/system)
-# - output an error page when the session object bind fails on startup instead of just giving a 500 error
-# - minor typo Ctag should have been tag in show_pod() method call in the handler()
-#
-# Revision 1.67  2012/05/11 17:29:46  eutl420
-# - check to see if the POD_PATHS object is defined first before trying to access it
-#
-# Revision 1.66  2012/05/09 19:27:27  eutl420
-# - don't show BLM modules that are in @INC path when showing files in POD_PATHS
-#
-# Revision 1.65  2012/05/09 19:02:09  eutl420
-# - reworked the get_all_blms(), blm_listing() methods into get_all_modules() and module_listing() methods to support user
-#   documentation.  Add an array object to tagx.xml named POD_PATHS and Bedrock will add look for perl modules in these paths
-#   and make their documentation available on the /bedrock/pod page.
-#
-# Revision 1.64  2012/05/08 16:50:42  eutl420
-# - use run-time module inclusion (require IPC::Shareable) if environment variable set
-#
-# Revision 1.63  2012/04/13 17:09:48  eutl420
-# - avoid tie of %BEDROCK_CONFIG_CACHE unless the environment variable is set, thus avoiding an unsightly error message from
-#   the tie, even though it is in an eval block
-#
-# Revision 1.62  2012/03/05 20:28:46  eutl420
-# - check for header/session=yes when pre-binding the header and session objects. Previously the code looked for existence of
-#   the object 'header' only and did not test value.  Seeing 'yes' in tagx.xml might mislead someone into believing that 'no'
-#   turned off the feature.  It does now...
-# - trap errors when binding the session object
-# - output errors to STDOUT for Bedrock shell if we can get started for some reason
-#
-# Revision 1.61  2012/03/05 16:33:15  eutl420
-# - added new require_module, bind_module to generalize process of "pre-binding" startup BLMs
-# - pre-bind 'session' manager and expose this to BLMs via the context object
-#
-# Revision 1.60  2012/02/27 14:33:48  eutl420
-# - should not have been escaping the double quotes
-#
-# Revision 1.59  2012/02/24 19:31:23  eutl420
-# - log messages are now in a more standard format that includes the subroutine name first
-# - some log messages have been made clearer and shorter, some moved from info to debug or debug to info
-# - we now try to tie the config cache shared memory variable and try to do config file cacheing
-#
-# Revision 1.58  2012/02/20 16:39:04  eutl420
-# - BEDROCK_USER_PEBBLE_DIR changed to PEBBLE_DIR
-#
-# Revision 1.57  2012/02/08 19:49:41  eutl420
-# - omit \? from list of tags
-#
-# Revision 1.56  2012/02/08 13:55:04  eutl420
-# - add filters to "plugins" documentation page
-#
-# Revision 1.55  2012/01/17 22:45:49  eutl420
-# - use BEDROCK_LOGO instead of hard-code 'bedrock.jpg'
-#
-# Revision 1.54  2011/12/28 16:53:01  eutl420
-# - set status for mod_perl
-#
-# Revision 1.53  2011/11/30 18:50:54  eutl420
-# - formatting, comment about error handling
-#
-# Revision 1.52  2011/11/28 21:43:17  eutl420
-# - error in Bedrock shell was indicated on wrong line when error on line 1
-#
-# Revision 1.51  2011/11/16 14:37:15  eutl420
-# - pass the context object the header object
-#
-# Revision 1.50  2011/11/14 14:16:27  eutl420
-# - -compile appended to previous string by tidy
-#
-# Revision 1.49  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.48  2011/09/14 18:55:20  eutl420
-# - Bedrock shell errors now need to lookup pebble names if the error occurred in a pebble rather than a file
-#
-# Revision 1.47  2011/09/10 15:51:13  eutl420
-# - use PLUGIN_PATH to find Application Plugins
-#
-# Revision 1.46  2011/08/24 22:34:39  eutl420
-# - support for BEDROCK_ADMIN_DIR to allow for installing Bedrock without root
-#   privileges for example.
-#
-# Revision 1.45  2011/08/18 22:00:08  eutl420
-# - added support for --dns= in <sqlconnect> tag by reading dbnames.xml into config object
-#
-# Revision 1.44  2011/08/16 20:40:09  eutl420
-# - delay looking up APP_CONFIG file until all .xmls merged to allow override
-#
-# Revision 1.43  2011/08/13 14:43:39  eutl420
-# - look in Bedrock's config directory for startup modules (config.d/startup)
-#
-# Revision 1.42  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.41  2011/07/13 18:07:52  eutl420
-# - collect a list of config files that are loaded so we can output the list if an error occurs
-# - output a better error message for shell and web when config files are malformed
-#
-# Revision 1.40  2011/07/12 18:21:53  eutl420
-# - report $@ in log file if an error occurs
-#
-# Revision 1.39  2011/07/11 18:03:23  eutl420
-# - in all methods, use Apache request object for logging as $r && $r->log ...) this allows some methods
-#   to be called without the ARO.  Of course, you'll get no logging, but nothing in life is free.
-# - root directory "/" object form tagx_apps.xml like files was not being loaded because: split /\//, $dir is empty when
-#   $dir = "/" or "" - see perldoc -f split
-# - look for files in Bedrock's config.d directory (was missing .)
-#
-# Revision 1.38  2011/07/06 16:21:01  eutl420
-# - read config files from ${BEDROCK_CONFIG_PATH}.d
-# - remove ${DOCUMENT_ROOT} from start of uri-dir to support bedrock shell
-#
-# Revision 1.37  2011/07/05 20:34:26  eutl420
-# - tagx_apps.xml style files loaded from  the framework directory should be named for the root directory for which
-#   the configuration applies
-# - directory level configuration info in the tagx_apps style configs cascades
-#
-# Revision 1.36  2011/07/05 17:54:19  eutl420
-# - moved the order in which config (.xml) files are loaded so that the
-#   tagx_apps.xml-ish files in the ~CONFIG/framework directory are loaded last
-#   thus overriding any other values with the same keys.
-#
-# Revision 1.35  2011/03/30 18:05:33  eutl420
-# - for shell users, show a useful error message with line number and offending
-#   line of the Bedrock file
-# - for shell users, return 0 not 200
-#
-# Revision 1.34  2011/03/29 14:16:26  eutl420
-# - do not test for redirects unless running under Apache
-#
-# Revision 1.33  2011/03/25 17:15:29  eutl420
-# - create method merge_modules() which does a true merge or the modules instead
-#   of just replacing or appending
-# - die if the tagx.xml file is empty
-# - call merge_modules() when merging configs from config.d/startup directory
-# - output error page when config problem instead of just logging message and
-#   issuing a status 500
-#
-# Revision 1.32  2011/01/12 19:15:50  eutl420
-# - use exact regexp to see if trying to reload tagx.xml
-#
-# Revision 1.31  2010/12/20 21:29:24  eutl420
-# - closedir
-# - config.d directory was not being scanned and files were not loaded properly
-# - allow use of either yes or docs to ALLOW_BEDROCK_INFO
-# - set CONFIG_PATH in configuration object from enviroment
-#
-# Revision 1.30  2010/12/18 16:31:50  eutl420
-# - make sure that LOGDIR is writeable and set config if we use /tmp
-#
-# Revision 1.29  2010/12/17 21:31:56  eutl420
-# - $conf =
-#
-# Revision 1.28  2010/12/17 18:59:40  eutl420
-# - use $path not $_ in loop
-#
-# Revision 1.27  2010/12/17 18:52:35  eutl420
-# - exclude tagx_apps from list of files to look for
-#
-# Revision 1.26  2010/12/17 16:52:51  eutl420
-# - remove the BLM::Startup/BLM:: from plugin titles on the Bedrock doc pages
-# - move the implementation of config.d merging into this module since it
-#   really is a Bedrock system behavior that is independent of config file
-#   reading and processing.  Now any .xml file on the config directory is
-#   merged with the config object and one can override the default
-#   tagx.xml configuration settings using REPLACE_CONFIG in tagx.xml
-#
-# Revision 1.25  2010/12/12 21:27:44  eutl420
-# - added Apache log modules
-#
-# Revision 1.24  2010/12/12 17:14:00  eutl420
-# - use Bedrock::Text::URLEncode
-#
-# Revision 1.23  2010/12/06 14:14:43  rlauer
-# - use BEDROCK_IMAGE_URL primarily, deprecate IMAGE_URL
-# - status page changes
-#   + prettification
-#   + log configuration checking and display
-#   + bedrock.log dump of tail
-#
-# Revision 1.22  2010/11/23 00:06:12  rlauer
-# - use BEDROCK_POD_CSS_URL instead of POD_CSS_URL
-#
-# Revision 1.21  2010/11/16 00:20:12  rlauer
-# - add BUILD_DATE to header of documentation
-#
-# Revision 1.20  2010/11/15 02:08:27  rlauer
-# - prevent non-PUBLIC BLMs from being shown in Plugin listing
-#
-# Revision 1.19  2010/11/14 21:11:21  rlauer
-# - removed 'exec' from the list of hidden tags - ok to get docs on this
-#   as the docs indicate that it is deprecated in favor of <pebble>
-#
-# Revision 1.18  2010/11/08 03:20:02  rlauer
-# - added subroutine show_pod, add <img> tag to plugin/tag documentation
-# - pass ALLOW_SNIPPET_TAG in option hash to TagX
-#
-# Revision 1.17  2010/10/30 21:45:51  rlauer
-# - deprecate ERROR_LOCATION (relative to document root), in favor of
-#   BEDROCK_ERROR_LOCATION which is an absolute path
-#
-# Revision 1.16  2010/06/24 21:36:25  rlauer
-# rename the Bedrock/Config.pm file to Bedrock/BedrockConfig.pm to avoid Config.pm conflict
-#
-# Revision 1.15  2009/12/31 18:33:53  rlauer
-# exclude blm from tag listing
-#
-# Revision 1.14  2009/12/30 00:19:01  rlauer
-# split up plugins/application plugins, stream pod to disk first before displaying
-#
-# Revision 1.13  2009/12/28 23:31:31  rlauer
-# fixed pod2html call to use temp file so removed comment, use plugins, not BLM
-#
-# Revision 1.12  2009/12/28 19:29:48  rlauer
-# removing traces of BLM, replacing with plugin moniker
-#
-# Revision 1.11  2009/12/26 15:38:38  rlauer
-# remove BLM::OrderedObject, all objects now ordered
-#
-# Revision 1.10  2009/01/14 13:38:15  rlauer
-# - use Apache2::Const for return status
-#
-# Revision 1.9  2009/01/13 20:16:29  rlauer
-# - hack to make sure internal redirects work under mod_perl/Apache2
-#
-# Revision 1.8  2008/12/02 15:14:51  rlauer
-# $doc incorrectly assigned to re-initialized $1
-#
-# Revision 1.7  2008/11/26 19:25:38  rlauer
-# return FORBIDDEN if ALLOW_BEDROCK_INFO ne yes
-#
-# Revision 1.6  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.5  2008/02/28 18:14:38  rlauer
-# Applying Rob's patches to make Bedrock work on Apache 2.x
-# (plus a few other obvious bug fixes).
-#
-# Revision 1.4  2001/02/14 15:35:42  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.3  2000/12/18 18:05:01  sridhar
-# Using Bedrock::Context instead of SIS::Base
-#
-# Revision 1.2  2000/12/15 16:22:26  sridhar
-# Kicked out BLM::Startup::Modules -- all modules are `require'ed rather
-# than `use'd for faster startup.
-#
-# Revision 1.1  2000/12/12 18:58:56  sridhar
-# 1. Bedrock.pm, the main bedrock request handler now lives inside
-# Bedrock
-# 2. Same handler is used by the bedrock CGI too, by just mimicking the
-# apache request handler object
-# 3. Not using Apache::Constants since this module will now be used by
-# the CGI too. Have the required constants hardcoded instead.
-# 4. SIS::Base::Apache no longer used. Replaced by SIS::Base.
-#
-# Revision 1.13  2000/11/29 20:49:55  sridhar
-# Can specify PEBBLE_DIR in the config
-#
-# Revision 1.12  2000/11/16 20:14:10  sridhar
-# 1. chdir's to script directory and changes back on return from
-# handler.
-# 2. Uses `fastcwd' to find current dir for changing back.
-# 3. Have a generic `error' function which changes back dir on return.
-# 4. If script has an error, invokes `$tx->show_error()' with an error
-# page.
-#
-# Revision 1.11  2000/11/13 14:51:50  sridhar
-# Kicked out config cacheing till things stabilize a bit.
-#
-# Revision 1.10  2000/11/07 21:26:29  sridhar
-# 1. Load configuration from disk for every request only if `RELOAD' set
-# to `yes'
-# 2. Defines a bunch of environment vars `BEDROCK_*' to contain the
-# current script name, file, dir, etc.
-# 3. Log message includes PID
-#
-# Revision 1.9  2000/11/07 14:16:51  sridhar
-# 1. Major changes implementing directory-specific configuration, including
-# Startup modules per directory.
-# 2. Module takes care of loading config file `tagx.cfg' and creating
-# the config object for each request based on the request directory, and
-# merging the startup module list for each directory with the site-wide
-# startup module list
-# 3. Creates a subroutine for as the binding for each startup object
-# which gets invoked for constructing the object only if needed. So one
-# could have 100 startup modules for a directory, but use only 3 of them
-# in a script; the other 97 wouldn't be constructed at all. All this
-# magic happens behind the scenes so nobody is any the wiser.
-#
-# Revision 1.8  2000/11/01 21:02:17  sridhar
-# Using XML file for Configuration
-#
-# Revision 1.7  2000/08/11 17:56:47  sridhar
-# Catch unhandled exceptions and log an error.
-#
-# Revision 1.6  2000/07/19 19:41:59  sridhar
-# Using BLM::Startup::Modules instead of BLM::Modules since dynamic BLMs
-# no longer need to be pre-declared.
-#
-# Revision 1.5  2000/07/11 20:58:50  sridhar
-# Localized $SIG{__DIE__} and __WARN__ so that state is restored on exit
-# from handler.
-#
-# Revision 1.4  2000/07/06 18:36:15  sridhar
-# Pass the SIS::Base::Apache object directly as the output handle to
-# TagX since all necessary methods are supported in it (done for uniform
-# header handling between mod_perl and CGI environments).
-#
-# Revision 1.3  2000/07/06 17:23:09  sridhar
-# 1. MODULES config variable is now expected to have startup modules
-# under MODULES->STARTUP.
-# 2. MODULES->HEADER can be the name of a startup module object which
-# generates HTTP headers.
-#
-# Revision 1.2  2000/06/15 19:35:29  sridhar
-# New version with support for BLMs
-#
-# Revision 1.1  2000/06/07 19:53:41  sridhar
-# Added mod_perl module for bedrock
-#
-#

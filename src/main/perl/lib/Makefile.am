@@ -1,6 +1,8 @@
-## Process this file with automake to produce Makefile.in   -*-Makefile-*-
+# -*-Makefile-*-
 PERL = @PERL@
+
 BEDROCK_RELEASE = @BEDROCK_RELEASE@
+
 perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
@@ -66,18 +68,19 @@ perl5bedrockapplicationlib_DATA = \
 BEDROCK_APPLICATION=$(perl5bedrockapplicationlib_DATA:.pm=.pm.in)
 
 perl5bedrockapachelib_DATA = \
-    Bedrock/Apache/Bedrock.pm \
+    $(BEDROCK_APACHE:.pm.in=.pm) \
     Bedrock/Apache/bedrock.pl \
-    Bedrock/Apache/bedrock_sh.pl \
-    Bedrock/Apache/Request_cgi.pm \
-    Bedrock/Apache/Request_shell.pm \
-    Bedrock/Apache/BedrockAutocomplete.pm \
-    Bedrock/Apache/BedrockSessionFiles.pm \
-    Bedrock/Apache/BedrockCloudSessionFiles.pm \
-    Bedrock/Apache/BedrockDocs.pm \
-    Bedrock/Apache/BedrockModPerl.pm
+    Bedrock/Apache/bedrock_sh.pl
 
-BEDROCK_APACHE=$(perl5bedrockapachelib_DATA:.pm=.pm.in)
+BEDROCK_APACHE = \
+    Bedrock/Apache/Bedrock.pm.in \
+    Bedrock/Apache/Request_cgi.pm.in \
+    Bedrock/Apache/Request_shell.pm.in \
+    Bedrock/Apache/BedrockAutocomplete.pm.in \
+    Bedrock/Apache/BedrockSessionFiles.pm.in \
+    Bedrock/Apache/BedrockCloudSessionFiles.pm.in \
+    Bedrock/Apache/BedrockDocs.pm.in \
+    Bedrock/Apache/BedrockModPerl.pm.in
 
 perl5bedrockcontextlib_DATA = \
     Bedrock/Context/Shell.pm
@@ -251,7 +254,7 @@ perl5blmstartuplib_DATA = \
 
 BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
 
-dist_noinst_DATA = \
+PERL_PM = \
     Bedrock.pm.in \
     bedrock_handler_common.pm.in \
     $(BEDROCK) \
@@ -277,21 +280,35 @@ dist_noinst_DATA = \
     $(BLM_STARTUP) \
     $(TEST_BEDROCK)
 
+PERL_PL = \
+    Bedrock/Apache/bedrock.pl \
+    Bedrock/Apache/bedrock_sh.pl
+
+dist_noinst_DATA = \
+    $(PERL_PM) \
+    $(PERL_PL)
+
 @do_subst_command@
 
-SUFFIXES = .tdy .in .pm .pm.in
+SUFFIXES = .tdy .in .pm .pm.in .pl
 
 %.pm: %.pm.in
 	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
 	$(do_subst) $< > $@
 
-TIDY = $(dist_noinst_DATA:.pm.in=.pm.in.tdy)
+TIDY_PM = $(PERL_PM:.pm.in=.pm.in.tdy)
 
-tidy: $(TIDY)
+TIDY_PL = $(PERL_PL:.pl=.pl.tdy)
 
-$(TIDY): %.in.tdy : %
+tidy: $(TIDY_PM) $(TIDY_PL)
+
+%.in.tdy: %
 	test -e $<.in && perltidy -vt=2 -pt=1 -dws -i=2 -lp -ci=0 -cti=1 $<.in || true
 	test -e $@ && cp $@ $<.in && touch $@ || true
+
+%.tdy: %
+	test -e $< && perltidy -vt=2 -pt=1 -dws -i=2 -lp -ci=0 -cti=1 $< || true
+	test -e $@ && cp $@ $< && touch $@ || true
 
 clean-local:
 	find . -name '*.pm' -exec rm {} \;

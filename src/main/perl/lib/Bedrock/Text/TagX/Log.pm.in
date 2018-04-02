@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -26,6 +25,8 @@ package TagX::Log;
 use strict;
 use warnings;
 
+use Date::Format;
+
 BEGIN {
   use Exporter ();
   use vars qw ($VERSION @ISA @EXPORT @EXPORT_OK);
@@ -37,19 +38,25 @@ BEGIN {
 
 use Scalar::Util qw/reftype blessed/;
 
-my %options = ( 'LOG_MAXSIZE' => 100000 );
+my %options = (
+	       'LOG_MAXSIZE'  => 100000,
+	       'LOG_WARNINGS' => 'off',
+	       'LOG_ERRORS'   => 'off',
+	       'LOG_FORMAT'   => '%m/%d/%Y %H:%M:%S'
+	      );
 
 sub start_logger {
   my %args = @_;
+  
   return unless $args{LOG_FILE};
 
-  my ( $key, $value );
-  while ( ( $key, $value ) = each %args ) {
-    $options{$key} = $args{$key};
-  }
-
+  # override default options
+  @options{keys %args} = values %args;
+  
   my ( $logfile, $maxsize ) = @options{qw(LOG_FILE LOG_MAXSIZE)};
-  if ( ( stat($logfile) )[7] > $maxsize ) {
+  
+  # truncate log unless LOG_MAXSIZE < 0
+  if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($logfile) )[7] > $maxsize ) ) {
     open( FILE, ">$logfile" );
     close FILE;
   }
@@ -60,29 +67,32 @@ sub start_logger {
     ":start_logger(): Unable to append to log file $logfile: $!\n";
     return;
   }
+  
   my $fd = IO::Handle->new_from_fd( 'STDERR', 'a' );
   $fd->autoflush(1);
   $fd->close;
-  print STDERR
-"================================================================================";
 
-  # And log a sample message
-  &log_message( undef, "started logger" );
-  $SIG{__WARN__} = $SIG{__DIE__} = sub { unshift @_, undef; goto &log_message };
+  # log warnings/errors to page log, unless in eval {}
+  $SIG{__DIE__} = $SIG{__WARN__} = sub {
+    # don't log if we are in an eval {}
+    return unless defined $^S and $^S == 0;
+    
+    unshift @_, undef;
+    goto &log_message
+  };
+ 
+  &log_message( undef, "started logger");
 }
+
 
 sub log_message {
   my $obj = shift;
+  
   return unless exists $options{LOG_FILE};
 
   my $logfile = $options{LOG_FILE};
   open( LOG, ">> $logfile" ) or return;
-
-  # Make time
-  my @t = localtime;
-  my $time = sprintf "%02d/%02d/%4d %02d:%02d:%02d", $t[4] + 1, $t[3],
-  1900 + $t[5], $t[2], $t[1], $t[0];
-
+   
   # Make caller
   my ( $pack, $filename, $line ) = caller;
 
@@ -92,47 +102,25 @@ sub log_message {
     $loc = "[" . $obj->start_location . "]\n[$obj]\n";
   }
 
+  # default: %m/%d/%Y %H:%M:%S
+  my $time = time2str($options{LOG_FORMAT}, time);
+
   # And print message
-  print LOG "\n$time \[$$\]\t\t$filename($line)\n$loc@_\n";
+  my $page = eval {
+    if ( $ENV{BEDROCK_URI} ) {
+      $ENV{BEDROCK_URI};
+    }
+    elsif ( $ENV{BEDROCK_FILE} ) {
+      $ENV{BEDROCK_FILE};
+    }
+    else {
+      'unknown';
+    }
+  };
+  
+  print LOG "$time \[$$\]\t[$page]\t$filename($line)\n$loc@_\n";
+
   close LOG;
 }
 
 1;
-
-#
-# Revision 1.9  2012/07/29 18:35:30  lauerrc
-# - avoid calling the 'start_location' method if an object was not passed to the log_message method
-#
-# Revision 1.8  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.7  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.6  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.5  2010/11/29 15:57:53  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.4  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.3  2001/02/14 15:35:49  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.2  2000/10/17 15:37:38  sridhar
-# Complains loudly (using `warn') if unable to open log file.
-#
-# Revision 1.1  2000/04/24 12:45:46  sridhar
-# Added TagX::Log for logging messages
-#
-#

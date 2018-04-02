@@ -1,6 +1,8 @@
-This is the README file for the 'bedrock' project.
+This is the README file for the `bedrock` project.
 
-See [http://twiki.openbedrock.net]() for more helpful hints.
+* See [http://twiki.openbedrock.net]() for more information about the
+Bedrock framework.
+* See the NEWS file changes and updates.
 
 # Overview
 
@@ -46,13 +48,10 @@ See the *Prerequisites* section below for other programs that must be
 installed and configured on your system before you can install the Bedrock
 package.
 
-See the `BUGS` file for information on reporting bugs.
-
-See the `INSTALL` file for installation instructions.
-
-See the `HACKING` file for developer build instructions and the like.
-
-See the `NEWS` file for changes for this release, and a running list of
+* See the `BUGS` file for information on reporting bugs.
+* See the `INSTALL` file for installation instructions.
+* See the `HACKING` file for developer build instructions and the like.
+* See the `NEWS` file for changes for this release, and a running list of
 changes from previous releases. Any incompatibilities with previous versions
 will be noted in the 'NEWS' file.
 
@@ -131,7 +130,6 @@ standard Unix way:
 
 - Bedrock running as a CGI should work with no compatibility issues
 under Apache 1.x/2.x+
-
 - For increased performance use `mod_perl` with Apache 2.2.
 
 # Creating a persistent Session Database

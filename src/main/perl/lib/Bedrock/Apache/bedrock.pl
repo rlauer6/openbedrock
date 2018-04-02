@@ -1,6 +1,5 @@
 #!/usr/bin/perl
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -21,20 +20,20 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-BEGIN
-{
-    if ( open( FILE, 'bedrock.INC' ) ) {
-	while (<FILE>) {
-	    chomp;
-	    if ( s/^inc\s+//i ) {
-		unshift @INC, $_;
-	    } elsif ( s/config_path\s+//i ) {
-		$ENV{BEDROCK_CONFIG_PATH} = $_;
-		$ENV{CONFIG_PATH} = $_; # deprecated
-	    }
-	}
-	close FILE;
+BEGIN {
+  if ( open( FILE, 'bedrock.INC' ) ) {
+    while (<FILE>) {
+      chomp;
+      if (s/^inc\s+//i) {
+        unshift @INC, $_;
+      }
+      elsif (s/config_path\s+//i) {
+        $ENV{BEDROCK_CONFIG_PATH} = $_;
+        $ENV{CONFIG_PATH}         = $_;    # deprecated
+      }
     }
+    close FILE;
+  }
 }
 
 use strict;
@@ -44,11 +43,11 @@ use Bedrock;
 use Apache::Bedrock;
 use Apache::Request_cgi;
 
-$SIG{TERM} = \&confess;
+$SIG{TERM}     = \&confess;
 $SIG{__WARN__} = \&Carp::cluck;
 my $code = &Apache::Bedrock::handler( Apache::Request_cgi->new );
-if ($code == 404) {
-    print <<eot;
+if ( $code == 404 ) {
+  print <<eot;
 Content-type: text/html
 Status: 404
 
@@ -67,7 +66,7 @@ Status: 404
 eot
 }
 else {
-    die "Bedrock handler returned code: $code" if $code;
+  die "Bedrock handler returned code: $code" if $code;
 }
 
 exit 0;
