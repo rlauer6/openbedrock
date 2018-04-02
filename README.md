@@ -30,13 +30,13 @@ robust applications can be built with only 7 Bedrock tags and the
 built-in objects **$input**, **$header**, **$session**, and **$config**:
 
 ```
-    <if>
-    <null>
-    <var>
-    <sqlselect>
-    <sql>
-    <sqlconnect>
-    <foreach>
+<if>
+<null>
+<var>
+<sqlselect>
+<sql>
+<sqlconnect>
+<foreach>
 ```
 
 # More Information
@@ -128,9 +128,9 @@ standard Unix way:
 
 # Performance
 
-- Bedrock running as a CGI should work with no compatibility issues
+* Bedrock running as a CGI should work with no compatibility issues
 under Apache 1.x/2.x+
-- For increased performance use `mod_perl` with Apache 2.2.
+* For increased performance use `mod_perl` with Apache 2.2.
 
 # Creating a persistent Session Database
 
@@ -143,11 +143,14 @@ There are also implementations using PostgreSQL and SQLite.
 To create the database and table necessary to use the Bedrock $session
 object, you'll want to do something similar to:
 
-    $ mysqladmin -u root -p create bedrock
+```
+$ mysqladmin -u root -p create bedrock
+$ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock
+```
 
-    $ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock
+## More Information on Sessions
 
-See `perldoc /usr/lib/bedrock/perl5/BLM/Startup/UserSession.pm` for
+* See `perldoc /usr/lib/bedrock/perl5/BLM/Startup/UserSession.pm` for
 more details.
 
-See [http://twiki.openbedrock.net]() for more helpful hints.
+* See [http://twiki.openbedrock.net]() for more helpful hints.
