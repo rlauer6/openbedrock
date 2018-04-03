@@ -39,18 +39,37 @@ built-in objects **$input**, **$header**, **$session**, and **$config**:
 <foreach>
 ```
 
+# Installation
+
+
+## RPM
+
+To install Bedrock from rpm, visit http://repo.openbedrock.net.
+
+## Manual Install
+
+You'll need a few Perl modules installed on your system before you
+start, but `configure` will look for them before you can build
+Bedrock.
+
+See the [Prerequisites](#prerequisites) section below for other programs that must be
+installed and configured on your system before you can install the Bedrock
+package.
+
+```
+git clone https://github.com/rlauer6/openbedrock.git
+cd openbedrock
+./bootstrap
+./configure --prefix=/usr
+make
+sudo install
+bedrock --version
+```
+
 # More Information
 
 * [Bedrock Wiki](http://twiki.openbedrock.net)
 * [Bedrock Blog](http://openbedrock.blogspot.com)
-
-See the *Prerequisites* section below for other programs that must be
-installed and configured on your system before you can install the Bedrock
-package.
-
-* See the `BUGS` file for information on reporting bugs.
-* See the `INSTALL` file for installation instructions.
-* See the `HACKING` file for developer build instructions and the like.
 * See the `NEWS` file for changes for this release, and a running list of
 changes from previous releases. Any incompatibilities with previous versions
 will be noted in the 'NEWS' file.
@@ -66,18 +85,11 @@ of the core library shipped with Perl (e.g., Data::Dumper, MIME::Base64, etc.)
 
 The various Bedrock components are primarily implemented in Perl, so of
 course, a Perl installation is needed. Current Bedrock development is done
-using Perl 5.8.8, but any 5.8.x+ features that are used should be
+using Perl 5.16, but any 5.8.x+ features that are used should be
 conditional. This means that Bedrock should work with versions of Perl prior
-to 5.8.x, as well.
+to 5.16 as well.
 
-# Packages
-
-## RedHat
-
-If you are using the `yum` repo to install Bedrock, dependencies
-should be handled for you.
-
-## Ubuntu/Debian
+# Ubuntu/Debian
 
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.
@@ -86,9 +98,9 @@ we get a first class package for Ubuntu users.  In the interim, try
 the `setup-ubuntu.sh` script or follow the instructions below.
 
 If you want to install Bedrock on Debian based system like Ubunutu,
-first satisfy the Bedrock Perl dependencies using `apt`.  Here's a
-list (not guaranteed to be complete) of the packages you may need to
-install:
+first satisfy the Bedrock Perl dependencies using `apt` or install
+them manually from CPAN.  Here's a list (not guaranteed to be
+complete) of the packages you may need to install:
 
 Programs...
 
