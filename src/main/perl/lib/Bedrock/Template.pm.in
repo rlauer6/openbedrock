@@ -1,3 +1,6 @@
+use strict;
+use warnings;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -20,9 +23,6 @@
 
 # provides a mimimal context object for Bedrock
 package Faux::Context;
-
-use strict;
-use warnings;
 
 sub new {
   my $class = shift;
@@ -55,12 +55,20 @@ sub close {
 
 package Bedrock::Template;
 
-use Bedrock;
+use parent qw/Class::Accessor/;
+
+__PACKAGE__->follow_best_practice();
+__PACKAGE__->mk_accessors(qw/text param config/);
+
+use lib '@perl5_pkglibdir@/Bedrock';
+
+use Text::TagX;
+
+use Bedrock::Array;
 use Bedrock::BedrockConfig;
 
 use IO::Scalar;
 use Scalar::Util qw/reftype/;
-use Text::TagX;
 use Data::Dumper;
 
 =pod
@@ -180,20 +188,14 @@ configuration object is provided by default (F<tagx.xml>).
 sub new {
   my $class = shift;
 
-  my $self = {};
-  bless $self, $class;
-
-  if ( ref($_[0]) && reftype($_[0]) eq 'HASH') {
-    my $args = shift;
-
-    $self->text($args->{text}) if exists $args->{text};
-    $self->param($args->{param}) if exists $args->{param};
-    $self->config($args->{CONFIG}) if exists $args->{CONFIG};
-  }
-  else {
-    $self->text(shift);
-    $self->param({ @_ });
-  }
+  my $self = eval {
+    if ( ref($_[0]) && reftype($_[0]) eq 'HASH') {
+      $class->SUPER::new(shift);
+    }
+    else {
+      $class->SUPER::new({ text => $_[0], param => {@_} });
+    }
+  };
   
   unless ($self->config) {
     $self->config(Bedrock::Config->new('@libdir@/bedrock/config/tagx.xml'));
@@ -218,14 +220,13 @@ use Bedrock's default F<tagx.xml>.
 sub config {
   my $self = shift;
 
-  if ( @_ )  {
-    $self->{_config} = shift;
+  if ( @_ ) {
+    $self->set_config(@_);
   }
-
-  return $self->{_config};
+  else {
+    $self->get_config();
+  }
 }
-
-=pod
 
 =head2 param
 
@@ -240,14 +241,14 @@ represent data or objects that will be used by the template.
 
 sub param {
   my $self = shift;
-
-  if ( @_ ) {
-    $self->{_param} = shift;
+  
+  if (@_) {
+    $self->set_param(@_);
   }
-
-  return $self->{_param};
+  else {
+    $self->get_param();
+  }
 }
-
 
 =pod
 
@@ -262,15 +263,16 @@ the string or undef if no string is currently set.
 
 =cut
 
+
 sub text {
   my $self = shift;
 
-  if ( @_ ) {
+  if (@_) {
     my $text = shift;
-    $self->{_text} = ref($text) ? $text : \$text;
+    $self->set_text(ref($text) ? $text : \$text );
   }
 
-  return $self->{_text};
+  return $self->get_text();
 }
 
 =pod
@@ -313,27 +315,29 @@ can pass the text to parse.
 sub parse {
   my $self = shift;
   my $text = shift;
-
+  
   my %args = @_;
-
-  my $param = $self->param() || {};
-
-  map { $param->{$_} = $args{$_} } keys %args;
-
+  
   $self->text($text) if $text;
 
+  # merge parameters with those passed
+  my $param = $self->param() || {};
+  map { $param->{$_} = $args{$_} } keys %args;
+
   my $output = "";
-  my $tx = Text::TagX->new( 
-			   IO::Scalar->new($self->text),
-			   Faux::Context->new(IO::Scalar->new(\$output), CONFIG => $self->config)
-			  );
+  
+  my $ctx = Faux::Context->new(IO::Scalar->new(\$output), CONFIG => $self->config);
+
+  my $fh = IO::Scalar->new($self->text);
+  
+  my $tx = Text::TagX->new($fh, $ctx);
 
   $tx->param(%$param);
  
   my $error = eval {
     $tx->output;
   };
-  
+
   die Dumper [ $tx->error ] 
     if ( $@ );
 
@@ -349,7 +353,3 @@ sub parse {
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-# Revision 1.1  2012/02/13 14:39:43  eutl420
-# - first check-in
-#
