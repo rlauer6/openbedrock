@@ -25,11 +25,13 @@ package TagX::Log;
 use strict;
 use warnings;
 
+use Bedrock::Log::Spooler;
 use Date::Format;
+use Data::Dumper;
 
 BEGIN {
   use Exporter ();
-  use vars qw ($VERSION @ISA @EXPORT @EXPORT_OK);
+  use vars qw (@ISA @EXPORT @EXPORT_OK);
   @ISA = qw (Exporter);
 }
 
@@ -48,39 +50,43 @@ my %options = (
 sub start_logger {
   my %args = @_;
   
-  return unless $args{LOG_FILE};
-
+  return unless $args{LOG_FILE} || $args{LOG_SPOOLER};
+    
   # override default options
   @options{keys %args} = values %args;
   
   my ( $logfile, $maxsize ) = @options{qw(LOG_FILE LOG_MAXSIZE)};
   
-  # truncate log unless LOG_MAXSIZE < 0
-  if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($logfile) )[7] > $maxsize ) ) {
-    open( FILE, ">$logfile" );
-    close FILE;
-  }
-
-  # Redirect STDERR too to append to logfile
-  unless ( open( STDERR, ">> $logfile" ) ) {
-    warn __PACKAGE__,
-    ":start_logger(): Unable to append to log file $logfile: $!\n";
-    return;
+  if ( $logfile ) {
+    if ( -e $logfile ) {
+      # truncate log unless LOG_MAXSIZE < 0
+      if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($logfile) )[7] > $maxsize ) ) {
+	open( FILE, ">$logfile" );
+	close FILE;
+      }
+    }
+    
+    # Redirect STDERR too to append to logfile
+    unless ( open( STDERR, ">> $logfile" ) ) {
+      warn __PACKAGE__,
+	":start_logger(): Unable to append to log file $logfile: $!\n";
+      return;
+    }
+  
+    my $fd = IO::Handle->new_from_fd( 'STDERR', 'a' );
+    $fd->autoflush(1);
+    $fd->close;
   }
   
-  my $fd = IO::Handle->new_from_fd( 'STDERR', 'a' );
-  $fd->autoflush(1);
-  $fd->close;
-
   # log warnings/errors to page log, unless in eval {}
   $SIG{__DIE__} = $SIG{__WARN__} = sub {
     # don't log if we are in an eval {}
-    return unless defined $^S and $^S == 0;
+    return unless  defined $^S and $^S == 0;
     
     unshift @_, undef;
     goto &log_message
   };
- 
+  
   &log_message( undef, "started logger");
 }
 
@@ -88,11 +94,8 @@ sub start_logger {
 sub log_message {
   my $obj = shift;
   
-  return unless exists $options{LOG_FILE};
+  return unless exists $options{LOG_FILE} || $options{LOG_SPOOLER};
 
-  my $logfile = $options{LOG_FILE};
-  open( LOG, ">> $logfile" ) or return;
-   
   # Make caller
   my ( $pack, $filename, $line ) = caller;
 
@@ -102,10 +105,6 @@ sub log_message {
     $loc = "[" . $obj->start_location . "]\n[$obj]\n";
   }
 
-  # default: %m/%d/%Y %H:%M:%S
-  my $time = time2str($options{LOG_FORMAT}, time);
-
-  # And print message
   my $page = eval {
     if ( $ENV{BEDROCK_URI} ) {
       $ENV{BEDROCK_URI};
@@ -117,10 +116,42 @@ sub log_message {
       'unknown';
     }
   };
-  
-  print LOG "$time \[$$\]\t[$page]\t$filename($line)\n$loc@_\n";
 
-  close LOG;
+  # Allow either, or neither...
+  if ( $options{LOG_FILE} ) {
+    my $logfile = $options{LOG_FILE};
+    # default: %m/%d/%Y %H:%M:%S
+    my $time = time2str($options{LOG_FORMAT}, time);
+
+    open( LOG, ">> $logfile" ) or return;   
+    print LOG "$time \[$$\]\t[$page]\t$filename($line)\n$loc@_\n";
+    close LOG
+  }
+
+  if ( $options{LOG_SPOOLER} ) {
+    my %spooler_options = (channel => "bedrock/log$page");
+
+    # note LOG_SPOOLER can override channel
+    #
+    # <object name="HTML_LOGSPOOLER">
+    #   <scalar name="channel">mychannel</scalar>
+    # </object>
+    #
+    if (ref($options{LOG_SPOOLER}) && reftype($options{LOG_SPOOLER}) eq 'HASH' ) {
+      @spooler_options{keys %{$options{LOG_SPOOLER}}} = values %{$options{LOG_SPOOLER}};
+    }
+    
+    eval {
+      my $spooler = Bedrock::Log::Spooler->instance(%spooler_options);
+      $spooler->publish(\@_, page => $page, line => $line, loc => $loc, filename => $filename);
+    };
+
+    if ( $@ ) {
+      # try to print the log message to STDERR
+      print STDERR "error spooling log message: $@\n";
+      print STDERR sprintf("[%s] %s - %s\n", time2str("%c", time), $page, join('', @_));
+    }
+  }
 }
 
 1;

@@ -11,6 +11,8 @@ perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
+perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
+
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
@@ -29,6 +31,9 @@ perl5blmfilterlibdir                     = $(perl5libdir)/BLM/Filter
 perl5blmindexedtablehandlerlibdir        = $(perl5libdir)/BLM/IndexedTableHandler
 perl5blmstartuplibdir 	                 = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
+
+perl5bedrockloglib_DATA = \
+   Bedrock/Log/Spooler.pm
 
 perl5lib_DATA = \
     Bedrock.pm \
@@ -59,6 +64,8 @@ perl5bedrocktemplatelib_DATA = \
     Bedrock/Template/Email.pm
 
 BEDROCK_TEMPLATE=$(perl5bedrocktemplatelib_DATA:.pm=.pm.in)
+
+BEDROCK_LOG=$(perl5bedrockloglib_DATA:.pm=.pm.in)
 
 perl5bedrockapplicationlib_DATA = \
     Bedrock/Application/Plugin.pm
@@ -248,6 +255,7 @@ PERL_PM = \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
+    $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
     $(BEDROCK_TEMPLATE) \
