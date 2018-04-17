@@ -7,6 +7,10 @@ AC_PREREQ([2.61])
 
 AC_CONFIG_AUX_DIR([autotools])
 
+AC_REQUIRE_AUX_FILE([tap-driver.sh])
+
+AC_PROG_AWK
+
 dnl Indicate dir where our custom m4 macros may be found (future
 dnl proofing; as of may not be used yet...)
 AC_CONFIG_MACRO_DIR([autotools])

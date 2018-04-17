@@ -1,6 +1,13 @@
 # -*-Makefile-*-
 PERL = @PERL@
 
+check_SCRIPTS = prove.sh
+
+TESTS = $(check_SCRIPTS)
+
+TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
+              $(top_srcdir)/autotools/tap-driver.sh
+
 BEDROCK_RELEASE = @BEDROCK_RELEASE@
 
 perl5libdir = @PERL_LIBDIR@
@@ -310,3 +317,10 @@ clean-local:
 
 test: Test/Bedrock.pm
 	$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t
+
+prove.sh: Test/Bedrock.pm
+	echo "$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
+	chmod 755 prove.sh
+
+CLEANFILES = \
+    prove.sh
