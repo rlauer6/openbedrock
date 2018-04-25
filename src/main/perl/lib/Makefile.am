@@ -60,6 +60,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Hash.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/Log.pm \
+    Bedrock/Object.pm \
     Bedrock/Plugin.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
