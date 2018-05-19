@@ -23,11 +23,9 @@ package BLM::IndexedTableHandler;
 use strict;
 use warnings;
 
-BEGIN
-{
-    use Exporter ();
-    use vars	qw($VERSION @ISA @ENV @EXPORT_OK @EXPORT);
-}
+use vars qw/$VERSION/;
+
+our $VERSION = sprintf("%s.%s", (split(/\./, '@PACKAGE_VERSION@'))[0], "01");
 
 use Bedrock::Array;
 
@@ -666,10 +664,18 @@ sub new {
     
     die "BLM::IndexedTableHandler currently only supports MySQL tables.\n"
       unless $dbi->get_info(17) =~/mysql/i;
-
-    $class =~/^(.*)::(.*?)(=.*)?$/;
-
-    $table_name = $table_name || lc($2) or die "Unable to determine table name.";
+    
+    if ( ref($this) ) {
+      $table_name = $this->get_table_name();
+    }
+    elsif ( ! $table_name ) {
+      if ( $class =~/^(.*)::(.*?)(=.*)?$/ ) {
+	$table_name = lc($2);
+      }
+    }
+    
+    die "Unable to determine table name."
+      unless $table_name;
 
     # validate config object
     unless ( ref($config) && $config->{tables} ) {
@@ -804,10 +810,6 @@ sub get_lists {
   return $_[0]->{_lists} || {};
 }
 
-# deprecated
-sub get_field_list {
-  return $_[0]->{_field_list};
-}
 
 =head2 delete
 
@@ -939,17 +941,70 @@ sub is_field {
 
 =head2 reset
 
- reset
+ reset( [delete] )
 
-Clears (sets columns to NULL) all of the columns in the object.
+Clears (sets columns to NULL) all of the columns in the object or if
+the C<delete> flag is set, will remove the column from the set of
+columns with data to save or insert.
+
+In some cases, you may not want a value of NULL in your column and
+want an insert or update to only update the columns that have been
+explicitly set.  In that case, use C<insert()> instead of C<save()> as
+C<insert()> will only insert columns that have explicitly been set
+with a value (unlike C<save()> which will insert NULL for columns not
+explicitly set).
+
+So, when using C<reset()> you may want to reset the object to a state
+where no columns have been explicitly set.
+
+ $ith->reset(1);
+
+An example of this may be when your columns have
+default values and also have constraints.  Consider the column
+definition below:
+
+ first_name varchar(32) not null default '';
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->save();
+
+The above example will cause a NOT NULL constraint exception. Now consider:
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->insert();
+
+ $ith->reset();
+ $ith->set('last_name', 'Jones');
+
+In the example above, the first record is written and the second causes and exception. And then consider...
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->insert();
+
+ $ith->reset(1);
+ $ith->set('last_name', 'Jones');
+
+...and both records are now written.
 
 =cut
 
 sub reset {
   my $self = shift;
-
+  my $delete = shift;
+  
   foreach (@{$self->get_field_list}) {
-    $self->{$_} = undef;
+    if( $delete ) {
+      delete $self->{$_};
+    }
+    else {
+      $self->{$_} = undef;
+    }
   }
 }
 
@@ -1034,7 +1089,6 @@ sub init_config {
 sub keys {
   $_[0]->fields();
 }
-
 
 sub get_table_name {
   my $self = shift;
@@ -1303,10 +1357,17 @@ columns will be set.
   </if>
 
 I<Note that only the fields corresponding to the columns that exist in
-the object are updated.  In other words if you want to avoid updating
-a column, delete the member from the object.>
+the object are updated if the record exists. For new records, all
+columns are inserted regardless of whether or not you have explicitly
+provided a value for that column!  In other words, for UPDATES ONLY,
+if you want to avoid updating a column, delete the member from the
+object.>
 
   <null $foo.delete('bar')>
+
+I<If you want to only insert those columns that you have explicitly
+set and therefore let your table defaults take care of the rest of the
+columns, use the C<insert()> method.>
 
 =cut
 
@@ -1314,7 +1375,7 @@ sub save {
   my $self = shift;
   my $input = shift;
   
-  if ( ref($input) && reftype($input) eq 'HASH') {
+  if ( ref($input) && reftype($input) eq 'HASH' ) {
     foreach ( $self->get_fields ) {
       $self->set($_, $input->{$_} )
 	if exists $input->{$_};
@@ -1325,7 +1386,7 @@ sub save {
     $self->_update;
   }
   else {
-    $self->_insert;
+    $self->_insert_all;
   }
 
   my $table_name = $self->get_table_name;
@@ -1340,6 +1401,69 @@ sub save {
   return $self->{id};
 }
 
+
+
+=pod
+
+=head2 insert
+
+insert()
+
+Similar to C<save()> but only inserts columns that have been
+explicitly set in your object.  See L</save>.
+
+=cut
+
+sub insert { goto &_insert_some; }
+
+
+
+sub _insert {
+  my $self = shift;
+  my $some_or_all = shift;
+
+  $self->_format_fields_for_insert;
+
+  my $query = "insert into %s (%s) values (%s)";
+  $self->{id} = 0;
+
+  my @fields = ($self->get_fields());
+
+  if ( $some_or_all eq 'some' ) {
+    @fields = map { exists $self->{$_} ? $_ : (); } @fields;
+  }
+
+  $query = sprintf($query,
+                   $self->get_table_name,
+                   join(",", @fields),
+                   join(",", split "", "?" x scalar(@fields))
+                  );
+
+  $self->Do($query, @{$self}{@fields});
+
+  $self->{id} = $self->dbi->{mysql_insertid};
+}
+
+sub _insert_some { push @_, 'some'; goto &_insert; }
+sub _insert_all  { push @_, 'all'; goto &_insert; }
+
+sub _update {
+  my $self = shift;
+
+  $self->_format_fields_for_insert;
+
+  my @fields = grep { !/^id$/ } ($self->get_fields());
+  @fields = map { exists $self->{$_} ? $_ : (); } @fields;
+
+  my $query = sprintf("update %s set %s where id = ?",
+		      $self->get_table_name,
+		      join(",", map { "$_ = ?" } @fields)
+      );
+
+  $self->Do($query, @{$self}{@fields}, $self->{'id'});
+
+  return $self->{rows};
+}
 
 =pod
 
@@ -1372,7 +1496,6 @@ of the data prior to the data being written to the database, you can
 override this method.
 
 =cut
-
 
 sub set_field {
   my $self = shift;
@@ -1470,43 +1593,6 @@ sub _format_fields_for_insert {
 	if exists $self->{$field};
     }
   }
-}
-
-sub _insert {
-  my $self = shift;
-
-  $self->_format_fields_for_insert;
-
-  my $query = "insert into %s (%s) values (%s)";
-  $self->{id} = 0;
-
-  $query = sprintf($query,
-		   $self->get_table_name,
-		   join(",", @{$self->{_field_list}}),
-		   join(",", split "", "?" x scalar($self->get_fields()))
-		  );
-
-  $self->Do($query, @{$self}{$self->get_fields});
-
-  $self->{id} = $self->dbi->{mysql_insertid};
-}
-
-sub _update {
-  my $self = shift;
-
-  $self->_format_fields_for_insert;
-
-  my @fields = grep { !/^id$/ } ($self->get_fields());
-  @fields = map { exists $self->{$_} ? $_ : (); } @fields;
-
-  my $query = sprintf("update %s set %s where id = ?",
-		      $self->get_table_name,
-		      join(",", map { "$_ = ?" } @fields)
-      );
-
-  $self->Do($query, @{$self}{@fields}, $self->{'id'});
-
-  return $self->{rows};
 }
 
 
@@ -1884,13 +1970,8 @@ C<columns()> are synonymous.
 
 =cut
 
-sub columns { $_[0]->fields() };
-
-sub fields {
-  my $self = shift;
-
-  return Bedrock::Array->new( $self->get_fields() );
-}
+sub columns { goto &fields; };
+sub fields  { Bedrock::Array->new( shift->get_fields() ); }
 
 =pod
 
@@ -1909,9 +1990,8 @@ lists to C<Bedrock::Array> objects.>
 
 =cut
 
-sub get_fields {
-  @{$_[0]->{_field_list}};
-}
+sub get_field_list { shift->{_field_list} };
+sub get_fields     { @{shift->get_field_list()} };
 
 =pod
 
@@ -1936,19 +2016,20 @@ reference.
 
 sub asref {
   my $self = shift;
+  
   my $ref = {};
   my @cols;
 
-  if ( scalar(@_) ) {
+  if ( @_ ) {
     push @cols,  map { (ref $_ ) ? @{$_} : $_ } @_;
   }
   else {
-    @cols = @{$self->get_field_list()};
+    @cols = $self->get_fields();
   }
     
   @{$ref}{@cols} = @{$self}{@cols};
   
-  return Bedrock::Hash->new( %$ref );
+  return bless $ref, 'Bedrock::Hash';
 }
 
 

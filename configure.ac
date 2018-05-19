@@ -1,6 +1,6 @@
 dnl -*-Autoconf-*-
 
-AC_INIT([bedrock], [3.0.0], [rlauer6@comcast.net])
+AC_INIT([bedrock], [3.0.1], [rlauer6@comcast.net])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -291,6 +291,7 @@ AX_DISTCHECK_HACK
 do_subst_command='do_subst = sed \
   -e '"'"'s,[@]PACKAGE[@],$(PACKAGE),g'"'"' \
   -e '"'"'s,[@]VERSION[@],$(VERSION),g'"'"' \
+  -e '"'"'s,[@]PACKAGE_VERSION[@],$(PACKAGE_VERSION),g'"'"' \
   -e '"'"'s,[@]BEDROCK_RELEASE[@],$(BEDROCK_RELEASE),g'"'"' \
   -e '"'"'s,[@]PATH_SEPARATOR[@],$(PATH_SEPARATOR),g'"'"' \
   -e '"'"'s,[@]configure_input[@],Generated from $@.in; do not edit by hand.,g'"'"' \
