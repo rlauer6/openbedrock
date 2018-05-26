@@ -29,7 +29,7 @@ eot
   $dbi->do($create_table);
 };
 
-BAIL_OUT("could not create database and table for test\n$@\n")
+BAIL_OUT("could not create database and table for test: $@\n")
   if $@;
 
 my $ith = eval {

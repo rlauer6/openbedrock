@@ -1,0 +1,473 @@
+package BLM::IndexedTableHandler::Model;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Carp::Always;
+
+use parent qw/Class::Accessor::Fast/;
+
+use Scalar::Util qw/reftype/;
+use Data::Dumper;
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw/dbi table model dry_run/);
+
+=pod
+
+=head1 NAME
+
+C<BLM::IndexedTableHandler::Model>
+
+=head1 SYNOPSIS
+                  
+  my $model_specs = [
+  		   {
+  		    name => 'id',
+  		    type => 'int',
+  		    options => 'auto_increment primary key'
+  		   },
+  		   {
+  		    name => 'lastname',
+  		    type => 'varchar',
+  		    options => 'not null'
+  		   }
+  		  ];
+
+ my $model = new BLM::IndexedTableHandler::Model({ dbi => $dbi, table => $table, model => $model_specs});
+
+ $model->create_table();
+
+ # migrate table (apply changes)
+ my $changes = $model->migrate(dry_run => 1);
+
+=head1 DESCRIPTION
+
+Class for creating/modifying MySQL tables.
+
+=head1 METHODS
+
+=head2 create_table
+
+ create_table()
+
+=cut
+
+sub create_table {
+  my $self = shift;
+  my %args = @_;
+
+  my $table = $args{table} ||
+    $self->check_table();
+  
+  my $model = $args{model} ||
+    $self->check_model();
+  
+  my $dbi = $args{dbi} ||
+    $self->check_dbi();
+  
+  my $dry_run = $args{dry_run} ||
+    ref($self) ? $self->get_dry_run() : undef;
+  
+  return _create(table => $table, model => $model, dbi => $dbi);
+}
+
+sub _create {
+  my %args = @_;
+  
+  my @column_defs = map { column_create_statement($_) } @{$args{model}}; 
+  my $create_statement = sprintf("create table %s (\n    %s\n)\n", $args{table}, join(",\n    ", @column_defs));
+  
+  unless ($args{dry_run}) {
+    eval {
+      $args{dbi}->do($create_statement);
+    };
+    
+    if ( $@ ) {
+      die "$create_statement\n$@";
+    }
+  }
+  
+  return $create_statement;
+}
+
+
+=head2 describe_table
+
+ describe_table( [ table => table-name ] );
+
+Returns a hash containing a hash of the all of the column definitions
+of an existing MySQL table.  Keys are the names of the columns in the table.  Each
+hash then contains the following keys:
+
+=over 5
+
+=item name
+
+Name of the column.
+
+=item type
+
+Type of the column (example int, varchar, datetime, etc).
+
+=item options
+
+Options associated with the column definition. For example:
+
+ NOT NULL DEFAULT ''
+ NULL DEFAULT 'foo'
+ AUTO_INCREMENT NOT NULL PRIMARY KEY
+
+=back
+
+=cut
+
+sub describe_table {
+  my $self = shift;
+  my %args = @_;
+  
+  my $table = $args{table} ||
+    $self->check_table();
+
+  my $dbi = $args{dbi} ||
+    $self->check_dbi();
+
+  my $sth = $dbi->prepare("describe $table");
+  $sth->execute;
+
+  my %table;
+  
+  while (my $r = $sth->fetchrow_hashref ) {
+    $table{$r->{Field}} = $r;
+  }
+  
+  return \%table;
+}
+
+sub options_as_string {
+  my $column_def = shift;
+  
+  my @options;
+
+  if ( $column_def->{Null} && lc($column_def->{Null}) eq 'yes') {
+    push @options, 'NULL';
+  }
+  elsif ( $column_def->{Null} && lc($column_def->{Null}) eq 'no') {
+    push @options, 'NOT NULL';
+  }
+  else {
+    push @options, 'NULL';
+  }
+  
+  push @options, $column_def->{Extra} if $column_def->{Extra};
+  
+  if ( defined $column_def->{Default} ) {
+    if ( $column_def->{Type} =~/enum/i ) {
+      # quote enum default 'contact', e.g.
+      push @options, 'DEFAULT ' . "'" . $column_def->{Default} . "'";
+    }
+    else {
+      push @options, 'DEFAULT ' . $column_def->{Default};
+    }
+  }
+  
+  if ( $column_def->{Key} ) {
+    if ( lc($column_def->{Key}) eq 'pri' ) {
+      push @options, 'primary key'
+    }
+    elsif ( lc($column_def->{Key}) eq 'uni' ) {
+      push @options, 'unique key';
+    }
+    else {
+      push @options, $column_def->{Key};
+    }
+  }
+    
+  return join(" ", @options);
+}
+
+=pod
+
+=head2 migrate
+
+  migrate( [model => model, dry_run => 0/1, table => table-name] );
+
+Compares the currently defined model and the state of the table to
+produce a set of SQL statements to apply in order to migrate a table.
+Set C<dry_run> to 1 to disable execution of the statements.
+
+Returns an array of statements that were (or would have been) used to
+migrate the table.
+
+=cut
+
+sub migrate {
+  my $self = shift;
+  my %args = @_;
+
+  my $model = $args{model} ||
+    $self->check_model(); # (target state)
+  
+  my $table = $args{table} ||
+    $self->check_table();
+
+  my $dbi = $args{dbi} ||
+    $self->check_dbi();
+  
+  my %table_def; # code defined table (target state)
+  
+  die "usage: migrate( model => array-ref, table => table, dry_run => 0/1, dbi => dbi);\n"
+    unless ref($model) && reftype($model) eq 'ARRAY';
+  
+  foreach (@$model) {
+    $table_def{$_->{Field}} = $_;
+  }
+  
+  my %target_model = %table_def;
+    
+  my %table_state = %{$self->describe_table(dbi => $dbi, table => $table)}; # database defined table (current state)
+  
+  my @modify_these;
+  my @add_these;
+  my @drop_these;
+
+  # FIXME: How can we tell if the table definition has changed?
+
+  # There are problaby cleverer ways to accomplish this but they would
+  # involve saving some stateful information about the table. Short of
+  # that we have the serialization method. The technique below simply
+  # tries to transform the database state into a representation that
+  # is consistent with the representation in the class or to be more
+  # accurate a transformation of the class model.
+  #
+  # give that x = g(x')...
+  #
+  # where x is the internal class representation potentially updated
+  # by the developer and persisted in code...  and x' is the table
+  # name applied to the function g() to produce the internal
+  # representation g(x')...
+  #
+  # ...we serialize both...using serialization function f() and compare.
+  #
+  # y=f(x) <=> y'=f(g(x'))
+  #
+  # in other words we are hoping that applying the same function to
+  # two different inputs, one from the class and one a transformation
+  # from the database to what is hoped to be equal to the class
+  # representation of the table results in the same serialized
+  # representation which can be compared to detect table changes.  We
+  # are again hoping that g(x') produces x consistently (and uniquely).
+
+  # This breaks down if a) our function() is not actually a function
+  # and can produce the same output given two different inputs (note
+  # that the serialized output may be considered equivalent based on
+  # something other than 'eq' - e.g. lc(f(x)) eq lc(f(g(x)).  b) if
+  # the serialization function is incomplete which could either lead
+  # to false positives or false negatives (failing to detect a
+  # change).
+
+  # Again, the most accurate way (but not foolproof) way is to create
+  # a stateful system that records an indication that the schema has
+  # been updated outside the context of the model system.  This should
+  # probably be a separate table that holds metadata regarding the
+  # state of the table.
+  
+  # 1. table name
+  # 2. date changed
+  # 3. unique token based on the table definition that is consistently
+  #    reproducible
+  # 4. number of fields
+
+  # Our third requirement demands that we have control over the
+  # uniqueness of the token, so we would most likely need to again
+  # create a transformation function from the table definition as
+  # represented by the database engine as a starting point. If that
+  # transformation changes over time (version to version) then false
+  # positives may again be introduced.  Therefore, it may be the fact
+  # that a stateful approach and a dynamic approach, both suffer from
+  # error terms that are not under the control of this model
+  # system. This is especially true the farther away from the database
+  # definition language the model allows the devloper.
+
+  # One technique might be at least consistent within a version of the
+  # database engine assuming again that we can rely on conistent
+  # informtation from the database engine.
+
+  # - create a temporary table foo using the class model
+  # - compare the tables using the database engine's serialization or internal representation of the table
+
+  # This may give us an accurate indication of change, but what
+  # changed? and how do we create our own function to transform the
+  # database to the new state? So it seems we have no choice but to
+  # engage in writing a serializer as imperfect as it will be...
+
+  # There's no free lunch, but the good news is that we can:
+  # - accurately detect new columns
+  # - accurately detect dropped columns
+  
+  # ...the bad news is that a name change of a column is bad thing as
+  # it will be seen as an add and delete
+
+  foreach (keys %table_state) {
+    if ( exists $table_def{$_} ) {
+      unless ( lc(column_create_statement($table_state{$_})) eq lc(column_create_statement($table_def{$_})) ) {
+	push @modify_these, $_;
+      }
+
+      delete $table_def{$_};
+      delete $table_state{$_};
+    }
+  }
+  
+  if ( keys %table_state ) {
+    push @drop_these, keys %table_state;
+  }
+
+  if ( keys %table_def ) {
+    push @add_these, keys %table_def;
+  }
+  
+  my @migration;
+  
+  foreach (@modify_these) {
+    push @migration , sprintf("alter table %s modify %s;", $table, column_create_statement($target_model{$_}));
+  }
+
+  foreach (@add_these) {
+    push @migration, sprintf("alter table %s add %s;", $table, column_create_statement($target_model{$_}));
+  }
+  
+  foreach (@drop_these) {
+    push @migration, sprintf("alter table %s drop %s;", $table, $_);
+  }
+  
+  unless ( $args{dry_run} ) {
+    my $dbi = $args{dbi} ||
+      $self->check_dbi;
+    
+    eval {
+      foreach (@migration) {
+	$dbi->do($_);
+      }
+    };
+    
+    if ($@) {
+      $dbi->rollback;
+    }
+    else {
+      $dbi->commit;
+    }
+  }
+	  
+  return \@migration;
+}
+
+# return 0 or >0 if migration needed...
+sub verify_model {
+  my $self = shift;
+  my %args = @_;
+
+  $args{dry_run} = 1;
+  
+  return @{$self->migrate(%args)};
+}
+
+=pod
+
+=head2 model_as_string
+
+ model_as_string( [table => table-name] ); 
+
+Creates a serialized array representation of column definitions
+from an existing MySQL table.
+
+  print $model->model_as_string(table => 'contact');
+
+=cut
+
+sub model_as_string {
+  my $self = shift;
+  my $model = shift ||
+    $self->check_model;
+  
+  foreach (@{$model}) {
+    exists $_->{Null} ? lc($_->{Null}) : 'yes';
+    exists $_->{Key} ? lc($_->{Key}) : '';
+    exists $_->{Null} ? lc($_->{Null}) : '';
+  }
+
+  $Data::Dumper::Varname= 'MODEL';
+  
+  $Data::Dumper::Sortkeys = sub {
+    my $column = shift;
+    [ ('Field', 'Type', 'Null', 'Extra'), defined $column->{Default} ? 'Default' : () , ('Key')];
+  };
+  
+  my $str = Dumper($model);
+  $str =~s/\$MODEL1/our \$MODEL/;
+
+  $str;
+}
+
+sub column_create_statement {
+  my $column_def = shift;
+  
+  lc sprintf("%s %s %s", @{$column_def}{qw/Field Type/}, options_as_string($column_def));
+}
+
+sub check_dbi {
+  my $self = shift;
+  
+  my $dbi = ref($self) ? $self->get_dbi() : undef;
+
+  die "no database handler set\n"
+    unless $dbi;
+
+  $dbi;
+}
+
+sub check_table {
+  my $self = shift;
+  
+  my $table = ref($self) ? $self->get_table() : undef;
+
+  die "no table set\n"
+    unless $table;
+
+  $table;
+}
+
+sub check_model {
+  my $self = shift;
+  
+  my $model = ref($self) ? $self->get_model() : undef;
+
+  print Dumper [ $model ];
+  
+  die "no model available\n"
+    unless ref($model) && reftype($model) eq 'ARRAY' && @{$model};
+
+  $model;
+}
+
+1;
