@@ -17,6 +17,7 @@ POD2MAN = /usr/bin/pod2man
 PERLSCRIPTS = \
     bedrock.pl.in \
     bedrock-plugin.pl.in \
+    bedrock-model.pl.in \
     bedrock-cache.pl.in \
     brxml2json.pl.in
 
@@ -50,6 +51,7 @@ else
 install-data-hook: installdirs
 	test -e $(DESTDIR)/bin || mkdir $(DESTDIR)/bin
 	ln -f -s @bindir@/bedrock.pl  $(DESTDIR)/bin/bedrock
+	ln -f -s @bindir@/bedrock-model.pl  $(DESTDIR)/bin/bedrock-model
 	ln -f -s @bindir@/bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
 endif
 

@@ -1,0 +1,324 @@
+package Bedrock::Model::Migration;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use parent qw/Class::Accessor::Fast/;
+
+use Scalar::Util qw/reftype blessed/;
+use Data::Dumper;
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw/model dry_run migration/);
+
+=pod
+
+=head2 new
+
+  new({ model => model, dry_run => 0/1 });
+
+Compares the currently defined model and the state of the table to
+produce a set of SQL statements to apply in order to migrate a table.
+Set C<dry_run> to 1 to disable execution of the statements.
+
+Returns a Bedrock::Model::Migration object that can then be used to
+apply the migration by calling the C<execute()> method.
+
+=over 5
+
+=item model
+
+A C<Bedrock::Model> object.
+
+=item dry_run
+
+Boolean indicating whether C<execute()> should actually apply migration.
+
+=back
+
+
+=cut
+
+sub new {
+  my $class = shift;
+  
+  my $self = $class->SUPER::new(ref($_[0]) ? @_ : { @_ });
+
+  $self->migrate();
+
+  $self;
+}
+
+sub migrate {
+  my $self = shift;
+  
+  my $model = $self->get_model(); # model class
+  
+  die "usage: new Bedrock::Model::Migration({ model => Bedrock::Model->new(...) })\n"
+    unless blessed($model) && $model->isa('Bedrock::Model');
+
+  die "no model defined\n"
+    unless $model->get_model() && reftype($model->get_model) eq 'HASH';
+
+  my %target_model = %{$model->get_model()}; # the actual model (code defined target state)
+  my %table_state = %{$model->fetch_model}; # database defined table (current state)
+  
+  my @modify_these;
+  my @add_these;
+  my @drop_these;
+
+  # How can we tell if the table definition has changed?
+
+  # There are problaby cleverer ways to accomplish this but they would
+  # involve saving some stateful information about the table. Short of
+  # that we have the serialization method. The technique below simply
+  # tries to transform the database state into a representation that
+  # is consistent with the representation in the class or to be more
+  # accurate a transformation of the class model.
+  #
+  # give that x = g(x')...
+  #
+  # where x is the internal class representation potentially updated
+  # by the developer and persisted in code...  and x' is the table
+  # name applied to the function g() to produce the internal
+  # representation g(x')...
+  #
+  # ...we serialize both...using serialization function f() and compare.
+  #
+  # y=f(x) <=> y'=f(g(x'))
+  #
+  # in other words we are hoping that applying the same function to
+  # two different inputs, one from the class and one a transformation
+  # from the database to what is hoped to be equal to the class
+  # representation of the table results in the same serialized
+  # representation which can be compared to detect table changes.  We
+  # are again hoping that g(x') produces x consistently (and uniquely).
+
+  # This breaks down if a) our function() is not actually a function
+  # and can produce the same output given two different inputs (note
+  # that the serialized output may be considered equivalent based on
+  # something other than 'eq' - e.g. lc(f(x)) eq lc(f(g(x)).  b) if
+  # the serialization function is incomplete which could either lead
+  # to false positives or false negatives (failing to detect a
+  # change).
+
+  # Again, the most accurate way (but not foolproof) way is to create
+  # a stateful system that records an indication that the schema has
+  # been updated outside the context of the model system.  This should
+  # probably be a separate table that holds metadata regarding the
+  # state of the table.
+  
+  # 1. table name
+  # 2. date changed
+  # 3. unique token based on the table definition that is consistently
+  #    reproducible
+  # 4. number of fields
+
+  # Our third requirement demands that we have control over the
+  # uniqueness of the token, so we would most likely need to again
+  # create a transformation function from the table definition as
+  # represented by the database engine as a starting point. If that
+  # transformation changes over time (version to version) then false
+  # positives may again be introduced.  Therefore, it may be the fact
+  # that a stateful approach and a dynamic approach, both suffer from
+  # error terms that are not under the control of this model
+  # system. This is especially true the farther away from the database
+  # definition language the model allows the devloper.
+
+  # One technique might be at least consistent within a version of the
+  # database engine assuming again that we can rely on conistent
+  # informtation from the database engine.
+
+  # - create a temporary table foo using the class model
+  # - compare the tables using the database engine's serialization or internal representation of the table
+
+  # This may give us an accurate indication of change, but what
+  # changed? and how do we create our own function to transform the
+  # database to the new state? So it seems we have no choice but to
+  # engage in writing a serializer as imperfect as it will be...
+
+  # There's no free lunch, but the good news is that we can:
+  # - accurately detect new columns
+  # - accurately detect dropped columns
+  
+  # ...the bad news is that a name change of a column is bad thing as
+  # it will be seen as an add and delete
+  
+  foreach my $field (keys %table_state) {
+    if ( exists $target_model{$field} ) {
+      unless ( lc($table_state{$field}->as_string) eq lc($target_model{$field}->as_string) ) {
+	push @modify_these, $field;
+      }
+
+      delete $target_model{$field};
+      delete $table_state{$field};
+    }
+  }
+  
+  if ( keys %table_state ) {
+    push @drop_these, keys %table_state;
+  }
+
+  if ( keys %target_model ) {
+    push @add_these, keys %target_model;
+  }
+  
+  my %migration;
+  
+  my $table = $self->get_model->get_table;
+  my $dry_run = $self->get_dry_run;
+  my $dbi = $self->get_model->get_dbi;
+  
+  foreach (@modify_these) {
+    $migration{$_} = sprintf("alter table %s modify %s;", $table, $model->get_model->{$_}->as_string);
+  }
+
+  foreach (@add_these) {
+    $migration{$_} = sprintf("alter table %s add %s;", $table, $model->get_model->{$_}->as_string);
+  }
+  
+  foreach (@drop_these) {
+    $migration{$_} = sprintf("alter table %s drop %s;", $table, $_);
+  }
+
+  $self->set_migration(\%migration);
+  
+  \%migration;
+}
+
+=pod
+
+=head2 should_migrate
+
+ should_migrate()
+
+Returns the number of statements needed for migrating table.
+
+=cut
+
+sub should_migrate {
+  my $self = shift;
+  
+  my $migration = $self->get_migration;
+  
+  if (ref($migration) &&
+      reftype($migration) eq 'HASH' &&
+      (values %$migration > 0) ) {
+    return scalar(values %$migration);
+  }
+  else {
+    return 0;
+  }
+}
+
+=pod
+
+=head2 execute
+
+ execute()
+
+=cut
+
+sub execute {
+  my $self = shift;
+  
+  my $dbi = $self->get_model->get_dbi;
+  my $migration = $self->get_migration;
+  
+  my @sql_statements;
+
+  if ( $self->should_migrate() ) {
+    @sql_statements = values %$migration;
+    
+    unless ( $self->get_dry_run ) {
+      eval {
+	foreach (@sql_statements) {
+	  $dbi->do($_);
+	}
+      };
+      
+      if ($@) {
+	$dbi->rollback;
+	die "$@";
+      }
+      else {
+	$dbi->commit;
+      }
+    }
+  }
+  
+  return \@sql_statements;
+}
+
+=pod
+
+=head2 rename_field
+
+ rename_field(old-field, new-field)
+
+Renaming a field can be done as an atomic operation or after you have
+altered the model definition and instantiated a migration object.
+
+ my $migration = new Bedrock::Model::Migration({ model => $model });
+
+
+=cut
+
+sub rename_field {
+  my $self = shift;
+  
+  my ($old_field, $new_field) = @_;
+  my $current_model = $self->get_model->fetch_model;
+  
+  die "no column '$old_field' exists\n"
+    unless $current_model->{$old_field};
+
+  die "column with that name exists\n"
+    if $current_model->{$new_field};
+  
+  my $migration = $self->get_migration || {};
+
+  my $field = $self->get_model->get_model->{$old_field};
+  
+  unless ( $field ) {
+    $field = $self->get_model->get_model->{$new_field};
+
+    die "no field named '$old_field' or '$new_field' in model\n"
+      unless $field;
+  }
+  else {
+    $field->{field} = $new_field;
+  }
+  
+  $migration->{$old_field} = sprintf("alter table %s change %s %s",
+				     $self->get_model->get_table, $old_field, $field->as_string);
+  
+  delete $migration->{$new_field};
+  
+  $self->set_migration($migration);
+  
+  $self;
+}
+
+  
+1;

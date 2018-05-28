@@ -20,6 +20,8 @@ perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 
+perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
+perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
@@ -47,24 +49,25 @@ perl5lib_DATA = \
     bedrock_handler_common.pm
 
 perl5bedrocklib_DATA = \
-    Bedrock/BedrockConfig.pm \
-    Bedrock/Context.pm \
-    Bedrock/BedrockCGI.pm \
-    Bedrock/VERSION.pm \
-    Bedrock/XML.pm \
     Bedrock/Array.pm \
+    Bedrock/BedrockCGI.pm \
+    Bedrock/BedrockConfig.pm \
+    Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
+    Bedrock/Context.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
-    Bedrock/BedrockJSON.pm \
     Bedrock/Log.pm \
+    Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
-    Bedrock/Template.pm
+    Bedrock/Template.pm \
+    Bedrock/VERSION.pm \
+    Bedrock/XML.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
 
@@ -212,14 +215,29 @@ perl5bedrockxmlcontainerlib_DATA = \
 
 BEDROCK_XML_CONTAINER=$(perl5bedrockxmlcontainerlib_DATA:.pm=.pm.in)
 
-# Plugins
-# -------
+# Bedrock Model
+# -------------
 
 perl5blmindexedtablehandlerlib_DATA = \
     BLM/IndexedTableHandler/RecordSet.pm \
     BLM/IndexedTableHandler/Common.pm
 
 BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
+
+perl5bedrockmodellib_DATA = \
+    Bedrock/Model/Field.pm \
+    Bedrock/Model/Migration.pm \
+    Bedrock/Model/Role.pm
+
+BEDROCK_MODEL=$(perl5bedrockmodellib_DATA:.pm=.pm.in)
+
+perl5bedrockmodelserializerlib_DATA = \
+    Bedrock/Model/Serializer/MySQL.pm
+
+BEDROCK_MODEL_SERIALIZER=$(perl5bedrockmodelserializerlib_DATA:.pm=.pm.in)
+
+# Plugins
+# -------
 
 perl5blmlib_DATA = \
     BLM/Awk.pm \
@@ -266,6 +284,8 @@ PERL_PM = \
     $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
+    $(BEDROCK_MODEL) \
+    $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \

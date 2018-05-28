@@ -1,0 +1,244 @@
+package Bedrock::Model;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use parent qw/Class::Accessor::Fast/;
+
+use Scalar::Util qw/reftype blessed/;
+use Data::Dumper;
+
+use Bedrock::Model::Serializer::MySQL;
+use Bedrock::Model::Migration;
+  
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine/);
+
+sub new {
+  my $class = shift;
+  $class = ref($class) || $class;
+  
+  my $args = ref($_[0]) ? $_[0] : { @_ };
+  $args->{engine} = 'MySQL' || $args->{engine};
+
+  my $self = $class->SUPER::new($args);
+
+  my $serializer = 'Bedrock::Model::Serializer::' . $args->{engine};
+  
+  $self->set_serializer($serializer->new({ dbi => $self->get_dbi(), table => $self->get_table()}));
+  
+  $self;
+}
+
+sub describe_table {
+  shift->get_serializer->describe_table(@_);
+}
+
+sub model_as_string {
+  shift->get_serializer->as_string(@_);
+}
+
+
+=pod
+
+=head1 NAME
+
+C<Bedrock::Model>
+
+=head1 SYNOPSIS
+                  
+
+ my $model = new Bedrock::Model({ dbi => $dbi, table => $table, model => $model_specs});
+
+ $model->create_table();
+
+ # migrate table (apply changes)
+ my $changes = $model->migrate(dry_run => 1);
+
+=head1 DESCRIPTION
+
+Class for creating/modifying MySQL tables.
+
+=head1 METHODS
+
+=head2 create_table
+
+ create_table()
+
+=cut
+
+sub create_table {
+  my $self = shift;
+  my %args = @_;
+
+  my $table = $args{table} ||
+    $self->check_table();
+  
+  my $model = $args{model} ||
+    $self->check_model();
+  
+  my $dbi = $args{dbi} ||
+    $self->check_dbi();
+  
+  my $dry_run = $args{dry_run} ||
+    ref($self) ? $self->get_dry_run() : undef;
+  
+  return _create_table( model => $model, dry_run => $dry_run, table => $table, dbi => $dbi);
+}
+
+=pod
+
+=head2 create
+
+ $model->create();
+
+ Foo::Bar::create($dbi);
+
+Create the model.
+
+=cut
+
+sub create {
+  my $self = shift;
+  my $class = ref($self) || $self;
+  
+  my $dbi = shift;
+  
+  my $model = $class->_model;
+  
+  unless (ref($model) && (reftype($model) eq 'ARRAY') && @{$model}) {
+    die "$class must provide a MODEL\n";
+  }
+  
+  my $table = $class->_table_name;
+  
+  die "could not determine table name from $class\n"
+    unless $table;
+  
+  my $stmnt = eval {
+    $self->create_table(dbi => $dbi, table => $table, model => $model);
+  };
+  
+  die "error creating table: $table\n$@"
+    if $@;
+  
+  return $table;
+}
+
+sub _create_table {
+  my %args = @_;
+  
+  my @column_defs = map { $_->as_string } values %{$args{model}}; 
+  my $create_statement = sprintf("create table %s (\n    %s\n)\n", $args{table}, join(",\n    ", @column_defs));
+  
+  unless ($args{dry_run}) {
+    eval {
+      $args{dbi}->do($create_statement);
+    };
+    
+    if ( $@ ) {
+      die "$create_statement\n$@";
+    }
+  }
+  
+  return $create_statement;
+}
+
+sub check_dbi {
+  my $self = shift;
+  
+  my $dbi = blessed($self) ? $self->get_dbi() : undef;
+
+  die "no database handler set\n"
+    unless $dbi;
+
+  $dbi;
+}
+
+sub check_table {
+  my $self = shift;
+  
+  my $table = ref($self) ? $self->get_table() : undef;
+
+  die "no table set\n"
+    unless $table;
+
+  $table;
+}
+
+sub check_model {
+  my $self = shift;
+  
+  my $model = ref($self) ? $self->get_model() : undef;
+
+  die "no model available\n"
+    unless ref($model) && reftype($model) eq 'HASH' && %{$model};
+
+  $model;
+}
+
+# returns a Bedrock::Model::Migration object (dry_run)
+sub verify_model {
+  my $self = shift;
+  my $dbi = shift || $self->get_dbi;
+    
+  Bedrock::Model::Migration->new({ model => $self, dry_run => 1});
+}
+
+# returns a Bedrock::Model::Migration object (ready to run)
+sub migrate_model {
+  my $self = shift;
+  my $dbi = shift || $self->get_dbi;
+
+  Bedrock::Model::Migration->new({ model => $self});
+}
+
+sub fetch_model {
+  shift->get_serializer->fetch_model;
+}
+
+sub rename_field {
+  my $self = shift;
+
+  Bedrock::Model::Migration->new({ model => $self })->rename_field(@_)->execute();
+
+  return $self;
+}
+
+sub add_field {
+  my $self = shift;
+  my %args = @_;
+
+  my $model = $self->get_model;
+
+  my $field = new Bedrock::Model::Field(\%args);
+  
+  die "field $args{field} exists\n"
+    if defined $model->{$args{field}};
+
+  $model->{$args{field}} = $field;
+  
+  return $model;
+}
+
+1;
