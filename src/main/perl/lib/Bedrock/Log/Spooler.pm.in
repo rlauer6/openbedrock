@@ -1,0 +1,160 @@
+package Bedrock::Log::Spooler;
+
+use base qw/Class::Singleton/;
+
+use Data::Dumper;
+
+use Redis;
+
+use JSON -convert_blessed_universally;
+
+=pod
+
+=head1 NAME
+
+C<Bedrock::Log::Spooler>
+
+=head1 SYNOPSIS
+
+ my $spooler = new Bedrock::Log::Spooler;
+ $spooler->publish("some message...", key => value, ...);
+
+=head1 DESCRIPTION
+
+Singleton class for spooling logging information to a Redis channel.
+Suppose you want to aggregate logs from several servers or provide
+addtional information that could "potentially" be captured from your
+application.
+
+C<Bedrock::Log::Spooler> can help you publish information to a Redis
+channel by adding a call to the C<publish()> method at various points
+in your logger or application.  Then, use a subscriber to receive,
+filter and capture the published events.
+
+   my $redis = new Redis(server => 'localhost:6379');
+
+   $redis->psubscribe('foo*', sub { print Dumper [@_] });
+
+   $redis->wait_for_messages(10) while $keep_going;
+
+=cut
+
+sub _new_instance {
+  my $class = shift;
+  
+  $self = ref(${_[0]}) ? shift : { @_ };
+  
+  bless $self, $class;
+   
+  $self->channel('bedrock/log')
+    unless $self->channel;
+
+  $self->server('localhost')
+    unless $self->server;
+  
+  $self->port('6379')
+    unless $self->port;
+  
+  my $redis_client = Redis->new(server => sprintf("%s:%s", $self->server, $self->port))
+    || die "Cannot connect to Redis $server:$port";
+
+  $self->redis_client($redis_client);
+  
+  return $self;
+}
+
+
+sub _set_get {
+  my $key = shift;
+  if (@_ > 1) {
+    $_[0]->{$key} = $_[1];
+  }
+  else {
+    shift->{$key};
+  }
+}
+
+=pod
+
+=head2 redis_client
+
+Set or get the Redis client handle.
+
+=cut
+
+sub redis_client { unshift @_, 'redis_client'; goto &_set_get; }
+
+=pod
+
+=head2 publish_env
+
+Set or get an indicator that determines if C<%ENV> should be published
+to channel. You may not want to publish C<%ENV> if it contains
+sensitive information.
+
+ $spooler->publish_env(1);
+
+=cut
+
+sub publish_env { unshift @_, 'publish_env'; goto &_set_get; }
+
+=pod
+
+=head2 channel
+
+=cut
+
+sub channel { unshift @_, 'channel'; goto &_set_get; }
+
+=pod
+
+=head2 server
+
+=cut
+
+sub server { unshift @_, 'server'; goto &_set_get; }
+
+=pod
+
+=head2 port
+
+=cut
+
+sub port { unshift @_, 'port'; goto &_set_get; }
+
+=pod
+
+=head2 publish
+
+ publish(array-ref, key => value, ...)
+
+Publish a message and addition information to a Redis channel.
+
+=cut
+
+sub publish {
+  my $self = shift;
+  my $log_message = shift;
+  my %details = @_;
+
+  my %payload = (%details,
+		 $self->publish_env ? (env => to_json(\%ENV, {allow_blessed => 1, convert_blessed => 1})) : (),
+		 time     => time,
+		 message  => join('', @$log_message)
+		);
+  
+  my $channel = $payload{channel}
+    || $self->channel;
+
+  $self->redis_client->publish($channel, to_json(\%payload,{allow_blessed => 1, convert_blessed => 1}));
+}
+
+=pod
+
+=head AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
+
+1;

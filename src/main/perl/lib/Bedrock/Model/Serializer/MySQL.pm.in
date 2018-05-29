@@ -1,0 +1,113 @@
+package Bedrock::Model::Serializer::MySQL;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use parent qw/Class::Accessor::Fast/;
+
+__PACKAGE__->follow_best_practice();
+__PACKAGE__->mk_accessors(qw/dbi table/);
+
+use Bedrock::Model::Field;
+
+use Data::Dumper;
+use Scalar::Util qw/reftype/;
+
+=head2 describe_table
+
+ describe_table( dbi, table-name );
+
+Returns a hash containing a hash of Bedrock::Model::Field objects.
+Keys are the names of the columns in the table.
+
+See L<Bedrock::Model::Field>
+
+=cut
+
+sub describe_table {
+  my $self = shift;
+  my $dbi = shift || $self->get_dbi;
+  my $table = shift || $self->get_table;
+
+  my $sth = $dbi->prepare("describe $table");
+  $sth->execute;
+
+  my %table_def;
+  
+  while (my $r = $sth->fetchrow_hashref ) {
+    $table_def{$r->{Field}} = new Bedrock::Model::Field( { map { lc($_), $r->{$_ }; } keys %$r });
+  }
+  
+  return \%table_def;
+}
+
+=pod
+
+=head2 as_string
+
+ as_string( [table => table-name] ); 
+
+Creates a serialized array representation of column definitions
+from an existing MySQL table.
+
+  print $model_serializer->as_string(table => 'contact');
+
+=cut
+
+sub as_string {
+  my $self = shift;
+  my $model = shift || $self->fetch_model();
+
+  my $model_as_string = "our \$MODEL = new Bedrock::Hash(\n%s\n);";
+  
+  my $field_template = "%s => new Bedrock::Model::Field({\n%s\n})";
+  
+  chomp $field_template;
+  
+  my @columns;
+  
+  foreach my $field (values %{$model}) {
+    $field->set_null(defined $field->get_null() ? lc($field->get_null()) : 'yes');
+    $field->set_key(defined $field->get_key() ? lc($field->get_key()) : undef);
+    my @column_defs;
+    
+    push @column_defs, sprintf(" field => '%s'", $field->get_field);
+    push @column_defs, sprintf(" type => '%s'", $field->get_type());
+    push @column_defs, sprintf(" null => '%s'", $field->get_null());
+    push @column_defs, sprintf(" extra => '%s'", $field->get_extra) if $field->get_extra;
+    push @column_defs, sprintf(" key => '%s'", $field->get_key) if $field->get_key;
+    push @column_defs, sprintf(" default => '%s'", $field) if $field->get_default;
+    
+    push @columns, sprintf($field_template,
+			   $field->get_field,
+			   join(",\n", @column_defs));
+  }
+
+  return sprintf($model_as_string, join(",\n\n", @columns));
+}
+
+sub fetch_model {
+  shift->describe_table;
+}
+
+1;

@@ -1,6 +1,5 @@
 #!@PERL@
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -29,13 +28,14 @@ use warnings;
 BEGIN {
   use Exporter ();
   @Bedrock::Context::ISA = qw (Exporter);
+  push @INC, "@perl5_pkglibdir@/Bedrock";
 }
 
-use Bedrock;
 use Bedrock::BedrockConfig;
 use Bedrock::Log;
 use Bedrock::Dump;
 use Bedrock::Array;
+
 use Text::URLEncode;
 
 use Carp;
@@ -123,8 +123,7 @@ sub upload_file {
     $options = { @_ };
   }
 
-  &LOG_MESSAGE( MSG_DEBUG,
-                "upload_file options: " . Bedrock::Dump::compact($options) );
+  &LOG_MESSAGE( MSG_DEBUG, "upload_file options: " . Bedrock::Dump::compact($options) );
 
   my $upload_content_type = $self->cgi->uploadInfo($fh)->{'Content-Type'};
 
@@ -137,12 +136,10 @@ sub upload_file {
 
     &LOG_MESSAGE(MSG_DEBUG, sprintf( "upload_file acceptable content-types: %s", join( ",", @content_types )));
 
-    die sprintf(
-          "upload_file content_type error: uploading (%s), must be one of (%s)",
-          $self->cgi->uploadInfo($fh)->{'Content-Type'},
-          join( ",", @content_types ) )
-    unless grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'} }
-      @content_types;
+    die sprintf( "upload_file content_type error: uploading (%s), must be one of (%s)",
+		 $self->cgi->uploadInfo($fh)->{'Content-Type'},
+		 join( ",", @content_types ) )
+      unless grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'} } @content_types;
   }
 
   # if the file came from a WinDoze machine...set the parsing appropriately
@@ -169,10 +166,9 @@ sub upload_file {
   $upload_filename = $options->{filename} || ( $name . $ext );
 
   my $uploaded_file = sprintf( "%s/%s", $upload_path, $upload_filename );
-  &LOG_MESSAGE( MSG_INFO,
-        sprintf( "upload_file processing: file => [%s], content-type => [%s]\n",
-                 $uploaded_file, $self->cgi->uploadInfo($fh)->{'Content-Type'}
-               )
+  &LOG_MESSAGE( MSG_INFO, sprintf( "upload_file processing: file => [%s], content-type => [%s]\n",
+				   $uploaded_file, $self->cgi->uploadInfo($fh)->{'Content-Type'}
+				 )
               );
 
   my $buffer;
@@ -191,7 +187,7 @@ sub upload_file {
   if ( $options->{passkey} ) {
     $options->{'cipher'} = $options->{'cipher'} || 'DES';
     $cipher = Crypt::CBC->new( -cipher => $options->{cipher},
-				  -key => $options->{passkey}
+			       -key => $options->{passkey}
 			     );
 
     $cipher->start('encrypting');
@@ -349,7 +345,7 @@ sub new {
 
   die "$class->new(): APACHE_HANDLER parameter must be specified."
     unless $args{'APACHE_HANDLER'};
-
+  
   my $self = bless {}, $class;
 
   my $config;
@@ -361,25 +357,38 @@ sub new {
     $config = $self->config( Bedrock::Config->new( $args{'CONFIG_FILE'} ) );
   }
 
+  # FIXME: we need to replace the notion of "APACHE_HANDLER" in favor
+  # or the request object and detangle code from knowing about
+  # upstream HTTP request initiators...i.e. could be Apache, Nginx, etc
+  $self->request($args{'APACHE_HANDLE'});
   $self->apache_handler( $args{'APACHE_HANDLER'} );
 
+  # ditto for response...
   if ( $args{'OUTPUT_HANDLER'} ) {
     $self->output_handler($args{'OUTPUT_HANDLER'});
+    $self->response($args{'OUTPUT_HANLDER'});
   }
   else {
     $self->output_handler( $args{'APACHE_HANDLER'} );
+    $self->response($self->request);
   }
 
+  # At some point it was decided not to use the Apache error_log to
+  # log message, so where should Bedrock startup messages being going?
+  #
   # This logger records all non-page events...primarily used for
   # starting up Bedrock. Once a page is being processed, Bedrock uses
   # the TagX::Log module.
-  
-  &Bedrock::Log::StartLogger(
-			     LOGDIR     => $config->{'LOGDIR'},
-			     LOGLEVEL   => $config->{'LOGLEVEL'},
-			     LOGFORMAT  => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
-			     LOGFILE    => $config->{'LOGFILE'} || 'bedrock.log'
-			    );
+
+  eval {
+    &Bedrock::Log::StartLogger(
+			       LOGDIR     => $config->{'LOGDIR'},
+			       LOGLEVEL   => $config->{'LOGLEVEL'},
+			       LOGFORMAT  => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
+			       LOGFILE    => $config->{'LOGFILE'} || 'bedrock.log'
+			      );
+  };
+
   $self;
 }
 
@@ -662,6 +671,14 @@ sub output_vars {
   _set( @_, 'output_vars');
 }
 
+sub request {
+  _set(@_, '_request');
+}
+
+sub response {
+  _set(@_, '_response');
+}
+
 # deprecated
 sub set_header {
   _set(@_, 'HEADER');
@@ -684,6 +701,7 @@ sub _set {
   $self->{$key};
 }
 
+
 =pod
 
 =head1 AUTHOR
@@ -693,173 +711,5 @@ J. Sridhar
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-#
-# Revision 1.28  2013/11/05 15:48:44  rlauer
-# - added a lot of pod
-# - added setters/getters to prevent direct access to objects CONFIG, INPUT, SESSION, HEADER
-#
-# Revision 1.27  2013/05/10 15:53:27  rlauer
-# - use Bedrock, use Text::URLEncode in order to avoid duplicate symbol warnings (encode, etc)
-#
-# Revision 1.26  2012/12/11 20:34:40  rlauer
-# - create paths for upload if the do not exist and check if writable
-#
-# Revision 1.25  2012/02/24 19:14:33  eutl420
-# - removed deprecated methods args(), content()
-# - set LOGFORMAT to default value
-#
-# Revision 1.24  2012/02/15 20:03:56  eutl420
-# - encrypt files before writing to disk using Crypt::CBC
-#
-# Revision 1.23  2011/12/28 17:17:19  eutl420
-# - remove supurious warning message
-#
-# Revision 1.22  2011/11/16 14:34:50  eutl420
-# - added methods set_header(), header(), and setCookieValue().  The header object should be set in the Bedrock
-#   handler startup code when it instantiates the header object.
-#
-# Revision 1.21  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.20  2011/09/14 18:51:52  eutl420
-# - support added for maxsize option to upload_file() method that restricts the size of files that can be uploaded
-#
-# Revision 1.19  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.18  2011/07/15 15:30:25  laytonax
-# Minor changes to Startup/Header.pm and Bedrock/Context.pm, both of which were exposed when the application stack has multiple Cookie: headers (as is the case when sitting behind an application pool such as an F5 or Varnish).
-#
-# Revision 1.17  2011/07/04 13:40:07  eutl420
-# - add content-type to the stat object returned in the upload_file call
-#
-# Revision 1.16  2011/03/02 10:25:27  eutl420
-# - bugzilla #4499 upload_file, use fileparse_set_fstype
-#
-# Revision 1.15  2010/12/18 16:27:28  eutl420
-# indents
-#
-# Revision 1.14  2010/12/12 17:16:07  eutl420
-# - remove use of Data::Dumper
-# - use Bedrock::Text::URLEncode
-#
-# Revision 1.13  2010/11/29 15:57:52  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.12  2010/11/20 04:09:30  rlauer
-# - add client filename to info hash
-#
-# Revision 1.11  2010/06/24 21:36:25  rlauer
-# rename the Bedrock/Config.pm file to Bedrock/BedrockConfig.pm to avoid Config.pm conflict
-#
-# Revision 1.10  2009/12/30 12:47:04  rlauer
-# - CGI.pm module treats multiply named CGI vars from an HTML form by
-#   separating the with "\0" if you use the Vars() method to retrieve
-#   a hash of the values. That's pretty horrible, and would require some
-#   fixup for compatibility with Bedrock I.
-#
-#   Therefore, we'll use the more straight forward approach of getting the
-#   var names using param() and then iterating through the list, gettting the
-#   values of each HTML form var.  In this case, param(name) "does the right
-#   thing" by returning an array for multiply named CGI vars.
-#
-# Revision 1.9  2009/12/28 20:31:34  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.8  2009/12/26 15:38:40  rlauer
-# use CGI for parsing GET/POST data, added upload_file method, args(), content() deprecated
-#
-# Revision 1.7  2009/12/23 12:26:04  rlauer
-# beefed up upload_file
-#
-# Revision 1.6  2009/12/23 00:46:04  rlauer
-# experimental use of CGI, upload method
-#
-# Revision 1.5  2009/01/13 20:02:48  rlauer
-# - modified cgi_header_out/in for Apache2
-#
-# Revision 1.4  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.3  2008/02/28 18:14:37  rlauer
-# Applying Rob's patches to make Bedrock work on Apache 2.x
-# (plus a few other obvious bug fixes).
-#
-# Revision 1.2  2001/02/14 15:35:42  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.1  2000/12/18 17:59:39  sridhar
-# 1. Moved Bedrock/SIS/Base.pm to Bedrock/Context.pm
-# 2. Added options OUTPUT_HANDLER to constructor to use for in `print()'
-#
-# Revision 1.4  2000/12/12 20:18:50  sridhar
-# 1. New version integrates SIS::Base and SIS::Base::Apache
-# 2. No longer need to use SIS::InputSource since APACHE_HANDLER must be
-# specified as an argument to constructor.
-# 3. Creates log file named bedrock.log for both CGI and mod_perl
-# versions
-# 4. Threw out template junk
-#
-# Revision 1.3  2000/12/08 20:04:17  sridhar
-# Added methods `getOutputValue()' and `setOutputValue()'
-#
-# Revision 1.2  2000/11/07 13:54:45  sridhar
-# 1. Can pass a config object instead of a config file to the
-# constructor
-# 2. Kicked out use of IO::Handle object for output. Directly using
-# `*STDOUT' for this purpose.
-#
-# Revision 1.1  2000/09/18 14:20:26  sridhar
-# Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
-#
-# Revision 1.10  2000/08/23 17:29:44  sridhar
-# Added (empty) method cgi_header_in() which (purportedly) returns a
-# hash or hash ref of header fields.
-#
-# Revision 1.9  2000/07/18 19:26:50  sridhar
-# Closing STDOUT too in object method close().
-#
-# Revision 1.8  2000/07/17 13:57:57  sridhar
-# 1. Some cleanup -- removed code not used by any modules.
-# 2. Added a close() method for use when CGI wants to close browser
-# connection and go off to do something else.
-# 3. more comments
-#
-# Revision 1.7  2000/07/06 18:32:02  sridhar
-# 1. new() creates an output handle from STDOUT
-# 2. Added methods print(), cgi_header_out() and send_http_header() to
-# mirror mod_perl environment
-#
-# Revision 1.6  2000/06/26 13:53:39  sridhar
-# Decoding cookies
-#
-# Revision 1.5  2000/06/09 17:49:46  sridhar
-# 1. Removed _locate_cfg() since same service provided by SIS::Config
-# 2. Removed default CONFIG_PATH. Must be set outside now.
-# 3. Added some comments
-#
-# Revision 1.4  2000/06/07 18:34:15  sridhar
-# Using config object directly as a hash
-#
-# Revision 1.3  2000/05/24 13:49:27  sridhar
-# 1. Support concept of CONFIG_PATH, a set of colon-separated
-# directories where the config file is searched, if the config file is a
-# filename without path info. CONFIG_PATH can be set in the environment,
-# failing which a default value is used
-# 2. The default config file for the class is `sis.cfg' (was `base.cfg'
-# earlier)
-# 3. XHTML_PATH is treated as a colon-separated list of directories in
-# which to look for the template file
-# 4. Added a method `getTemplate' for getting the full pathname of a
-# template file.
-#
-# Revision 1.2  2000/05/08 12:57:46  sridhar
-# Added method for getting cookies.
-#
-# Revision 1.1  2000/02/04 16:18:17  sridhar
-# Added SIS::Base -- the base class of all CGI classes.
-#
-#
 
 1;

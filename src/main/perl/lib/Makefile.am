@@ -1,6 +1,13 @@
 # -*-Makefile-*-
 PERL = @PERL@
 
+check_SCRIPTS = prove.sh
+
+TESTS = $(check_SCRIPTS)
+
+TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
+              $(top_srcdir)/autotools/tap-driver.sh
+
 BEDROCK_RELEASE = @BEDROCK_RELEASE@
 
 perl5libdir = @PERL_LIBDIR@
@@ -8,10 +15,14 @@ perl5libdir = @PERL_LIBDIR@
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
-perl5bedrockinputsourcelibdir          	  = $(perl5libdir)/Bedrock/InputSource
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
+perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
+
+perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
+perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
+perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
 perl5bedrocktexttagxtaglibdir  		  = $(perl5libdir)/Bedrock/Text/TagX/TAG
@@ -24,43 +35,48 @@ perl5bedrockserializerlibdir         	  = $(perl5libdir)/Bedrock/Serializer
 perl5bedrockxmllibdir			  = $(perl5libdir)/Bedrock/XML
 perl5bedrockxmlcontainerlibdir 		  = $(perl5libdir)/Bedrock/XML/Container
 
-perl5blmlibdir                    = $(perl5libdir)/BLM
-perl5blmfilterlibdir              = $(perl5libdir)/BLM/Filter
-perl5blmindexedtablehandlerlibdir = $(perl5libdir)/BLM/IndexedTableHandler
-perl5blmstartuplibdir 	          = $(perl5libdir)/BLM/Startup
-perl5blmstartupsessionlibdir      = $(perl5libdir)/BLM/Startup/Session
+perl5blmlibdir                           = $(perl5libdir)/BLM
+perl5blmfilterlibdir                     = $(perl5libdir)/BLM/Filter
+perl5blmindexedtablehandlerlibdir        = $(perl5libdir)/BLM/IndexedTableHandler
+perl5blmstartuplibdir 	                 = $(perl5libdir)/BLM/Startup
+perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 
-perl5testlibdir                   = $(perl5libdir)/Test
-perl5testlib_DATA = \
-    Test/Bedrock.pm
-
-TEST_BEDROCK=$(perl5testlib_DATA:.pm=.pm.in)
+perl5bedrockloglib_DATA = \
+   Bedrock/Log/Spooler.pm
 
 perl5lib_DATA = \
     Bedrock.pm \
     bedrock_handler_common.pm
 
 perl5bedrocklib_DATA = \
-    Bedrock/BedrockConfig.pm \
-    Bedrock/Context.pm \
-    Bedrock/BedrockCGI.pm \
-    Bedrock/VERSION.pm \
-    Bedrock/XML.pm \
     Bedrock/Array.pm \
+    Bedrock/BedrockCGI.pm \
+    Bedrock/BedrockConfig.pm \
+    Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
+    Bedrock/Context.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
-    Bedrock/InputSource.pm \
-    Bedrock/BedrockJSON.pm \
     Bedrock/Log.pm \
+    Bedrock/Model.pm \
+    Bedrock/Object.pm \
     Bedrock/Plugin.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
-    Bedrock/Template.pm
+    Bedrock/Template.pm \
+    Bedrock/VERSION.pm \
+    Bedrock/XML.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
+
+perl5bedrocktemplatelib_DATA = \
+    Bedrock/Template/Email.pm
+
+BEDROCK_TEMPLATE=$(perl5bedrocktemplatelib_DATA:.pm=.pm.in)
+
+BEDROCK_LOG=$(perl5bedrockloglib_DATA:.pm=.pm.in)
 
 perl5bedrockapplicationlib_DATA = \
     Bedrock/Application/Plugin.pm
@@ -82,11 +98,6 @@ BEDROCK_APACHE = \
     Bedrock/Apache/BedrockDocs.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in
 
-perl5bedrockcontextlib_DATA = \
-    Bedrock/Context/Shell.pm
-
-BEDROCK_CONTEXT=$(perl5bedrockcontextlib_DATA:.pm=.pm.in)
-
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
 
@@ -98,11 +109,6 @@ perl5blmfilterlib_DATA = \
     BLM/Filter/xls.pm
 
 BEDROCK_FILTER=$(perl5blmfilterlib_DATA:.pm=.pm.in)
-
-perl5bedrockinputsourcelib_DATA = \
-    Bedrock/InputSource/Term.pm
-
-BEDROCK_INPUTSOURCE=$(perl5bedrockinputsourcelib_DATA:.pm=.pm.in)
 
 perl5bedrocktextlib_DATA = \
     Bedrock/Text/TagX.pm \
@@ -209,14 +215,29 @@ perl5bedrockxmlcontainerlib_DATA = \
 
 BEDROCK_XML_CONTAINER=$(perl5bedrockxmlcontainerlib_DATA:.pm=.pm.in)
 
-# Plugins
-# -------
+# Bedrock Model
+# -------------
 
 perl5blmindexedtablehandlerlib_DATA = \
     BLM/IndexedTableHandler/RecordSet.pm \
     BLM/IndexedTableHandler/Common.pm
 
 BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
+
+perl5bedrockmodellib_DATA = \
+    Bedrock/Model/Field.pm \
+    Bedrock/Model/Migration.pm \
+    Bedrock/Model/Role.pm
+
+BEDROCK_MODEL=$(perl5bedrockmodellib_DATA:.pm=.pm.in)
+
+perl5bedrockmodelserializerlib_DATA = \
+    Bedrock/Model/Serializer/MySQL.pm
+
+BEDROCK_MODEL_SERIALIZER=$(perl5bedrockmodelserializerlib_DATA:.pm=.pm.in)
+
+# Plugins
+# -------
 
 perl5blmlib_DATA = \
     BLM/Awk.pm \
@@ -260,10 +281,12 @@ PERL_PM = \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
-    $(BEDROCK_CONTEXT) \
+    $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
-    $(BEDROCK_INPUTSOURCE) \
+    $(BEDROCK_MODEL) \
+    $(BEDROCK_MODEL_SERIALIZER) \
+    $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \
     $(BEDROCK_TEXT_TAGX_TAG) \
@@ -277,8 +300,7 @@ PERL_PM = \
     $(BEDROCK_XML_CONTAINER) \
     $(BLM_INDEXEDTABLEHANDLER) \
     $(BLM) \
-    $(BLM_STARTUP) \
-    $(TEST_BEDROCK)
+    $(BLM_STARTUP)
 
 PERL_PL = \
     Bedrock/Apache/bedrock.pl \
@@ -314,5 +336,12 @@ clean-local:
 	find . -name '*.pm' -exec rm {} \;
 	rm -rf *.tdy
 
-test:
+test: Test/Bedrock.pm
 	$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t
+
+prove.sh: Test/Bedrock.pm
+	echo "$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
+	chmod 755 prove.sh
+
+CLEANFILES = \
+    prove.sh
