@@ -612,174 +612,270 @@ default is 0 which indicates "no limit".
 
 =cut
 
-sub new {
-    my $this = shift;
-    my $class = ref($this) || $this;
+sub _new_with_query {
+  my $self = shift;
+  
+  my %args = %{$_[0]};
+  
+  die "you must pass a database handle (dbi)\n"
+    unless exists $args{dbi};
 
-    my $self = bless {}, $class;
+  $self->dbi(delete $args{dbi});
+  
+  if ( exists $args{table_name} ) {
+    $self->set_table_name(delete $args{table_name});
+  }
+  else {
+    $self->set_table_name($self->_table_name);
+  }
+  
+  die "possibly not a table object\n"
+    unless $self->get_table_name;
 
-    my $dbi = shift;
+  my @bind_vars;
+  my @query;
+  
+  die "no columns to query\n"
+    unless keys %args;
+  
+  foreach my $key (keys %args) {
+    my $column = $key;
     
-    my $id;
-    my $config;
-    my $table_name;
-    my $max_rows;
-
-    # new(id, config)
-    # new(id, table-name)
-    # new(id, config, table-name)
-    unless ( ref($_[0]) ) {
-      if ( @_ == 2 ) {
-	if ( ref($_[1]) ) {
-	  ($id, $config) = @_;
-	}
-	else {
-	  ($id, $table_name) = @_;
-	}
-      }
+    # '!foo' => 1, e.g.
+    # '!foo' => undef  (is not null)
+    my $isnt;
+    $isnt = $column =~/^\s*!/;
+    $column =~s/\!//;
+    
+    if ( defined $args{$key} ) {
+      push @bind_vars, $args{$key};
+      push @query, sprintf("%s %s ?", $column, $isnt ? '<>' : '=', $args{$key});
+    }
       else {
-	($id, $config, $table_name) = @_;
+	push @query, sprintf("%s is %s null", $column, $isnt ? "not" : "");
       }
-    }
-    # new( dbi, hash-ref )
-    else {
-      my $opts = shift;
-      ($id, $config, $table_name, $max_rows) = @{$opts}{qw/id config table_name max_rows/};
-      $self->lock( $opts->{lock} );
-    }
+  }
+  
+  my $filter = sprintf("select id from %s where %s", $self->get_table_name, join(" and ", @query)); 
+  
+  my $sth = $self->dbi->prepare($filter);
+  
+  $sth->execute(@bind_vars);
+    my $ref = $sth->fetchrow_hashref;
+  
+  return $ref->{id} ? $ref->{id} : 0;
+}
 
-    if ( $id ) {
-      die "id must be integer, not [$id]\n"
-	unless $id =~/^\d+$/;
-    }
+sub _new_with_options {
+  my $self = shift;
+  my $opts = shift;
 
-    if ( ref($dbi) ) {
-      unless ( ref($dbi) =~/DBI/ ) {
-	my $ref = $dbi;
+  my ($id, $config, $table_name, $max_rows) = @{$opts}{qw/id config table_name max_rows/};
 
-	$dbi = $ref->{dbi};
-	die "usage: BLM::IndexedTableHandler->new( dbi, ...)\n"
-	  unless $dbi && ref($dbi) =~/DBI/;
+  $self->{_config} = $config;
+  $self->{_table} = $table_name;
+  $self->max_rows($max_rows);
 
-	($id, $config, $table_name) = @{$ref}{qw/id config table_name/};
-      }
-    }
-    
+  $self->lock( $opts->{lock} );
+
+  return $id ? $id : 0;
+}
+
+sub _new_with_id {
+  my $self = shift;
+  
+  my @args = @_;
+  my $id;
+
+  # new(dbi, id, config)  <>  ref, scalar, ref
+  # new(dbi, id, table-name) <>  ref, scalar, scalar
+  # new(dbi, id, config, table-name) <> ref, scalar, ref, scalar
+  if ( @args == 2 && ref($_[1]) ) {
+    $id = shift;
+    $self->{_config} = shift;
+  }
+  elsif ( @args == 2 ) {
+    $id = shift;
+    $self->{_table} = shift;
+  }
+  else {
+    $id = shift;
+    $self->{_config} = shift;
+    $self->{_table} = shift;
+  }
+  
+  return $id ? $id : 0;
+}
+
+sub dbi {
+  my $self = shift;
+
+  if ( @_ ) {
+    my $dbi = shift;
+  
+    die "[$dbi] not a DBI object\n"
+      unless ref($dbi) && ref($dbi) =~/DBI::db/;
+
     die "BLM::IndexedTableHandler currently only supports MySQL tables.\n"
       unless $dbi->get_info(17) =~/mysql/i;
     
-    if ( ref($this) ) {
-      $table_name = $this->get_table_name();
-    }
-    
-    if ( ! $table_name ) {
-      if ( $class =~/^(.*)::(.*?)(=.*)?$/ ) {
-	$table_name = lc($2);
-      }
-    }
-    
-    die "Unable to determine table name."
-      unless $table_name;
-
-    # validate config object
-    unless ( ref($config) && $config->{tables} ) {
-      $config = {};
-    }
-
-    $self->{_config} = $config;
-    $self->{_table} = $table_name;
     $self->{_dbi} = $self->{_db} = $dbi;
+  }
 
-# - avoid redundant creation of data structure for each row in a list
-#   i.e. if this object is being constructed thusly:
-#
-#   $another = $me->new($dbi, $id);
-#
-#   which is done from find() for example, then we really don't want to 
-#   create whole bunch of arrays that hold the table directory, one will do nicely thanks
-#
-    unless ( ref($this) && $this->get_field_list ) {
-      my $sth = $dbi->prepare("show fields from $table_name");
-      $sth->execute;
+  return $self->{_dbi};
+}
 
-      my $fields = {};
-      my $id_found;
-      my $idx = 0;
+sub _table_name {
+  my $class = ref( $_[0] ) || $_[0];
+  
+  # probably not a good class name 'table', but we'll support it
+  $class =~ /(::)?([^:]+)$/ ? lc($2) : undef;
+}
 
-      while (my $ref = $sth->fetchrow_hashref) {
-	$ref->{idx} = ++$idx;
-	$fields->{$ref->{Field}} = $ref;
-	if (($ref->{Field} eq 'id') && 
-	    ($ref->{Key} eq 'PRI') && 
-	    ($ref->{Extra} eq 'auto_increment')) {
-	  $id_found = $ref;
-	}
-      }
+sub set_table_name { $_[0]->{_table} = $_[1] };
+sub set_config { $_[0]->{_config} = $_[1] };
 
-      die "Table must have an indexed field named [id] and it must be auto_increment!" 
-	unless $id_found;
+sub _get_table_dir {
+  my $self = shift;
 
-      $sth->finish;
+  my $table_name = $self->get_table_name;
+  
+  my $sth = $self->dbi->prepare('show fields from ' . $table_name);
+  $sth->execute;
+    
+  my $fields = {};
+  my $id_found;
+  my $idx = 0;
+  
+  while (my $ref = $sth->fetchrow_hashref) {
+    $ref->{idx} = ++$idx;
+    $fields->{$ref->{Field}} = $ref;
+    
+    if ( ($ref->{Field} eq 'id') && 
+	 ($ref->{Key} =~/pri/i) && 
+	 ($ref->{Extra} =~/auto_increment/i)) {
+      $self->{_id} = $ref;
+    }
+  }
 
-      $self->{_table_dir} = $fields;
-      $self->{_field_list} = [sort {$fields->{$a}->{idx} <=> $fields->{$b}->{idx}} keys %$fields];
+  die "Table must have an indexed field named [id] and it must be auto_increment!" 
+    unless $self->{_id};
+  
+  $sth->finish;
+  
+  $self->{_table_dir} = $fields;
+  $self->{_field_list} = [sort {$fields->{$a}->{idx} <=> $fields->{$b}->{idx}} keys %$fields];
+	
+  if ( $self->get_table_config->{$table_name}->{labels} ) {
+    $self->{_labels} = $self->get_table_config->{$table_name}->{labels};
+  }
+  
+  if ( $self->get_table_config->{$table_name}->{lists} ) {
+    $self->{_lists} = $self->{_config}->{tables}->{$table_name}->{lists};
+  }
+  
+  if ( $self->get_table_config->{$table_name}->{attributes}) {
+    $self->{_attributes} = $self->get_table_config->{$table_name}->{attributes};
+  }
+  
+  if ( $self->get_table_config->{$table_name}->{search_fields} ) {
+    $self->{_search_fields} = [];
+    
+    foreach ( @{$self->get_table_config->{$table_name}->{search_fields}} ) {
+      push @{$self->{_search_fields}}, $_->{exact};
+      push @{$self->{_search_fields}}, $_->{field};
+    }
+  }
 
-      if ( $self->get_table_config->{$table_name}->{labels} ) {
-	$self->{_labels} = $self->get_table_config->{$table_name}->{labels};
-      }
+  return $self->{_table_dir};
+}
 
-      if ( $self->get_table_config->{$table_name}->{lists} ) {
-	$self->{_lists} = $self->{_config}->{tables}->{$table_name}->{lists};
-      }
 
-      if ( $self->get_table_config->{$table_name}->{attributes}) {
-	$self->{_attributes} = $self->get_table_config->{$table_name}->{attributes};
-      }
+sub new {
+  my $this = shift;
+  my $class = ref($this) || $this;
+  my @args = @_;
 
-      if ( $self->get_table_config->{$table_name}->{search_fields} ) {
-	$self->{_search_fields} = [];
+  my $self = bless {}, $class;
+  my $id;
 
-	foreach ( @{$self->get_table_config->{$table_name}->{search_fields}} ) {
-	  push @{$self->{_search_fields}}, $_->{exact};
-	  push @{$self->{_search_fields}}, $_->{field};
-	}
-      }
+  if ( ref($args[0]) && ref($args[0]) !~/DBI::db/i ) {
+    
+    $id = $self->_new_with_query(@args);
+  }
+  # new( dbi, hash-ref )
+  elsif ( ref($args[0]) && ref($args[0]) =~/DBI::db/ ) {
+    $self->dbi(shift @args);
+    if (ref($args[0]) && reftype($args[0]) eq 'HASH') {
+      $id = $self->_new_with_options(@args);
     }
     else {
-      @{$self}{keys %$this} = values %$this if $this;
-
-      foreach ( $self->get_fields() ) {
-	$self->{$_} = undef;
-      }
-      die unless $self->get_config;
+      $id = $self->_new_with_id(@args);
     }
-
-    my $dir = $self->get_table_dir;
-
-    foreach ( $self->get_fields ) {
-      if ( $dir->{$_}->{Type} eq 'timestamp') {
-	$self->set_display_only( $_ );
-      }
-    }
-
-    if ( $id ) {
-      my $query = "select * from %s where id = ? %s";
+  }
+  else {
+    die "usage: new BLM::IndexedTableHandler(...)\n";
+  }
+  
+  if ( ref($this) ) {
+    $self->set_table_name($this->get_table_name());
+  }
+  elsif ( ! $self->get_table_name ) {
+    $self->set_table_name($self->_table_name);
+  }
       
-      my $lock_mode = { 0 => '',
-			1 => 'for update',
-			2 => 'lock in share mode'
-		      }->{$self->lock || 0};
+  die "Unable to determine table name"
+    unless $self->get_table_name;
+      
+  # validate config object
+  unless ( ref($self->get_config) && $self->get_config->{tables} ) {
+    $self->set_config({});
+  }
+  
+  # - avoid redundant creation of data structure for each row in a list
+  #   i.e. if this object is being constructed thusly:
+  #
+  #   $another = $me->new($dbi, $id);
+  #
+  #   which is done from find() for example, then we really don't want to 
+  #   create multiple arrays that hold the table directory, one will do nicely thanks
+  #
+  if ( ref($this) && $this->can('get_field_list') ) {
+    # grab all the same hidden values from the reference class instance
+    @{$self}{keys %$this} = values %$this;
 
-      my $ref = $self->select( sprintf($query, $table_name, $lock_mode), $id );
-
-      foreach (keys %$ref) {
-	$self->set($_, $ref->{$_});
-      }
+    # ...but the values of the columns in the table
+    foreach ( $self->get_fields() ) {
+      $self->{$_} = undef;
     }
-
-    $self->max_rows(defined $max_rows ? $max_rows : 0);
-
-    $self;
+  }
+      
+  $self->get_table_dir;
+      
+  foreach ( $self->get_fields ) {
+    if ( $self->get_field_type($_) eq 'timestamp') {
+      $self->set_display_only( $_ );
+    }
+  }
+      
+  if ( $id ) {
+    my $query = "select * from %s where id = ? %s";
+    
+    my $lock_mode = { 0 => '',
+		      1 => 'for update',
+		      2 => 'lock in share mode'
+		    }->{$self->lock || 0};
+    
+    my $ref = $self->select( sprintf($query, $self->get_table_name, $lock_mode), $id );
+    
+    foreach (keys %$ref) {
+      $self->{$_} = $ref->{$_};
+    }
+  }
+     
+  $self->set_upsert_mode(0); # default legacy behavior
+    
+  $self;
 }
 
 =pod
@@ -917,12 +1013,7 @@ Example:
 
 =cut
 
-sub is_null {
-  my $self = shift;
-  my $field = shift;
-
-  return ! defined $self->{$field};
-}
+sub is_null { ! defined $_[0]->{$_[1]}; }
 
 =pod
 
@@ -934,12 +1025,7 @@ Returns true if C<name> is a column in the table.  Returns false if it is not.
 
 =cut
 
-sub is_field {
-  my $self = shift;
-  my $field = shift;
-
-  return exists $self->get_table_dir->{$field};
-}
+sub is_field { exists $_[0]->{_table_dir}->{$_[1]}; }
 
 =pod
 
@@ -1089,7 +1175,6 @@ sub init_config {
   return $self->get_config;
 }
 
-
 sub keys {
   $_[0]->fields();
 }
@@ -1109,7 +1194,7 @@ sub get_table_config {
 sub get_table_dir {
   my $self = shift;
 
-  return $self->{_table_dir} || {};
+  return $self->{_table_dir} || $self->_get_table_dir;
 }
 
 sub config {
@@ -1126,11 +1211,29 @@ sub get_config {
 
 =head2 get
 
+ get(field)
+ get(field, field, ...)
+
+Returns the value of a field specified or a returns a Bedrock array of
+the set of fields requested.  This behavior is consistent with the how
+a Bedrock hash returns values.
+
 =cut
+
+sub get { 
+  my $self = shift;
+  
+  if ( @_ > 1) {
+    return Bedrock::Array->new(map { $self->_get($_) } @_);
+  }
+  else {
+    return $self->_get(shift);
+  }
+}
 
 # - Default getter method checks to see whether there is method override specified
 #   in tagx.xml
-sub get {
+sub _get {
   my ($self, $key) = @_;
 
   my $getters;
@@ -1160,13 +1263,14 @@ sub _set {
 
   my $setters = $self->get_table_config->{$self->get_table_name}->{set};
 
-  my $dir = $self->get_table_dir;
-
   while (@_) {
     $key = shift;
     $value = shift;
 
-    my $type = $dir->{$key}->{Type};
+    my $type = $self->get_field_type($key);
+
+    die "field $key does not exist in table\n"
+      unless defined $type;
 
     if ( $type =~/(date|time)/ ) {
       $value = undef
@@ -1270,35 +1374,49 @@ like this:
 =cut
 
 sub set {
-    my $self = shift;
+  my $self = shift;
 
-# - if there is only one argument to set then assume
-#   the argument is an object (typicaly $input) and we're 
-#   setting the field values from that object...
-    if (@_ == 1) {
-	my $dir = $self->get_table_dir;
-	my $ref = shift;
+  # - if there is only one argument to set then assume
+  #   the argument is an object (typicaly $input) and we're 
+  #   setting the field values from that object...
+  if (@_ == 1) {
+    my $ref = shift;
+    die "use of set() with one argument requires a hash reference\n"
+      unless ref($ref) && reftype($ref) eq 'HASH';
 
-	foreach ( $self->get_fields() ) {
-	    if (exists $ref->{$_}) {
-	      $self->_set($_, $ref->{$_});
-	    }
-# - drudge! if the field type is a 'tinyint', i.e. boolean, then this was 
-#   rendered as a checkbox.  Unfortunately, an HTML checkbox that is not checked
-#   does not manifest itself in the QUERY_STRING.  Therefore, we're going out a bit 
-#   on a limb here, but if you've asked this method to use an object to set the 
-#   field values, then most likely this is the $input object AND we'll attempt to 
-#   handle the checkbox problem for you...so if the field value is NOT in the input
-#   object AND the field type is tinyint...set the value to '0'
-	    elsif ($dir->{$_}->{Type} =~/tinyint/) {
-		$self->_set($_, 0);
-	    }
-	}
+    foreach my $f ( $self->get_fields() ) {
+      if (exists $ref->{$f}) {
+	$self->_set($f, $ref->{$f});
+      }
+      # - drudge! if the field type is a 'tinyint', i.e. boolean, then this was 
+      #   rendered as a checkbox.  Unfortunately, an HTML checkbox that is not checked
+      #   does not manifest itself in the QUERY_STRING.  Therefore, we're going out a bit 
+      #   on a limb here, but if you've asked this method to use an object to set the 
+      #   field values, then most likely this is the $input object AND we'll attempt to 
+      #   handle the checkbox problem for you...so if the field value is NOT in the input
+      #   object AND the field type is tinyint...set the value to '0'
+      elsif ($self->get_field_type($f) eq 'tinyint') {
+	$self->_set($f, 0);
+      }
     }
-    else {
-	$self->_set(@_);
-    }
+  }
+  else {
+    $self->_set(@_);
+  }
 }
+
+=pod
+
+=head2 get_field_type
+
+ get_field_type(field)
+
+Returns the fully articulated type of the field (int, varchar, enum,
+set, etc) as manifested in a C<describe table> command.
+
+=cut
+
+sub get_field_type { $_[0]->{_table_dir}->{$_[1]}->{Type} };
 
 # dumps private/public keys separately (debugging)
 
@@ -1371,7 +1489,10 @@ object.>
 
 I<If you want to only insert those columns that you have explicitly
 set and therefore let your table defaults take care of the rest of the
-columns, use the C<insert()> method.>
+columns, set 'upsert' mode first.
+
+ <null $foo.set_upsert_mode(1)>
+ <null $foo.save()>
 
 =cut
 
@@ -1390,7 +1511,12 @@ sub save {
     $self->_update;
   }
   else {
-    $self->_insert_all;
+    if ( $self->get_upsert_mode ) {
+      $self->_insert_some;
+    }
+    else {
+      $self->_insert_all;
+    }
   }
 
   my $table_name = $self->get_table_name;
@@ -1405,22 +1531,62 @@ sub save {
   return $self->{id};
 }
 
-
-
 =pod
 
-=head2 insert
+=head2 set_upsert_mode
 
-insert()
+=head2 get_upsert_mode
 
-Similar to C<save()> but only inserts columns that have been
-explicitly set in your object.  See L</save>.
+Sets the mode for inserts.  If I<upsert_mode> is set to 0, then the
+C<save()> method attempts to save all columns (columns that are not
+set are assumed to be null).  If I<upsert_mode> is set to 1, then
+C<save()> on new columns acts like an update, only inserting columns
+that have been explicitly set.  They can be set to null and will be
+updated if set to undef.
+
+Assuming a table named 'foo' has columns 'biz', 'baz', 'buz';
+
+ create table foo (
+   id  int          auto_increment primary key,
+   biz varchar(10)  not null,
+   baz varchar(10)  null,
+   buz varchar(10)  not null default 'buzzzz'
+ )
+
+Example: Insert a new record, setting only the 'biz' column.
+
+ my $record = new MyApp::Foo($dbi);
+ $record->set_upsert_mode(1);
+ $record->set('biz');
+ $record->save();
+
+Note that colum 'buz' is defined as 'not null' but has a default.  In
+this case since we only insert column 'biz', the column will look this
+after insertion.
+
+Example: Insert a new record, setting all columns ('baz', 'buz', will be set to null)
+
+ my $record = new MyApp::Foo($dbi);
+ $record->set('biz');
+ $record->save();
+
+Note this will produce a NOT NULL exception on column 'buz' since we
+attempt to insert all column and no value is given for 'buz'.
 
 =cut
 
-sub insert { goto &_insert_some; }
+sub set_upsert_mode { goto &_upsert_mode; }
+sub get_upsert_mode { goto &_upsert_mode; }
 
+sub _upsert_mode {
+  my $self = shift;
 
+  if ( @_ ) {
+    $self->{_upsert_mode} = shift;
+  }
+  
+  return $self->{_upsert_mode};
+}
 
 sub _insert {
   my $self = shift;
@@ -1714,12 +1880,28 @@ sub set_key_fields {
   }
 }
 
-# a select with nothing returns the whole table as a recordset...
+=pod
+
+=head2 select
+
+ select([query, args]);
+
+Returns an array of hashes containing the query results.
+
+ select()
+
+Returns a C<BLM::IndexedTableHandler::RecordSet> containing all
+records in the table.
+
+See also C<BLM::DBHandler>
+
+=cut
+
 sub select {
   my $self = shift;
 
   unless ( @_ ) {
-    Bedrock::IndexedTableHandler::RecordSet->new($self->select_list("select * from " . $self->get_table_name));
+    BLM::IndexedTableHandler::RecordSet->new($self->select_list("select * from " . $self->get_table_name));
   }
   else {
     $self->SUPER::select(@_);
@@ -1728,7 +1910,7 @@ sub select {
 
 =head2 search
 
-  search($input) 
+  search($input, [exact-flag]) 
 
 This is essentially the same as C<find> except it attempts to
 intelligently figure out what you want to search by looking at the
@@ -1803,6 +1985,7 @@ C<search> would then proceed similarly through the non-indexed fields
 sub search {
     my $self = shift;
     my $input = shift;
+    my $exact_flag = shift || 0;
 
     $self->set($input);
     $self->set_key_fields() unless $self->{_search_fields};
@@ -1818,14 +2001,14 @@ sub search {
 	if ($self->{$field_name}) {
 	  push @search_args, $exact_flag, $field_name, $input->{$field_name};
 	}
-	  }
+      }
     }
     
-# still uncomfortable with assuming certain wildcard/non-wildcard searching
+    # still uncomfortable with assuming certain wildcard/non-wildcard searching
     unless (@search_args) {
       foreach ( $self->get_fields() ) {
 	if ( $input->{$_} ) {
-	  push @search_args, 0, $_, $input->{$_};
+	  push @search_args, $exact_flag, $_, $input->{$_};
 	}
       }
     }
@@ -2116,13 +2299,6 @@ sub get_field_length {
   return undef;
 }
 
-sub get_field_type {
-  my $self = shift;
-  my $field_name = shift;
-
-  return $self->get_table_dir->{$field_name}->{Type};
-}
-
 sub _get_options {
   my $self = shift;
   my ($list_type, $field_type) = @_;
@@ -2204,23 +2380,23 @@ Given a table with an enum column 'doc_type':
 
 sub get_enum_values {
   my $self = shift;
-  my $column = shift;
+  my $field = shift;
 
-  my $dir = $self->{_table_dir};
-
+  my $type = $self->get_field_type($field);
+  
   die "usage: get_enum_value( column-name )\n" 
-    unless $column && $dir->{$column};
+    unless $type;
 
-  my @list; 
+  my $list = new Bedrock::Array;
 
-  if ( $dir->{$column}->{Type} =~/(enum|set)(\(.*?\))/) { 
-    @list = eval $2;
+  if ( $type =~/(enum|set)(\(.*?\))/) { 
+    push @$list, eval $2;
   }
   else {
-    die "column: [$column] is not an enum or set field type\n";
+    die "column: [$field] is not an 'enum' or 'set' field type\n";
   }
   
-  return Bedrock::Array->new( @list );
+  return $list;
 }
 
 sub create_date_field {
@@ -2274,7 +2450,7 @@ sub create_select_field {
     my ($self, $field_name, $attributes, $labels, $lists, $options) = @_;
     my $value;
     
-    if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
+    if ($self->get_field_type($field_name) =~/set/) {
       $value = [split ",", $self->{$field_name}];
     }
     else {
@@ -2380,7 +2556,7 @@ sub create_checkbox_field {
   
   my $value;
 
-  if ($self->{_table_dir}->{$field_name}->{Type} =~/set/) {
+  if ($self->get_field_type($field_name) =~/set/) {
     $value = [split ",", $self->{$field_name}];
   } else {
     $value = $self->{$field_name};
@@ -2623,11 +2799,11 @@ sub html_form_body {
   my $exclude_field_list = {};
   map { $exclude_field_list->{$_} = 1; } @{$exclude_fields};
 
-  my $dir = $self->{_table_dir};
-
   my $html = create_html_element("table", %{$attributes->{table}})."\n";
   
   foreach ( $self->get_fields() ) {
+    my $field_type = $self->get_field_type($_);
+    
     next if exists $exclude_field_list->{$_};
 
     # if no "maxlength" is given for an input field and a "size" is given, then use that as maxlength
@@ -2638,8 +2814,8 @@ sub html_form_body {
     
     # - first check to see if this is a pick list
     my $options;
-    $options = $self->_get_options( $lists->{$_}, $dir->{$_}->{Type} ) 
-      if $lists->{$_} || $dir->{$_}->{Type} =~/(enum|set)/;
+    $options = $self->_get_options( $lists->{$_}, $field_type ) 
+      if $lists->{$_} || $field_type =~/(enum|set)/;
  
     my $tr_attributes = $attributes->{$_}->{tr} || {};
     my $th_attributes = $attributes->{$_}->{th} || {};
@@ -2670,7 +2846,7 @@ sub html_form_body {
 			 $input_element
 			);
       }
-    } elsif ($dir->{$_}->{Type} =~/(enum|set)/) {
+    } elsif ($field_type =~/(enum|set)/) {
       if ($options && @{$options->{list}} > 4) {
 	$html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 			 create_html_element('tr', %{$tr_attributes}),
@@ -2681,7 +2857,7 @@ sub html_form_body {
 			);
       } else {
 	my $input_element;
-	if ($dir->{$_}->{Type} =~/enum/) {
+	if ($field_type =~/enum/) {
 	  $input_element = $self->create_radio_field($_, $attributes->{$_}, $labels, $lists, $options)
 	} else {
 	  $input_element = $self->create_checkbox_field($_, $attributes->{$_}, $labels, $lists, $options)
@@ -2695,7 +2871,7 @@ sub html_form_body {
 			 $input_element
 			);
       }
-    } elsif ($dir->{$_}->{Type} =~/tinyint/) {
+    } elsif ($field_type =~/tinyint/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),
@@ -2704,7 +2880,7 @@ sub html_form_body {
 		       $self->create_tinyint_field($_, $attributes->{$_}, $labels, $lists)
 		      );
       
-    } elsif ($dir->{$_}->{Type} =~/varchar/) {
+    } elsif ($field_type =~/varchar/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),
@@ -2712,7 +2888,7 @@ sub html_form_body {
 		       create_html_element('td', %{$td_attributes}),
 		       $self->create_varchar_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    } elsif ($dir->{$_}->{Type} =~/int/) {
+    } elsif ($field_type =~/int/) {
       next if $_ =~/^id$/;
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
@@ -2722,7 +2898,7 @@ sub html_form_body {
 		       $self->create_int_field($_, $attributes->{$_}, $labels, $lists)
 		      );
       
-    } elsif ($dir->{$_}->{Type} =~/^char/) {
+    } elsif ($field_type =~/^char/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),
@@ -2730,7 +2906,7 @@ sub html_form_body {
 		       create_html_element('td', %{$td_attributes}),
 		       $self->create_char_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    } elsif ($dir->{$_}->{Type} =~/date/) {
+    } elsif ($field_type =~/date/) {
       
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
@@ -2739,7 +2915,7 @@ sub html_form_body {
 		       create_html_element('td', %{$td_attributes}),
 		       $self->create_date_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    } elsif ($dir->{$_}->{Type} =~/timestamp/) {
+    } elsif ($field_type =~/timestamp/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),
@@ -2747,7 +2923,7 @@ sub html_form_body {
 		       create_html_element('td', %{$td_attributes}),
 		       $self->create_timestamp_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    } elsif ($dir->{$_}->{Type} =~/text/) {
+    } elsif ($field_type =~/text/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),
@@ -2755,7 +2931,7 @@ sub html_form_body {
 		       create_html_element('td', %{$td_attributes}),
 		       $self->create_text_field($_, $attributes->{$_}, $labels, $lists)
 		      );
-    } elsif ($dir->{$_}->{Type} =~/decimal/) {
+    } elsif ($field_type =~/decimal/) {
       $html .= sprintf("%s\n%s%s</th>%s%s</td>\n</tr>\n",
 		       create_html_element('tr', %{$tr_attributes}),
 		       create_html_element('th', %{$th_attributes}),

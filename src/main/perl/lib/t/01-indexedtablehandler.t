@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 15;
+use Test::More tests => 12;
 
 use DBI;
 use Data::Dumper;
@@ -38,61 +38,80 @@ my $ith = eval {
 
 isa_ok($ith,'BLM::IndexedTableHandler') or BAIL_OUT($@);
 
-my @columns = sort $ith->get_fields();
-is_deeply(\@columns, [qw/bar_phone foo id name/], 'get_fields()');
+my @columns;
+
+subtest 'get_fields' => sub {
+  @columns = sort $ith->get_fields();
+  is_deeply(\@columns, [qw/bar_phone foo id name/], 'get_fields()');
+
+  is($ith->get_field_type('name'), 'varchar(100)', 'get_field_type') or diag($ith->get_field_type('name'));
+};
+
+subtest 'set/get' => sub {
+  $ith->set('name', 'Bill');
+  is($ith->{name}, 'Bill', 'set scalar');
+
+  $ith->set({ name => 'William', id => 0, foo => 'foo', bar_phone => 'bar'});
+  ok($ith->{name} eq 'William' &&
+     $ith->{id} == 0 &&
+     $ith->{foo} eq 'foo' &&
+     $ith->{bar_phone} eq 'bar', 'set hash ref');
+
+  my $row = $ith->get(qw/id name foo bar_phone/);
+  isa_ok($row, 'Bedrock::Array');
+  is(join('',@$row), '0Williamfoobar', 'get array');
+};
 
 $ith->set('id', 0);
-$ith->set('name', 'William');
+$ith->set('foo', undef); # cannot be null - should throw exception
+$ith->set('bar_phone', undef); # cannot be null - should throw exception
 
-# this should produce an error
+# this should produce an error, foo cannot be null
 eval {
   $ith->save();
 };
 
-like($@, qr/null/, 'save() - NOT NULL');
+like($@, qr/cannot be null/i, 'save() - not null field');
 
-$ith->set('bar_phone', '');
-$ith->set('foo', '');
+my $id;
 
-my $id = eval {
-  $ith->save();
+subtest 'save' => sub {
+  $id = eval {
+    $ith->set({ id => 0, name => 'William', bar_phone => '8001234567', foo => 'bar'});
+    $ith->save();
+  };
+  
+  ok(! $@ && defined $id && $id > 0, 'save');
+  is($ith->get('id'), $id, 'returns, sets id');
+  
+  my $ith2 = BLM::IndexedTableHandler->new($dbi, $id, undef, $ith->get_table_name);
+  ok($ith2->{id} == $ith->{id} &&
+     $ith2->{name} eq $ith->{name} &&
+     $ith2->{foo} eq $ith->{foo} &&
+     $ith2->{bar_phone} eq $ith2->{bar_phone}, 'saved record');
 };
 
-ok(! $@ && defined $id && $id > 0, 'save()');
+subtest 'reset' => sub {
+  $ith->reset();
+  my $count = 0;
+  
+  foreach (@columns) {
+    $count++
+      if exists $ith->{$_} && ! $ith->{$_};
+  }
+  
+  cmp_ok($count, '==', 4, 'reset()');
+  
+  $ith->reset(1);
+  $count = 0;
 
-$ith->reset();
-my $count = 0;
+  foreach (@columns) {
+    $count++
+      if exists $ith->{$_};
+  }
 
-foreach (@columns) {
-  $count++
-    if exists $ith->{$_} && ! $ith->{$_};
-}
-
-cmp_ok($count, '==', 4, 'reset()');
-
-$ith->reset(1);
-$count = 0;
-
-foreach (@columns) {
-  $count++
-    if exists $ith->{$_};
-}
-
-cmp_ok($count, '==', 0, 'reset(1)');
-
-$ith->set('id', 0);
-$ith->set('name', 'John');
-
-$id = eval {
-  $ith->insert();
+  cmp_ok($count, '==', 0, 'reset(1)');
 };
-
-ok(! $@ && defined $id && $id > 0, 'insert()');
-
-my $ith2 = $ith->new($dbi, $id);
-
-isa_ok($ith2, 'BLM::IndexedTableHandler') or BAIL_OUT(ref($ith2));
-ok(exists $ith2->{name} && $ith2->{name} eq 'John', 'new() - fetch inserted record');
 
 # sub-class BLM::IndexedTablehandler
 {
@@ -100,18 +119,18 @@ ok(exists $ith2->{name} && $ith2->{name} eq 'John', 'new() - fetch inserted reco
   push @{'ITH::Foo::ISA'}, 'BLM::IndexedTableHandler';
 }
 
-my $ith3 = new ITH::Foo($dbi, $id);
-isa_ok($ith3, 'ITH::Foo') or BAIL_OUT($@);
-ok(exists $ith3->{name} && $ith3->{name} eq 'John', 'new() - fetch inserted record');
+$ith = new ITH::Foo($dbi, $id);
+isa_ok($ith, 'ITH::Foo') or BAIL_OUT($@);
+ok(exists $ith->{name} && $ith->{name} eq 'William', 'new() - fetch inserted record');
 
-my $ref = $ith3->asref();
+my $ref = $ith->asref();
 isa_ok($ref, 'Bedrock::Hash');
 
 @columns = sort keys %$ref;
 is_deeply(\@columns, [qw/bar_phone foo id name/], 'asref() - keys');
 
 my $values = join('',@{$ref}{@columns});
-is($values, "$id" . 'John', 'asref() - values');
+is($values, "8001234567bar$id" . 'William', 'asref() - values');
 
 END {
   eval { $dbi->do('drop database foo'); };

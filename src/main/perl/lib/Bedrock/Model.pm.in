@@ -34,6 +34,87 @@ use Bedrock::Model::Migration;
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine/);
 
+=pod
+
+=head1 NAME
+
+C<Bedrock::Model>
+
+=head1 SYNOPSIS
+                  
+ my $model = new Bedrock::Model({ dbi => $dbi, table => $table, model => $model_specs});
+
+ $model->create_table();
+
+ # migrate table (apply changes)
+ my $changes = $model->migrate(dry_run => 1);
+
+...or as an ORM...
+
+ package MyApp::Users;
+
+ use parent qw/Bedrock::Model::Handler/;
+
+ our $MODEL = {
+     
+     id => new Bedrock::Model::Field(
+         {
+             field => 'id',
+             type  => 'int(11)',
+             null  => 'no',
+             extra => 'auto_increment',
+             key   => 'pri'
+         }
+     ),
+     email => new Bedrock::Model::Field(
+         {
+             field => 'email',
+             type  => 'varchar(100)',
+             null  => 'yes'
+         }
+     ),
+     %Bedrock::Model::Timestampable,
+ };
+ 
+ 1;
+
+...then...
+
+ MyApp::Users->_create($dbi);
+
+ my $users = new MyApp::Users($dbi);
+ $user->set('email', 'someuser@example.com');
+ $user->save();
+                          
+=head1 DESCRIPTION
+
+Class for creating/modifying MySQL tables.
+
+=head1 METHODS
+
+=head2 new
+
+ new({ dbi => dbi, table => table-name, model => model});
+
+=over 5
+
+=item dbi
+
+Reference to a C<DBI> object for an open database connection.
+
+=item table-name
+
+Name of the table.
+
+=item model
+
+A hash of key/value pairs where the keys are the column names and the
+fields are C<Bedrock::Model::Field> objects.
+
+=back
+
+=cut
+
 sub new {
   my $class = shift;
   $class = ref($class) || $class;
@@ -61,29 +142,14 @@ sub model_as_string {
 
 =pod
 
-=head1 NAME
-
-C<Bedrock::Model>
-
-=head1 SYNOPSIS
-                  
-
- my $model = new Bedrock::Model({ dbi => $dbi, table => $table, model => $model_specs});
-
- $model->create_table();
-
- # migrate table (apply changes)
- my $changes = $model->migrate(dry_run => 1);
-
-=head1 DESCRIPTION
-
-Class for creating/modifying MySQL tables.
-
-=head1 METHODS
-
 =head2 create_table
 
  create_table()
+ create_table( dbi => dbi, table => table-name, model => model );
+
+See C<new()> for argument descriptions.
+
+Creates a new table based on the object's model.
 
 =cut
 
@@ -114,7 +180,9 @@ sub create_table {
 
  Foo::Bar::create($dbi);
 
-Create the model.
+Class method to create the table.  This method can be called as an
+instance or class method depending on the need. It checks to make sure
+you have a valid model defined for the class.
 
 =cut
 
@@ -157,11 +225,113 @@ sub _create_table {
     };
     
     if ( $@ ) {
-      die "$create_statement\n$@";
+      die "$create_statement: $@";
     }
   }
   
   return $create_statement;
+}
+
+=pod
+
+=head2 verify_model
+
+Creates a C<Bedrock::Model::Migration> object suitable for querying to
+determine if a migration is required, but not suitable for execution.
+
+ my $migration = $model->verify_model();
+
+ if ( $migration->should_migrate ) {
+   print STDERR "model our of sync with database table...";
+ }
+
+=cut
+
+sub verify_model {
+  my $self = shift;
+  my $dbi = shift || $self->get_dbi;
+    
+  Bedrock::Model::Migration->new({ model => $self, dry_run => 1});
+}
+
+=pod
+
+=head2 migrate_model
+
+Creates a C<Bedrock::Model::Migration> object suitable for querying to
+determine if a migration is required and suitable for execution.
+
+ my $migration = $model->migrate_model();
+
+ if ( $migration->should_migrate ) {
+   $migration->execute();
+ }
+
+=cut
+
+sub migrate_model {
+  my $self = shift;
+  my $dbi = shift || $self->get_dbi;
+
+  Bedrock::Model::Migration->new({ model => $self});
+}
+
+=pod
+
+=head2 fetch_model
+
+Returns a reference to a hash that represents the model derived
+directly from the MySQL table.  The hash contains the columns as keys
+and C<Bedrock::Model::Field> objects as values.
+
+=cut
+
+sub fetch_model {
+  shift->get_serializer->fetch_model;
+}
+
+=pod
+
+=head2 rename_field
+
+ rename_field(old-field, new-field)
+
+Renames a column.  I<Note that this method will alter the database and the model.>
+
+=cut
+
+sub rename_field {
+  my $self = shift;
+  
+  $self->check_dbi;
+  
+  Bedrock::Model::Migration->new({ model => $self })->rename_field(@_)->execute();
+
+  return $self;
+}
+
+=pod
+
+=head2 add_field
+
+ add_field( field => name, type => type, [ extra => extra-options, default => default, key => ] );
+
+=cut
+
+sub add_field {
+  my $self = shift;
+  my %args = @_;
+
+  my $model = $self->get_model;
+
+  my $field = new Bedrock::Model::Field(\%args);
+  
+  die "field $args{field} exists\n"
+    if defined $model->{$args{field}};
+
+  $model->{$args{field}} = $field;
+  
+  return $self;
 }
 
 sub check_dbi {
@@ -169,7 +339,7 @@ sub check_dbi {
   
   my $dbi = blessed($self) ? $self->get_dbi() : undef;
 
-  die "no database handler set\n"
+  die "no database handle set\n"
     unless $dbi;
 
   $dbi;
@@ -197,48 +367,16 @@ sub check_model {
   $model;
 }
 
-# returns a Bedrock::Model::Migration object (dry_run)
-sub verify_model {
-  my $self = shift;
-  my $dbi = shift || $self->get_dbi;
-    
-  Bedrock::Model::Migration->new({ model => $self, dry_run => 1});
-}
-
-# returns a Bedrock::Model::Migration object (ready to run)
-sub migrate_model {
-  my $self = shift;
-  my $dbi = shift || $self->get_dbi;
-
-  Bedrock::Model::Migration->new({ model => $self});
-}
-
-sub fetch_model {
-  shift->get_serializer->fetch_model;
-}
-
-sub rename_field {
-  my $self = shift;
-
-  Bedrock::Model::Migration->new({ model => $self })->rename_field(@_)->execute();
-
-  return $self;
-}
-
-sub add_field {
-  my $self = shift;
-  my %args = @_;
-
-  my $model = $self->get_model;
-
-  my $field = new Bedrock::Model::Field(\%args);
-  
-  die "field $args{field} exists\n"
-    if defined $model->{$args{field}};
-
-  $model->{$args{field}} = $field;
-  
-  return $model;
-}
-
 1;
+
+=pod
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer6@comcast.net
+
+=head1 SEE ALSO
+
+C<Bedrock::Model::Field>, C<BLM::IndexedTableHandler>, C<Bedrock::Model::Handler>
+
+=cut

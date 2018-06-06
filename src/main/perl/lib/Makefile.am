@@ -227,6 +227,7 @@ BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
 perl5bedrockmodellib_DATA = \
     Bedrock/Model/Field.pm \
     Bedrock/Model/Migration.pm \
+    Bedrock/Model/Handler.pm \
     Bedrock/Model/Role.pm
 
 BEDROCK_MODEL=$(perl5bedrockmodellib_DATA:.pm=.pm.in)
