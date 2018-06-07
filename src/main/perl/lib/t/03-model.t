@@ -36,7 +36,8 @@ our \$MODEL = new Bedrock::Hash(
         {
             field => 'email',
             type  => 'varchar(100)',
-            null  => 'no'
+            null  => 'no',
+            key   => 'uni'
         }
     ),
     lname => new Bedrock::Model::Field(
@@ -88,7 +89,7 @@ my $model = MyApp::Users->_add_field($dbi,
 				    );
 
 my $migration = new Bedrock::Model::Migration({model => $model});
-is($migration->should_migrate(), 1, 'should migrate');
+is($migration->should_migrate(), 1, 'should migrate') or diag(Dumper $migration->get_migration);
 
 eval {
   $migration->execute();
