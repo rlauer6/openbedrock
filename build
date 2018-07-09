@@ -1,76 +1,130 @@
 #!/bin/bash
+# -*- mode: sh; -*-
 
-# NOTES:
-#
-# To release the Bedrock RPMs perform all of these steps.  You need to
-# bump, build AND deploy!  They are separate steps because you may not
-# want to deploy until you are have tested and updated documentation.
-#
-# 'deploy' means create a repo and update the Bedrock repo site.
-# 
-# 1) build the RPMs
-#     
-#     ./build bump
-#     ./build build
-# 
-# 2) build and deply a new repo
-# 
-#     ./build deploy
-#
-# 3) edit the wiki and declare a new version
-
-#
-# help()
-#
-# help!
-#
 help() {
     cat <<EOF
-    $0 [options] [command]
+    $0 [OPTIONS [COMMAND]
+
+Build the Bedock project.  Optionally deploy the rpms to the Bedrock
+repo website.
+
+OPTIONS
+-------
+-h, --help                   - help
+-x, --no-sign                - do not sign the RPM
+-r, --rpm-mode               - do not compile Perl during build
+-b, --basedir                - base directory (default: \$HOME)
     
-Build the rpm files for the Bedock project.  Optionally deploy the
-rpms to the Bedrock repo website.
+COMMANDS
+--------
+build                        - build and sign RPM (unless -x)
+bump                         - bump minor revision
+bump release|minor|major     - bump minor release
+createrepo                   - stage a repo to \$basdedir/yum-repo
+deploy                       - createrepo & deploy RPM
+
+Recipes:
+-------
+To release (publish to public repository) the Bedrock RPMs perform all
+of these steps.  You need to bump, build AND deploy!  Steps have been
+separated to support delayed deployment pending testing and
+documentation update.
+
+Note: 'deploy' means to create a repo for previously built RPMs and
+then update the Bedrock repo site.
+
+* build the RPMs
     
-      Options
-      -------
-        -h, --help                   - help
-        -x, --no-sign                - do not sign the RPM
-        -r, --rpm-mode               - do not compile Perl during build
-        -b, --basedir                - base directory (default: \$HOME)
-    
-      Commands
-      --------
-        build                        - build and sign RPM (unless -x)
-        bump                         - bump minor revision
-        bump release                 - bump minor release
-        createrepo                   - stage a repo to \$basdedir/yum-repo
-        deploy                       - createrepo & deploy RPM
-        unbump                       - restore last version number
+  ./build build
+
+* build but don't sign RPMs
+
+  ./build -x build
+
+* build and deply a new repo
+
+  ./build deploy
+
+* bump the package release (M.m.n-release, see Versions)
+
+  ./build bump
+
+Versions:
+---------
+The official version base of Bedrock is contained in 'configure.ac'. A
+sub-release version is tacked on for development releases prior to
+release of a new stable version.
+
+* To release a new version of Bedrock, bump the version, update the
+  NEWS, commit changes and push to the master branch.
+
+  * release an update to an existing release - updates package release
+
+    ./bump bump release    -> M.m.n-r+1
+
+  * release a MINOR update
+
+    ./bump bump minor      -> M.m.0-0
+
+  * release a MAJOR update
+
+    ./bump bump major      -> M.0.0-0
 
 Hints:
+------
+* Use the --rpm-mode (-r) option when you want to build the project
+  without checking the syntax of the Perl modules.  Without this
+  option your environment will need to have dependent Perl modules
+  installed.  -r is used primarily with an automated build process that
+  builds the project in a "pristine" environment.
 
-1) Use the --rpm-mode (-r) option when you want to build the project
-   without checking the syntax of the Perl modules.  Without this
-   option your environment will need to have dependent Perl modules
-   installed.  -r is used primarily with an automated build process that
-   builds the project in a "pristine" environment.
+* Use the --no-sign (-x) option if you're not interested in signing
+  the rpms.  You may not have access to Bedrock's private key or may
+  not want to deal with the question.
 
-2) Use the --no-sign (-x) option if you're not interested in signing
-   the rpms.  You may not have access to Bedrock's private key.
+  ./build -x build
 
-3) Use --basedir (-b) with the 'createrepo' or 'deploy' commands to
-   stage the yum repository website to a directory named 'yum-repo'
-   below the directory specifed with this option.  The default is to
-   create a directory named 'yum-repo' in your \$HOME directory.
-
-4) To release a new version of Bedrock, bump the version, update the
-   NEWS, commit changes and push to the master branch.
+* Use --basedir (-b) with the 'createrepo' or 'deploy' commands to
+  stage the yum repository website to a directory named 'yum-repo'
+  below the directory specifed with this option.  The default is to
+  create a directory named 'yum-repo' in your \$HOME directory.
 
 EOF
 
     return 0
 }
 
+
+bump_acinit() {
+    if [ "$1" = "release" ]; then
+	part=3
+    elif [ "$1" = "minor" ]; then
+	part=2
+    elif [ "$1" = "major" ]; then
+	part=1
+    fi
+
+    for p in 1 2 3; do
+	test -n "$version" && version="${version}.";
+
+	v=$(cat configure.ac | grep AC_INIT | cut -f3 -d\[ | perl -np -e 's/[^0-9\.]//g' | cut -f${p} -d.)
+	if [ "$p" = "$part" ]; then
+	    v=$(echo $v "1+n" | dc -)
+	elif [ "$1" = "major" ]; then
+	    v="0"
+	elif [ "$1" = "minor" ] && [ "$p" = "3" ]; then 
+	    v="0"
+	fi
+	version="$version$v"
+    done
+
+    perl -i.bak -npe '/AC_INIT/ && s/\[(\d+\.\d+\.\d+)\]/\['$version'\]/;' configure.ac
+}
+
+bedrock_full_version() {
+    acinit_version=$(cat configure.ac | grep AC_INIT | cut -f3 -d\[ | perl -np -e 's/[^0-9\.]//g')
+    echo $acinit_version-$(cat bedrock-build)
+}
 
 # create the files that will define the http://repo.openbedrock.net
 # website.  Files are staged to $1
@@ -214,30 +268,21 @@ case "$1" in
 	exit 0;
 	;;
 
-    unbump)
-	if test -e "bedrock-build~"; then
-	    mv bedrock-build~ bedrock-build
-	fi
-	cat bedrock-build
-	;;
-
-    # bump release number (not version, just release)
+    # bump version
     bump)
 	shift;
 	PROJECT_RELEASE=$(cat bedrock-build)
         if test -z "$1"; then
- 	    PROJECT_RELEASE=$(printf %0.2f $(echo "$PROJECT_RELEASE 0.01+n" | dc -))
+ 	    PROJECT_RELEASE=$(printf %d $(echo "$PROJECT_RELEASE 1+n" | dc -))
+	    mv bedrock-build bedrock-build~
+	    echo $PROJECT_RELEASE > bedrock-build
 	else
-	    if [ "$1" = "release" ]; then
- 		PROJECT_RELEASE=$(echo "$PROJECT_RELEASE 1+n" | dc -)
-	    else
-		echo "huh?"
-		exit;
-	    fi
+ 	    bump_acinit $1
+	    echo 0 > bedrock-build
+	    rm -f bedrock-build~
 	fi
-	mv bedrock-build bedrock-build~
-	echo "$PROJECT_RELEASE" > bedrock-build
-	echo "$PROJECT_RELEASE"
+	
+	bedrock_full_version;
 	;;
 
     # build from latest tag
