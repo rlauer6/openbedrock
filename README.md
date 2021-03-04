@@ -4,7 +4,7 @@ This is the README file for the `bedrock` project.
 Bedrock framework.
 * See the NEWS file changes and updates.
 
-![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=main)
+![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
 # Overview
 
@@ -67,6 +67,24 @@ sudo install
 bedrock --version
 ```
 
+## Testing the Installation
+
+There are some tests you can run that will exercise Bedrock tags and
+other Perl modules.  After installing all of the pre-requisites and
+installing Bedrock, try:
+
+```
+cd src/main/perl
+make test
+```
+
+...and
+
+```
+cd src/main/perl/lib/
+make test
+```
+
 # More Information
 
 * [Bedrock Wiki](http://twiki.openbedrock.net)
@@ -91,6 +109,10 @@ conditional. This means that Bedrock should work with versions of Perl prior
 to 5.16 as well.
 
 # Ubuntu/Debian
+
+_Ubuntu support via Debian packages will likely never happen, however
+there is no reason to believe Bedrock will not run on Ubuntu using a
+manual installation method._
 
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.
