@@ -1,6 +1,6 @@
 dnl -*-Autoconf-*-
 
-AC_INIT([bedrock], [3.0.2], [rlauer6@comcast.net])
+AC_INIT([bedrock], [3.0.2], [rclauer@gmail.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -18,7 +18,7 @@ AC_CONFIG_MACRO_DIR([autotools])
 dnl Turn on all Automake warnings and report them as errors
 AM_INIT_AUTOMAKE([-Wall foreign tar-ustar ])
 
-DFLT_MAINTAINER="rlauer6@comcast.net"
+DFLT_MAINTAINER="rclauer@gmail.com"
 AC_SUBST([DFLT_MAINTAINER])
 
 if ! test -e bedrock-build; then
@@ -140,7 +140,7 @@ AC_ARG_WITH(
 AC_SUBST([apache_sessiondir])
 
 AC_PATH_PROG([PERL],
-	[perl])
+	[perl], [/usr/bin/perl], [/usr/bin:/usr/local/bin:$PATH])
 
 if test -z "$PERL" ; then 
   AC_MSG_ERROR([perl not found?])
@@ -161,9 +161,6 @@ AC_ARG_WITH(
 )
 
 AC_SUBST([perl5libdir])
-
-dnl require /at least/ perl version 5.8.0
-ads_PROG_PERL([5.008000])
 
 dnl pod2man comes with perl, which the above verifies that we have. Not yet sure
 dnl if we can rely on that (distribution packaging may provide it in an optional

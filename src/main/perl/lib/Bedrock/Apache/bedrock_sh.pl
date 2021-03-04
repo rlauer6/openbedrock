@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl -w
+#!@PERL@ -w
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
