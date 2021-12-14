@@ -244,9 +244,16 @@ dnl FIXME: provide macro maintainer email address in error message
         _tmp_found_mod_version="$(
           eval "'""${PERL}""'" "'""-M${_tmp_perl_mod_name}""'" \
             "${ax_perl5_extra_includes_opt}" -wle "'"'
+               $| = 1;
                my $modname = shift;
                my $ver = eval { "${modname}::VERSION"; };
-               print $$ver if defined $$ver && length $$ver;
+               if ( $ver && $ver ne "::VERSION") {
+                 print eval "\$$ver";
+                 exit 0;
+               }
+               else {
+                  exit 1;
+               }
             '"'" "'""${_tmp_perl_mod_name}""'"
         )"
         if test $? -ne 0; then
