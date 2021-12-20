@@ -61,9 +61,11 @@ Boolean indicating whether C<execute()> should actually apply migration.
 
 sub new {
   my $class = shift;
-  
+
   my $self = $class->SUPER::new(ref($_[0]) ? @_ : { @_ });
 
+  $self->set_debug($self->get_model->get_debug);
+  
   $self->migrate();
 
   $self;
@@ -71,17 +73,21 @@ sub new {
 
 sub migrate {
   my $self = shift;
-  
-  my $model = $self->get_model(); # model class
-  
-  die "usage: new Bedrock::Model::Migration({ model => Bedrock::Model->new(...) })\n"
+
+  my $model = $self->get_model();    # model class
+
+  die
+    "usage: new Bedrock::Model::Migration({ model => Bedrock::Model->new(...) })\n"
     unless blessed($model) && $model->isa('Bedrock::Model');
 
   die "no model defined\n"
-    unless $model->get_model() && reftype($model->get_model) eq 'HASH';
+    unless $model->get_model() && reftype( $model->get_model ) eq 'HASH';
 
-  my %target_model = %{$model->get_model()}; # the actual model (code defined target state)
-  my %table_state = %{$model->fetch_model}; # database defined table (current state)
+  # the actual model (code defined target state)
+  my %target_model = %{ $model->get_model() };
+
+  # database defined table (current state)
+  my %table_state = %{ $model->fetch_model };
   
   my @modify_these;
   my @add_these;
@@ -165,33 +171,42 @@ sub migrate {
   # as it will be seen as an add and delete. Short of giving the
   # migration script/class a clue it would result in lost data.
   
-  foreach my $field (keys %table_state) {
+  foreach my $field ( keys %table_state ) {
+
     if ( exists $target_model{$field} ) {
       my $target_model_field = $target_model{$field};
-      my $table_state_field = $table_state{$field};
+      my $table_state_field  = $table_state{$field};
 
       # synonym boolean <=> tinyint(1)
       if ( $target_model_field->get_type() eq 'boolean' ) {
         $target_model_field->set_type('tinyint(1)');
       }
+
+      $table_state_field->set_ignore_unknown_keys(
+        $self->get_ignore_unknown_keys() );
+
+      # let's assume ALL case/whitespace is meaningless ????
+      my $ts_as_string = lc( $table_state_field->as_string );
+      $ts_as_string =~s/\s//g;
       
-      $table_state_field->set_ignore_unknown_keys($self->get_ignore_unknown_keys());
+      my $tmf_as_string = lc( $target_model_field->as_string );
+      $tmf_as_string =~s/\s//g;
 
-      unless ( lc($table_state_field->as_string) eq lc($target_model_field->as_string) ) {
+      if ( $ts_as_string ne $tmf_as_string ) {
 
-	print STDERR lc($table_state_field->as_string), "\t"
-	  if $self->get_debug;
+        print STDERR lc( $table_state_field->as_string ), "\t"
+          if $self->get_debug;
 
-	print STDERR lc($target_model_field->as_string), "\n"
-	  if $self->get_debug;
+        print STDERR lc( $target_model_field->as_string ), "\n"
+          if $self->get_debug;
 
-	push @modify_these, $field;
-      }
+        push @modify_these, $field;
+      } ## end unless ( lc( $table_state_field...))
 
       delete $target_model{$field};
       delete $table_state{$field};
-    }
-  }
+    } ## end if ( exists $target_model...)
+  } ## end foreach my $field ( keys %table_state)
   
   if ( keys %table_state ) {
     push @drop_these, keys %table_state;
@@ -208,15 +223,17 @@ sub migrate {
   my $dbi = $self->get_model->get_dbi;
   
   foreach (@modify_these) {
-    $migration{$_} = sprintf("alter table %s modify %s;", $table, $model->get_model->{$_}->as_string);
+    $migration{$_} = sprintf( "alter table %s modify %s;",
+      $table, $model->get_model->{$_}->as_string );
   }
 
   foreach (@add_these) {
-    $migration{$_} = sprintf("alter table %s add %s;", $table, $model->get_model->{$_}->as_string);
+    $migration{$_} = sprintf( "alter table %s add %s;",
+      $table, $model->get_model->{$_}->as_string );
   }
-  
+
   foreach (@drop_these) {
-    $migration{$_} = sprintf("alter table %s drop %s;", $table, $_);
+    $migration{$_} = sprintf( "alter table %s drop %s;", $table, $_ );
   }
 
   $self->set_migration(\%migration);
@@ -338,6 +355,5 @@ sub rename_field {
   
   $self;
 }
-
   
 1;

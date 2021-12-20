@@ -42,7 +42,8 @@ C<Bedrock::Model>
 
 =head1 SYNOPSIS
                   
- my $model = new Bedrock::Model({ dbi => $dbi, table => $table, model => $model_specs});
+ my $model = new Bedrock::Model(
+   { dbi => $dbi, table => $table, model => $model_specs } );
 
  $model->create_table();
 
@@ -80,7 +81,7 @@ C<Bedrock::Model>
 
 ...then...
 
- MyApp::Users->_create($dbi);
+ MyApp::Users->create($dbi);
 
  my $users = new MyApp::Users($dbi);
  $user->set('email', 'someuser@example.com');
@@ -154,8 +155,7 @@ Creates a new table based on the object's model.
 =cut
 
 sub create_table {
-  my $self = shift;
-  my %args = @_;
+  my ($self, %args) = @_;
 
   my $table = $args{table} ||
     $self->check_table();
@@ -168,8 +168,33 @@ sub create_table {
   
   my $dry_run = $args{dry_run} ||
     ref($self) ? $self->get_dry_run() : undef;
+
+  my $sth = $dbi->prepare("show tables like ?");
+  $sth->execute($table);
+  my ($result) = $sth->fetchrow_array;
   
-  return _create_table( model => $model, dry_run => $dry_run, table => $table, dbi => $dbi);
+  if ( $result && lc($result) eq lc($table) ) {
+    if ( $args{verbose} || $self->get_verbose ) {
+      print STDERR "table $table already exists!\n";
+    }
+    
+    my $migration = $self->verify_model($dbi, %args);
+    
+    if ( $migration->should_migrate
+      && ( $args{verbose} || $self->get_verbose ) ) {
+      print STDERR "WARNING: Migration required\n";
+      print STDERR Dumper [ $migration->get_migration ];
+    }
+    
+    return $migration;
+  }
+  
+  return _create_table(
+    model   => $model,
+    dry_run => $dry_run,
+    table   => $table,
+    dbi     => $dbi
+  );
 }
 
 =pod
@@ -187,10 +212,9 @@ you have a valid model defined for the class.
 =cut
 
 sub create {
-  my $self = shift;
+  my ($self, $dbi, %args) = @_;
+
   my $class = ref($self) || $self;
-  
-  my $dbi = shift;
   
   my $model = $class->_model;
   
@@ -203,22 +227,38 @@ sub create {
   die "could not determine table name from $class\n"
     unless $table;
   
-  my $stmnt = eval {
-    $self->create_table(dbi => $dbi, table => $table, model => $model);
-  };
+  my $sth = $dbi->prepare("show tables like ?");
+  $sth->execute($table);
+  my ($result) = $sth->fetchrow_array;
   
-  die "error creating table: $table\n$@"
-    if $@;
+  if ( $result && lc($result) eq lc($table) ) {
+    warn "table $table already exists!\n";
+    my $migration = $class->verify_model($dbi, %args);
+    if ( $migration ) {
+      print STDERR "WARNING: Model is out of sync with database";
+    }
+  }
+  else {
+    my $stmnt = eval {
+      $self->create_table(dbi => $dbi, table => $table, model => $model);
+    };
+  
+    die "error creating table: $table\n$@"
+      if $@;
+  }
   
   return $table;
 }
 
 sub _create_table {
   my %args = @_;
-  
+
   my @column_defs = map { $_->as_string } values %{$args{model}}; 
-  my $create_statement = sprintf("create table %s (\n    %s\n)\n", $args{table}, join(",\n    ", @column_defs));
-  
+
+  my $create_statement = sprintf( "create table %s (\n    %s\n)\n",
+  $args{table}, join( ",\n    ", @column_defs ) );
+
+
   unless ($args{dry_run}) {
     eval {
       $args{dbi}->do($create_statement);
@@ -248,10 +288,11 @@ determine if a migration is required, but not suitable for execution.
 =cut
 
 sub verify_model {
-  my $self = shift;
-  my $dbi = shift || $self->get_dbi;
-    
-  Bedrock::Model::Migration->new({ model => $self, dry_run => 1});
+  my ($class, $dbi, %args) = @_;
+
+  my $self = ref($class) ? $class : $class->new({dbi => $dbi});
+      
+  Bedrock::Model::Migration->new({ model => $self, dry_run => 1, %args });
 }
 
 =pod
