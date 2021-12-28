@@ -22,6 +22,8 @@ perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
+perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
+
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
@@ -224,14 +226,27 @@ perl5blmindexedtablehandlerlib_DATA = \
 
 BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
 
+
+# Bedrock/Model
 perl5bedrockmodellib_DATA = \
     Bedrock/Model/Field.pm \
     Bedrock/Model/Migration.pm \
     Bedrock/Model/Handler.pm \
+    Bedrock/Model/Importer.pm \
+    Bedrock/Model/ReservedWords.pm \
     Bedrock/Model/Role.pm
 
 BEDROCK_MODEL=$(perl5bedrockmodellib_DATA:.pm=.pm.in)
 
+
+# Bedrock/Model/ReservedWords
+perl5bedrockmodelreservedwordslib_DATA = \
+    Bedrock/Model/ReservedWords/MySQL.pm
+
+BEDROCK_MODEL_RESERVEDWORDS=$(perl5bedrockmodelreservedwordslib_DATA:.pm=.pm.in)
+
+
+# Bedrock/Model/Serializer
 perl5bedrockmodelserializerlib_DATA = \
     Bedrock/Model/Serializer/MySQL.pm
 
@@ -287,6 +302,7 @@ PERL_PM = \
     $(BEDROCK_FILTER) \
     $(BEDROCK_MODEL) \
     $(BEDROCK_MODEL_SERIALIZER) \
+    $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \

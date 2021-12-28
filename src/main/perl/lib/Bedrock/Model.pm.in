@@ -27,12 +27,12 @@ use parent qw/Class::Accessor::Fast/;
 
 use Scalar::Util qw/reftype blessed/;
 use Data::Dumper;
+use Carp;
 
-use Bedrock::Model::Serializer::MySQL;
 use Bedrock::Model::Migration;
   
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine/);
+__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine verbose debug/);
 
 =pod
 
@@ -125,21 +125,52 @@ sub new {
 
   my $self = $class->SUPER::new($args);
 
-  my $serializer = 'Bedrock::Model::Serializer::' . $args->{engine};
-  
-  $self->set_serializer($serializer->new({ dbi => $self->get_dbi(), table => $self->get_table()}));
+  my $serializer = _init_serializer($self->get_dbi, $self->get_table, $self->get_engine);
+
+  $self->set_serializer($serializer);
   
   $self;
 }
 
 sub describe_table {
-  shift->get_serializer->describe_table(@_);
+  my ($self, $serializer, $dbi, $table) = @_;
+  
+  $serializer = $serializer || $self->get_serializer;
+  $dbi        = $dbi        || $self->get_dbi;
+  $table      = $table      || $self->get_table;
+  
+  return $self->$serializer->describe_table($dbi, $table);
 }
 
 sub model_as_string {
-  shift->get_serializer->as_string(@_);
+  my ($self, $model) = @_;
+  
+  $model = $model || $self->get_model;
+
+  return $self->get_serializer->as_string($model);
 }
 
+sub as_string {
+  goto &model_as_string;
+}
+
+sub to_string {
+  goto &mode_as_string;
+}
+
+# +-----------------+
+# | PRIVATE METHODS |
+# +-----------------+
+
+sub _init_serializer {
+  my ($dbi, $table, $engine) = @_;
+  
+  my $serializer = "Bedrock::Model::Serializer::$engine";
+  
+  eval "require $serializer";
+  
+  return $serializer->new( { dbi => $dbi, table => $table } );
+}
 
 =pod
 
@@ -252,12 +283,23 @@ sub create {
 
 sub _create_table {
   my %args = @_;
+  
+  my $model = $args{model};
+  
+  if ( ! ref($model) || reftype($model) ne 'HASH' ) {
+    croak "model argument must be a hash\n" . Dumper [$model];
+  }
 
+  foreach my $k ( keys %$model ) {
+    if ( ! ref($model->{$k}) ||  ref($model->{$k}) ne 'Bedrock::Model::Field' ) {
+      croak "$k is not a Bedrock::Model::Field object:\n" . Dumper($model->{$k});
+    }
+  }
+  
   my @column_defs = map { $_->as_string } values %{$args{model}}; 
-
-  my $create_statement = sprintf( "create table %s (\n    %s\n)\n",
-  $args{table}, join( ",\n    ", @column_defs ) );
-
+  
+  my $create_statement = sprintf( "create table %s %s (\n    %s\n)\n",
+  "if not exists", $args{table}, join( ",\n    ", @column_defs ) );
 
   unless ($args{dry_run}) {
     eval {

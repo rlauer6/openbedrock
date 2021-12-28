@@ -1161,7 +1161,7 @@ sub init_config {
 		  labels      => ''
 		);
   
-    my @cols = $self->get_fields;
+  my @cols = $self->get_fields;
   
   foreach my $type (qw(set get attributes labels)) {
     my $config = $table_config->{$type} || {};
@@ -1499,13 +1499,12 @@ columns, set 'upsert' mode first.
 =cut
 
 sub save {
-  my $self = shift;
-  my $input = shift;
+  my ($self, $input) = @_;
   
   if ( ref($input) && reftype($input) eq 'HASH' ) {
-    foreach ( $self->get_fields ) {
-      $self->set($_, $input->{$_} )
-	if exists $input->{$_};
+    foreach my $f ( $self->get_fields ) {
+      $self->set($f, $input->{$f} )
+	if exists $input->{$f};
     }
   }
 
@@ -1591,18 +1590,20 @@ sub _upsert_mode {
 }
 
 sub _insert {
-  my $self = shift;
-  my $some_or_all = shift;
+  my ($self, $some_or_all) = @_;
 
   $self->_format_fields_for_insert;
 
   my $query = "insert into %s (%s) values (%s)";
   $self->{id} = 0;
 
-  my @fields = ($self->get_fields());
-
+  my @fields;
+  
   if ( $some_or_all eq 'some' ) {
-    @fields = map { exists $self->{$_} ? $_ : (); } @fields;
+    @fields = map { exists $self->{$_} ? "`$_`" : (); } $self->get_fields();
+  }
+  else {
+    @fields = map { "`$_`" } $self->get_fields();
   }
 
   $query = sprintf($query,
@@ -1611,9 +1612,22 @@ sub _insert {
                    join(",", split "", "?" x scalar(@fields))
                   );
 
-  $self->Do($query, @{$self}{@fields});
+  $self->Do($query, $self->_get_values(@fields));
 
   $self->{id} = $self->dbi->{mysql_insertid};
+}
+
+sub _get_values {
+  my ($self, @fields) = @_;
+  
+  my @values;
+
+  foreach my $f (@fields) {
+    $f =~s/`//g;
+    push @values, $self->{$f};
+  }
+  
+  return @values;
 }
 
 sub _insert_some { push @_, 'some'; goto &_insert; }
@@ -1625,14 +1639,14 @@ sub _update {
   $self->_format_fields_for_insert;
 
   my @fields = grep { !/^id$/ } ($self->get_fields());
-  @fields = map { exists $self->{$_} ? $_ : (); } @fields;
+  @fields = map { exists $self->{$_} ? "`$_`" : (); } @fields;
 
   my $query = sprintf("update %s set %s where id = ?",
 		      $self->get_table_name,
 		      join(",", map { "$_ = ?" } @fields)
       );
 
-  $self->Do($query, @{$self}{@fields}, $self->{'id'});
+  $self->Do($query, $self->_get_values(@fields), $self->{'id'});
 
   return $self->{rows};
 }
@@ -1917,13 +1931,14 @@ See also C<BLM::DBHandler>
 =cut
 
 sub select {
-  my $self = shift;
+  my ($self, @args) = @_;
 
-  unless ( @_ ) {
-    BLM::IndexedTableHandler::RecordSet->new($self->select_list("select * from " . $self->get_table_name));
+  if (! @args) {
+    BLM::IndexedTableHandler::RecordSet->new(
+      $self->select_list( "select * from " . $self->get_table_name ) );
   }
   else {
-    $self->SUPER::select(@_);
+    $self->SUPER::select(@args);
   }
 }
 
@@ -2002,40 +2017,44 @@ C<search> would then proceed similarly through the non-indexed fields
 =cut
 
 sub search {
-    my $self = shift;
-    my $input = shift;
-    my $exact_flag = shift || 0;
+  my ( $self, $input, $exact_flag ) = @_;
 
+  $exact_flag = $exact_flag || 0;
+
+  if ( $input ) {
     $self->set($input)
-      if $input;
+  }
 
-    $self->set_key_fields() unless $self->{_search_fields};
+  if ( ! $self->{_search_fields} ) {
+    $self->set_key_fields;
+  }
+  
+  my @search_args;
+
+  if ( $self->{_search_fields} && @{ $self->{_search_fields} } ) {
+    my @search_fields = @{ $self->{_search_fields} };
     
-    my @search_args;
-    
-    if ($self->{_search_fields} && @{$self->{_search_fields}}) {
-      my @search_fields = @{$self->{_search_fields}};
-      while (@search_fields) {
-	my $exact_flag = shift @search_fields;
-	my $field_name = shift @search_fields;
-	
-	if ($self->{$field_name}) {
-	  push @search_args, $exact_flag, $field_name, $input->{$field_name};
-	}
+    while (@search_fields) {
+      my $exact_flag = shift @search_fields;
+      my $field_name = shift @search_fields;
+
+      if ( $self->{$field_name} ) {
+        push @search_args, $exact_flag, $field_name, $input->{$field_name};
+      }
+    } ## end while (@search_fields)
+  } ## end if ( $self->{_search_fields...})
+
+  # still uncomfortable with assuming certain wildcard/non-wildcard searching
+  if ( ! @search_args) {
+    foreach my $f ( $self->get_fields ) {
+      if ( $input->{$f} ) {
+        push @search_args, $exact_flag, $f, $input->{$f};
       }
     }
-    
-    # still uncomfortable with assuming certain wildcard/non-wildcard searching
-    unless (@search_args) {
-      foreach ( $self->get_fields() ) {
-	if ( $input->{$_} ) {
-	  push @search_args, $exact_flag, $_, $input->{$_};
-	}
-      }
-    }
+  } ## end unless (@search_args)
 
-    return $self->_find(@search_args);
-}
+  return $self->_find(@search_args);
+} ## end sub search
 
 =pod
 
@@ -2211,7 +2230,19 @@ lists to C<Bedrock::Array> objects.>
 =cut
 
 sub get_field_list { shift->{_field_list} };
-sub get_fields     { @{shift->get_field_list()} };
+
+sub get_fields  {
+  my ($self) = @_;
+
+  my @fields;
+  
+  foreach my $f ( @{$self->get_field_list}) {
+    $f =~s/`//g;
+    push @fields, $f;
+  }
+  
+  return @fields;
+};
 
 =pod
 

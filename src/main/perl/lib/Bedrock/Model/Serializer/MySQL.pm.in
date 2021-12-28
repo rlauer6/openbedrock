@@ -29,7 +29,7 @@ __PACKAGE__->follow_best_practice();
 __PACKAGE__->mk_accessors(qw/dbi table/);
 
 use Bedrock::Model::Field;
-
+use Carp;
 use Data::Dumper;
 use Scalar::Util qw/reftype/;
 
@@ -48,14 +48,18 @@ sub describe_table {
   my $self = shift;
   my $dbi = shift || $self->get_dbi;
   my $table = shift || $self->get_table;
-
+  
+  croak "usage: " . __PACKAGE__ . "->describe_table($dbi, $table)\n"
+    if ! ( $dbi && $table );
+    
   my $sth = $dbi->prepare("describe $table");
   $sth->execute;
 
   my %table_def;
   
-  while (my $r = $sth->fetchrow_hashref ) {
-    $table_def{$r->{Field}} = new Bedrock::Model::Field( { map { lc($_), $r->{$_ }; } keys %$r });
+  while ( my $r = $sth->fetchrow_hashref ) {
+    $table_def{ $r->{Field} }
+      = Bedrock::Model::Field->new( { map { lc($_), $r->{$_}; } keys %$r } );
   }
   
   return \%table_def;
@@ -65,19 +69,20 @@ sub describe_table {
 
 =head2 as_string
 
- as_string( [table => table-name] ); 
+ as_string( [ model ] ); 
 
 Creates a serialized array representation of column definitions
 from an existing MySQL table.
 
-  print $model_serializer->as_string(table => 'contact');
+  print $model_serializer->as_string($model);
 
 =cut
 
 sub as_string {
-  my $self = shift;
-  my $model = shift || $self->fetch_model();
-
+  my ($self, $model) = @_;
+  
+  $model = $model || $self->fetch_model();
+  
   my $model_as_string = "our \$MODEL = new Bedrock::Hash(\n%s\n);";
   
   my $field_template = "%s => new Bedrock::Model::Field({\n%s\n})";
@@ -86,7 +91,12 @@ sub as_string {
   
   my @columns;
   
-  foreach my $field (values %{$model}) {
+  foreach my $field_name (keys %{$model}) {
+    my $field = $model->{$field_name};
+    if ( ! ref($field) || ref($field) ne 'Bedrock::Model::Field' ) {
+      croak Dumper [ $field ];
+    }
+    
     $field->set_null(defined $field->get_null() ? lc($field->get_null()) : 'yes');
     $field->set_key(defined $field->get_key() ? lc($field->get_key()) : undef);
     my @column_defs;
@@ -97,13 +107,11 @@ sub as_string {
     push @column_defs, sprintf(" extra => '%s'", $field->get_extra) if $field->get_extra;
     push @column_defs, sprintf(" key => '%s'", $field->get_key) if $field->get_key;
     push @column_defs, sprintf(" default => '%s'", $field->get_default) if $field->get_default;
-
-    my $field_name = $field->get_field;
-
+    
     if ( $field_name =~/^\d/ ) {
       $field_name = "'$field_name'";
     }
-
+    
     push @columns, sprintf($field_template,
 			   $field_name,
 			   join(",\n", @column_defs));
@@ -113,7 +121,9 @@ sub as_string {
 }
 
 sub fetch_model {
-  shift->describe_table;
+  my ($self) = @_;
+  
+  $self->describe_table;
 }
 
 1;

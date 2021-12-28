@@ -18,6 +18,7 @@ PERLSCRIPTS = \
     bedrock.pl.in \
     bedrock-plugin.pl.in \
     bedrock-model.pl.in \
+    bedrock-model-importer.pl.in \
     bedrock-cache.pl.in \
     brxml2json.pl.in
 
@@ -53,6 +54,7 @@ install-data-hook: installdirs
 	ln -f -s @bindir@/bedrock.pl  $(DESTDIR)/bin/bedrock
 	ln -f -s @bindir@/bedrock-model.pl  $(DESTDIR)/$(bindir)/bedrock-model
 	ln -f -s @bindir@/bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
+	ln -f -s @bindir@/bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
 endif
 
 .PHONY: clean-local
