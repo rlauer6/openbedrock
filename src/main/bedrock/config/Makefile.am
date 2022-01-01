@@ -10,7 +10,8 @@ CONFIG = \
     tagx.xml.in \
     mysql-session.xml.in \
     tagx_apps.xml.in \
-    perl_bedrock.conf.in \
+    perl_bedrock.conf22.in \
+    perl_bedrock.conf24.in \
     bedrock-rest-framework.conf.in \
     startup.pl.in
 
