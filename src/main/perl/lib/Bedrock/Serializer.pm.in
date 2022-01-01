@@ -3,6 +3,8 @@ package Bedrock::Serializer;
 use strict;
 use warnings;
 
+use Scalar::Util qw/reftype/;
+
 use Role::Tiny;
 use Data::Dumper;
 
@@ -56,5 +58,72 @@ before deserialize => sub {
   my $data = shift;
   $orig->options('out', shift);
 };
+
+# convert Bedrock objects -> regular perl objects
+sub devolve {
+  my $this = shift;
+
+  if ( ref($this) && reftype($this) eq 'HASH' ) {
+    my $that = {};
+    
+    eval { keys %$this; };
+
+    die ref($this) . ' trapped.' if $@;
+
+    foreach ( keys %{$this} ) {
+      $that->{$_} = &devolve( $this->{$_} );
+    }
+
+    return $that;
+  }
+  elsif ( UNIVERSAL::isa($this, 'ARRAY') ) { 
+    my $that = [];
+
+    foreach ( @{$this} ) {
+      push @{$that}, &devolve($_);
+    }
+
+    return $that;
+  }
+  elsif ( ref($this) ) {
+    die "invalid object\n";
+  }
+  else {
+    return $this;
+  }
+}
+
+# promote regular perl objects -> Bedrock objects
+sub evolve {
+  my $this = shift;
+
+  if ( ref($this) eq 'HASH' ) {
+    bless $this, 'Bedrock::Hash';
+    
+    foreach ( keys %$this ) {
+      $this->{$_} = evolve( $this->{$_} );
+    }
+
+    return $this;
+  }
+  elsif ( ref($this) eq 'ARRAY' ) {
+    bless $this, 'Bedrock::Array';
+    
+    for ( my $idx = 0 ; $idx < @$this ; $idx++ ) {
+      $this->[$idx] = evolve( $this->[$idx] );
+    }
+    
+    return $this;
+  }
+  elsif ( ref($this) =~/boolean/i ) {
+    return ( $this ) ? 1 : 0; 
+  }
+  elsif ( ref($this) ) {
+    die "Invalid object during promotion: " . ref($this);
+  }
+  else {
+    return $this;
+  }
+}
 
 1;
