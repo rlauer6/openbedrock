@@ -1,6 +1,6 @@
 dnl -*-Autoconf-*-
 
-AC_INIT([bedrock], [3.0.2], [rclauer@gmail.com])
+AC_INIT([bedrock], [3.1.0], [rclauer@gmail.com])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
