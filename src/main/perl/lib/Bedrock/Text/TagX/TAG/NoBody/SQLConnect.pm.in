@@ -32,6 +32,7 @@ BEGIN {
 }
 
 use DBI;
+use Data::Dumper;
 
 use TagX::Log;
 use TagX::TAG::NoBody;
@@ -40,6 +41,112 @@ use TagX::TAG::NoBody;
 
 sub ANONYMOUS {
   '*anonymous*';
+}
+
+sub _fetch_dsn {
+  my ($dsn_source) = @_;
+
+  return @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
+}
+
+sub _check_options {
+  my ($tx, $name, %options) = @_;
+
+  foreach (qw/db data-source username password/) {
+    die "sqlconnect: option --" . $_ . " requires a value.\n"
+      if exists $options{$_} && ! $options{$_};
+  }
+
+  if ( exists $tx->{'VARS'}->{$name} ) {
+    die "sqlconnect: cannot assign database connection to `$name': variable already exists.\n";
+  }
+}
+
+# returns (dsn, username, password)
+sub _get_dsn_from_config {
+  my ($tx, $options) = @_;
+
+  my %dsn_spec;
+
+  foreach (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/) {
+    $dsn_spec{$_} = $tx->config($_);
+  }
+  
+  return _fetch_dsn(\%dsn_spec);
+}
+
+sub _get_dsn_from_data_sources {
+  my ($tx, %options) = @_;
+  
+  my $dsn_name = $options{dsn};
+
+  my ($dsn, $user, $pass, $host);
+  
+  if ( $dsn_name ) {
+    my $dbnames = $tx->config->dbnames() || {};
+    
+    if ( ! $dbnames->{$dsn_name} ) {
+      die "sqlconnect: no named connection '" . $options{dsn} . "' found.\n";
+    }
+    
+    ($dsn, $user, $pass, $host ) = _fetch_dsn($dbnames->{$dsn_name});
+  }
+
+  return ($dsn, $user, $pass, $host);
+}
+
+sub _get_dsn_from_options {
+  my ($tx, %options) = @_;
+
+  return @options{qw/data-source username password/};
+}
+
+sub _get_dsn_from_environment {
+  my ($tx, %options) = @_;
+  
+  return _fetch_dsn(\%ENV);
+}
+
+sub _get_dsn {
+  my ($tx, %options) = @_;
+
+  my %source = (
+    'options'      => \&_get_dsn_from_options,
+    'data-sources' => \&_get_dsn_from_data_sources,
+    'environment'  => \&_get_dsn_from_environment,
+    'config'       => \&_get_dsn_from_config,
+  );
+                
+
+  my ($dsn, $user, $pass, $host);
+  
+  foreach my $src (keys %source) {
+    ($dsn, $user, $pass, $host) = $source{$src}->($tx, %options);
+    
+    if ( $dsn && $user ) {
+      $tx->{DB_DSN_SOURCE} = $src;
+      last;
+    }
+  }
+
+  return ($dsn, $user, $pass, $host);
+}
+
+
+sub _check_for_existing_connection {
+  my ($tx, $name, %options) = @_;
+  
+  my $is_connected = exists $tx->{'DB'}->{$name};
+
+  if ( $is_connected ) {
+    
+    $tx->{'DB'}->{$name}->disconnect;
+    
+    delete $tx->{'DB'}->{$name};
+    delete $tx->{'VARS'}->{$name};
+  }
+
+  return $is_connected;
 }
 
 sub finalize {
@@ -54,98 +161,125 @@ sub finalize {
                   'data-source=s' => undef,
                   'dsn=s'         => undef,
                   'username=s'    => undef,
-                  'password=s'    => undef
+                  'password=s'    => undef,
+                  'hostname=s'    => undef,
                 );
 
+  # --- parse options
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
 
-  my $dbnames = $tx->config->dbnames();
+  my $verbose = $self->verbose;
 
   $self->dump_options( \%options ) 
     if $verbose;
 
-  die "Specify the DSN using the `--data-source' option or as argument, but not both.\n"
-    if exists $options{'data-source'} and @argv;
-
-  my $dsn;
-
-  foreach (qw/db data-source username password/) {
-    die "option --" . $_ . " requires a value.\n"
-      if ( exists $options{$_} && ( !defined $options{$_} || !$options{$_} ) );
-  }
-
-  if ( exists $options{'data-source'} ) {
-    $dsn = $options{'data-source'};
-  }
-  elsif (@argv) {
-    $dsn = "@argv";
-  }
-  elsif ( exists $options{dsn} && ref($dbnames) ) {
-    if ( exists $dbnames->{$options{dsn}} ) {
-      $dsn = $dbnames->{$options{dsn}}->{DBI_DSN};
-      $options{username} = $dbnames->{$options{dsn}}->{DBI_USER};
-      $options{password} = $dbnames->{$options{dsn}}->{DBI_PASS};
-    }
-    else {
-      die "No named connection '" . $options{dsn} . "' found.\n";
-    }
-  }
-  elsif ( exists $ENV{DBI_DSN} ) {
-    $dsn = $ENV{DBI_DSN};
-    $options{username} = $options{username} || $ENV{DBI_USER};
-    $options{password} = $options{password} || $ENV{DBI_PASS};
-  }
-  elsif ( $tx->config('DBI_DSN') ) {
-    &log_message( $self, "DSN will be taken from configuration..." )
-      if $verbose;
-    $dsn = $tx->config('DBI_DSN');
-    $options{username} = $options{username} || $tx->config('DBI_USER');
-    $options{password} = $options{password} || $tx->config('DBI_PASS');
-    &log_message( $self, "DSN: $dsn username: " . $options{username} . " password: " . $options{password})
-      if $verbose;
-  }
   
-  die "Data source not specified.\n" 
-    unless $dsn;
+  # --- parse tag and determine name of variable for storing dbi handle
+  my $tag_opts = $self->parse_tag_name($argv[0]);
   
-  $tx->{'DB'} = {} 
-    unless exists $tx->{'DB'};
-
-  &log_message( $self, "deprecated use of --dbname, use --db instead." );
-
-  my $name = $options{'dbname'} || $options{'db'};
-  die "Cannot assign database connection to `$name': variable already exists.\n"
-    if $name && exists $tx->{'VARS'}->{$name};
-
-  $name = &ANONYMOUS;
-  
-  if ( exists $tx->{'DB'}->{$name} ) {
-    &log_message( $self, "Disconnecting previous DB connection named ($name)\n" )
-      if $verbose;
-    $tx->{'DB'}->{$name}->disconnect;
-
-    delete $tx->{'DB'}->{$name};
-    delete $tx->{'VARS'}->{$name};
-  }
-  
-  my $dbh = DBI->connect( $dsn, @options{qw(username password)},
-			  {
-			   'AutoCommit' => $options{AutoCommit},
-			   'PrintError' => $options{PrintError},
-			   'RaiseError' => $options{RaiseError},
-			   'ChopBlanks' => $options{ChopBlanks}
-			  }
-			);
-
-  die "Unable to connect to database: ", $DBI::errstr, "\n"
-    unless $dbh;
-
-  &log_message( $self, "Connected to database, handle = <$dbh>\n" ) 
+  &log_message( $self, Dumper( \@argv, $tag_opts ) )
     if $verbose;
 
-  $tx->{'DB'}->{$name} = $dbh;
-  $tx->{'VARS'}->{$name} = $dbh unless $name eq &ANONYMOUS;
+  my $name;
+  
+  if ( $tag_opts->{name} ) {
+    $name = $tag_opts->{name};
+    shift @argv;
+  }
+  elsif ( $options{'dbname'} ) {
+    $name = $options{'dbname'};
+    &log_message( $self, "deprecated use of --dbname, use --define-var instead." );
+  }
+  elsif ( $options{'db'} ) {
+    $name = $options{'db'};
+    &log_message( $self, "deprecated use of --dbname, use --define-var instead." );
+  }
+  else {
+    $name = &ANONYMOUS;
+  }
+
+  
+  # --- check option consistency
+  _check_options($tx, $name, %options);
+
+  
+  # --- check for user of overlapping dsn
+  if ( exists $options{'data-source'} and @argv ) {
+    die "Specify the DSN using the `--data-source' option or as argument, but not both.\n";
+  }
+  elsif ( @argv ) {
+    $options{'data-source'} = "@argv"; # all args must now come from options
+  }
+
+  
+  # --- check for existing connection
+  $tx->{'DB'} = $tx->{'DB'} || {};
+
+  &log_message($self, 'sqlconnect: disconnecting previous connection')
+    if _check_for_existing_connection($tx, $name, %options) && $verbose;
+
+  # --- look for connection information
+  $self->dump_options(\%options)
+    if $verbose;
+  
+  my ($dsn, $user, $pass, $host) = _get_dsn($tx, %options);
+
+
+  # --- connect to database
+
+  # note: password can be optional...
+  if ( $dsn && $user ) {
+    
+    if ( ! $pass ) {
+      &log_message($self, 'sqlconnect: no password');
+    }
+
+    $dsn = "$dsn:$host" if $host;
+
+    if ($verbose) {
+      &log_message( $self,
+            'sqlconnect: attempting connection to '
+          . $dsn
+          . ' with for user '
+          . $user );
+    } ## end if ($verbose)
+    
+    my $dbh = DBI->connect(
+      $dsn, $user, $pass,
+      { 'AutoCommit' => $options{AutoCommit},
+        'PrintError' => $options{PrintError},
+        'RaiseError' => $options{RaiseError},
+        'ChopBlanks' => $options{ChopBlanks}
+      }
+    );
+
+    if ( $dbh ) {
+      
+      if ($verbose) {
+        &log_message( $self,
+              "sqlconnect: connected to database ($dsn) from "
+            . $tx->{DB_DSN_SOURCE}
+            . "\n" );
+        
+        &log_message( $self, Dumper( [ $name, $dbh, $tx ] ) );
+      } ## end if ($verbose)
+  
+      # save for other <sql..> operations
+      $tx->{'DB'}->{$name} = $dbh;
+      
+      # add $name to namespace
+      $tx->{'VARS'}->{$name} = $dbh
+        if $name ne &ANONYMOUS;
+    }
+    else {
+      die "sqlconnect: unable to connect to database: ", $DBI::errstr, "\n"
+    }
+  }
+  else {
+    my ($missing) = map { eval "\$$_" ? () : $_ } qw/dsn user/;    
+
+    die "sqlconnect: no $missing found from any source\n";
+  }
 }
 
 =head1 TAG - C<E<lt>sqlconnectE<gt>>
@@ -164,11 +298,15 @@ Connection string, ala perl's C<DBI> connection strings.  You can
 optionally specify the connection string as a tag argument
 (I<deprecated>) or by using the C<--data-source> or C<--dsn> option.
 
+If you specify the connection string as an argument or you use the
+C<--data-source> option, then all options to connect most be specified as
+options.
+
 =head2 options
 
  --data-source  = data-source
  --dsn          = named connection
- --db           = database connection handle
+ --db           = database connection handle name
  --username     = database user
  --password     = user password
  --ChopBlanks   = 1|0
@@ -180,38 +318,31 @@ optionally specify the connection string as a tag argument
 
 =item --dsn
 
-Specifies a named connection that you created in the F<data-sources.xml>
-file that you dropped in either the C<$ENV{BEDROCK_CONFIG_PATH}> or
-C<$ENV{CONFIG_PATH}> directories.
-
-Example:
-
- <sqlconnect --dsn="sales">
-
-...then in F<data-sources.xml>
-
- <object>
-  <object name="sales">
-   <scalar name="DBI_DSN">dbi:Oracle:sales_prod</scalar>
-   <scalar name="DBI_USER">zig</scalar>
-   <scalar name="DBI_PASS">ziglar</scalar>
-  </object>
- </object>
+Specifies a named connection that you created in the
+F<data-sources.xml> file that you dropped in either the
+C<$ENV{BEDROCK_CONFIG_PATH}> or C<$ENV{CONFIG_PATH}> directories.
 
 =item --data-source
 
 Data source name of the form:
 
-C<dbi:database-type:database-name>
+C<dbi:database-type:database-name[:hostname]>
 
 Example:
 
  dbi:Oracle:name_devl
- dbi:mysql:bedrock
+
+ dbi:mysql:bedrock:localhost
 
 =item --db
 
-Optional name of an object that will store the database handle used in subsequent database related calls.
+Optional name of an object that will store the database handle used in
+subsequent database related calls.
+
+=item --hostname
+
+Optional name of the host.  If this value is present it will be
+appended to the connection string.
 
 =item --username
 
@@ -245,22 +376,78 @@ Bedrock's database layer is implemented using the Perl C<DBI> module.
 For more information regarding the behavior of C<DBI> see C<perldoc
 DBI>.
 
-The environment variable C<DBI_DSN> can also be used to specify the
-connect string. If the username and password arguments are undefined,
-C<DBI> will also look for C<DBI_USER> and C<DBI_PASS> in the
-environment to use as the username and password respectively.
+To connect to the database you must supply the connection information
+in one of the ways described below. The order in which Bedrock will
+look for connection information is:
 
-Bedrock will verify that you have the C<DBI_DSN> environment variable
-defined if you do not specify a connect string, otherwise Bedrock will
-look in it's configuration object for a data-source, username and
-password defined using the same variables (C<DBI_DSN>, C<DBI_USER>,
-C<DBI_PASS>). If Bedrock still can't find a data-source it will throw an
-exception.
+=over 5
 
-The configuration object is initially read from F<tagx.xml> so you
-could specify those variables there.  You can alternately set them in
-your Bedrock page by invoking the C<set> method of the C<$config>
-object.
+=item 1. options
+
+=item 2. data sources file
+
+=item 3. Environment variables
+
+=item 4. Configuration object
+
+=back
+
+=head2 Specifying Connection Parameters in the Tag
+
+Specify the username, password and connection string using options to
+the C<E<lt>sqlconnectE<gt>> tag.
+
+ <sqlconnect --username fred --password flintstone dbi:mysql:bedrock>
+ <sqlconnect --username fred --password flintstone --hostname=localhost dbi:mysql:bedrock>
+ <sqlconnect --username fred --password flintstone --data-source=dbi:mysql:bedrock>
+
+=head2 Using a Data Sources XML File
+
+Using the C<--dsn> option you can specify the name of a set of
+connection parameters found in the F<data-sources.xml> file.  Create a
+file named F<data-sources.xml> similar to the one below and copy it
+Bedrock's configuration path.
+
+
+ <object>
+  <object name="customers">
+   <scalar name="DBI_DSN">dbi:mysql:customers</scalar>
+   <scalar name="DBI_USER">some-user</scalar>
+   <scalar name="DBI_PASS">some-password</scalar>
+  </object>
+ </object>
+
+Then, to connect to the database:
+
+ <sqlconnect --dsn="customers">
+
+=head2 Using Environment Variables to Specify Connection Parameters
+
+As discussed previously, you can force Bedrock to export configuration
+variables to the environment using the C<export_env="yes"> attribute
+of a Bedrock XML C<E<lt>scalarE<gt>> tag.
+
+ <scalar export_env="yes"  name="DBI_DSN">dbi:mysql:bedrock;host=localhost</scalar>
+ <scalar export_env="yes"  name="DBI_USER">fred</scalar>
+ <scalar export_env="yes"  name="DBI_PASS">bedrock</scalar>
+
+=head2 Specifying Connection Parameters in a Configuration File
+
+Bedrock will also look for connection information in the the configuration
+object if no options are given in the tag.  The configuration object
+is the result of merging any C<.xml> files in Bedrock's configuraiton
+paths, so placing the variables:
+
+ DBI_DSN
+ DBI_USER
+ DBI_PASS
+ DBI_HOST
+
+...in any of C<.xml> file will create a default database connection
+configuration.
+
+You can alternately set them in your Bedrock page by invoking the
+C<set> method of the C<$config> object.
 
  <null $config.set('DBI_DSN', 'dbi:mysql:bedrock')>
  <null $config.set('DBI_USER', 'fred')>
@@ -272,33 +459,25 @@ configuration file.
 
  <null $config.merge("bedrock-connect.xml")>
 
-Yet another way, would be to create a directory specific configuration
-in F<tagx_apps.xml> which is merged with the system configuration when
-Bedrock serves a page from the directory specified as one of the keys
-in F<tagx_apps.xml> file.
+=head2 Using Directory Specific Connection Parameters
+
+Yet another way to provide connection information to Bedrock is to
+create a directory specific configuration in F<tagx_apps.xml>.  This
+file will be merged with the system configuration when Bedrock serves
+a page from the directory specified as one of the keys in
+F<tagx_apps.xml> file.
 
  <object>
   <object name="/accounting">
-   <scalar name="DBI_DSN">dbi:Oracle:name_devl</scalar>
-   <scalar name="DBI_USER">ACCTN</scalar>
-   <scalar name="DBI_PASS">ACCTN</scalar>
+   <scalar name="DBI_DSN">dbi:mysql:accounting</scalar>
+   <scalar name="DBI_USER">fred</scalar>
+   <scalar name="DBI_PASS">flintstone</scalar>
   </object>
  </object>
 
-As discussed previously, you can force Bedrock to export configuration
-variables to the environment using the C<export_env="yes"> attribute
-of a Bedrock XML C<E<lt>scalarE<gt>> tag.
-
- <scalar export_env="yes"  name="DBI_DSN">dbi:mysql:bedrock;host=localhost</scalar>
- <scalar export_env="yes"  name="DBI_USER">fred</scalar>
- <scalar export_env="yes"  name="DBI_PASS">bedrock</scalar>
-
-I<Even though DBI and Bedrock support this, exporting usernames and
-passwords is probably not something you want to do.>
-
 =head1 EXAMPLE
 
- <sqlconnect --data-source="dbi:Oracle:name_devl"  --username="srch" --password="srch">
+ <sqlconnect --data-source="dbi:mysql:bedrock:10.1.1.1"  --username="srch" --password="srch">
 
  <sqlselect "select * from custmr where acct < 999">
   <var $ACCT> <var $NAME><br>
@@ -309,121 +488,5 @@ passwords is probably not something you want to do.>
 C<E<lt>sqlE<gt>>, C<E<lt>sqlselectE<gt>>, C<BLM::Startup::Config>
 
 =cut
-
-#
-# Revision 1.31  2013/11/02 21:43:35  rlauer
-# - pod tweak
-#
-# Revision 1.30  2011/12/28 16:54:36  eutl420
-# - pod tweaks
-#
-# Revision 1.29  2011/09/15 16:05:33  eutl420
-# - perl tidy
-#
-# Revision 1.28  2011/08/22 23:23:07  eutl420
-# - use named connections via the --dsn option
-#
-# Revision 1.27  2011/08/18 21:52:45  eutl420
-# - added option --dns= to support access of DNS names set in dbnames.xml
-#
-# Revision 1.26  2011/07/17 16:50:27  eutl420
-# @PERL@, log_message if verbose
-#
-# Revision 1.25  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.24  2011/07/06 15:53:48  eutl420
-# - typo needed an extra paren when testing connect options
-#
-# Revision 1.23  2011/07/05 21:25:34  eutl420
-# - check the options to see if the option for connection may have been specified but no valid
-#   value is provide.  This might happen if for example you are taking values from an object for
-#   a connect string and it is undefined.  Because Bedrock 2 drops back to defaults DBI_DSN for example
-#   you probably only want to drop back in the event you don't specify the options at all
-#
-# Revision 1.22  2010/12/12 16:22:17  eutl420
-# - dump_options, not dump_keys
-# - use environment DBI_USER, DBI_PASS if available
-#
-# Revision 1.21  2010/12/06 14:18:26  rlauer
-# - use DBI_DSN, DBI_USER, DBI_PASS from Bedrock's configuration
-# - lot's of pod to explain above
-#
-# Revision 1.20  2010/11/29 15:57:54  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.19  2010/11/19 19:14:31  rlauer
-# - documentation edits
-#
-# Revision 1.18  2010/11/17 02:27:42  rlauer
-# - pod cleanup
-#
-# Revision 1.17  2010/11/11 21:41:33  rlauer
-# - type log_mesas
-#
-# Revision 1.16  2009/12/31 18:38:38  rlauer
-# updated docs
-#
-# Revision 1.15  2009/12/31 12:43:34  rlauer
-# docs tweaks
-#
-# Revision 1.14  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.13  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.12  2001/02/14 15:35:50  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.11  2000/11/21 19:27:33  sridhar
-# Database connection exported to the script if --dbname option is used.
-#
-# Revision 1.10  2000/11/16 19:11:36  sridhar
-# 1. Fixed error messages so exceptions don't have perl source code
-# locations in them.
-# 2. RaiseError and PrintError turned off -- we will explicitly check
-# for return code and show a suitable error message
-#
-# Revision 1.9  2000/09/22 20:21:17  sridhar
-# 1. RaiseError defaults to 1 (on)
-# 2. Argument if present is treated as the data source to connect to if
-# --data-source is not used.
-#
-# Revision 1.8  2000/08/04 17:13:07  sridhar
-# BUG Fix: Return from DBI->connect was not being verified presuming
-# exception would be thrown -- has been fixed.
-#
-# Revision 1.7  2000/05/31 14:58:03  sridhar
-# Rigorous version numbering and usage
-#
-# Revision 1.6  2000/05/30 17:50:32  sridhar
-# Options hash was specified wrongly without '=s' when it was needed.
-#
-# Revision 1.5  2000/04/24 12:48:27  sridhar
-# Using TagX::Log for logging messages
-#
-# Revision 1.4  2000/04/13 15:20:37  sridhar
-# Using new parse_options method with support for expressions
-#
-# Revision 1.3  2000/03/06 18:32:00  sridhar
-# Replaced all ad-hoc message logging with message logging only on demand
-# -- via --verbose flag specified as a tag option
-#
-# Revision 1.2  2000/02/08 15:37:45  sridhar
-# Added support for being able to use Exporter version numbers
-#
-# Revision 1.1  2000/02/08 15:25:00  sridhar
-# Added TagX
-#
-#
 
 1;

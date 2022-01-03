@@ -22,6 +22,7 @@ BEDROCK_TESTS = \
     t/plugin.yml  \
     t/reftype.yml  \
     t/sink.yml    \
+    t/sqlconnect.yml    \
     t/try.yml     \
     t/var.yml
 
