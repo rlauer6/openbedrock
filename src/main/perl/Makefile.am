@@ -1,39 +1,50 @@
-## Process this file with automake to produce Makefile.in   -*-Makefile-*-
-SUBDIRS = \
-    lib     \
-    bin     \
-    cgi-bin \
-    .
+#-*- mode: makefile; -*-
 
-check_SCRIPTS = prove.sh
-
-TESTS = $(check_SCRIPTS)
+SUBDIRS = lib bin cgi-bin .
 
 TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
               $(top_srcdir)/autotools/tap-driver.sh
 
 BEDROCK_TESTS = \
-    t/flush.yml   \
-    t/if.yml      \
-    t/iif.yml      \
+    t/flush.yml \
+    t/if.yml \
+    t/iif.yml \
     t/include.yml \
-    t/null.yml    \
-    t/open.yml    \
-    t/plugin.yml  \
-    t/reftype.yml  \
-    t/sink.yml    \
-    t/sqlconnect.yml    \
-    t/try.yml     \
+    t/null.yml \
+    t/open.yml \
+    t/plugin.yml \
+    t/reftype.yml \
+    t/sink.yml \
+    t/sqlconnect.yml \
+    t/try.yml \
     t/var.yml
 
-# each test is represented by a .yml (YAML) file we create a symbolic
-# link for eacth .yml file of the form t/test.t to the generic
-# test.tag.pl file which figures out which test to run based on the
-# basename of the test being executed.  Accordingly we create the
-# symbolic links to a test directory so we are only saving the .yml
-# files to the project
+BEDROCK_TEST_HARNESS = \
+    lib/Test/Bedrock.pm.in
 
-test:
+@do_subst_command@
+
+%.pm: %.pm.in
+	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
+	$(do_subst) $< > $@
+
+# NOTE:
+#
+# Each test is represented by a .yml (YAML) file. We create a symbolic
+# link for each .yml file of the form t/test.t to the generic
+# `test.tag.pl`.  This script figures out which test to run based on
+# the basename of the test being executed.  Accordingly because we
+# create the symbolic links to a test directory so we are only saving
+# the .yml files to the project
+#
+# See `perldoc lib/Test/Bedrock.pm` for more information about
+# creating Bedrock tests.
+
+#.PHONY: test
+test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
+	cd lib;
+	$(MAKE)
+
 	test_dir=$$(mktemp -d); \
 	mkdir $$test_dir/t; \
 	for a in $(BEDROCK_TESTS); do \
@@ -42,16 +53,3 @@ test:
 	done; \
 	$(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
-
-prove.sh:
-	test_dir=$$(mktemp -d); \
-	mkdir $$test_dir/t; \
-	for a in $(BEDROCK_TESTS); do \
-	  test_file=$$(basename $$a .yml); \
-	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
-	done; \
-	echo "$(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t" > prove.sh
-	chmod 755 prove.sh
-
-CLEANFILES = \
-    prove.sh

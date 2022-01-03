@@ -33,48 +33,55 @@ sub AUTOLOAD {
 }
 
 sub log {
-  my $self = shift;
-  print STDERR @_;
+  my ( $self, @message ) = @_;
+
+  print STDERR "@message";
+
   return $self;
-}
+} ## end sub log
 
 package Faux::Context;
 
-use Bedrock;
 use Bedrock::Log;
+use Bedrock;
+use Data::Dumper;
 use TagX::Log;
 
 # we need to provide Text::TagX with a context object if we want
 # certain behaviors in Bedrock. This is also a convenient place to start a
 # test logger as well.
 sub new {
-  my $class = shift;
-  my $outhandle = shift;
+  my ($class, $outhandle, %options) = @_;
 
-  # everything else should be a hash of options
-  my $self = { @_ };
-
-  bless $self, ref($class) || $class;
-
-  $self->{outhandle} = $outhandle;
+  # everything else should be a hash of option
+  $options{outhandle} = $outhandle;
+  my $self = bless \%options, ref($class) || $class;
 
   my $logdir = $self->{LOGDIR} ? $self->{LOGDIR} : '/tmp';
-  my $logfile = $self->{LOGFILE} || sprintf("%s/bedrock-test.log", $logdir);
+  my $logfile = $self->{LOGFILE} || sprintf( "%s/bedrock-test.log", $logdir );
 
   $self->{CONFIG}->{LOGDIR} = $logdir;
   $self->{APACHE_HANDLER} = Faux::ApacheHandler->new;
 
-  Bedrock::Log::StartLogger(
-			    LOGDIR     => $self->{CONFIG}->{'LOGDIR'},
-			    LOGLEVEL   => $self->{CONFIG}->{'LOGLEVEL'},
-			    LOGFORMAT  => $self->{CONFIG}->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
-			    LOGFILE    => $self->{CONFIG}->{'LOGFILE'} || 'bedrock.log'
-			   );
+  # don't get confused!
+  #
+  # TagX::Log       --> logging tag operations
+  # Bedrock::Log    --> logging for plugins and Bedrock::Context, export LOG_MESSAGE
 
-  TagX::Log::start_logger(LOG_FILE => $logfile);
+  Bedrock::Log::StartLogger(
+    LOGDIR => $self->{CONFIG}->{'LOGDIR'} || $logdir,
+    LOGLEVEL  => $self->{CONFIG}->{'LOGLEVEL'},
+    LOGFORMAT => $self->{CONFIG}->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
+    LOGFILE   => $logfile || $self->{CONFIG}->{'LOGFILE'}
+  );
+
+  TagX::Log::start_logger(
+    LOG_FILE    => $logfile,
+    LOG_MAXSIZE => -1
+  );
 
   $self;
-}
+} ## end sub new
 
 sub cgi_header_in {
 }
@@ -108,7 +115,7 @@ use JSON;
 use Scalar::Util qw/reftype/;
 use Symbol;
 use Test::More;
-use YAML::Syck;
+use YAML qw/LoadFile/;
 
 use vars qw/@ISA @EXPORT_OK/;
 
@@ -295,32 +302,37 @@ Tests are typically stored in a YAML file as an array of tests.  Here's an examp
 
 # interprets and runs the test configurations
 sub run {
-  my $tests = shift;
+  my ( $tests, %options ) = @_;
 
-  my %options = @_;
-  
-  my $name = $options{name};
-  my $config = $options{config} || config();
-  my $logdir = $options{logdir};
+  my $name    = $options{name};
+  my $config  = $options{config} || config();
+  my $logdir  = $options{logdir};
   my $logfile = $options{logfile};
 
-  unless (ref($tests)) {
-    $tests = load($tests, %options);
-    
+  unless ( ref($tests) ) {
+    $tests = load( $tests, %options );
+
     die "could not load [$tests]\n"
       unless ref($tests);
-  }
+  } ## end unless ( ref($tests) )
 
-  unless ( ref($tests) && reftype($tests) eq 'ARRAY') {
+  unless ( ref($tests) && reftype($tests) eq 'ARRAY' ) {
     die "test object is not an array\n";
   }
 
-  plan tests => exists $options{plan} ? $options{plan} : scalar(@{$tests});
+  plan tests => exists $options{plan} ? $options{plan} : scalar( @{$tests} );
 
-  foreach my $t (@{$tests}) {
+  foreach my $t ( @{$tests} ) {
     check_test($t);
 
-    my %r = bedrock($t->{test}, name => $name, param => $t->{param}, config => $config, logfile => $logfile, logdir => $logdir);
+    my %r = bedrock(
+      $t->{test},
+      name    => $name,
+      param   => $t->{param},
+      config  => $config,
+      logfile => $logfile,
+      logdir  => $logdir
+    );
 
     # are we looking for an error
     if ( $t->{error} ) {
@@ -335,40 +347,42 @@ sub run {
     }
 
     my $success;
-    
+
     for ($op) {
       /^is$/ && do {
-	$success = is($r{output}, $t->{result}, $t->{name});
+        $success = is( $r{output}, $t->{result}, $t->{name} );
       };
 
       /^isnt$/ && do {
-	$success = isnt($r{output}, $t->{result}, $t->{name});
+        $success = isnt( $r{output}, $t->{result}, $t->{name} );
       };
 
       /^like$/ && do {
-	$success = like($r{output}, $t->{result}, $t->{name});
+        $success = like( $r{output}, $t->{result}, $t->{name} );
       };
 
       /^unlike$/ && do {
-	$success = unlike($r{output}, $t->{result}, $t->{name});
-      };
-      
-      /^cmp_ok/ && do {
-	$success = cmp_ok($r{output}, $t->{op}->{cmp_ok}, $t->{result}, $t->{name});
+        $success = unlike( $r{output}, $t->{result}, $t->{name} );
       };
 
-      unless ( $success ) {
-	if ( $r{error} ) {
-	  diag(sprintf("[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error}));
-	}
-	else {
-	  note(sprintf("%s", $t->{comment})) if defined $t->{comment};
-	  note(sprintf("[%s]:[%s]\n", @r{qw/input output/}));
-	}
-      }
-    }
-  }
-}
+      /^cmp_ok/ && do {
+        $success = cmp_ok( $r{output}, $t->{op}->{cmp_ok}, $t->{result},
+          $t->{name} );
+      };
+
+      unless ($success) {
+        if ( $r{error} ) {
+          diag(
+            sprintf( "[%s]:[%s]:[%s]\n", @r{qw/input output/}, $r{error} ) );
+        }
+        else {
+          note( sprintf( "%s", $t->{comment} ) ) if defined $t->{comment};
+          note( sprintf( "[%s]:[%s]\n", @r{qw/input output/} ) );
+        }
+      } ## end unless ($success)
+    } ## end for ($op)
+  } ## end foreach my $t ( @{$tests} )
+} ## end sub run
 
 =pod
 
@@ -397,10 +411,11 @@ sub config {
 
   $bedrock_config_path = $bedrock_config_path || '@libdir@/bedrock/config';
 
-  $ENV{BEDROCK_CONFIG_PATH} = $ENV{BEDROCK_CONFIG_PATH} || $bedrock_config_path;
+  $ENV{BEDROCK_CONFIG_PATH}
+    = $ENV{BEDROCK_CONFIG_PATH} || $bedrock_config_path;
 
-  return Bedrock::Handler->new(Faux::ApacheHandler->new)->config;
-}
+  return Bedrock::Handler->new( Faux::ApacheHandler->new )->config;
+} ## end sub config
 
 =pod
 
@@ -438,31 +453,32 @@ Boolean that indicates the file is in YAML format.
 
 # loads the t/{file}.txt file
 sub load {
-  my $file = shift;
-  my %options = @_;
+  my ($file, %options) = @_;
 
-  if ( $file =~/\.ya?ml$/ ) {
+  if ( $file =~ /\.ya?ml$/ ) {
     $options{yaml} = 1;
   }
 
   my $tests = eval {
-    if ( exists $options{yaml} && $options{yaml}) {
-      [LoadFile($file)];
+    if ( exists $options{yaml} && $options{yaml} ) {
+      [ LoadFile($file) ];
     }
     else {
-      local $/ = undef;
-      open (my $fh, "<" . $file) or die "can't open $file";
+      local $/;
+      
+      open( my $fh, "<" . $file ) or die "can't open $file";
       my $tests = <$fh>;
       close $fh;
-      from_json($tests, {  relaxed => 1 });
-    }
+      
+      JSON::PP->new->utf8->relax->decode($tests);
+    } ## end else [ if ( exists $options{yaml...})]
   };
-    
+
   die "unable to load test file [$file]: $@"
     if $@;
 
   $tests;
-}
+} ## end sub load
 
 =pod
 
@@ -529,40 +545,41 @@ sub bedrock {
   my $text = shift;
 
   my %options = @_;
-  my %param = $options{param} ? %{$options{param}} : ();
-  
+  my %param = $options{param} ? %{ $options{param} } : ();
+
   require Text::TagX;
 
   my $logdir = $options{logdir} || '/tmp';
 
-  if ( $options{name} && ! $options{logfile} ) {
-    $options{logfile} = $options{logfile} || sprintf("%s/bedrock-test_%s.log", $logdir, $options{name} ? $options{name} : $$);
+  if ( $options{name} && !$options{logfile} ) {
+    $options{logfile}
+      = $options{logfile} || sprintf( "%s/bedrock-test_%s.log",
+      $logdir, $options{name} ? $options{name} : $$ );
   }
 
   my $output = '';
-  my $ctx = Faux::Context->new(
-			       IO::Scalar->new(\$output), 
-			       CONFIG    => $options{config},
-			       LOGDIR    => $options{logdir},
-			       LOGFILE   => $options{logfile}
-			      );
-    
-  my $tx = Text::TagX->new(IO::Scalar->new(\$text), $ctx);
+  my $ctx    = Faux::Context->new(
+    IO::Scalar->new( \$output ),
+    CONFIG  => $options{config},
+    LOGDIR  => $options{logdir},
+    LOGFILE => $options{logfile}
+  );
 
-  $tx->param(%param, config => $options{config});
+  my $tx = Text::TagX->new( IO::Scalar->new( \$text ), $ctx );
 
-  load_startup_modules( $tx,
-			CONFIG          => $options{config},
-			CONTEXT         => $ctx,
-			EXCLUDE_MODULES => [ q/BLM::Startup::UserSession/ ]
-		      );
+  $tx->param( %param, config => $options{config} );
 
-  my $e = eval {
-    $tx->output;
-  };
+  load_startup_modules(
+    $tx,
+    CONFIG          => $options{config},
+    CONTEXT         => $ctx,
+    EXCLUDE_MODULES => [q/BLM::Startup::UserSession/]
+  );
+
+  my $e = eval { $tx->output; };
 
   return ( input => $text, error => $@, output => $output );
-}
+} ## end sub bedrock
 
 sub check_test {
   my $test = shift;
@@ -572,22 +589,22 @@ sub check_test {
 
   die "no result or error key found in test\n"
     unless exists $test->{result} || exists $test->{error};
-}
+} ## end sub check_test
 
 sub require_module {
   my $modfile = shift;
-  
+
   $modfile =~ s!::!/!g;
   $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-  
+
   require $modfile;
-}
+} ## end sub require_module
 
 sub bind_module {
   my %options = @_;
 
   require_module( $options{module} );
-      
+
   my $obj;
 
   if ( $options{type} eq 'hash' or $options{type} eq 'object' ) {
@@ -603,23 +620,24 @@ sub bind_module {
     tie *{$obj}, $options{module}, $options{context}, $options{config};
   }
 
-  my $func = tied(%{$obj});
-  $func->can('init_plugin') && $func->init_plugin( $options{context}, $options{config} );
+  my $func = tied( %{$obj} );
+  $func->can('init_plugin')
+    && $func->init_plugin( $options{context}, $options{config} );
 
   return $obj;
-}
+} ## end sub bind_module
 
 # load_startup_modules($tx, CONFIG => $config, CONTEXT => $ctx, EXCLUDE_MODULES => [])
 #
 # loads startup BLMs, excluding those in EXCLUDE_MODULES list
 sub load_startup_modules {
-  my $tx = shift;
+  my $tx      = shift;
   my %options = @_;
 
-  my $config = $options{CONFIG};
-  my $ctx = $options{CONTEXT};
-  my @exclude_modules = @{$options{EXCLUDE_MODULES} || []};
-  
+  my $config          = $options{CONFIG};
+  my $ctx             = $options{CONTEXT};
+  my @exclude_modules = @{ $options{EXCLUDE_MODULES} || [] };
+
   # load generic startup BLMs
   my $modules = $config->{'MODULES'};
   return unless ref($modules) && reftype($modules) eq 'ARRAY';
@@ -630,37 +648,36 @@ sub load_startup_modules {
 
     foreach my $path (@plugin_inc) {
       push @INC, $path
-      unless grep { /$path/ } @INC;
+        unless grep {/$path/} @INC;
     }
-  }
+  } ## end if ( $config->{PLUGIN_PATH...})
 
-  foreach my $modconf (@{$modules}) {
+  foreach my $modconf ( @{$modules} ) {
     my $module = $modconf->{module};
-    next if grep { /$module/ } @exclude_modules;
-    
+    next if grep {/$module/} @exclude_modules;
+
     # no binding?
     next unless defined $modconf->{'binding'};
 
     my $pre_bound_binding;
 
     # only for HEADER/SESSION objects
-    if ( exists $modconf->{header} && $modconf->{header} =~/^y/i) {
-      $pre_bound_binding = 'HEADER'
+    if ( exists $modconf->{header} && $modconf->{header} =~ /^y/i ) {
+      $pre_bound_binding = 'HEADER';
     }
-    elsif ( exists $modconf->{session} && $modconf->{session} =~/y/i) {
+    elsif ( exists $modconf->{session} && $modconf->{session} =~ /y/i ) {
       $pre_bound_binding = 'SESSION';
     }
-    
-    if ( $pre_bound_binding ) {
+
+    if ($pre_bound_binding) {
       # Bind the module
       my $obj = bind_module(
-			    module  => $modconf->{'module'},
-			    type    => $modconf->{'type'} || 'hash',
-			    context => $ctx,
-			    config  => $modconf->{'config'}
-			   );
-      
-      
+        module  => $modconf->{'module'},
+        type    => $modconf->{'type'} || 'hash',
+        context => $ctx,
+        config  => $modconf->{'config'}
+      );
+
       # add the object to Bedrock' top frame (symbol table)
       $tx->param( $modconf->{'binding'} => $obj );
 
@@ -669,41 +686,42 @@ sub load_startup_modules {
 
       # ...so does the context object which can be used by Bedrock::CGI
       $ctx->{$pre_bound_binding} = $obj;
-    }
+    } ## end if ($pre_bound_binding)
     else {
       # bind a subroutine to the binding name so the constructor gets
       # invoked ONLY if the variable is accessed from the script.
-      $tx->param( $modconf->{'binding'},
-		  sub {
-		    my $obj;
-		    
-		    my $modfile = $modconf->{'module'};
-		    $modfile =~ s!::!/!g;
-		    $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
-		    
-		    require $modfile;
+      $tx->param(
+        $modconf->{'binding'},
+        sub {
+          my $obj;
 
-		    my $type = $modconf->{'type'} || 'hash';
-		    
-		    if ( $type eq 'hash' or $type eq 'object' ) {
-		      $obj = bless {}, $modconf->{'module'};
-		      tie %{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-		    }
-		    elsif ( $type eq 'array' ) {
-		      $obj = bless [], $modconf->{'module'};
-		      tie @{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-		    }
-		    elsif ( $type eq 'handle' ) {
-		      $obj = bless gensym, $modconf->{'module'};
-		      tie *{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-		    }
-		    
-		    $obj;
-		  }
-		);
-    }
-  }
-}
+          my $modfile = $modconf->{'module'};
+          $modfile =~ s!::!/!g;
+          $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+
+          require $modfile;
+
+          my $type = $modconf->{'type'} || 'hash';
+
+          if ( $type eq 'hash' or $type eq 'object' ) {
+            $obj = bless {}, $modconf->{'module'};
+            tie %{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+          }
+          elsif ( $type eq 'array' ) {
+            $obj = bless [], $modconf->{'module'};
+            tie @{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+          }
+          elsif ( $type eq 'handle' ) {
+            $obj = bless gensym, $modconf->{'module'};
+            tie *{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
+          }
+
+          $obj;
+        }
+      );
+    } ## end else [ if ($pre_bound_binding)]
+  } ## end foreach my $modconf ( @{$modules...})
+} ## end sub load_startup_modules
 
 =pod
 

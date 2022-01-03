@@ -1,3 +1,5 @@
+# README
+
 This is the README for the Bedrock tag test suite.  This is currently
 a work-in-progress and we are actively adding tag tests all the time.
 The intent of these particular tests is to test tag behavior, not to
@@ -7,12 +9,12 @@ environment.
 # Running the tag tests
 
     $ cd src/main/perl
-    $ make && make test
+    $ make test
 
 # Where are the tests?
 
 The tests are located in the `src/main/perl/t` directory and stored
-with an extension of `.txt`, not the traditional `.t`.  A test harness
+with an extension of `.yml`, not the traditional `.t`.  A test harness
 will create symbolic links with an extension of `.t` so that the
 `prove` program will execute these as tests.  The symbolic link points
 to the `test-tag.pl` test harness and through a little bit of magic
@@ -24,9 +26,9 @@ tests are actually executed.
 # Where are the test logs?
 
 Bedrock normally creates a page log of each page it parses.  Likewise
-the tests will product a log for each test file it
+the tests will produce a log for each test file it
 encounters. Depending on the tag and whether you've included the
-`--verbose` option you will find varying degrees of information a file
+`--verbose` option you will find varying degrees of information in a file
 named `/tmp/test-tag_{filename}.txt`.  Where `{filename}` is the name
 of the test file.  For example for the test file `null.txt`, there
 will be a `/tmp/test-tag_null.log` file created.

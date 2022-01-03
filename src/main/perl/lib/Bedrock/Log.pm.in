@@ -51,6 +51,7 @@ use constant MSG_WARNING  => 1 << 4;
 use constant MSG_ERROR    => 1 << 5;
 use constant MSG_SYSERROR => 1 << 6;
 use constant MSG_FATAL    => 1 << 7;
+use constant MAX_LOGSIZE  => 200 * 1024 * 1024;
 
 =pod
 
@@ -152,46 +153,46 @@ sub StartLogger {
     else { MSG_INFO }
   };
 
-  # Copy maillevels
-  $MailLevels = $args{'MAILLEVEL'}
-  if defined( $args{'MAILLEVEL'} )
-    and ref( $args{'MAILLEVEL'} ) eq 'HASH';
-
   # Make the logfile name
-  if ( $args{'LOGFILE'} ) {
-    $Log_File = $dir . q(/) . $args{'LOGFILE'};
-  }
-  else {
-    $Log_File = $dir . q(/) . basename( $0, '.pl', '.cgi' ) . q(.log);
-  }
+  if ( $args{'LOGFILE'} ne '/dev/stderr' ) {
+    if ( $args{'LOGFILE'} ) {
+      $Log_File = $dir . q(/) . $args{'LOGFILE'};
+    }
+    else {
+      $Log_File = $dir . q(/) . basename( $0, '.pl', '.cgi' ) . q(.log);
+    }
+  
 
-  # Truncate logs if it has reached limit
-  my $maxsize = defined( $args{'MAXSIZE'} ) ? $args{'MAXSIZE'} : 200000;
-  if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($Log_File) )[7] > $maxsize ) ) {
-    open( FILE, ">$Log_File" );
-    close FILE;
+    # Truncate logs if it has reached limit
+    if ( $Log_File ne '/dev/stderr' ) {
+      my $maxsize = defined( $args{'MAXSIZE'} ) ? $args{'MAXSIZE'} : MAX_LOGSIZE;
+  
+      if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($Log_File) )[7] > $maxsize ) ) {
+        open( FILE, ">$Log_File" );
+        close FILE;
+      }
+    }
   }
-
-  unless ( $args{LOG_REDIRECT_STDERR_OFF} ) {
+  
+  if ( $Log_File && $Log_File ne '/dev/stderr' && ! $args{LOG_REDIRECT_STDERR_OFF} ) {
     # Redirect STDERR too to append to logfile
-    unless ( open( STDERR, ">> $Log_File" ) ) {
+    if (! open( STDERR, '>>', $Log_File ) ) {
       warn "Unable to append to log file $Log_File: $!\n";
       return;
     }
   }
       
-  $LOGFORMAT = $args{'LOGFORMAT'}
-    if exists $args{'LOGFORMAT'};
+  $LOGFORMAT = $args{'LOGFORMAT'} // '';
 
   # Log die and warn errors too if not redirected and not in an eval {} 
-  unless ( $SIG{__WARN__} ) {
+  if  ( ! $SIG{__WARN__} ) {
     $SIG{__WARN__} = sub {
       return unless defined $^S and $^S == 0;
       unshift @_, MSG_WARNING; goto &LOG_MESSAGE
     };
   }
   
-  unless ( $SIG{__DIE__} ) {
+  if ( ! $SIG{__DIE__} ) {
     $SIG{__DIE__} = sub {
       return unless defined $^S and $^S == 0;
       unshift @_, MSG_FATAL; goto &LOG_MESSAGE

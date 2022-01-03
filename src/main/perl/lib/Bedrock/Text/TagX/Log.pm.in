@@ -49,15 +49,17 @@ my %options = (
 
 sub start_logger {
   my %args = @_;
+
+  if ( ! $args{LOG_FILE} && ! $args{LOG_SPOOLER} ) {
+    return 0;
+  }
   
-  return unless $args{LOG_FILE} || $args{LOG_SPOOLER};
-    
   # override default options
   @options{keys %args} = values %args;
   
   my ( $logfile, $maxsize ) = @options{qw(LOG_FILE LOG_MAXSIZE)};
   
-  if ( $logfile ) {
+  if ( $logfile && $logfile ne '/dev/stderr' ) {
     if ( -e $logfile ) {
       # truncate log unless LOG_MAXSIZE < 0
       if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($logfile) )[7] > $maxsize ) ) {
@@ -77,7 +79,7 @@ sub start_logger {
     $fd->autoflush(1);
     $fd->close;
   }
-    
+  
   # log warnings/errors to page log, unless in eval {}
   $SIG{__DIE__} = $SIG{__WARN__} = sub {
     # don't log if we are in an eval {}
@@ -94,17 +96,15 @@ sub start_logger {
 sub log_message {
   my $obj = shift;
   
-  return unless exists $options{LOG_FILE} || $options{LOG_SPOOLER};
-
-  # Make caller
-  my ( $pack, $filename, $line ) = caller;
-
-  # Input location tracking
-  my $loc = '';
-  if ( blessed($obj) && $obj->can('start_location') ) {
-    $loc = "[" . $obj->start_location . "]\n[$obj]\n";
+  if ( ! $options{LOG_FILE} && ! $options{LOG_SPOOLER} ) {
+    return 0;
   }
 
+  # -- get caller
+  my ( $pack, $filename, $line ) = caller;
+
+  
+  # -- set page
   my $page = eval {
     if ( $ENV{BEDROCK_URI} ) {
       $ENV{BEDROCK_URI};
@@ -113,22 +113,46 @@ sub log_message {
       $ENV{BEDROCK_FILE};
     }
     else {
-      'unknown';
+      my @stack;
+      my $i = 0;
+      
+      while (my @details = caller($i++)) {
+        push @stack, \@details;
+      }
+      (pop @stack)->[1];
     }
   };
 
-  # Allow either, or neither...
-  if ( $options{LOG_FILE} ) {
-    my $logfile = $options{LOG_FILE};
-    # default: %m/%d/%Y %H:%M:%S
-    my $time = time2str($options{LOG_FORMAT}, time);
-
-    open( LOG, ">> $logfile" ) or return;   
-    print LOG "$time \[$$\]\t[$page]\t$filename($line)\n$loc@_\n";
-    close LOG
+  
+  # -- set loc input location tracking
+  my $loc = '';
+  
+  if ( blessed($obj) && $obj->can('start_location') ) {
+    $loc = "[" . $obj->start_location . "]\n[$obj]\n";
   }
 
-  if ( $options{LOG_SPOOLER} ) {
+
+  # -- set time, default: %m/%d/%Y %H:%M:%S
+  my $time = time2str($options{LOG_FORMAT}, time);
+
+  
+  # -- create log message
+  my @raw_message = @_;
+  my $message = sprintf("%s [%s]\t[%s]\t%s(%s)\n%s%s\n",
+                        $time, $$, $page, $filename, $line, $loc, "@raw_message");
+  
+  # -- write log message to file, stderr, or spooler
+  if ( $options{LOG_FILE} && $options{LOG_FILE} ne '/dev/stderr') {
+    my $logfile = $options{LOG_FILE};
+  
+    open( LOG, ">> $logfile" ) or return;   
+    print LOG $message;
+    close LOG
+  }
+  elsif ( $options{LOG_FILE} eq '/dev/stderr' ) {
+    print STDERR $message;
+  }
+  elsif ( $options{LOG_SPOOLER} ) {
     my %spooler_options = (channel => "bedrock/log$page");
 
     # note LOG_SPOOLER can override channel
@@ -143,13 +167,19 @@ sub log_message {
     
     eval {
       my $spooler = Bedrock::Log::Spooler->instance(%spooler_options);
-      $spooler->publish(\@_, page => $page, line => $line, loc => $loc, filename => $filename);
+      $spooler->publish(
+        \@raw_message,
+        page     => $page,
+        line     => $line,
+        loc      => $loc,
+        filename => $filename
+      );
     };
 
     if ( $@ ) {
       # try to print the log message to STDERR
       print STDERR "error spooling log message: $@\n";
-      print STDERR sprintf("[%s] %s - %s\n", time2str("%c", time), $page, join('', @_));
+      print STDERR $message;
     }
   }
 }
