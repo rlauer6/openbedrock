@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -53,103 +52,122 @@ sub finalize {
   my $verbose = $self->verbose;
   $self->dump_options( \%options ) if $verbose;
 
-  my $dir;
-  my $file;
+  my $dir_prefix = delete $options{'dir-prefix'};
+  
+  my $file = delete $options{'file'};
 
-  if ( defined( $dir = delete $options{'dir-prefix'} ) ) {
-    &log_message( $self, "Dir prefix is <$dir>" ) if $verbose;
-  }
-
-  if ( exists $options{'file'} ) {
-    $file = delete $options{'file'};
-  }
-  elsif (@argv) {
+  if ( ! $file && @argv ) { 
     my $tag_opts = $self->parse_tag_name( $argv[0] );
-    $tag_opts->{name} =~ /^(.*?)(\.inc)?$/;
-    $file = $tag_opts->{name} ? $1 . ".inc" : $argv[0];
+    $file = $tag_opts->{name} || "@argv";
   }
-  else {
+
+  if ( ! $file ) {
     die "Must specify file as argument to <include>.\n";
   }
 
+  # TBD: add test for ..
   die "invalid filename\n"
     if $file =~/\.\./;
 
-  if ($dir) {
-    $file = $dir . "/" . $file;
+  my @file_paths;
+  
+  # -- if a prefix exists, we assume an absolute path (might want to
+  # reconsider this 'feature')
+  if ($dir_prefix) {
+    &log_message($self, 'WARNING: possible security issue using absolute paths!');
+    
+    push @file_paths, $dir_prefix . '/' . $file;
+    
+    push @file_paths, $dir_prefix . '/' . $file . '.inc'
+      if $file !~/\.(.+)$/;
   }
   else {
-    unless ( -s $file ) {
-      if ($verbose) {
-        &log_message( $self,
-                      "File $file not found in ["
-                      . getcwd()
-                      . "]...proceeding on search path."
-                    ) if $verbose;
-      }
-      unless ( $file =~ /^\~/ ) {
-        $file = $tx->getoption("INCLUDE_DIR") . "/" . $file;
-      }
-      else {
-        $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
-      }
+    
+    # what they asked for
+    push @file_paths, $file;
+
+    # in case they forgot the inc
+    push @file_paths, $file . '.inc'
+      if $file !~/\.(.+)$/;
+    
+    # relative to DOCUMENT_ROOT
+    if ( $file =~/^\~/ ) {
+      $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
+      push @file_paths, $file;
+    }
+
+    if ( $tx->getoption('INCLUDE_DIR') ) {
+      push @file_paths, $tx->getoption('INCLUDE_DIR') . '/' . $file;
+    }
+    elsif ( $file =~/^\// ) {
+      &log_message($self, "WARNING: attempt to include a file using an absolute path!");
     }
   }
 
-  die "Cannot include `$file': is a directory.\n" if -d $file;
+  my $include_file;
+  my @status_info;
 
-  &log_message( $self, "Including file <$file>" ) if $verbose;
+  &log_message($self, "search list: ", join("\n", @file_paths))
+    if $verbose;
+  
+  foreach my $f (@file_paths) {
+    die "Cannot include `$f': is a directory.\n"
+      if -d $f;
+    
+    @status_info = stat($f);
 
-  my $more = keys %options;
-  my @sv;
-
-  if ($more) {
-    @sv = stat($file);
-    unless (@sv) {
-      &log_message( $self, "Unable to stat file: $!" );
-      return;
+    # try again w/.inc if they forgot .inc?
+    if ( ! @status_info and $f !~/\.(.+)$/ ) {
+      &log_message($self, 'looking for .inc file')
+        if $verbose;
+      
+      $f = $f . '.inc';
+      
+      @status_info = stat($f);
     }
+    
+    if ( @status_info ) {
+      push @status_info, $f;
+      last;
+    }
+    
+    &log_message($self, "include: $f not found on search path")
+      if $verbose;
   }
+  
+  if ( @status_info ) {
+    $file = pop @status_info;
+               
+    &log_message( $self, "include: found file [$file]" )
+      if $verbose;
 
-  unless ( defined $options{'source'} ) {
+    if ( ! $options{'source'} ) {
 
-    my $subform;
-    if ( -e $file ) {
-      $subform = $tx->new($file);
-   
+      my $subform = $tx->new($file);
+      my @file_times = @status_info[(8, 9, 10)];
+      
+      foreach my $v (qw/access modify change/) {
+        if ( $options{$v . '-time'} ) {
+          my $value = shift @file_times;
 
-      if ($more) {
-	if ( exists $options{'access-time'} ) {
-	  my $value = $sv[8];
-	  $value = &strftime( $options{'access-time-format'}, localtime($value) )
-	    if exists $options{'access-time-format'};
-	  $subform->param( $options{'access-time'}, $value );
-	}
-	
-	if ( exists $options{'modify-time'} ) {
-	  my $value = $sv[9];
-	  $value = &strftime( $options{'modify-time-format'}, localtime($value) )
-	    if exists $options{'modify-time-format'};
-	  $subform->param( $options{'modify-time'}, $value );
-	}
-	
-	if ( exists $options{'change-time'} ) {
-	  my $value = $sv[10];
-	  $value = &strftime( $options{'change-time-format'}, localtime($value) )
-	    if exists $options{'change-time-format'};
-	  $subform->param( $options{'change-time'}, $value );
-	}
+          if ( $options{$v . '-time-format'} ) {
+            $value = &strftime( $options{$v . '-time-format'}, localtime($value) );
+          }
+
+          $subform->param( $options{$v . '-time'}, $value );
+        }
       }
-
+      
       $subform->output;
-    }
-    elsif ( ! $options{'optional'} ) {
-      die "Unable to open [$file] for input: No such file or directory\n";
+    }  
+    else {
+      my $obj = TagX::Error->new($file);
+      
+      $tx->out_handle->print( $obj->view_source );
     }
   }
-  else {
-    my $obj = TagX::Error->new($file);
-    $tx->out_handle->print( $obj->view_source );
+  elsif ( ! $options{'optional'} ) {
+    die "Unable to open [$file] for input: No such file or directory\n";
   }
 }
 
@@ -219,6 +237,24 @@ It works best when placed in a C<E<lt>preE<gt>> block.
  <include --source "index.roc">
  </pre>
 
+=item File Stats
+
+=over 10
+
+=item access-time
+
+Name of variable to hold the access time of the file.
+
+=item change-time
+
+Name of variable to hold the change time of the file.
+
+=item modify-time
+
+Name of variable to hold the modify time of the file.
+
+=back
+
 =back
 
 =head1 NOTES
@@ -241,7 +277,7 @@ If the filename is prefaced with a C<~>, then the file is presumed to
 be found relative to the document root.
 
 If the filename includes a C</>, then the filename is presumed to be
-a fully qualifed path.
+a fully qualifed path. B<(highty discouraged!)>.
 
 =head1 EXAMPLE
 
@@ -254,109 +290,5 @@ a fully qualifed path.
 C<E<lt>pebbleE<gt>>
 
 =cut
-
-#
-# Revision 1.27  2011/09/15 16:05:33  eutl420
-# - perl tidy
-#
-# Revision 1.26  2011/07/17 16:50:28  eutl420
-# @PERL@, log_message if verbose
-#
-# Revision 1.25  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.24  2011/01/13 17:18:08  eutl420
-# - in finalize, incorrectly handled <include "foo.inc"> case
-#
-# Revision 1.23  2010/12/12 17:07:19  eutl420
-# - use parse_tag_name
-#
-# Revision 1.22  2010/12/06 14:17:29  rlauer
-# - tweaks to pod to better explain the file finding rules and '~'
-#
-# Revision 1.21  2010/11/23 00:07:10  rlauer
-# - added --source option
-#
-# Revision 1.20  2010/11/20 03:58:32  rlauer
-# - better logging when file not found
-# - use dump_options
-#
-# Revision 1.19  2010/11/17 02:27:30  rlauer
-# - pod cleanup
-#
-# Revision 1.18  2010/10/30 21:43:40  rlauer
-# - need to to account for '~' in include tag
-#
-# Revision 1.17  2009/12/31 18:38:33  rlauer
-# updated docs
-#
-# Revision 1.16  2009/12/31 12:43:29  rlauer
-# docs tweak
-#
-# Revision 1.15  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.14  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.13  2008/11/12 16:09:33  rlauer
-# - support new <include: syntax
-# - use INCLUDE_DIR when looking for files
-# - support default .inc extension
-#
-# Revision 1.12  2001/02/14 15:35:49  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.11  2000/11/29 20:56:18  sridhar
-# If the filename has a `~' at the beginning, it is replaced with
-# DOCUMENT_ROOT environment variable.
-#
-# Revision 1.10  2000/11/16 19:10:10  sridhar
-# Fixed error messages so exceptions don't have perl source code
-# locations in them.
-#
-# Revision 1.9  2000/11/01 16:05:58  sridhar
-# 1. Croak if file argument turns out to be a directory
-# 2. Removed --access-time, etc.
-#
-# Revision 1.8  2000/10/31 21:47:39  sridhar
-# Bug fix: characters following the closing '>' after <exec> and <include>
-# were being discarded due to $_ being clobbered when `output()' was
-# reinvoked with new file.
-#
-# Revision 1.7  2000/05/31 14:54:20  sridhar
-# Rigorous version numbering and usage
-#
-# Revision 1.6  2000/04/24 12:48:27  sridhar
-# Using TagX::Log for logging messages
-#
-# Revision 1.5  2000/04/13 15:16:48  sridhar
-# 1. Using new parse_options method with support for expressions
-# 2. Passing filename to TagX->new() method to enable filename logging
-# with log messages.
-#
-# Revision 1.4  2000/03/09 14:16:32  sridhar
-# Added new option --dir-prefix, the value of which should be a
-# variable resolving into a directory.
-#
-# Revision 1.3  2000/03/06 18:32:00  sridhar
-# Replaced all ad-hoc message logging with message logging only on demand
-# -- via --verbose flag specified as a tag option
-#
-# Revision 1.2  2000/02/08 15:37:44  sridhar
-# Added support for being able to use Exporter version numbers
-#
-# Revision 1.1  2000/02/08 15:24:58  sridhar
-# Added TagX
-#
-#
 
 1;

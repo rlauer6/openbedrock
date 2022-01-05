@@ -68,6 +68,7 @@ use Text::TagX;
 use Text::URLEncode;
 use Benchmark qw/:all/;
 use Data::Dumper;
+use English;
 use File::Basename;
 use File::Spec;
 use File::Temp;
@@ -180,7 +181,8 @@ sub handler {
   my $r = shift;
 
   # start HiRes timer
-  my $t0 = Benchmark->new if get_loglevel($r) eq 'debug';
+  my $t0 = Benchmark->new
+    if get_loglevel($r) eq 'debug';
 
   # errors are handled in the init_bedrock_handler() subroutine
   my $bedrock_handler = init_bedrock_handler($r) or return OK;
@@ -188,40 +190,60 @@ sub handler {
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
 
-# make sure that the LOG directories are present and writable, otherwise try /tmp
-  foreach (qw(LOGDIR HTML_LOGDIR)) {
-    unless ( -d $conf->{$_} && -w $conf->{$_} ) {
-      $conf->{$_} = '/tmp';
-    }
-  }
+  # make sure that the LOG directories are present and writable, otherwise try /tmp
+  foreach my $dir (qw(LOGDIR HTML_LOGDIR)) {
+    if ( !-d $conf->{$dir} || !-w $conf->{$dir} ) {
 
-  $bedrock_handler->log_info( sprintf( "Bedrock log directory is ..........[%s]", $conf->{LOGDIR} ) );
-  $bedrock_handler->log_info( sprintf( "Bedrock's HTML log directory is ...[%s]", $conf->{HTML_LOGDIR} ) );
+      eval { mkpath $dir };
 
-  my $bedrock_admin_dir =  $bedrock_handler->get_bedrock_admin_dir;    # typically /bedrock
+      if ($@) {
+        $bedrock_handler->log_error(
+          "could not create $dir - [$OS_ERROR] - using [/tmp]\n");
+        $conf->{$dir} = '/tmp';
+      }
+    } ## end if ( !-d $conf->{$dir}...)
+  } ## end foreach my $dir (qw(LOGDIR HTML_LOGDIR))
+
+  $bedrock_handler->log_info(
+    sprintf( "Bedrock log directory is ..........[%s]", $conf->{LOGDIR} ) );
+
+  $bedrock_handler->log_info(
+    sprintf(
+      "Bedrock's HTML log directory is ...[%s]", $conf->{HTML_LOGDIR}
+    )
+  );
+
+  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir; # typically /bedrock
 
   my $file = $bedrock_handler->{file};
 
   if ($file) {
     # check mime-type
     unless ( $r->content_type =~ /(text\/html|application\/json|text\/plain)/ ) {
-      $bedrock_handler->error( sprintf "content type: [%s] not supported\n", $r->content_type );
-      return UNSUPPORTED;
+     $bedrock_handler->error( sprintf "content type: [%s] not supported\n",
+      $r->content_type );
+
+     return UNSUPPORTED;
     }
 
     unless ( -e $r->filename ) {
-      $bedrock_handler->error( sprintf( "file does not exist: [%s]", $file ) );
-      return NOT_FOUND;
+     $bedrock_handler->error( sprintf( "file does not exist: [%s]", $file ) );
+
+     return NOT_FOUND;
     }
 
     unless ( -r $r->filename ) {
-      $bedrock_handler->error( sprintf( "file permissions deny access: [%s]", $file ) );
-      return FORBIDDEN;
+     $bedrock_handler->error(
+      sprintf( "file permissions deny access: [%s]", $file ) );
+
+     return FORBIDDEN;
     }
   }
   else {
-    $bedrock_handler->error( sprintf( "attempt to serve directory: [%s]", $r->uri ) );
-    return FORBIDDEN;
+   $bedrock_handler->error(
+    sprintf( "attempt to serve directory: [%s]", $r->uri ) );
+
+   return FORBIDDEN;
   }
 
   local ( $SIG{__DIE__}, $SIG{__WARN__} );
@@ -356,14 +378,25 @@ sub handler {
                      config  => $config
                    );
       };
-
-      if ( $@ && exists $modconf->{abort_if_error} ) {
+      
+      my $bind_error = $@;
+      
+      if ( $bind_error && exists $modconf->{abort_if_error} ) {
         if ( is_bedrock_shell($r) ) {
-          print sprintf( "[%s]: could not bind %s ($@)", (caller(0) )[3], $pre_bound{$binding}, $modconf->{'binding'} );
-	  exit -1;
+          print sprintf(
+            "[%s]: could not bind %s (%s)",
+            ( caller(0) )[3],
+            $pre_bound{$binding}, $modconf->{'binding'}, $bind_error
+          );
+          exit -1;
         }
         else {
-          $bedrock_handler->error(sprintf( "could not bind %s (%s", $pre_bound{$binding}, $modconf->{'binding'}, $@));
+          $bedrock_handler->error(
+            sprintf(
+              "could not bind %s (%s",
+              $pre_bound{$binding}, $modconf->{'binding'}, $bind_error
+            )
+          );
           $r->content_type('text/html');
           $r->send_http_header;
 
@@ -383,8 +416,13 @@ eom
           return OK;
         }
       }
-      elsif ($@) {
-	$bedrock_handler->error(sprintf("Could not bind module [%s] -> [%s] - (but 'abort_on_error' is not set for this module's configuration...so we'll keep going)", $modconf->{module}, $@));
+      elsif ($bind_error) {
+        $bedrock_handler->error(
+          sprintf( "Could not bind module [%s]\n"
+              . "[%s]\n"
+              . "('abort_on_error' not set for [%s]...continuing)\n",
+              $modconf->{module},
+            $bind_error, $modconf->{module} ) );
         undef $obj;
       }
 
@@ -398,14 +436,15 @@ eom
 
         # ...so does the context object which can be used by Bedrock::CGI
         $ctx->{$binding} = $obj;
-      }
+      } ## end if ($obj)
       else {
-        $tx->param( 'error' => $@ );
+        $tx->param( 'error' => $bind_error );
       }
     }
     else {
       
-      # ** FIXME: this should call bind_module()...note it does not call "init_plugin" as does bind_module()!
+      # ** FIXME: this should call bind_module()...note it does not
+      # call "init_plugin" as does bind_module()!
       
       # Bind a subroutine to the binding name so the constructor gets
       # invoked ONLY if the variable is accessed from the script.
@@ -447,13 +486,14 @@ eom
   }
 
   # Croak if no header module
-  unless ( $pre_bound{HEADER} ) {
+  if ( ! $pre_bound{HEADER} ) {
     return $bedrock_handler->error(sprintf("error in config file: No header module"));
   }
 
   $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );
 
   eval { $tx->output };
+  
   my $err = $@;
 
   if ($err) {
@@ -514,11 +554,20 @@ eom
       }
     }
     else {
-      $bedrock_handler->log_error( sprintf( "script [%s] with mime-type [%s] encountered the following error:", $bedrock_handler->{file}, $r->content_type ));
+      $bedrock_handler->log_error(
+        sprintf(
+          "script [%s] with mime-type [%s] encountered the following error:",
+          $bedrock_handler->{file},
+          $r->content_type
+        )
+      );
 
       $bedrock_handler->log_error("$err");
 
-      my $error_location = $conf->{BEDROCK_ERROR_LOCATION} ? $conf->{BEDROCK_ERROR_LOCATION} : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
+      my $error_location
+        = $conf->{BEDROCK_ERROR_LOCATION}
+        ? $conf->{BEDROCK_ERROR_LOCATION}
+        : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
 
       # if we are serving up JSON content, then we need to return a
       # proper error code, not 200
@@ -571,7 +620,8 @@ eom
 
   if ( get_loglevel($r) eq 'debug' ) {
     $bedrock_handler->log_debug( "log level " . get_loglevel($r) );
-    $bedrock_handler->log_debug( "processing complete: " . timestr( timediff( $t1, $t0 ), 'all' ) );
+    $bedrock_handler->log_debug(
+      "processing complete: " . timestr( timediff( $t1, $t0 ), 'all' ) );
   }
 
   return OK;
