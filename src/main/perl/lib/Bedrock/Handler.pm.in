@@ -41,7 +41,9 @@ use constant DECLINED     => Apache2::Const::DECLINED;
 use constant REDIRECT     => Apache2::Const::REDIRECT;
 
 use Cwd qw/realpath fastcwd/;
+use English;
 use File::Basename;
+use File::Find;
 use Bedrock::BedrockConfig;
 use Data::Dumper;
 
@@ -61,12 +63,13 @@ if ( $ENV{BEDROCK_CACHE_CONFIG} ) {
   eval {
     require IPC::Shareable;
     {
-      local $SIG{__WARN__} = sub {};
-      tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', { 
-                                                    key    => 'BCFG', 
-                                                    create => 0, 
-                                                    size   => 1024 * ( $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256 )
-                                                   }; 
+      local $SIG{__WARN__} = sub { };
+      tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
+        {
+        key    => 'BCFG',
+        create => 0,
+        size   => 1024 * ( $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256 )
+        };
     }
   };
 
@@ -179,6 +182,33 @@ sub init_request {
   }
 }
 
+sub read_config {
+  my ($self, $path, $file) = @_;
+
+  my $conf;
+  
+  if ( $path && $file ) {
+    $file = $file . '.xml'
+      if $file !~/\.xml$/;
+
+    my $fqp = $path . '/' . $file;
+    
+    $conf = eval {
+      Bedrock::Config->new( $fqp );
+    };
+    
+    if ($@) {
+      $self->log_warn('could not read ' . $fqp . ":[$@] [$OS_ERROR]");
+    }
+    else {
+      $self->log_debug("successfully read $fqp");
+      $self->config_files_processed($fqp);
+    }
+  }
+  
+  return $conf;
+}
+
 sub is_mod_perl {
   return $MOD_PERL;
 }
@@ -206,14 +236,22 @@ sub apache_handler {
 sub request_handler { goto &apache_handler; }
 
 sub _log {
-  my $who = (caller(2) =~/Bedrock::Handler/) ? 3 : 2;
-
-  while ( (caller($who))[3] =~/eval/ ) { $who++; last unless defined ((caller($who))[2]); }
-
-  my $level = $_[2];
-  my (undef, undef, $line, $caller) = caller($who);
+  my ($r, $message, $level) = @_;
   
-  $_[0]->request_handler->log->$level( $caller . '[' . $line . ']: ' . $_[1] );
+  my $depth = 0;
+  my @stack;
+  
+  while (my @frame = caller($depth++) ) {
+    push @stack, \@frame;
+  }
+
+  my $frame;
+  
+  while ($frame = pop @stack) {
+    last if $frame->[3] !~/eval/;
+  }
+  
+  $r->request_handler->log->$level( $frame->[3] . '[' . $frame->[2] . ']: ' . $message );
 }
 
 =pod
@@ -295,6 +333,20 @@ sub config {
   return $self->{_config};
 }
 
+sub _list_xml_files {
+  my ($path, @filter) = @_;
+  
+  my @files;
+  
+  find(sub {
+         my $name = $_;
+         push @files, $File::Find::name
+           if /\.xml$/ && ! grep { /^$name$/ } @filter;
+       }, $path);
+
+  return @files;
+}
+
 =pod
 
 =head2 get_uri_dir
@@ -368,170 +420,145 @@ the master F<tagx.xml> file
 sub get_bedrock_config {
   my $self = shift;
 
-  my $bedrock_config_path = realpath($ENV{BEDROCK_CONFIG_PATH})
-    if $ENV{BEDROCK_CONFIG_PATH};
-
-  unless ( $bedrock_config_path) {
-    $self->log_warn("No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.");
-  }
-
-  my $config_path = realpath($ENV{CONFIG_PATH})
-    if $ENV{CONFIG_PATH};
-
-  unless ( $config_path ) {
-    $self->log_warn("No CONFIG_PATH found.");
-  }
-
-  my $conf = eval {
-    Bedrock::Config->new($bedrock_config_path . '/tagx.xml');
-  };
-
-  # it's probably okay, not to find this, but only if you have your
-  # own tagx.xml somewhere, so let's at least warn
-
-  if ( $@ ) {
-    $self->log_warn(sprintf("error reading %s/tagx.xml -\n %s\n", $bedrock_config_path, $@));
+  my ($bedrock_config_path, $config_path);
+  
+  if ( $ENV{BEDROCK_CONFIG_PATH} ) {
+    $bedrock_config_path = realpath( $ENV{BEDROCK_CONFIG_PATH} );
   }
   else {
-    $self->log_debug(sprintf("successfully read %s/%s\n",  $bedrock_config_path, "/tagx.xml"));
-    $self->config_files_processed($bedrock_config_path . "/tagx.xml");
+    $self->log_warn(
+      'No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.'
+    );
   }
-  
+
+  if ( $ENV{CONFIG_PATH} ) {
+    $config_path = realpath( $ENV{CONFIG_PATH} );
+  }
+  else {
+    $self->log_warn(
+          'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:['
+        . $bedrock_config_path
+        . ']' );
+  } ## end else [ if ( $ENV{CONFIG_PATH})]
+
+  my @paths = grep { defined } ($bedrock_config_path, $config_path);
+
+  # it's probably okay, not to find this...
+  my $conf = $self->read_config($bedrock_config_path, 'tagx');
+
+  # Basically we want to allow users these options:
+  #
+  # 1. use Bedrock's configuration
+  # 2. use their own configuration instead of Bedrock's (default)
+  # 3. override some of Bedrock's configuration
+
+  # there is no Bedrock configuration, so we need to look for
+  # application's config (option #1)
+  if ( ! $conf ) {
+    $conf = $self->read_config($config_path, 'tagx');
+  }
+  elsif ( $conf->{REPLACE_CONFIG} =~/^y/i ) {
+    $conf = $self->read_config($config_path, 'tagx');
+  }
+  else {
+    $conf->merge_config($self->read_config($config_path, 'tagx'));
+  }
+
+  if ( !$conf || 0 == keys %$conf ) {
+    die "No or empty 'tagx.xml' \n"
+      . "BEDROCK_CONFIG_PATH: [$bedrock_config_path]\n"
+      . "CONFIG_PATH: [$config_path]\n";
+  }
+
   # look for data-sources.xml which defines database connection strings
-  my $db_conf = Bedrock::Config->new;
-
-  foreach my $config_path (qw(BEDROCK_CONFIG_PATH CONFIG_PATH)) {
-    next unless $ENV{$config_path};
-
-    my $xml_file = $ENV{$config_path} . "/data-sources.xml"
-      if exists $ENV{$config_path};
-
-    next unless $xml_file && -s $xml_file;
-
-    $self->config_files_processed($xml_file);
-    $db_conf = $db_conf->merge($xml_file);
-  }
-
-  # look for a tagx.xml that will be used with or instead of Bedrock's tagx.xml
-  if ( defined $config_path && -r $config_path . '/tagx.xml' ) {
-    if ( !$conf || $conf->{REPLACE_CONFIG} =~ /^y/i ) {
-      $conf = Bedrock::Config->new( $config_path . '/tagx.xml' );
-      $self->config_files_processed( $config_path . '/tagx.xml' );
-    }
-    else {
-      my $local_conf = Bedrock::Config->new( $config_path . '/tagx.xml' );
-
-      if ( exists $local_conf->{REPLACE_CONFIG} && $local_conf->{REPLACE_CONFIG} =~ /^y/i ) {
-        $self->log_debug("replacing standard Bedrock configuration");
-        $conf = $local_conf;
-      }
-      else {
-        $conf->merge_config($local_conf);
-      }
-
-      $self->config_files_processed( $config_path . '/tagx.xml' );
-    }
-  }
+  my $db_conf = $self->read_config($bedrock_config_path, 'data-sources');
   
-  $conf->dbnames($db_conf);
+  if ( $db_conf ) {
+    $db_conf->merge($self->read_config($config_path, 'data-sources'));
+  }
+  else {
+    $db_conf = $self->read_config($config_path, 'data-sources');
+  }
 
-  die "No or empty 'tagx.xml' found in BEDROCK_CONFIG_PATH:[$bedrock_config_path] or CONFIG_PATH:[$config_path]\n"
-    unless $conf && keys %$conf;
+  $conf->dbnames($db_conf || {});
 
   # look for more config files to merge
-  my @config_paths;
-  push @config_paths, $bedrock_config_path . '.d'
-    if defined $bedrock_config_path;
+  
+  my @config_paths = map { $_ . '.d' } @paths;
+  
+  foreach my $path ( @config_paths, $config_path ) {
+    next if !$path || !-d $path;
 
-  if ( defined $config_path ) {
-    push @config_paths, $config_path;
-    push @config_paths, $config_path . '.d';
-  }
+    $self->log_debug(sprintf "Searching [%s] for config files", $path);
 
-  foreach my $path ( @config_paths ) {
-    $self->log_debug(sprintf "Searching [%s] for config files\n", $path);
-    next unless -d $path;
-
-    local (*CONFIG_FILES);
-    opendir CONFIG_FILES, "$path";
-
-    while ( my $file = readdir CONFIG_FILES ) {
-      next unless $file =~ /\.xml$/ && $file !~ /^(tagx|tagx_apps)\.xml$/;
-
-      $self->log_debug( sprintf "Found a configuration file: [%s]\n", $file);
-      $self->config_files_processed("$path/$file");
-      $conf->merge("$path/$file");
+    for my $file ( _list_xml_files($path, 'tagx.xml', 'tagx_apps.xml') ) {
+      $self->log_debug( sprintf "Found a configuration file: [%s]", $file);
+      
+      $self->config_files_processed($file);
+      
+      $conf->merge($file);
     }
-
-    closedir CONFIG_FILES;
   }
 
-  # look for module configs
+  # -- look for module configs
   my @module_paths;
 
-  foreach ( qw/startup plugin/ ) {
-    # note the order is important here, we want local configurations
-    # to override system configurations
-    push @module_paths, $bedrock_config_path . ".d/" . $_
-      if -d $bedrock_config_path . ".d/" . $_;
-    
-    push @module_paths, $config_path . ".d/" . $_
-      if defined $config_path && -d $config_path . ".d/" . $_;
+  # note the order is important here, we want local configurations
+  # to override system configurations
+  foreach my $p ( @paths ) {
+    foreach my $dir ( qw/startup plugin/ ) {
+      push @module_paths, $p . ".d/" . $dir
+        if -d $p . ".d/" . $dir;
+    }
   }
 
   foreach my $path ( @module_paths ) {
-    local (*CONFIG_FILES);
-    opendir CONFIG_FILES, "$path";
+    foreach my $file ( _list_xml_files($path) ) {
+      $self->log_debug( sprintf "Found a potential module configuration file: [%s]", $file);
+      $self->log_debug( sprintf "Merging [%s]", $file );
 
-    while ( my $file = readdir CONFIG_FILES ) {
-      next unless $file =~ /\.xml$/;
-
-      $self->log_debug( sprintf "Found a potential module configuration file: [%s]\n", $file);
-      $self->log_debug( sprintf "Merging [%s]\n", $file );
-
-      my $module_config = Bedrock::Config->new("$path/$file");
+      my $module_config = Bedrock::Config->new($file);
       $conf->merge_modules( { MODULES => [ $module_config ] });
     }
+   }
 
-    closedir CONFIG_FILES;
-  }
+  
+  # -- directory configs
+  # directory configs are either typically in tagx_apps.xml
+  # <object>
+  #  <object name="/foo">
+  #   ...
+  #  </object>
+  # </object>
 
-  # note that configurations above could have overridden APP_CONFIG
-  # These are directory level configurations (tagx_apps.xml)
-  my @app_conf_files = $conf->{'APP_CONFIG'} 
-    if $conf->{'APP_CONFIG'} && -s $conf->{'APP_CONFIG'};
+  my $tagx_apps = $conf->{'APP_CONFIG'};
+  
+  if ( $tagx_apps ) {
+    my $app_config = $self->read_config($bedrock_config_path, $tagx_apps);
+    
+    if ( $app_config ) {
+      $app_config->merge_config($self->read_config($config_path, $tagx_apps));
+    }  
 
-  # in case we have directory specific configuration files...
-  my $dir = $self->get_uri_dir;
-  $dir =~s|^/||;
-
-  # Bedrock shell uses DOCUMENT_ROOT differently
-  $dir =~ s/^$ENV{DOCUMENT_ROOT}//
-    if defined $ENV{DOCUMENT_ROOT};
-
-  foreach my $dir_conffile (@app_conf_files) {
-    # Load the config file
-    $self->config_files_processed( $dir_conffile );
-    my $dir_conf = Bedrock::Config->new($dir_conffile);
-
-    my $dir_path = '/';
-    my %dirconfs;
-
-    foreach my $dir_part ( undef, split /\//, $dir ) {
-      $dir_path .= $dir_part if defined $dir_part;
-
-      next if $dirconfs{$dir_path};
-
-      $dirconfs{$dir_path} = $dir_path;
+    if ( $app_config && keys %$app_config ) {
+      # in case we have directory specific configuration files...
+      my $dir = $self->get_uri_dir;
       
-      # Look up the app config, based on directory of current request
-      my $app_conf = $dir_conf->{$dir_path} || $dir_conf->{ $dir_path . '/' };
+      # Bedrock shell uses DOCUMENT_ROOT differently (explain?)
+      $dir =~ s/^$ENV{DOCUMENT_ROOT}//
+        if defined $ENV{DOCUMENT_ROOT};
 
-      $conf->merge_config($app_conf) if $app_conf;
-      $dir_path .= '/' unless $dir_path eq '/';
+      foreach my $k (keys %$app_config) {
+        delete $app_config->{$k}
+          if ! $k eq "/$dir";
+      }
+
+      # merge what's left since it must be our directory
+      $conf->merge_config($app_config);
     }
-  }
+   }
 
+  # -- not sure why we ever needed this line
   $conf->{CONFIG_PATH} = $config_path;
 
   # override use of BEDROCK_IMAGE_URL if app defines own
