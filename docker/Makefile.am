@@ -1,14 +1,11 @@
 SUBDIRS = .
 
 DOCKERFILE = \
-    Dockerfile.in
+    Dockerfile
 
 @do_subst_command@
 
-GDOCKERFILE = $(DOCKERFILE:.in=)
-
-$(GDOCKERFILE): $(DOCKERFILE)
-	$(do_subst) $< > $@
+all: config
 
 REPOS = \
    bedrock.repo \
@@ -17,6 +14,61 @@ REPOS = \
 XML_FILES = \
    mysql-session.xml.in \
    data-sources.xml.in
+
+TAGX = \
+  tagx.xml.in
+
+GTAGX = $(TAGX:.xml.in=.xml)
+
+$(GTAGX): % : %.in
+	if test -n "$(STREAM_LOGS)"; then \
+	  html_logfile="STDERR"; \
+	fi; \
+	if test -n "$(STREAM_LOGS)"; then \
+	  logfile="STDERR"; \
+	else \
+	  logfile="bedrock.log"; \
+	fi; \
+	sed -e 's,@logfile@,'$$logfile',' \
+	    -e 's,@html_logfile@,'$$html_logfile',' < $< >$@
+
+APACHE_CONF = \
+  httpd.conf.in
+
+GAPACHE_CONF = $(APACHE_CONF:.conf.in=.conf)
+
+$(GAPACHE_CONF): % : %.in
+	if test -n "$(STREAM_LOGS)"; then \
+	  error_log="/dev/fd/1"; \
+	else \
+	  error_log="/var/www/log/error_log"; \
+	fi; \
+	if test -n "$(STREAM_LOGS)"; then \
+	  access_log="/dev/fd/1"; \
+	else \
+	  access_log="/var/www/log/access_log"; \
+	fi; \
+	sed -e 's,@error_log@,'$$error_log',' \
+	    -e 's,@access_log@,'$$access_log',' < $< >$@
+
+BEDROCK_CONF = \
+  perl_bedrock.conf.in
+
+GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
+
+$(GBEDROCK_CONF): $(BEDROCK_CONF)
+	if test -n "$(STREAM_LOGS)"; then \
+	  error_log="/dev/fd/1"; \
+	else \
+	  error_log="/var/www/log/error_log"; \
+	fi; \
+	if test -n "$(STREAM_LOGS)"; then \
+	  access_log="/dev/fd/1"; \
+	else \
+	  access_log="/var/www/log/access_log"; \
+	fi; \
+	sed -e 's,@error_log@,'$$error_log',' \
+	    -e 's,@access_log@,'$$access_log',' < $< >$@
 
 GXML_FILES = $(XML_FILES:.xml.in=.xml)
 
@@ -34,24 +86,36 @@ $(GXML_FILES): % : %.in
 	    -e 's/@dbi_db@/'$$DBI_DB'/' \
 	    -e 's/@dbi_host@/'$$DBI_HOST'/' < $< >$@
 
+CONFIG_FILES = \
+    $(GXML_FILES) \
+    $(GAPACHE_CONF) \
+    $(GBEDROCK_CONF) \
+    $(GTAGX)
+
 FILES = \
     $(REPOS) \
     $(XML_FILES)
 
 CLEANFILES = \
-    $(GDOCKERFILE) \
     $(GXML_FILES) \
+    $(GAPACHE_CONF) \
+    $(GBEDROCK_CONF) \
+    $(GTAGX) \
     docker-image
 
 dist_noinst_DATA = \
     $(FILES) \
-    $(DOCKERFILE)
+    $(DOCKERFILE) \
+    $(APACHE_CONF) \
+    $(TAGX) \
+    $(BEDROCK_CONF)
 
-all:
 
-xml: $(GXML_FILES)
 
-docker-image: $(GDOCKERFILE) $(REPOS) $(GXML_FILES)
+.PHONY: config
+config: $(CONFIG_FILES)
+
+docker-image: $(DOCKERFILE) $(REPOS) $(CONFIG_FILES)
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build --no-cache -f $< . -t bedrock:latest | tee $$LOG; \
@@ -64,9 +128,11 @@ clean-local:
 	echo $$bedrock; \
 	if test -n "$$bedrock"; then \
 	  docker rm -f $$bedrock; \
-	fi; \
+	fi;
+
+.PHONY: realclean
+
+realclean: clean
 	if test -n "$$(docker image list | head -n +2 | grep '^bedrock')"; then \
 	  docker rmi bedrock; \
 	fi
-
-
