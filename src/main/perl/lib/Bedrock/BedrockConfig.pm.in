@@ -34,9 +34,12 @@ use IO::File;
 use File::Basename;
 
 use Bedrock::XML;
+require JSON::PP;
+use YAML qw/LoadFile Dump/;
 use Bedrock::Dump;
 use Data::Dumper;
 use Scalar::Util qw/reftype/;
+use Bedrock::Serializer qw/evolve devolve/;
 
 use parent qw/Bedrock::Hash/;
 
@@ -51,12 +54,51 @@ sub new {
   $class = ref($class) || $class;
 
   my $file = shift;
-
-  die "[$file] - only .xml files are supported as Bedrock configuration files.\n"
-    if $file && $file !~/\.xml$/i;
   
-  my $self = $file ? Bedrock::XML->new(&_locate_file($file)) : {};
+  $file = &_locate_file($file)
+    if $file;
 
+  my $self;
+
+  my $this = $file;
+  
+  for ($this) {
+    
+    /\.xml$/ && do {
+      $self = Bedrock::XML->new($file);
+
+      $self->{_config_path} = $file;
+      last;
+    };
+
+    /\.json$/ && do {
+      local $/;
+      my $json;
+      
+      open (my $fh, '<', $file)
+        or die "could not open $file for reading";
+
+      $json = <$fh>;
+      
+      close $fh;
+      
+      $self = JSON::PP->new->utf8->decode($json);
+      $self->{_config_path} = $file;
+      
+      last;
+    };
+
+    /\.yaml$/ && do {
+
+      $self = LoadFile($file);
+      $self->{_config_path} = $file;
+      
+      last;
+    };
+      
+    $self = {};
+  }
+  
   return bless $self, $class;
 }
 
@@ -90,55 +132,62 @@ sub dbnames {
 
  _locate_file( file )
 
+Searches the Bedrock path hierarchy looking for the specified
+configuration file. If any of the directories specfied ends with
+"config" then the C<_locate> will also look in directories the
+C<config.d> sub-directory.
+
+=over 5
+
+=item 1. $ENV{CONFIG_PATH}
+
+=item 2. $ENV{BEDROCK_CONFIG_PATH}
+
+=item 3. $ENV{@libdir@/bedrock/config}
+
+=back
+
 =cut
 
 sub _locate_file {
-  my $file = shift;
-
-  if ( $file =~ m!/! ) {
-    # No search for config file if filename specified with path
-
-    die "_locate_file: Config file $file not found"
-      unless -e $file;
-
-    die "_locate_file: Cannot open config file $file for reading."
-      unless -r $file;
-
-    return $file;
+  my ($self, $file) = @_;
+  
+  if ( ! ref($self) ) {
+    $file = $self;
+    undef $self;
   }
-  elsif ( -e $file ) {
-    # file exists in current directory, but can we read it?
-    die "_locate_file: Cannot open config file $file for reading."
-      unless -r $file;
+  
+  my $path;
+  
+  if ( $file && $file =~ m!^/! ) {
+    # No search for config file if filename specified with path
+    $path = $file;
+  }
+  elsif ( $file && !-e $file ) {
+    
+    # search for config file in path
+    my @search_paths = (@ENV{qw/CONFIG_PATH BEDROCK_CONFIG_PATH/}, '@libdir@/bedrock/config');
+    @search_paths = grep { defined $_ && /./ } @search_paths;
+    push @search_paths, map { /config$/ ? "$_.d" : () } @search_paths;
+    
+    for my $dir (@search_paths) {
+      if ( -d "$dir" && -e "$dir/$file" ) {
+        $path = "$dir/$file";
+        last;
+      }
+    }
+  }
 
-    return $file;
+  if ($path) {
+    # found it but it's unreadable
+    die "_locate_file: Cannot open config file $path for reading."
+      if !-r $path;
   }
   else {
-    # search for config file in path
-    my @search_paths;
-
-    push @search_paths, $ENV{CONFIG_PATH}
-      if $ENV{CONFIG_PATH};
-
-    die  "_locate_file: Could not locate $file and BEDROCK_CONFIG_PATH not set in environment"
-      unless $ENV{BEDROCK_CONFIG_PATH};
-
-    push @search_paths, $ENV{BEDROCK_CONFIG_PATH};
-
-    for my $dir ( @search_paths ) {
-      my $fullpath = $dir . '/' . $file;
-      next unless -e $fullpath;
-
-      # found it but it's unreadable
-      die "_locate_file: Cannot open config file $fullpath for reading."
-	unless -r $fullpath;
-
-      # found it
-      return $fullpath;
-    }
-
-    die "_locate_file: Could not locate $file in " . join(':', @search_paths);
+    die "_locate_file: Config file $file not found";
   }
+  
+  return $path;
 }
 
 sub merge_config {
@@ -190,11 +239,29 @@ sub merge {
   return $self;
 }
 
+sub to_json {
+  my ($self) = @_;
+
+  return JSON::PP->new->utf8->pretty->encode(devolve $self);
+}
+
+sub to_yaml {
+  my ($self) = @_;
+
+  return Dump $self;
+}
+
+sub to_xml {
+  my ($self) = @_;
+  
+  return Bedrock::XML::writeXMLString($self);
+}
+
 sub XML {
   my $self = shift;
   my $in_out = shift;
 
-  warn "$self::XML() has been deprecated, consider using <var --xml>\n";
+  warn ref($self) . "::XML() has been deprecated, consider using <var --xml>\n";
 
   die "Usage: \$config.XML('in|out', option, value, ...)"
     unless $in_out =~ /^(in|out)$/;

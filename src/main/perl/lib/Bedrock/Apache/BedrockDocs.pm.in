@@ -48,6 +48,7 @@ use Bedrock;
 use Bedrock::BedrockConfig;
 use Bedrock::Handler;
 use Bedrock::VERSION;
+use Text::TagX;
 
 use Data::Dumper;
 use File::Basename;
@@ -67,8 +68,12 @@ sub show_pod {
     output( $bedrock_handler->request_handler, $html );
   }
   else {
-    my $url = sprintf("http://%s/%s/%s\n\n", $bedrock_handler->get_bedrock_admin_dir, $ENV{HTTP_HOST}, $return_url);
-    $bedrock_handler->request_handler->cgi_header_out('Location', $url);
+    my $url = sprintf(
+      "http://%s/%s/%s\n\n",
+      $bedrock_handler->get_bedrock_admin_dir,
+      $ENV{HTTP_HOST}, $return_url
+    );
+    $bedrock_handler->request_handler->cgi_header_out( 'Location', $url );
   }
 
   return OK;
@@ -79,11 +84,11 @@ sub _show_pod {
   my ($file, $conf) = @_;
 
   my $bedrock_admin_dir = $conf->{BEDROCK_ADMIN_DIR} || '/bedrock';
-  my $outfile = tmpnam;
+  my $pod = tmpnam;
 
   my %options = (
 		 '--infile'   => $file,
-		 '--outfile'  => $outfile,
+		 '--outfile'  => $pod,
 		 '--cachedir' => File::Spec->tmpdir(),
 		 $conf->{BEDROCK_POD_CSS_URL} ? ("--css" => $conf->{BEDROCK_POD_CSS_URL}) : ()
 		);
@@ -96,10 +101,16 @@ sub _show_pod {
 
   my $snippet = <<html;
 <table width="100%">
+
 <tr>
-  <td align="left"><a href="$bedrock_admin_dir"><img src="$bedrock_logo" border="0"></a></td>
-  <td align="right" valign="bottom" width="9999"><i>Bedrock Version: $Bedrock::VERSION::ID - $Bedrock::VERSION::BUILD_DATE</i></td>
+  <td align="left">
+    <a href="$bedrock_admin_dir"><img src="$bedrock_logo" border="0"></a>
+  </td>
+  <td align="right" valign="bottom" width="9999">
+    <i>Bedrock Version: $Bedrock::VERSION::ID - $Bedrock::VERSION::BUILD_DATE</i>
+  </td>
 </tr>
+
 <tr>
   <td colspan="2"><hr></td>
 </tr>
@@ -109,24 +120,24 @@ html
   my $data;
 
   # little or no pod?
-  if ( -s $outfile > 600 ) {
-    open( FILE, $outfile ) or die "Unable to open $outfile: $!\n";
+  if ( -s $pod > 600 ) {
+    open( my $fh, '<', $pod )
+      or die "Unable to open $pod: $!\n";
+    
     local $/ = undef;
-    $data = <FILE>;
-    close FILE;
+    $data = <$fh>;
+    close $fh;
 
     $data =~ s/(<body(.*?)>)/$1\n$snippet/is;
-
   }
 
-  unlink $outfile;
+  unlink $pod;
 
   return $data;
 }
 
 sub get_modules {
-  my $dir = shift;
-  my $no_blms = shift;
+  my ($dir, $no_blms) = @_;
 
   my @listing;
 
@@ -303,17 +314,22 @@ eot
 }
 
 sub ul_links {
-  my $bedrock_admin_dir = shift;
-  my $links             = Bedrock::Hash->new( @_ );
-  my $ul                = "<ul>\n";
+  my ($url, @links) = @_;
+  
+  my $ul = "<ul>\n";
 
-  while ( my ( $key, $value ) = each %{$links} ) {
-    $ul .= sprintf( q{<li><a href="%s/%s">%s</a>} . "\n",
-                    $bedrock_admin_dir, $key, $value );
+  while (@links) {
+    my $path = shift @links;
+    my $label = shift @links;
+    if ( $label =~/\s*\(disabled\)$/ ) {
+      $ul .= "<li>$label</li>\n";
+    }
+    else {
+      $ul .= "<li><a href=\"$url/$path\">$label</a></li>\n";
+    }
   }
-
   $ul .= "</ul>\n";
-
+  
   return $ul;
 }
 
@@ -377,7 +393,7 @@ sub handler {
 
   my $conf = $bedrock_handler->config();
 
-  unless ( $conf->{ALLOW_BEDROCK_INFO} =~ /(yes|docs)/i ) {
+  if ( $conf->{ALLOW_BEDROCK_INFO} !~ /(yes|docs)/i ) {
     $r && $r->log->error(sprintf( "[%s]: bedrock admin directory request denied by configuration.", (caller(0))[3]));
     return FORBIDDEN;
   }
@@ -393,101 +409,104 @@ sub handler {
 
   my $html;
 
-  for ( $uri ) {
+  for ($uri) {
     /plugins\/?(.*?)$/ && do {
-      my $file = "$1";
+      my $file        = "$1";
       my @blm_listing = get_all_blms();
 
-      if ( $file ) {
-        my @path_list =
-	  grep { /(BLM\/$file|BLM\/Startup\/$file)|BLM\/Filter\/$file/i } @blm_listing;
+      if ($file) {
+        my @path_list
+          = grep {/(BLM\/$file|BLM\/Startup\/$file)|BLM\/Filter\/$file/i}
+          @blm_listing;
 
-        my $path = $path_list[0] . ".pm" if @path_list && -s $path_list[0] . ".pm";
+        my $path = $path_list[0] . ".pm"
+          if @path_list && -s $path_list[0] . ".pm";
 
         if ( $path && $path =~ /(BLM\/.*?)\.pm$/ ) {
           my $title = $1;
           $title =~ s/\//::/g;
-	  
-	  return show_pod( $bedrock_handler, $path, "plugins" );
-        }
+
+          return show_pod( $bedrock_handler, $path, "plugins" );
+        } ## end if ( $path && $path =~...)
         else {
           return NOT_FOUND;
         }
-      }
+      } ## end if ($file)
       else {    # blm listing
         my $blms = Bedrock::Hash->new;
 
-        foreach (  @blm_listing ) {
+        foreach (@blm_listing) {
           /BLM\/(.*?)$/;
           $blms->{$1} = "BLM/$1";
           $blms->{$1} =~ s/\//::/g;
         }
-	
+
         $html = head(
-		     title      => "Bedrock Plugins",
-		     stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		     home       => $bedrock_admin_dir,
-		     image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
-		    );
+          title      => "Bedrock Plugins",
+          stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+          home       => $bedrock_admin_dir,
+          image => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+        );
 
         $html .= blm_ul( $bedrock_admin_dir, $blms, "Plugins",
-                         grep ( !/^(Startup|Filter)/, keys %$blms ) );
+          grep ( !/^(Startup|Filter)/, keys %$blms ) );
         $html .= "<hr>\n";
-        $html .= blm_ul( $bedrock_admin_dir, $blms,
-                         "Application Plugins",
-                         grep ( /^Startup/, keys %$blms ) );
+        $html .= blm_ul(
+          $bedrock_admin_dir, $blms,
+          "Application Plugins",
+          grep ( /^Startup/, keys %$blms )
+        );
         $html .= "<hr>\n";
-        $html .= blm_ul( $bedrock_admin_dir, $blms,
-                         "Filters",
-                         grep ( /^Filter/, keys %$blms ) );
+        $html .= blm_ul( $bedrock_admin_dir, $blms, "Filters",
+          grep ( /^Filter/, keys %$blms ) );
         $html .= "</body>\n</html>\n";
-      }
+      } ## end else [ if ($file) ]
 
       last;
     };
 
-
     /system\/?(.*?)\/?$/ && do {
       my $module = $1;
 
-      my $pod_paths = [ '@libdir@/bedrock/perl5' ];
+      my $pod_paths = ['@libdir@/bedrock/perl5'];
       my $module_listing = get_all_modules( $pod_paths, 0 );
 
       $html = head(
-		   title      => "System Documentation Listing",
-		   stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		   home       => $bedrock_admin_dir,
-		   image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO} 
-		  );
-      
-      if ( $module && $module_listing && keys %$module_listing ) {
-	$module =~s/\//\:\:/g;
-	my $path = $module_listing->{$module} . '.pm';
+        title      => "System Documentation Listing",
+        stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+        home       => $bedrock_admin_dir,
+        image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+      );
 
-	return show_pod( $bedrock_handler, $path, "tag" );
-      }
+      if ( $module && $module_listing && keys %$module_listing ) {
+        $module =~ s/\//\:\:/g;
+        my $path = $module_listing->{$module} . '.pm';
+
+        return show_pod( $bedrock_handler, $path, "tag" );
+      } ## end if ( $module && $module_listing...)
       elsif ( $module_listing && keys %$module_listing ) {
 
-	my $modules = get_all_modules( $pod_paths, 0, 1 );
-	
-	$html .= "<ul>\n";
-	
-	foreach my $module ( sort keys %$modules ) {
-	  my $path = $module;
-	  $path =~s/\:\:/\//g;
-	  
-	  my $href = sprintf('<a href="/bedrock/system/%s">%s</a>', $path, $module ); 
-	  $html .= "<li>$href</li>\n"
-	    unless $module =~/Bedrock::(Text|Filter)/;
-	}
+        my $modules = get_all_modules( $pod_paths, 0, 1 );
 
-	$html .=<<eot;
+        $html .= "<ul>\n";
+
+        foreach my $module ( sort keys %$modules ) {
+          my $path = $module;
+          $path =~ s/\:\:/\//g;
+
+          my $href = sprintf( '<a href="/bedrock/system/%s">%s</a>', $path,
+            $module );
+          $html .= "<li>$href</li>\n"
+            unless $module =~ /Bedrock::(Text|Filter)/;
+        } ## end foreach my $module ( sort keys...)
+
+        $html .= <<eot;
 </ul>
 </body>
 </html>
 eot
-      }
-      
+      } ## end elsif ( $module_listing &&...)
+
       last;
     };
 
@@ -499,48 +518,49 @@ eot
       my $pod_paths = $conf->{POD_PATHS};
 
       if ( $pod_paths && @$pod_paths ) {
-	$module_listing = get_all_modules( $pod_paths, 0 );
+        $module_listing = get_all_modules( $pod_paths, 0 );
       }
 
       $html = head(
-		   title      => "User Documentation Listing",
-		   stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		   home       => $bedrock_admin_dir,
-		   image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO} 
-		  );
+        title      => "User Documentation Listing",
+        stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+        home       => $bedrock_admin_dir,
+        image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+      );
 
       if ( $module && $module_listing && keys %$module_listing ) {
-	$module =~s/\//\:\:/g;
-	my $path = $module_listing->{$module} . '.pm';
+        $module =~ s/\//\:\:/g;
+        my $path = $module_listing->{$module} . '.pm';
 
-	return show_pod( $bedrock_handler, $path, "tag" );
-      }
+        return show_pod( $bedrock_handler, $path, "tag" );
+      } ## end if ( $module && $module_listing...)
       elsif ( $module_listing && keys %$module_listing ) {
-	my $pod_paths = $conf->{POD_PATHS};
+        my $pod_paths = $conf->{POD_PATHS};
 
-	if ( $pod_paths && @$pod_paths ) {
-	  my $modules = get_all_modules( $pod_paths, 0, 1 );
+        if ( $pod_paths && @$pod_paths ) {
+          my $modules = get_all_modules( $pod_paths, 0, 1 );
 
-	  $html .= "<ul>\n";
+          $html .= "<ul>\n";
 
-	  foreach my $module ( sort keys %$modules ) {
-	    my $path = $module;
-	    $path =~s/\:\:/\//g;
+          foreach my $module ( sort keys %$modules ) {
+            my $path = $module;
+            $path =~ s/\:\:/\//g;
 
-	    my $href = sprintf('<a href="/bedrock/pod/%s">%s</a>', $path, $module ); 
-	    $html .= "<li>$href</li>\n";
-	  }
+            my $href
+              = sprintf( '<a href="/bedrock/pod/%s">%s</a>', $path, $module );
+            $html .= "<li>$href</li>\n";
+          } ## end foreach my $module ( sort keys...)
 
-	  $html .= <<eot;
+          $html .= <<eot;
 </ul>
 </body>
 </html>
 eot
-	}
-      }
+        } ## end if ( $pod_paths && @$pod_paths)
+      } ## end elsif ( $module_listing &&...)
       else {
-	$html .= "No user documentation found.";
-	$html .= "</body></html>";
+        $html .= "No user documentation found.";
+        $html .= "</body></html>";
       }
 
       last;
@@ -548,7 +568,7 @@ eot
 
     /tag\/?(.*?)\/?$/ && do {
       my $tag = lc($1);
-      
+
       if ($tag) {
         my $path;
         my $tag_file;
@@ -567,9 +587,9 @@ eot
             }
             closedir TAGS;
             last if $tag_file;
-          }
+          } ## end foreach ( "NoBody", "WithBody"...)
           last if $tag_file;
-        }
+        } ## end foreach my $inc (@INC)
 
         if ($tag_file) {
           return show_pod( $bedrock_handler, $tag_file, "tag" );
@@ -577,18 +597,23 @@ eot
         else {
           return NOT_FOUND;
         }
-      }
+      } ## end if ($tag)
       else {    # tag listing
         $html = head(
-		     title      => "Bedrock Tag Listing",
-		     stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		     home       => $bedrock_admin_dir,
-		     image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO} 
-		    );
+          title      => "Bedrock Tag Listing",
+          stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+          home       => $bedrock_admin_dir,
+          image => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+        );
 
         $Text::TagX::Opentag_expr =~ /^\^\((.*?)\)/;
         my @tag_listing = split /\|/, $1;
-        @tag_listing = map { !/(\#|else|else\?if|blm|\?)/ ? sprintf( q{<a href="%s/tag/%s">%s</a>}, $bedrock_admin_dir, $_, $_ ) : () } sort @tag_listing;
+        @tag_listing = map {
+          !/(\#|else|else\?if|blm|\?)/
+            ? sprintf( q{<a href="%s/tag/%s">%s</a>},
+            $bedrock_admin_dir, $_, $_ )
+            : ()
+        } sort @tag_listing;
         $html .= "<ul>\n";
         map { $html .= "<li>$_\n"; } @tag_listing;
         $html .= <<eot;
@@ -596,166 +621,200 @@ eot
 </body>
 </html>
 eot
-      }
+      } ## end else [ if ($tag) ]
 
       last;
     };
 
     /^\/(env|config)\/?$/ && do {
       my $doc = $1;
-      my $Environment = (exists $conf->{ALLOW_BEDROCK_ENV_INFO} && $conf->{ALLOW_BEDROCK_ENV_INFO} =~/^y/i) ? \%ENV : { ALLOW_BEDROCK_ENV_INFO => $conf->{ALLOW_BEDROCK_ENV_INFO} || "undefined" };
 
-      my $Configuration = (exists $conf->{ALLOW_BEDROCK_CONFIG_INFO} && $conf->{ALLOW_BEDROCK_CONFIG_INFO} =~/^y/i) ? $conf : { ALLOW_BEDROCK_CONFIG_INFO => $conf->{ALLOW_BEDROCK_CONFIG_INFO} || "undefined" };
-      my %vars = ( 
-		  env    => [ 'Environment',   $Environment ],
-		  config => [ 'Configuration', $Configuration ]
-		 );
+      my $Environment = \%ENV;
+      if ( !$conf->{ALLOW_BEDROCK_ENV_INFO} || $conf->{ALLOW_BEDROCK_ENV_INFO} !~ /^y/i ) {
+        $Environment = { ALLOW_BEDROCK_ENV_INFO => $conf->{ALLOW_BEDROCK_ENV_INFO} };
+      }
+      
+      my $Configuration  = $conf;
+      if (!$conf->{ALLOW_BEDROCK_CONFIG_INFO}
+        || $conf->{ALLOW_BEDROCK_CONFIG_INFO} !~ /^y/i ) {
+        $Configuration = { ALLOW_BEDROCK_CONFIG_INFO => $conf->{ALLOW_BEDROCK_CONFIG_INFO} };
+      }
+      
+      my %vars = (
+        env    => [ 'Environment',   $Environment ],
+        config => [ 'Configuration', $Configuration ]
+      );
 
-      $html = head( title      => "Bedrock " . $vars{$doc}->[0],
-		    stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		    home       => $bedrock_admin_dir,
-		    image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
-		  );
+      $html = head(
+        title      => "Bedrock " . $vars{$doc}->[0],
+        stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+        home       => $bedrock_admin_dir,
+        image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+      );
       $html .= q{<table cellpadding="0" cellspacing="0" border="0">} . "\n";
 
       foreach ( sort keys %{ $vars{$doc}->[1] } ) {
         my $val = $vars{$doc}->[1]->{$_};
-        my $string_val =  ref($val)  ? '<pre class="configref">' . Bedrock::Dump::compact($val) . '</pre>' : '<code class="configvar">' . $val . '</code>';
+        my $string_val
+          = ref($val)
+          ? '<pre class="configref">'
+          . Bedrock::Dump::compact($val)
+          . '</pre>'
+          : '<code class="configvar">' . $val . '</code>';
         $html .= <<eot;
 <tr>
   <th valign="top" align="right"><code>$_</code>&nbsp;</th>
   <td valign="top">$string_val</td>
 </tr>
 eot
-      }
+      } ## end foreach ( sort keys %{ $vars...})
 
       $html .= "</table>\n</body>\n</html>\n";
 
       last;
     };
 
-    $html = head( 
-		 title      => "Bedrock Reference Guide",
-		 stylesheet => $conf->{BEDROCK_POD_CSS_URL},
-		 home       => $bedrock_admin_dir,
-		 image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
-		);
-    
-    $html .= ul_links( $bedrock_admin_dir,
-		       "tag"     => "Bedrock Tags",
-		       "plugins" => "Bedrock Plugins",
-		     );
-    
+    $html = head(
+      title      => "Bedrock Reference Guide",
+      stylesheet => $conf->{BEDROCK_POD_CSS_URL},
+      home       => $bedrock_admin_dir,
+      image      => $conf->{BEDROCK_IMAGE_URL} . '/' . $conf->{BEDROCK_LOGO}
+    );
+
+    $html .= ul_links(
+      $bedrock_admin_dir,
+      "tag"     => "Bedrock Tags",
+      "plugins" => "Bedrock Plugins",
+    );
+
     $html .= "<hr>\n";
-    
+
     $html .= "<h1>System Documentation</h1>\n";
-    $html .= ul_links ( $bedrock_admin_dir,
-			"system" => "System Modules"
-		      );
-    
+    $html .= ul_links( $bedrock_admin_dir, "system" => "System Modules" );
+
     $html .= "<hr>\n";
-    
-    if ( $conf->{POD_PATHS} && @{$conf->{POD_PATHS}} ) {
+
+    if ( $conf->{POD_PATHS} && @{ $conf->{POD_PATHS} } ) {
       $html .= "<h1>User Documentation</h1>\n";
-      $html .= ul_links ( $bedrock_admin_dir,
-			  "pod" => "Module Listing"
-			);
-      
+      $html .= ul_links( $bedrock_admin_dir, "pod" => "Module Listing" );
+
       $html .= "<hr>\n";
-    }
-    
-    unless ( $conf->{ALLOW_BEDROCK_INFO} eq 'docs' ) {
-      $html .= "<h1>Bedrock Environment</h1>\n";
-      $html .= ul_links( $bedrock_admin_dir,
-			 "config" => "Bedrock Configuration",
-			 "env"    => "Bedrock Environment"
-		       );
+    } ## end if ( $conf->{POD_PATHS...})
+
+    # ALLOW_BEDROCK_INFO = yes, no, docs
+    # (we already prevented accessif not yes or docs)
+    if ( $conf->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
       
+      $html .= "<h1>Bedrock Environment</h1>\n";
+      
+      $html .= ul_links(
+        $bedrock_admin_dir,
+        "config" => "Bedrock Configuration"
+          . $conf->{ALLOW_BEDROCK_CONFIG_INFO} !~ /^y/i ? ' (disabled)' : '',
+        "env" => "Bedrock Environment" . $conf->{ALLOW_BEDROCK_ENVIRONMENT_INFO}
+          !~ /^y/i
+        ? ' (disabled)'
+        : ''
+      );
+
       # See if logs are working...
       $html .= "<hr>\n";
       $html .= "<h1>Bedrock Logs</h1>\n";
-      
-      my $logfile = sprintf( "%s/%s", @$conf{qw(LOGDIR LOGFILE)} );
-      
-      unless ( $conf->{LOGDIR} && $conf->{LOGFILE} ) {
-	
-	# no LOGDIR specified
-	$html .=
-	  q{<span class="error">No log directory or log file specified in <strong>tagx.xml</strong>.  Set <strong>LOGDIR and LOGFILE</strong></span> }
-	    . "\n";
-      }
-      elsif ( -d $conf->{LOGDIR} && !-s $logfile ) {
-	
-	# directory defined
-	$html .=
-	  q{<span class="error">Directory specified but no <strong>} 
-	    . $logfile
-	      . "</strong> can be found.  Check permissions.</span>\n";
-      }
-      elsif ( !-d $conf->{LOGDIR} ) {
-	
-	# directory not defined
-	$html .=
-	  q{<span class="error">Log directory is specified but <strong>}
-	    . $conf->{LOGDIR}
-	      . "</strong> does not exist.  Create the directory.  Make sure the Apache user can write to this directory.\n";
-      }
-      elsif ( !-d $conf->{HTML_LOGDIR} ) {
-	
-	# directory not defined
-	$html .=
-	  q{<span class="error">HTML log directory is specified but <strong>}
-	    . $conf->{HTML_LOGDIR}
-	      . "</strong> does not exists.  Create the directory. Make sure the Apache user can write to this directory.\n";
-      }
-      else {
-	
-	# defined and present
-	$html .= "<ul>\n";
-	$html .=
-	  q{<li><span class="code">LOGDIR:</span>&nbsp;<strong>}
-	    . $conf->{LOGDIR}
-	      . "</strong></li>\n";
-	$html .=
-	  q{<li><span class="code">LOGFILE:</span>&nbsp;<strong>}
-	    . $conf->{LOGFILE}
-	      . "</strong></li>\n";
-	$html .=
-	  q{<li><span class="code">HTML_LOGDIR:</span>&nbsp;<strong>}
-	    . $conf->{HTML_LOGDIR}
-	      . "</strong></li>\n";
-	$html .=
-	  q{<li><span class="code">LOGLEVEL:</span>&nbsp;<strong>}
-	    . $conf->{LOGLEVEL}
-	      . "</strong></li>\n";
-	$html .= "</ul>\n";
-	$html .= "<hr>\n";
-	$html .= "<h3>Bedrock Log Tail</h3>\n";
-	$html .=
-          q{<pre class="codeframe" style="height:150px; width:600px;">} . "\n";
-	
-	my $fd = IO::File->new( $logfile, "r" );
-	my $pos = ( -s $fd > 4000 ) ? -s $fd - 4000 : 0;
-	
-	$fd->setpos($pos);
 
-	while (<$fd>) {
-	  $html .= Text::URLEncode::Htmlencode($_);
-	}
+      my ( $logfile, $page_log, $logdir, $loglevel, $html_logmaxsize,
+        $html_logspooler )
+        = @{$conf}{
+        qw/LOGFILE HTML_LOGFILE LOGDIR LOGLEVEL HTML_LOGMAXSIZE HTML_LOGSPOOLER/
+        };
 
-	$html .= "</pre>\n";
-	
-	$fd->close;
+      if ( $logfile && $logfile ne 'STDERR' ) {
+        $logfile = $logdir . '/' . $logfile
+          if $logdir;
       }
-    }
-    
-    $html .= <<eot;
+
+      if ( !$logfile ) {
+
+        # no LOGDIR specified
+        $html .= <<HTML;
+<span class="error">
+ No log directory or log file specified in <strong>tagx.xml</strong>.
+ Set <strong>LOGDIR and LOGFILE</strong>
+</span> 
+HTML
+      } ## end if ( !$logfile )
+      elsif ( $logdir && -d $logdir && $logfile ne 'STDERR' && !-r $logfile )
+      {
+        # directory defined
+        $html .= <<HTML;
+<span class="error">Directory specified but no <strong> 
+ $logfile</strong> can be found. Check permissions.
+</span>
+HTML
+      } ## end elsif ( $logdir && -d $logdir...)
+      elsif ( $logdir && !-d $logdir ) {
+        # directory defined but does not exist
+        $html .= <<HTML;
+<span class="error">Log directory is specified but <strong>
+ $logdir</strong> does not exist. Create the directory.  
+Make sure the Apache user can write to this directory.
+</span>
+HTML
+      } ## end elsif ( $logdir && !-d $logdir)
+      elsif ( !$page_log ) {
+
+        # directory not defined
+        $html .= <<HTML;
+<span class="error">
+ Page logging disabled. Set <strong>HTML_LOGFILE</strong> to create log files for each page.
+</span>
+HTML
+      } ## end elsif ( !$page_log )
+
+      # defined and present
+      $html .= <<HTML;
+<ul>
+ <li><span class="code">LOGDIR:</span>&nbsp;<strong>$logdir</strong></li>
+ <li><span class="code">LOGFILE:</span>&nbsp;<strong>$logfile</strong></li>
+ <li><span class="code">HTML_LOGFILE:</span>&nbsp;<strong>$page_log</strong></li>
+ <li><span class="code">LOGLEVEL:</span>&nbsp;<strong>$loglevel</strong></li>
+ <li><span class="code">HTML_LOGMAXSIZE:</span>&nbsp;<strong>$html_logmaxsize</strong></li>
+</ul>
+<hr>
+<h3>Bedrock Log Detail</h3>
+HTML
+      if ( $logfile && $logfile ne 'STDERR' && !$html_logspooler ) {
+        $html .= <<HTML;
+<pre class="codeframe" style="height:150px; width:600px;">
+HTML
+
+        my $fd = IO::File->new( $logfile, "r" );
+        my $pos = ( -s $fd > 4000 ) ? -s $fd - 4000 : 0;
+
+        $fd->setpos($pos);
+
+        while (<$fd>) {
+          $html .= Text::URLEncode::Htmlencode($_);
+        }
+
+        $fd->close;
+        $html .= "</pre>\n";
+      } ## end if ( $logfile && $logfile...)
+      elsif ( $logfile eq 'STDERR' ) {
+        $html .= "<strong>Logging to STDERR</strong>\n";
+      }
+      elsif ( $html_logspooler ) {
+        $html .= "<strong>Spooling using $html_logspooler</strong>\n";
+      }
+      
+      $html .= <<HTML;
 </body>
 </html>
-eot
-  }
+HTML
+    } ## end if ( $conf->{ALLOW_BEDROCK_INFO...})
 
-  if ( $html ) {
+  } ## end for ($uri)
+  
+  if ($html) {
     output( $r, $html );
     return OK;
   }
@@ -763,13 +822,11 @@ eot
     return SERVER_ERROR;
   }
 }
-
-
 1;
 
-# Revision 1.2  2013/05/10 18:05:39  rlauer
-# - regexp had an extra \ in there preventing /plugins from working
-#
-# Revision 1.1  2013/05/10 15:04:40  rlauer
-# first check-in of modules extracted from old Apache::Bedrock and our new Apache::BedrockSessionFiles
-#
+  # Revision 1.2  2013/05/10 18:05:39  rlauer
+  # - regexp had an extra \ in there preventing /plugins from working
+  #
+  # Revision 1.1  2013/05/10 15:04:40  rlauer
+  # first check-in of modules extracted from old Apache::Bedrock and our new Apache::BedrockSessionFiles
+  #
