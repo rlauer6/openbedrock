@@ -41,29 +41,35 @@ use Bedrock::XML;
 use Bedrock::BedrockJSON;
 
 use Data::Dumper;
+use Log::Log4perl qw/:easy/;
+
 use Scalar::Util qw/reftype/;
 
 @ISA = qw (TagX::TAG::NoBody);
 
+sub define_options {
+  return (
+    'json'        => undef,
+    'bedrock-xml' => undef,
+    'define-var'  => undef,
+    'expand-args' => undef,
+    'expand-all'  => undef,
+    'expand'      => undef,
+    'handle'      => undef,
+    'file'        => undef,
+    'list'        => undef,
+    'recordset'   => undef
+  );
+}
+
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'json'        => undef,
-                  'bedrock-xml' => undef,
-                  'define-var'  => undef,
-                  'expand-args' => undef,
-                  'expand-all'  => undef,
-                  'expand'      => undef,
-                  'handle'      => undef,
-		  'file'        => undef,
-		  'list'        => undef,
-		  'recordset'   => undef
-                );
-
+  my %options = $self->define_options;
+  
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
 
-  $self->dump_options( \%options ) if $verbose;
+  $self->dump_options( \%options, @argv );
 
   my $name = $options{'define-var'} || '_';
   my $tag_opts = $self->parse_tag_name( $argv[0] );
@@ -86,7 +92,8 @@ sub finalize {
     
     unless ( ref( $fh ) ) {
       my $file = $tx->find_file( $fh, undef, "." );
-      unless ( $file && -s $file ) {
+      
+      if  ( !$file || ! -s $file ) {
 	die "error: can't read [$fh]. Either it does not exist or is empty\n";
       }
       
@@ -97,7 +104,7 @@ sub finalize {
     die "Could not open file ( $argv[0] ) for reading."
       unless $fh && ( (-r $fh ) || $fh->can('getline'));
 
-    $obj = new Bedrock::Array;
+    $obj = Bedrock::Array->new;
 
     while (<$fh>) {
       chomp;
@@ -109,6 +116,7 @@ sub finalize {
   }
   elsif ( $options{'json'} ) {
     my $json_string = join( '', @argv );
+    
     $obj = Bedrock::JSON::decode($json_string);
   }
   elsif (    exists $options{'expand-args'}
@@ -131,13 +139,14 @@ sub finalize {
   }
 
   die "Not an array definition ([@argv]).\n"
-    unless ref($obj) && reftype($obj) eq 'ARRAY';
+    if  !ref($obj) || reftype($obj) ne 'ARRAY';
 
-  $obj = new Bedrock::RecordSet( $obj ) 
-    if $options{recordset};
-
-  bless $obj, 'Bedrock::List'
-    if $options{list};
+  if ( $options{recordset} ) {
+    $obj = Bedrock::RecordSet->new( $obj ) 
+  }
+  elsif ( $options{list} ) {
+    bless $obj, 'Bedrock::List'
+  }
 
   $tx->{'VARS'}->{$name} = $obj;
 

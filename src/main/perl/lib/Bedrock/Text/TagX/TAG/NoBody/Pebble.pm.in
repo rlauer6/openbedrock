@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -36,8 +35,10 @@ use vars qw($PWD);
 
 use Bedrock::Array;
 use Bedrock::BufferStream;
-use TagX::Log;
+use Bedrock::Dump;
 use TagX::TAG::NoBody;
+
+use Log::Log4perl qw/:easy/;
 
 use Cwd;
 use Scalar::Util qw/reftype/;
@@ -55,9 +56,8 @@ sub finalize {
                 );
 
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
 
-  $self->dump_options( \%options ) if $verbose;
+  $self->dump_options( \%options, @argv );
 
   my $pwd = fastcwd;
   my $input;
@@ -87,7 +87,13 @@ sub finalize {
   }
   elsif ( exists $options{'object'} ) {
     $pebble_text = $options{'object'};
-    &log_message( $self, "Preparing to exec object [$input]" ) if $verbose;
+    
+    DEBUG sub {
+      "Preparing to exec object ["
+        . $input
+        . "]";
+    };
+    
   }
   elsif (@argv) {
     $pebble_text = shift @argv;
@@ -96,19 +102,26 @@ sub finalize {
     die "Must specify file or buffer as argument to <pebble>.\n";
   }
 
-  my $logmess = "Preparing to exec the following buffer (%s bytes)\n%s\n";
-  $logmess = sprintf($logmess,
-                     length($pebble_text),
-                     ($verbose && $verbose > 1 ) ? $pebble_text : substr( $pebble_text, 0, 200 ) . "....");
+  TRACE sub {
+    "Preparing to exec the following buffer ("
+      . length($pebble_text)
+      . " bytes)\n"
+      . substr( $pebble_text, 0, 200 )
+      . "....";
+    };
   
   $input = Bedrock::BufferStream->new($pebble_text);
   $tx->store_pebble( $pebble_name, $input );
 
-  &log_message( $self, "Created a buffer stream object [$input]" )
-  if $verbose;
+  DEBUG sub {
+    "Created a buffer stream object ["
+      . $input
+      . "]";
+  };
+  
 
   die "Unable to find specified pebble ([$pebble_name].\n"
-  unless $input;
+    if !$input;
 
   my $subform = $tx->new($input);
   $tx->{'VARS'}->new_frame;
@@ -123,21 +136,25 @@ sub finalize {
   }
 
   my @expanded;
+  
   if ( $options{'expand-args'} ) {
-    my $str = "Expanding arguments for <pebble>\n" if $verbose;
+    
     my $i = 0;
+    
     for my $item (@argv) {
       if ( ref($item) && reftype($item) eq 'ARRAY' ) {
-        $str .= "Item [$i] is an array -- expanded ..\n" if $verbose;
         push @expanded, @{$item};
       }
       else {
-        $str .= "Item [$i] is not an array -- pushed ..\n" if $verbose;
         push @expanded, $item;
       }
       $i++;
     }
-    &log_message( $self, $str ) if $verbose;
+    
+    DEBUG sub {
+      Bedrock::Dump::compact ['expand-args', \@expanded];
+    };
+
   }
   else {
     @expanded = @argv;
@@ -145,10 +162,20 @@ sub finalize {
 
   $tx->param( 'ARGV' => Bedrock::Array->new( @expanded ) );
 
-  &log_message( $self, "Starting the exec with [$subform] .." ) if $verbose;
+  DEBUG sub {
+    "Starting the exec with ["
+      . $subform
+      . "] ..";
+  };
+ 
   $subform->output;
-  &log_message( $self, "Completed exec with [$subform] .." ) if $verbose;
-
+  
+  DEBUG sub {
+    "Completed exec with ["
+      . $subform
+      . "] ..";
+  };
+  
   $tx->{'VARS'}->end_frame;
 }
 

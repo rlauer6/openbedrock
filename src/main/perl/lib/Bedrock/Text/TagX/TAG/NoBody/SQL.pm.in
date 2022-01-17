@@ -32,31 +32,35 @@ BEGIN {
   @ISA = qw (Exporter);
 }
 
-use DBI;
-
-use TagX::Log;
 use TagX::TAG::NoBody;
 use TagX::TAG::SQLHandler;
+
+use DBI;
+use Log::Log4perl qw/:easy/;
 use Scalar::Util qw/reftype/;
 
 @ISA = qw (TagX::TAG::NoBody TagX::TAG::SQLHandler);
 
+sub define_options {
+  return (
+    'dbname=s'        => undef,
+    'db=s',           => undef,
+    'statement=s'     => undef,
+    'bind=s'          => undef,
+    'arg=s'           => undef,
+    'define-var=s'    => '_',
+    'define-handle=s' => undef
+  );
+} ## end sub define_options
+
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'dbname=s'        => undef,
-                  'db=s',           => undef,
-                  'statement=s'     => undef,
-                  'bind=s'          => undef,
-                  'arg=s'           => undef,
-                  'define-var=s'    => '_',
-                  'define-handle=s' => undef
-                );
-
+  my %options = $self->define_options;
+  
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
 
-  $self->dump_options( \%options ) if $verbose;
+  $self->dump_options( \%options, @argv );
 
   @argv = $self->get_name( \%options, @argv );
 
@@ -81,23 +85,30 @@ sub finalize {
     }
   }
 
-  unless ($sth) {
+  if  (!$sth) {
     die "<sql>: no statement specified.\n"
-    unless length($statement);
+      if ! length $statement;
 
     if ( exists $options{'arg'} ) {
-      my @args =  (ref($options{arg}) && reftype($options{arg}) eq 'ARRAY') ? @{$options{arg}} : ($options{arg});
-      &log_message( $self, "Substituting following args into statement:\n@args" )
-	if $verbose;
+      my @args =  (ref($options{arg}) && reftype($options{arg}) eq 'ARRAY') ? @{$options{arg}} : $options{arg};
+
+      DEBUG sub {
+        "Substituting following args into statement:\n"
+          . @args;
+      };
       
       $statement = sprintf( $statement, @args );
-      &log_message( $self, "Statement after arg-substitution\n$statement" )
-      if $verbose;
+      
+      DEBUG sub {
+        "Statement after arg-substitution\n"
+          . $statement;
+      };
     }
 
     $sth = $dbh->prepare($statement);
+    
     die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n"
-    unless $sth;
+      if !$sth;
 
     if ( exists $options{'define-handle'} ) {
 
@@ -116,9 +127,13 @@ sub finalize {
   my $nParams = $sth->{NUM_OF_PARAMS};
 
   my @bind;
+  
   if ( exists $options{'bind'} ) {
-    die "Extra bind variables specified.\n" unless $nParams;
+    die "Extra bind variables specified.\n"
+      if !$nParams;
+    
     my $bind = $options{'bind'};
+
     if ( ref($bind) && reftype($bind) eq 'ARRAY' ) {
       for my $item ( @{$bind} ) {
         if ( ref($item) && reftype($item) eq 'ARRAY' ) {
@@ -144,34 +159,39 @@ sub finalize {
     die "SQL statement needs $nParams bind variable(s).\n";
   }
 
-  my $i = 1;
-  for my $bindval (@bind) {
-    my $type = $1
-    if defined($bindval)
-      and $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
+  my $idx = 0;
 
-    if ( defined($type) ) {
-      $sth->bind_param( $i, $bindval, { TYPE => $type } )
-      || die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
+  for my $bindval (@bind) {
+    ++$idx;
+    
+    my $type = '';
+    
+    if ( defined $bindval && $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$// ) {
+      $type = $1;
+    }
+
+    if ( $type ) {
+      $sth->bind_param( $idx, $bindval, { TYPE => $type } )
+        or die "Failure binding param $idx, TYPE $type: `", $sth->errstr, "'\n";
     }
     else {
-      $sth->bind_param( $i, $bindval )
-      || die "Failure binding param $i: `", $sth->errstr, "'\n";
+      $sth->bind_param( $idx, $bindval )
+        or die "Failure binding param $idx: `", $sth->errstr, "'\n";
     }
 
-    &log_message( $self, "Bound ($i, $type, $bindval)" )
-    if $verbose;
-  }
-  continue {
-    $i++;
+    DEBUG sub {
+      "Bound ($idx, $type, $bindval)";
+    };
   }
 
   my $rows = $sth->execute;
+  
   die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
-  unless defined($rows);
+    if ! defined $rows;
 
-  &log_message( $self, "Number of rows affected by statement is <$rows>" )
-    if $verbose;
+  DEBUG sub {
+    "Number of rows affected by statement is <$rows>";
+  };
 
   # keep user's copy of handle up to date
   if ( exists $options{dbname} ) {

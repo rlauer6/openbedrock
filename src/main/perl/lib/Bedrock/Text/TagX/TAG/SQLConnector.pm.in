@@ -1,0 +1,142 @@
+#!@PERL@ -w
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+package TagX::TAG::SQLConnector;
+
+use strict;
+use warnings;
+
+BEGIN {
+  use Exporter ();
+  use vars qw ($VERSION @ISA);
+  @ISA = qw (Exporter);
+}
+
+use DBI;
+use Data::Dumper;
+use Carp;
+
+use TagX::TAG::NoBody;
+
+use Log::Log4perl qw/:easy/;
+use Scalar::Util qw/reftype blessed/;
+
+sub ANONYMOUS {
+  '*anonymous*';
+}
+
+sub fetch_dsn {
+  my ($self, $dsn_source) = @_;
+
+  my ($dsn, $user, $pass, $host);
+  
+  if ( ref($dsn_source) && reftype($dsn_source) eq 'HASH' ) {
+    ($dsn, $user, $pass, $host) =  @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
+  }
+  
+  DEBUG sub {
+    "user: [$user]\n"
+      . "pass: [" . ('-' x length($pass)) . "]\n"
+      . "host: [$host]\n"
+      . "dsn: [$dsn]\n";
+    };
+
+  return ($dsn, $user, $pass, $host);
+}
+
+# returns (dsn, username, password)
+sub get_dsn_from_config {
+  my ($self, $tx, $options) = @_;
+
+  my %dsn_spec;
+
+  foreach my $var (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/) {
+    $dsn_spec{$var} = $tx->config->get($var);
+  }
+  
+  return $self->fetch_dsn(\%dsn_spec);
+}
+
+sub get_dsn_from_data_sources {
+  my ($self, $tx, %options) = @_;
+  
+  my $dsn_name = $options{dsn};
+
+  my ($dsn, $user, $pass, $host);
+  
+  if ( $dsn_name ) {
+    my $dbnames = $tx->config->dbnames() || {};
+    
+    if ( ! $dbnames->{$dsn_name} ) {
+      die "sqlconnect: no named connection '" . $options{dsn} . "' found.\n";
+    }
+    
+    ($dsn, $user, $pass, $host ) = $self->fetch_dsn($dbnames->{$dsn_name});
+    
+    return ($dsn, $user, $pass, $host );
+  }
+
+  return ($dsn, $user, $pass, $host);
+}
+
+sub get_dsn_from_options {
+  my ($self, $tx, %options) = @_;
+
+  return @options{qw/data-source username password/};
+}
+
+sub get_dsn_from_environment {
+  my ($self, $tx, %options) = @_;
+
+  return $self->fetch_dsn(\%ENV);
+}
+
+sub get_dsn {
+  my ($self, $tx, %options) = @_;
+
+  my %source = (
+    'options'      => \&get_dsn_from_options,
+    'data-sources' => \&get_dsn_from_data_sources,
+    'environment'  => \&get_dsn_from_environment,
+    'config'       => \&get_dsn_from_config,
+  );
+                
+  my ($dsn, $user, $pass, $host);
+  
+  foreach my $src (keys %source) {
+    ($dsn, $user, $pass, $host) = $source{$src}->($self, $tx, %options);
+
+    # if anything was set then let's try to connect
+    # potential problems with this approach...
+    # a. short circuits potential succesful connection strings
+    # b. partially configured connection options might trip us up
+    
+    if ( $dsn || $user || $pass || $host ) {
+      $tx->{DB_DSN_SOURCE} = $src;
+      last;
+    }
+  }
+
+  return ($dsn, $user, $pass, $host);
+}
+
+1;

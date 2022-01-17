@@ -32,31 +32,37 @@ BEGIN {
   @ISA = qw (Exporter);
 }
 
-use TagX::Log;
 use TagX::TAG::NoBody;
+use Bedrock::Dump;
+use English;
+use Log::Log4perl qw/:easy/;
 
 use Symbol;
 use Bedrock::Plugin;
 
 @ISA = qw (TagX::TAG::NoBody);
 
+sub define_options {
+  return (
+    'define-var=s'    => undef,
+    'dir-prefix=s'    => undef,
+    'define-plugin=s' => undef,
+    'tie'             => undef,
+  );
+
+} ## end sub define_options
+
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-
-  my %options = ( 'define-var=s'    => undef,
-                  'dir-prefix=s'    => undef,
-                  'define-plugin=s' => undef,
-                  'tie'             => undef,
-                );
-
+  my %options = $self->define_options;
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
-
-  $self->dump_options( \%options ) if $verbose;
+  
+  $self->dump_options( \%options, @argv );
 
   $options{'define-var'} = '_' unless defined $options{'define-var'};
+  
+  my $config = $tx->out_handle->{Handle}->{'CONFIG'};
 
   my $tag_name = shift @argv;
   my $tag_opts = $self->parse_tag_name($tag_name);
@@ -74,17 +80,23 @@ sub finalize {
   }
 
   if ( exists $tx->{'VARS'}->{$name} ) {
-    &log_message( undef, "WARNING: plugin name: \$name conflicts with existing variable.\n");
+    WARN sub {
+      "plugin name: [$name] conflicts with existing variable.\n";
+    };
   }
   
   if ( exists $tx->{'VARS'}->{$options{'define-var'}} ) {
-    &log_message( undef, "WARNING: return variable name: ", $options{'define-var'} . " conflicts with existing variable.\n");
+    WARN sub {
+      "return variable name: ["
+        . $options{'define-var'}
+        . "] conflicts with existing variable.\n"
+      };
   }
 
   # still undecided about this
   if ( exists $options{'dir-prefix'} ) {
     push @INC, $options{'dir-prefix'}
-    unless grep { $options{'dir-prefix'} } @INC;
+      if ! grep { $options{'dir-prefix'} } @INC;
   }
 
   # adhoc addition of a PLUGIN path
@@ -103,8 +115,9 @@ sub finalize {
     $class = $plugin;
   }
   elsif ( $self->loadModule( $class ) ) {
-    &log_message( undef, "Successfully loaded perl class ($class)\n" )
-      if $verbose;
+    DEBUG sub {
+      "Successfully loaded perl class ($class)\n";
+    };
   }
   else {
     die "Could not load module: [$class]. Check your syntax [<plugin$tag_name>] or your plugin path.\n";
@@ -113,32 +126,44 @@ sub finalize {
   my $obj;
 
   if ( $class->can('new')  && ! exists $options{tie} ) {
+    TRACE sub {
+      Bedrock::Dump::compact ['args', \@argv];
+    };
+    
     $obj = $class->new( @argv );
   }
   elsif ( $class->can( 'TIEHASH' ) ) {
-    &log_message( undef, "$self: creating an object of class $class" )
-      if $verbose;
+    DEBUG sub {
+      ref($self)
+        . " creating an object of class $class"
+    };
 
     $obj = {};
     tie %{$obj}, $class, @argv;
   }
   elsif ( $class->can( 'TIEARRAY' ) ) {
-    &log_message( undef, "$self: creating an array of class $class" )
-      if $verbose;
+    DEBUG sub {
+      ref($self)
+        . "creating an array of class $class";
+    };
 
     $obj = [];
     tie @{$obj}, $class, @argv;
   }
   elsif ( $class->can( 'TIEHANDLE' ) ) {
-    &log_message( undef, "$self: creating a handle of class $class" )
-      if $verbose;
-
+    DEBUG sub {
+      ref($self)
+        . " creating a handle of class $class";
+    };
+    
     $obj = gensym;
     tie *{$obj}, $class, @argv;
   }
   elsif ( $class->can( 'TIESCALAR' ) ) {
-    &log_message( undef, "$self: creating a scalar of class $class" )
-      if $verbose;
+    DEBUG sub {
+      ref($self)
+        . " creating a scalar of class $class";
+    };
 
     $obj = $argv[0];
     tie $obj, $class;
@@ -148,15 +173,20 @@ sub finalize {
   }
 
   bless $obj, $class
-    unless ref($obj) eq $class;
+    if ref($obj) ne $class;
   
   # call the plugin's init_plugin() if it exists...note that <plugin>
   # can be used to access "some" Perl modules that are not derived
   # from Bedrock::Plugin
   
   if ( ref($obj) && $obj->can('init_plugin') ) {
-    $obj->verbose( $verbose ) if $obj->can('verbose');
-    $obj->options( new Bedrock::Hash( %options) ) if $obj->can('options');
+    if ( $obj->can('verbose') ) {
+      $obj->verbose( $self->verbose );
+    }
+    
+    $obj->options( Bedrock::Hash( %options)->new )
+      if $obj->can('options');
+    
     $tx->{'VARS'}->{ $options{'define-var'} } = $obj->init_plugin(@argv);
   }
   
@@ -175,15 +205,22 @@ sub loadModule {
   return $module 
     if $INC{$module};
 
-  eval { require $module; };
+  eval {
+    require $module;
+  };
 
-  &log_message( undef, "$module not loaded! " . $@ )
-    if $@;
+  if ($EVAL_ERROR) {
+    ERROR sub {
+      "module: [$module] not loaded!\n"
+        . $EVAL_ERROR
+      };
+  }
   
-  &log_message( undef, "$module loaded successfully" ) 
-    if $self->verbose && ! $@;
+  DEBUG sub {
+    "module: [$module] loaded successfully";
+  };
   
-  return $@ ? undef : $module;
+  return $EVAL_ERROR ? undef : $module;
 }
 
 =head1 TAG - C<E<lt>pluginE<gt>>

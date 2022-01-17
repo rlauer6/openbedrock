@@ -15,6 +15,9 @@ CONFIG = \
     bedrock-rest-framework.conf.in \
     startup.pl.in
 
+CONFFILES = \
+    log4perl.conf
+
 GCONFIG = $(CONFIG:.in=)
 
 $(GCONFIG): % : %.in
@@ -22,7 +25,7 @@ $(GCONFIG): % : %.in
 
 config_DATA = $(GCONFIG)
 
-dist_config_DATA = bedrock.users
+dist_config_DATA = bedrock.users $(CONFFILES)
 
 dist_noinst_DATA = $(CONFIG)
 

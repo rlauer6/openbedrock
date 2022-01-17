@@ -31,26 +31,18 @@ BEGIN {
   @ISA = qw (Exporter);
 }
 
+use TagX::TAG::NoBody;
+use TagX::TAG::SQLConnector;
+
+push @ISA, qw (TagX::TAG::NoBody TagX::TAG::SQLConnector);
+
 use DBI;
 use Data::Dumper;
+use Log::Log4perl qw/:easy/;
+use Scalar::Util qw/reftype/;
 
-use TagX::Log;
-use TagX::TAG::NoBody;
-
-@ISA = qw (TagX::TAG::NoBody);
-
-sub ANONYMOUS {
-  '*anonymous*';
-}
-
-sub _fetch_dsn {
-  my ($dsn_source) = @_;
-
-  return @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
-}
-
-sub _check_options {
-  my ($tx, $name, %options) = @_;
+sub check_options {
+  my ($self, $tx, $name, %options) = @_;
 
   foreach (qw/db data-source username password/) {
     die "sqlconnect: option --" . $_ . " requires a value.\n"
@@ -62,188 +54,109 @@ sub _check_options {
   }
 }
 
-# returns (dsn, username, password)
-sub _get_dsn_from_config {
-  my ($tx, $options) = @_;
-
-  my %dsn_spec;
-
-  foreach (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/) {
-    $dsn_spec{$_} = $tx->config($_);
-  }
+sub check_for_existing_connection {
+  my ($self, $tx, $name, %options) = @_;
   
-  return _fetch_dsn(\%dsn_spec);
-}
-
-sub _get_dsn_from_data_sources {
-  my ($tx, %options) = @_;
+  my $dbh = $tx->{'DB'}->{$name};
   
-  my $dsn_name = $options{dsn};
-
-  my ($dsn, $user, $pass, $host);
-  
-  if ( $dsn_name ) {
-    my $dbnames = $tx->config->dbnames() || {};
-    
-    if ( ! $dbnames->{$dsn_name} ) {
-      die "sqlconnect: no named connection '" . $options{dsn} . "' found.\n";
-    }
-    
-    ($dsn, $user, $pass, $host ) = _fetch_dsn($dbnames->{$dsn_name});
-  }
-
-  return ($dsn, $user, $pass, $host);
-}
-
-sub _get_dsn_from_options {
-  my ($tx, %options) = @_;
-
-  return @options{qw/data-source username password/};
-}
-
-sub _get_dsn_from_environment {
-  my ($tx, %options) = @_;
-  
-  return _fetch_dsn(\%ENV);
-}
-
-sub _get_dsn {
-  my ($tx, %options) = @_;
-
-  my %source = (
-    'options'      => \&_get_dsn_from_options,
-    'data-sources' => \&_get_dsn_from_data_sources,
-    'environment'  => \&_get_dsn_from_environment,
-    'config'       => \&_get_dsn_from_config,
-  );
-                
-
-  my ($dsn, $user, $pass, $host);
-  
-  foreach my $src (keys %source) {
-    ($dsn, $user, $pass, $host) = $source{$src}->($tx, %options);
-    
-    if ( $dsn && $user ) {
-      $tx->{DB_DSN_SOURCE} = $src;
-      last;
-    }
-  }
-
-  return ($dsn, $user, $pass, $host);
-}
-
-
-sub _check_for_existing_connection {
-  my ($tx, $name, %options) = @_;
-  
-  my $is_connected = exists $tx->{'DB'}->{$name};
-
-  if ( $is_connected ) {
-    
+  if ( $dbh && ref($dbh) =~/DBI::db/ ) {
     $tx->{'DB'}->{$name}->disconnect;
     
     delete $tx->{'DB'}->{$name};
     delete $tx->{'VARS'}->{$name};
   }
 
-  return $is_connected;
+  return $dbh;
 }
+
+sub define_options {
+  return (
+    'AutoCommit=s'  => 1,
+    'PrintError=s'  => 1,
+    'RaiseError=s'  => 1,
+    'ChopBlanks=s'  => 1,
+    'dbname=s'      => undef,
+    'db=s'          => undef,
+    'data-source=s' => undef,
+    'dsn=s'         => undef,
+    'username=s'    => undef,
+    'password=s'    => undef,
+    'hostname=s'    => undef,
+  );
+} ## end sub define_options
 
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'AutoCommit=s'  => 1,
-                  'PrintError=s'  => 1,
-                  'RaiseError=s'  => 1,
-                  'ChopBlanks=s'  => 1,
-                  'dbname=s'      => undef,
-                  'db=s'          => undef,
-                  'data-source=s' => undef,
-                  'dsn=s'         => undef,
-                  'username=s'    => undef,
-                  'password=s'    => undef,
-                  'hostname=s'    => undef,
-                );
+  my %options = $self->define_options;
 
   # --- parse options
   my @argv = $self->parse_options( \%options, @context );
 
-  my $verbose = $self->verbose;
+  $self->dump_options( \%options, @argv );
 
-  $self->dump_options( \%options ) 
-    if $verbose;
-
-  
   # --- parse tag and determine name of variable for storing dbi handle
-  my $tag_opts = $self->parse_tag_name($argv[0]);
-  
-  &log_message( $self, Dumper( \@argv, $tag_opts ) )
-    if $verbose;
+  my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   my $name;
-  
+
   if ( $tag_opts->{name} ) {
     $name = $tag_opts->{name};
     shift @argv;
   }
   elsif ( $options{'dbname'} ) {
     $name = $options{'dbname'};
-    &log_message( $self, "deprecated use of --dbname, use --define-var instead." );
+
+    WARN "deprecated use of --dbname, use --define-var instead.";
   }
   elsif ( $options{'db'} ) {
     $name = $options{'db'};
-    &log_message( $self, "deprecated use of --dbname, use --define-var instead." );
+    WARN "deprecated use of --dbname, use --define-var instead.";
   }
   else {
-    $name = &ANONYMOUS;
+    $name = $self->ANONYMOUS;
   }
 
-  
   # --- check option consistency
-  _check_options($tx, $name, %options);
+  $self->check_options( $tx, $name, %options );
 
-  
   # --- check for user of overlapping dsn
   if ( exists $options{'data-source'} and @argv ) {
-    die "Specify the DSN using the `--data-source' option or as argument, but not both.\n";
+    die
+      "Specify the DSN using the `--data-source' option or as argument, but not both.\n";
   }
-  elsif ( @argv ) {
-    $options{'data-source'} = "@argv"; # all args must now come from options
+  elsif (@argv) {
+    $options{'data-source'} = "@argv";   # all args must now come from options
   }
 
-  
   # --- check for existing connection
   $tx->{'DB'} = $tx->{'DB'} || {};
 
-  &log_message($self, 'sqlconnect: disconnecting previous connection')
-    if _check_for_existing_connection($tx, $name, %options) && $verbose;
+  DEBUG sub {
+    'sqlconnect: disconnecting previous connection'
+      if $self->check_for_existing_connection( $tx, $name, %options );
+  };
 
-  # --- look for connection information
-  $self->dump_options(\%options)
-    if $verbose;
-  
-  my ($dsn, $user, $pass, $host) = _get_dsn($tx, %options);
-
+  my ( $dsn, $user, $pass, $host ) = $self->get_dsn( $tx, %options );
 
   # --- connect to database
 
   # note: password can be optional...
   if ( $dsn && $user ) {
-    
-    if ( ! $pass ) {
-      &log_message($self, 'sqlconnect: no password');
+
+    if ( !$pass ) {
+      WARN 'sqlconnect: no password';
     }
 
     $dsn = "$dsn:$host" if $host;
 
-    if ($verbose) {
-      &log_message( $self,
-            'sqlconnect: attempting connection to '
-          . $dsn
-          . ' with for user '
-          . $user );
-    } ## end if ($verbose)
-    
+    DEBUG sub {
+      'sqlconnect: attempting connection to '
+        . $dsn
+        . ' with for user '
+        . $user;
+    };
+
     my $dbh = DBI->connect(
       $dsn, $user, $pass,
       { 'AutoCommit' => $options{AutoCommit},
@@ -253,34 +166,35 @@ sub finalize {
       }
     );
 
-    if ( $dbh ) {
-      
-      if ($verbose) {
-        &log_message( $self,
-              "sqlconnect: connected to database ($dsn) from "
-            . $tx->{DB_DSN_SOURCE}
-            . "\n" );
-        
-        &log_message( $self, Dumper( [ $name, $dbh, $tx ] ) );
-      } ## end if ($verbose)
-  
+    if ($dbh) {
+
+      DEBUG sub {
+        "sqlconnect: connected to database ($dsn) from "
+          . $tx->{DB_DSN_SOURCE} . "\n";
+      };
+
+      TRACE sub {
+        Dumper [ 'name', $name, 'dbh', $dbh, 'tx', $tx ];
+      };
+
       # save for other <sql..> operations
       $tx->{'DB'}->{$name} = $dbh;
-      
+
       # add $name to namespace
       $tx->{'VARS'}->{$name} = $dbh
-        if $name ne &ANONYMOUS;
-    }
+        if $name ne $self->ANONYMOUS;
+    } ## end if ($dbh)
     else {
-      die "sqlconnect: unable to connect to database: ", $DBI::errstr, "\n"
+      die "sqlconnect: unable to connect to database: ", $DBI::errstr, "\n";
     }
-  }
+  } ## end if ( $dsn && $user )
   else {
-    my ($missing) = map { eval "\$$_" ? () : $_ } qw/dsn user/;    
+    my ($missing) = map { eval "\$$_" ? () : $_ } qw/dsn user/;
+    my $message = "sqlconnect: no $missing found from any source\n";
 
-    die "sqlconnect: no $missing found from any source\n";
-  }
-}
+    die $message;
+  } ## end else [ if ( $dsn && $user ) ]
+} ## end sub finalize
 
 =head1 TAG - C<E<lt>sqlconnectE<gt>>
 

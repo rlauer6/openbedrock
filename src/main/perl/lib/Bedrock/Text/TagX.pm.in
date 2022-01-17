@@ -81,6 +81,7 @@ use TagX::Term::String;
 use TagX::Term::Var;
 
 use Data::Dumper;
+use Log::Log4perl qw/:easy/;
 
 $Text::TagX::Opentag_expr =
 '^(\#|\?|array|case|noexec|pebble|plugin|var|hash|include|sink|snippet|sql|sqlrollback|sqlcommit|sqlconnect|sqltable|trace|foreach|sqlselect|while|iif|if|unless|else?if|try|catch|raise|recordset|else|null|exec|open|pebbledef|flush)(?=\W)';
@@ -561,8 +562,13 @@ sub define_name {
   my @components = split /\./oi, $name;
   return unless @components;
 
-  &log_message( undef, "$self: components are (@components)" );
+  DEBUG sub {
+    ref($self)
+      . " components are (@components)";
+   };
+  
   my $found = $self->{'VARS'};
+  
   for (@components) {
     if (/^\Q[\E(\d+)\Q]\E/) {
 
@@ -572,7 +578,10 @@ sub define_name {
         next;
       }
       else {
-        &log_message( undef, "Cannot define [$_] component in $name: $found is not an array" );
+        ERROR sub {
+          "Cannot define [$_] component in $name: $found is not an array";
+        };
+        
 	return;
       }
     }
@@ -588,10 +597,12 @@ sub define_name {
 
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
-        unless ( (reftype($found) eq 'ARRAY')  and @{$found} == 1 ) {
-          &log_message(undef, "Cannot define [$_] component in [$name]: $found is an array\n"
-		       . "containing more than one element .. cannot access it as a hash"
-		      );
+        if  ( (reftype($found) ne 'ARRAY')  ||  @{$found} != 1 ) {
+          ERROR sub {
+            "Cannot define [$_] component in [$name]: $found is an array\n"
+              . "containing more than one element .. cannot access it as a hash";
+          };
+          
           return undef;
         }
         $found = $found->[0]->{$key};
@@ -602,7 +613,12 @@ sub define_name {
     # illegal
     return;
   }
-  &log_message( undef, "$self: finally found [$found]" );
+  
+  DEBUG sub {
+    ref($self)
+      . ": finally found [$found]";
+  };
+  
   $found = $value;
 }
 
@@ -613,13 +629,17 @@ sub define_pebble {
 
   while ( ( $name, $value ) = each %args ) {
     if ( exists $self->pebble_cache->{$name} ) {
-      &log_message( undef, "redefining pebble: [$name]" );
+      DEBUG sub {
+        "redefining pebble: [$name]";
+      };
     }
     if ($value) {
       $self->store_pebble( $name, $value );
     }
     else {
-      &log_message( undef, "WARNING: undefined pebble: [$name]" );
+      WARN sub {
+        "undefined pebble: [$name]";
+      };
     }
   }
 }
@@ -638,10 +658,11 @@ sub pebble {
   else {
     $pebble = $self->fetch_pebble( $_[0] );    # look in cache, first
 
-    unless ($pebble) {
+    if  (!$pebble) {
       my $file = $self->find_file( @_ );
+      
       die "could not find pebble:" . $_[0] . "\n"
-	unless $file;
+	if ! $file;
 
       $pebble = $self->fetch_pebble( $_[0], $file );
     }
@@ -654,7 +675,7 @@ sub pebble {
 sub config {
   my $self = shift;
 
-  return $self->ctx && $self->ctx->can('config') ? $self->ctx->config(@_) : undef;
+  return ($self->ctx && $self->ctx->can('config')) ? $self->ctx->config(@_) : undef;
 }
 
 sub store_pebble {
@@ -891,17 +912,25 @@ sub close {
 
   # Close any database handles left behind
   my @keys = keys %{ $self->{'DB'} };
+  
   for my $name (@keys) {
     my $dbh = $self->{'DB'}->{$name};
     my $rc  = $dbh->disconnect;
-    &log_message( undef,
-         "Error shutting down db connection [$name]\n\t[" . $dbh->errstr . "]" )
-    unless $rc;
+
+    if ( !$rc ) {
+      ERROR sub {
+        "Error shutting down db connection [$name]\n\t["
+          . $dbh->errstr
+          . "]";
+      };
+        
+    }
     delete $self->{'DB'}->{$name};
   }
 
   # Clean up symbol table.
   $self->{'VARS'}->close;
+  
   delete $self->{'VARS'};
 }
 

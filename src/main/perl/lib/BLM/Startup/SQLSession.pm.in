@@ -7,6 +7,7 @@ use BLM::Startup::SessionManager;
 use File::Path;
 use Bedrock::Dump;
 use TagX::Log;
+use Log::Log4perl qw/:easy get_logger/;
 
 use vars qw ( @ISA %SQL );
 
@@ -19,7 +20,7 @@ our %SQL;
 sub startSession {
   my $self   = shift;
   my $config = shift;
-
+  
   # we copy the SQL statements over from the subclass which defines
   # them and store them in this class instance...
   my $sql = {};
@@ -43,8 +44,7 @@ sub do_sql {
 
   my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
 
-  &log_message( undef, "do_sql: $sql bindvars: " . join( ",", @args ) )
-    if $self->{verbose};
+  DEBUG sub { "do_sql: $sql bindvars: " . join( ",", @args ) };
 
   $self->_do_sql( $sql, @args );
 } ## end sub do_sql
@@ -113,15 +113,16 @@ sub _do_select {
 sub _do_select_set {
   my $self = shift;
   my $stm  = shift;
+  
   my $dbh  = $self->{'dbh'};
 
   my $sth = $dbh->prepare($stm);
-  die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n" if !$sth;
+  die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n"
+    if !$sth;
 
-  &log_message( undef, "statement: $stm\n" )
-    if $self->{verbose};
-
-  for ( my $i = 1; $i <= @_; $i++ ) {
+  get_logger->debug("statement: $stm\n" );
+  
+  for ( my $i=1; $i <= @_; $i++ ) {
     $sth->bind_param( $i, $_[ $i - 1 ] )
       || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
   }
@@ -310,8 +311,7 @@ sub FETCH_SESSION {
   my $self    = shift;
   my %options = @_;
 
-  &log_message( undef, "fetching session\n" )
-    if $self->{verbose};
+  get_logger->debug("fetching session\n");
 
   $self->do_select( 'FETCH_SESSION', %options );
 } ## end sub FETCH_SESSION
@@ -330,14 +330,14 @@ sub SESSION_CLEANUP {
   my $self    = shift;
   my %options = @_;
 
-  &log_message( undef, Bedrock::Dump::compact( $options{config} ) )
-    if $self->{verbose};
+  DEBUG sub {
+    Bedrock::Dump::compact( $options{config} );
+  };
 
   if ( $self->cleanup_session_dir ) {
     my $session_dir = $self->{'ctx'}->{'CONFIG'}->{'SESSION_DIR'};
 
-    &log_message( undef, "Session dir: $session_dir" )
-      if $self->{verbose};
+    DEBUG "Session dir: $session_dir";
 
     if ( -d "$session_dir" ) {
       my $session_ids = $self->FETCH_EXPIRED_SESSIONS(%options);
@@ -346,8 +346,7 @@ sub SESSION_CLEANUP {
         my $id = $session->[0];
         next if !$id;
 
-        &log_message( undef, "Removing $session_dir/$id" )
-          if $self->{verbose};
+        DEBUG "Removing $session_dir/$id";
 
         rmtree("$session_dir/$id")
           if -d "$session_dir/$id";
@@ -413,30 +412,31 @@ sub STORE_SESSION {
 
   if ( $options{new} ) {
     my $rows = $self->do_sql( 'STORE_SESSION_INSERT', %options );
-    &log_message( undef,
-      "Inserting session [" . $options{session} . "]: rows = [$rows]" )
-      if $options{verbose};
+    
+    DEBUG sub { "Inserting session [" . $options{session} . "]: rows = [$rows]" };
 
     if ( $options{'expires'} ) {
       my $rows = $self->do_sql( 'UPDATE_SESSION', %options );
-      &log_message( undef,
-            "Updated expiry date for session ["
-          . $options{session}
-          . "]: rows = [$rows]" )
-        if $options{verbose};
+      DEBUG sub { "Updated expiry date for session ["
+                    . $options{session}
+                    . "]: rows = [$rows]"
+                  };
+
     } ## end if ( $options{'expires'...})
   } ## end if ( $options{new} )
   else {
     my $rows = $self->do_sql( 'STORE_SESSION_UPDATE', %options );
-    &log_message( undef,
-          'Updated session ['
+
+    DEBUG sub {
+      'Updated session ['
         . $options{session}
         . "] with\n"
         . $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}
         . "\nBind values are ("
         . @options{qw{expires prefs firstname lastname email session}}
-        . "]" )
-      if $options{verbose};
+        . "]"
+       };
+
   } ## end else [ if ( $options{new} ) ]
 } ## end sub STORE_SESSION
 

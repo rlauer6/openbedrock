@@ -38,9 +38,10 @@ use File::Temp qw/tempfile/;
 use IO::Handle;
 use POSIX qw(strftime);
 
-use TagX::Log;
 use Bedrock::XML;
 use Bedrock::Hash;
+
+use Log::Log4perl qw/get_logger :easy/;
 
 @ISA = qw( Bedrock::Hash );
 
@@ -795,9 +796,7 @@ sub register {
                               email     => $email
                             );
 
-  &log_message( undef,
-    "Registering user ($username, $firstname, $lastname, $email): rows = [$rows]"
-  ) if $verbose;
+  get_logger()->debug("Registering user ($username, $firstname, $lastname, $email): rows = [$rows]");
 }
 
 sub kill_session {
@@ -831,8 +830,7 @@ sub login {
 
   my ($verbose, $ctx, $config) = @{$self}{qw(verbose ctx config)};
 
-  &log_message( undef, "Attempting to log in user [$username]" )
-    if $verbose;
+  DEBUG "Attempting to log in user [$username]";
 
   my $aref = $self->LOGIN( username => $username,
                            password => $password,
@@ -906,10 +904,10 @@ sub change_passwd {
   my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
   my $t = $config->{'table_name'};
 
-  &log_message( undef,
+  DEBUG sub {
     "Attempting to change password to `$npasswd' from `$opasswd' for `$username'"
-  ) if $verbose;
-
+  };
+  
   $self->UPDATE_LOGIN_PASSWORD(
     table    => $config->{table_name},
     username => $username,
@@ -923,7 +921,7 @@ sub remember_user {
   my $self = tied( %{$obj} );
 
   die "No user logged in to remember\n"
-  unless length( $self->{'data'}->{'username'} );
+    if !length( $self->{'data'}->{'username'} );
 
   my $username = $self->{'data'}->{'username'};
 
@@ -996,9 +994,7 @@ sub create_temp_login_session {
     die "invalid expiry time\n";
   }
 
-  my ($verbose) = @{$self}{qw(verbose)};
-  &log_message( undef, "Attempting to create temporary log-in session for user: $username" )
-    if $verbose;
+  DEBUG "Attempting to create temporary log-in session for user: $username";
 
   my $default_expiry = $seconds || $self->{config}->{cookie}->{expiry_secs};
   $self->{config}->{cookie}->{expiry_secs} = $default_expiry; 
@@ -1010,16 +1006,16 @@ sub create_temp_login_session {
 
   my $data;
   
-  if ( $recycle ) {
+  if ($recycle) {
     # do we have an active session for this user? If so, then use this token
     eval {
       $data = $self->FETCH_LOGIN_SESSION_BY_USERNAME(
-						     config   => $self->{config},
-						     username => $username
-						    );
+        config   => $self->{config},
+        username => $username
+      );
       $session = $data->[5];
     };
-  }
+  } ## end if ($recycle)
 
   if ( $@ || ! $session ) {
     $session = $self->newSessionID;
@@ -1098,21 +1094,27 @@ sub create_session_dir {
   $session_dir .= "/$session_id";
 
   if (! -d "$session_dir/$sub_dir" ) {
-    &log_message(undef, "creating directory $session_dir/$sub_dir")
-      if $verbose;
-
-    eval { mkpath("$session_dir/$sub_dir"); };
-    my $err = $@;
     
-    if ( $err ) {
-      &log_message(undef, "Unable to create $session_dir/$sub_dir\n$err\n\n$OS_ERROR");
+    DEBUG sub {
+      "creating directory $session_dir/$sub_dir"
+    };
+
+    eval {
+      mkpath("$session_dir/$sub_dir");
+    };
+    
+    if ( $EVAL_ERROR ) {
+      ERROR sub {
+        "Unable to create $session_dir/$sub_dir\n"
+          . "$EVAL_ERROR\n"
+          . "$OS_ERROR"
+         };
       die "Unable to create $session_dir/$sub_dir\n";
     }
 
   }
   else {
-    &log_message(undef, "session directory already exists")
-      if $verbose;
+    DEBUG "session directory already exists";
   }
 
   return "$session_dir/$sub_dir";
@@ -1351,8 +1353,8 @@ sub send_cookie {
     }
 
     $self->{'ctx'}->cgi_header_out( 'Set-Cookie', $header );
-    &log_message( undef, "Set cookie header: [Set-Cookie => $header]" )
-    if $self->{'verbose'} > 1;
+    
+    TRACE sub { "Set cookie header: [Set-Cookie => $header]" };
   }
 }
 
@@ -1361,9 +1363,8 @@ sub startSession {
 
   $self->{'config'} = $config;
 
-  die ref($self),
-  "->startSession(): param `table_name' must be specified in config\n"
-  unless $config->{table_name};
+  die ref($self),  "->startSession(): param `table_name' must be specified in config\n"
+    if !$config->{table_name};
 
   $self->CONNECT( config => $config );
   $self->SESSION_CLEANUP( config => $config );
@@ -1429,17 +1430,15 @@ sub init_session {
   my ($verbose) = @{$self}{qw(verbose)};
 
   if ( $aref ) {
-    &log_message(
-		 undef,
-		 "Initializing session\n" .
-		 "username = ($aref->[0])\n" .
-		 "firstname = ($aref->[1])\n".
-		 "lastname = ($aref->[2])\n" .
-		 "email = ($aref->[3])"
-		) if $verbose;
+    DEBUG sub {
+      "Initializing session\n" .
+        "username = ($aref->[0])\n" .
+        "firstname = ($aref->[1])\n".
+        "lastname = ($aref->[2])\n" .
+        "email = ($aref->[3])"
+      };
 
-    &log_message( undef, "Session prefs are\n$aref->[4]" ) 
-      if $verbose > 1;
+   TRACE sub { "Session prefs are\n$aref->[4]" };
 
     my $data = {};
 
@@ -1454,7 +1453,7 @@ sub init_session {
     $self->{'data'} = $data;
   }
   else {
-    &log_message( undef, "Initializing new session" ) if $verbose;
+    DEBUG "Initializing new session";
     $self->newSession;
   }
 }
@@ -1470,15 +1469,15 @@ sub readData {
 
   my ( $config, $verbose ) = @{$self}{qw(config verbose)};
 
-  &log_message( undef, "Reading data for session [$id]" ) if $verbose;
+  DEBUG sub { "Reading data for session [$id]"; };
+  
   my $aref = $self->FETCH_SESSION( 
 				  config  => $config,
 				  session => $id 
 				 );
 
-  unless ( $aref ) {
-    &log_message( undef, "Unable to read data for session [$id]" ) 
-      if $verbose;
+  if ( !$aref ) {
+    DEBUG sub { "Unable to read data for session [$id]" };
     return;
   }
 
@@ -1510,24 +1509,30 @@ sub newLoginSession {
   my $aref =
   $self->FETCH_LOGIN_SESSION( config => $config, login_id => $login_id );
 
-  unless ($aref) {
-    &log_message( undef, "Login session [$login_id] not found" ) if $verbose;
+  if (!$aref) {
+    DEBUG sub { "Login session [$login_id] not found" };
     return;
   }
 
   my $data = {};
 
-  &log_message(
-    undef,
-"Found login session [$login_id]\nusername = ($aref->[0])\nfirstname = ($aref->[1])\nlastname = ($aref->[2])\nemail = ($aref->[3])"
-  ) if $verbose;
-  &log_message( undef,
-            "Saved session info for login session [$login_id] is\n$aref->[-1]" )
-  if $verbose > 1;
+  DEBUG sub {
+    "Found login session [$login_id]\n"
+      . "username = ($aref->[0])\n"
+      . "firstname = ($aref->[1])\n"
+      . "lastname = ($aref->[2])\n"
+      . "email = ($aref->[3]"
+  };
 
+  DEBUG sub {
+    "Saved session info for login session [$login_id] is\n"
+      . "$aref->[-1]"
+    };
+  
   @{$data}{qw(username firstname lastname email)} = ( @{$aref}[ 0, 1, 2, 3 ] );
+  
   $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[-1] )
-  if length( $aref->[-1] );
+    if length( $aref->[-1] );
 
   # Create new session id
   my $id = $self->newSessionID;
@@ -1538,11 +1543,10 @@ sub newLoginSession {
                                          config   => $config
                                        );
 
-  &log_message(
-      undef,
-      "Updating session = [$id] for login session [$login_id]: rows = [$rows]\n"
-  ) if $verbose;
-
+  DEBUG sub {
+    "Updating session = [$id] for login session [$login_id]: rows = [$rows]\n"
+  };
+  
   $data->{'prefs'} = {} unless $data->{'prefs'};
   $self->{'data'} = $data;
   $self->{'session'};
@@ -1551,9 +1555,10 @@ sub newLoginSession {
 sub TIEHASH {
   my ( $class, $ctx, $config ) = @_;
 
-  # What is the name of the session variable being used?
   my $name = $config->{'param'};
-  die "$class->TIEHASH(): `param' not set in config\n" unless $name;
+  
+  die "$class->TIEHASH(): `param' not set in config\n"
+    if !$name;
 
   # Create session object
   my $self = bless {}, $class;
@@ -1562,45 +1567,57 @@ sub TIEHASH {
   $self->{'config'} = $config;
 
   my $verbose = $self->{'verbose'} = $config->{'verbose'};
-
+  get_logger->level($DEBUG)
+    if $verbose;
+  
   # Initialize session 
   $self->startSession($config);
 
   # Check for an existing session
-  my $id = $config->{'cookieless_sessions'} ? $ctx->getInputValue($name) : $ctx->getCookieValue($name);
+  my $id
+    = $config->{'cookieless_sessions'}
+    ? $ctx->getInputValue($name)
+    : $ctx->getCookieValue($name);
 
   # Get the session data only if a session exists
   if ( defined($id) ) {
-    &log_message( undef, "Read user's session: [$id]" ) if $verbose;
-    my $session = $self->readData($id);
+    DEBUG sub {
+      "Read user's session: [$id]"
+    };
+    
+    my $session = $self->readData($id) // '';
 
-    &log_message( undef, "User has session [$session]" )
-      if $session and $verbose;
+    DEBUG sub {
+      "User session [$session]"
+    };
 
     return $self if $session;
   }
 
   # No session cookie -- check to see if login cookie present
   my $login_cookie_name = $config->{'login_cookie_name'};
-  my $login_id =
-    $config->{'cookieless_sessions'}
+
+  my $login_id
+  = $config->{'cookieless_sessions'}
   ? $ctx->getInputValue($login_cookie_name)
   : $ctx->getCookieValue($login_cookie_name);
 
   if ($login_id) {
-    my $session = $self->newLoginSession($login_id);
-    &log_message( undef,
-                 "User has login session [$login_id] -- session is [$session]" )
-    if $session and $verbose;
+    my $session = $self->newLoginSession($login_id) // '';
+
+    DEBUG sub {
+      "User has login session [$login_id] -- session is [$session]"
+    };
+    
     return $self if $session;
   }
 
   # everything failed -- need to create a new session
   my $session = $self->newSession;
-  &log_message(
-     undef,
-     "User does not have anonymous session or login session -- using [$session]"
-  ) if $verbose;
+
+  DEBUG sub {
+    "User does not have anonymous session or login session -- using [$session]"
+  };
 
   $self->{'data'}->{'prefs'}->{expiry_secs} =
   $self->{'config'}->{'cookie'}->{'expiry_secs'};
@@ -1611,19 +1628,25 @@ sub TIEHASH {
 
 sub FETCH {
   my ( $self, $key ) = @_;
-  if ( $key eq 'session' ) { return $self->{$key} }
+  
+  if ( $key eq 'session' ) {
+    return $self->{$key};
+  }
   elsif ( $key =~ /^(username|firstname|lastname|email|config)$/ ) {
     return $self->{'data'}->{$key};
   }
   elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) {
     $self->{'data'}->{'prefs'}->{$key};
   }
-  else { return $self->{'config'}->{'default_prefs'}->{$key} }
+  else {
+    return $self->{'config'}->{'default_prefs'}->{$key};
+  }
 }
 
 # Just store the value in the session and return the value
 sub STORE {
   my ( $self, $key, $value ) = @_;
+
   if ( $key =~ /^(session|username)$/ ) {
     die "Cannot set `$key': attribute is read-only.\n";
   }
@@ -1631,17 +1654,23 @@ sub STORE {
     die "Cannot set `password': Use `change_password()' instead.\n";
   }
   elsif ( $key =~ /^(firstname|lastname|email)$/ ) {
-    die
-    "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
-    unless $self->{'data'}->{'username'};
+    die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
+      if !$self->{'data'}->{'username'};
+    
     die "Cannot store empty string in `$key'.\n"
-    if $key =~ /^(firstname|lastname)$/ and length($value) == 0;
-    &log_message( undef, "Storing [$key] = [$value]" ) if $self->{'verbose'};
+      if $key =~ /^(firstname|lastname)$/ and length($value) == 0;
+    
+    TRACE sub {
+      "Storing [$key] = [$value]"
+    };
+
     return $self->{'data'}->{$key} = $value;
   }
   else {
-    &log_message( undef, "Stored [$key] = [$value] into prefs" )
-    if $self->{'verbose'};
+    TRACE sub {
+      "Stored [$key] = [$value] into prefs"
+    };
+
     return $self->{'data'}->{'prefs'}->{$key} = $value;
   }
 }
@@ -1683,16 +1712,24 @@ sub NEXTKEY {
 
 sub EXISTS {
   my ( $self, $key ) = @_;
-  if ( $key eq 'session' ) { return 1 }
+  
+  if ( $key eq 'session' ) {
+    return 1
+  }
   elsif ( $key =~ /^(username|password|firstname|lastname|email)$/ ) {
     return exists $self->{'data'}->{$key};
   }
-  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) { return 1 }
-  else { exists $self->{'config'}->{'default_prefs'}->{$key} }
+  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) {
+    return 1
+  }
+  else {
+    return exists $self->{'config'}->{'default_prefs'}->{$key}
+  }
 }
 
 sub DELETE {
   my ( $self, $key ) = @_;
+  
   if ( $key =~ /^(session|username|firstname|lastname|email|password)$/ ) {
     die "Cannot delete `$key': illegal operation.\n";
   }
@@ -1703,6 +1740,7 @@ sub DELETE {
 
 sub CLEAR {
   my $self = shift;
+  
   %{ $self->{'data'}->{'prefs'} } = ();
 }
 
@@ -1720,14 +1758,17 @@ sub closeBLM {
   $prefs = $self->{config}->{default_prefs} if keys %{$prefs} == 0;
 
   my $xml = Bedrock::XML::writeXMLString($prefs || {});
-  &log_message( undef, "Saving session [" . $session . "] data\n$xml" )
-    if $verbose > 1;
 
+  DEBUG sub {
+    "Saving session [" . $session . "] data\n$xml"
+  };
+  
   # there are certain situations where Bedrock may call closeBLM() more than once
   # if that happens, we don't want to alter the object since the second call will fail
   # because the prefs object was already converted to XML...so we create a clone
   # object that is written to the database
   my $data = {};
+  
   map { $data->{$_} =  $self->{data}->{$_} unless $_ eq 'prefs'; } keys %{$self->{data}};
   $data->{prefs} = $xml;
 
@@ -1740,8 +1781,10 @@ sub closeBLM {
                       );
 
   my $nrows = $self->SESSION_CLEANUP( config => $self->{config} );
-  &log_message( undef, sprintf( "Cleaned up %s rows", $nrows ) )
-    if $verbose;
+  
+  TRACE sub {
+    "Cleaned up $nrows rows"
+  };
 
   $self->DISCONNECT( config => $self->{config} );
 }

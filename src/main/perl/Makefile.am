@@ -7,6 +7,7 @@ TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
 
 BEDROCK_TESTS = \
     t/flush.yml \
+    t/foreach.yml \
     t/if.yml \
     t/iif.yml \
     t/include.yml \
@@ -16,6 +17,7 @@ BEDROCK_TESTS = \
     t/reftype.yml \
     t/sink.yml \
     t/sqlconnect.yml \
+    t/sql.yml \
     t/try.yml \
     t/var.yml
 
@@ -44,10 +46,15 @@ BEDROCK_TEST_HARNESS = \
 test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 	cd lib;
 	$(MAKE)
-
+	TESTS=$$TESTS; \
+	if test -z "$$TESTS"; then \
+	  TESTS="$(BEDROCK_TESTS)"; \
+	else \
+	  echo "TESTS: $$TESTS"; \
+	fi; \
 	test_dir=$$(mktemp -d); \
 	mkdir $$test_dir/t; \
-	for a in $(BEDROCK_TESTS); do \
+	for a in $$TESTS; do \
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \

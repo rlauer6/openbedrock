@@ -24,24 +24,22 @@ use strict;
 
 BEGIN {
   use Exporter ();
+  use Bedrock;
+
   use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
+  @ISA = qw (Exporter TagX::TAG::SQLConnector);
 }
 
 use DBI;
 
-use TagX::Log;
 use Data::Dumper;
+use English qw( -no_match_vars );
 
 use Scalar::Util qw/reftype/;
-
-sub ANONYMOUS {
-  '*anonymous*';
-}
+use Log::Log4perl qw/:easy/;
 
 sub get_list_options {
-  my $self = shift;
-  my $option = shift;
+  my ($self, $option) = @_;
 
   my @list;
 
@@ -58,80 +56,69 @@ sub get_list_options {
 }
 
 sub get_db_handle {
-  my $self = shift;
-  my $tx = shift;
-
-  my %options = @_;
-
-  my $verbose = $self->verbose;
+  my ($self, $tx, %options) = @_;
 
   my $name = $options{'dbname'};
-  &log_message( $self,
-                "Use of deprecated option `--dbname'. Use `--db' instead.\n" )
-    if $name && $verbose;
+
+  WARN 'Use of deprecated option --dbname. Use --db instead.'
+    if $name;
 
   my $dbh;
+
   if ( $options{'db'} ) {
-    $dbh = $options{'db'};
-  } elsif ($name) {
+    $dbh = $tx->{DB}->{$options{'db'}};
+    
+    if ( !ref($dbh) || ref($dbh) !~/DBI::db/ ) {
+      die $options{'db'} . " is not a DBI handle\n";
+    }
+  }
+  elsif ($name) {
     $dbh = $tx->{'DB'}->{$name};
-    die "Unknown database connection named `$name'.\n" unless $dbh;
-  } else {
-    $dbh = $tx->{'DB'}->{&ANONYMOUS};
+    die "Unknown database connection named `$name'.\n"
+      if !$dbh;
+  }
+  else {
+    $dbh = $tx->{'DB'}->{$self->ANONYMOUS};
   }
 
-  unless ( defined($dbh) and ref($dbh) ) {
-    my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-    my $dsn;
-    if ( length( $ENV{'DBI_DSN'} ) ) {
-      $dsn = $ENV{'DBI_DSN'};
-      $dsn = $dsn . ':' . $ENV{'DBI_HOST'} 
-	if $ENV{'DBI_HOST'};
-
-      $options{username} = $options{username} || $ENV{DBI_USER};
-      $options{password} = $options{password} || $ENV{DBI_PASS};
-    } elsif ( $config->{DBI_DSN} ) {
-      &log_message( $self, "DSN will be taken from configuration..." )
-	if $verbose;
-      $dsn = $config->{DBI_DSN};
-      $dsn = $dsn . ':' . $config->{'DBI_HOST'} 
-	if $config->{'DBI_HOST'};
-
-      $options{username} = $options{username} || $config->{DBI_USER};
-      $options{password} = $options{password} || $config->{DBI_PASS};
-      &log_message( $self,
-                    "DSN: $dsn username: "
-                    . $options{username}
-                    . " password: "
-                    . $options{password}
-                  ) if $verbose;
-    } else {
-      die "No database connection to execute SQL statement."
-	. Dumper( [$config] ) . "\n"
-	  if $verbose;
-      die "No database connection to execute SQL statement.\n";
+  if ( !$dbh || !ref($dbh) ) {
+    my ($dsn, $user, $pass, $host) = $self->get_dsn($tx, %options);
+    
+    if ( !$dsn || !$user ) {
+      die "No database connection available.\n";
     }
-
+    
+    DEBUG sub {
+      "attempting to connect to [$dsn] as [$user]";
+    };
+        
     my $name = &ANONYMOUS;
 
-    $dbh = DBI->connect( $dsn,
-                         @options{qw(username password)},
-                         { 'AutoCommit' => 1,
-                           'PrintError' => 1,
-                           'RaiseError' => 1,
-                           'ChopBlanks' => 1
-                         }
-                       );
-    die "Unable to connect to database: ", $DBI::errstr, "\n" unless $dbh;
+    $dbh = eval {
+      DBI->connect(
+        $dsn,
+        @options{qw(username password)},
+        { 'AutoCommit' => 1,
+          'PrintError' => 1,
+          'RaiseError' => 1,
+          'ChopBlanks' => 1
+        }
+      );
+    };
+    
+    die "Unable to connect to database: ", $DBI::errstr, $EVAL_ERROR, "\n"
+      if ! $dbh;
 
-    &log_message( $self, "Connected to database, handle = <$dbh>\n" )
-      if $verbose;
+    DEBUG sub {
+      "Autoconnected to database [$dsn] as [$user]\n";
+    };
 
     $tx->{'DB'}->{$name} = $dbh;
   }
 
-  &log_message( $self, "Using database handle ($dbh)" )
-    if $verbose;
+  if ( !$dbh->ping ) {
+    die "database is not pingable\n";
+  }
 
   return $dbh;
 }

@@ -24,6 +24,7 @@
 package TagX::TAG::WithBody::Try;
 
 use strict;
+use warnings;
 
 BEGIN {
   use Exporter ();
@@ -31,8 +32,10 @@ BEGIN {
   @ISA = qw (Exporter);
 }
 
-use TagX::Log;
 use TagX::TAG::WithBody;
+
+use Log::Log4perl qw/:easy/;
+use English qw/-no_match_vars/;
 
 @ISA = qw (TagX::TAG::WithBody);
 
@@ -42,12 +45,16 @@ sub closure {
 
 sub catch {
   my $self = shift;
-  if ( @_ == 1 ) {
+
+  if ( @_ ) {
     $self->{'catch'} = shift;
-    $self->{'catch'}->parent_try(
-                 exists $self->{'parent_try'} ? $self->{'parent_try'} : $self );
+    
+    my $parent_try = $self->{parent_try} || $self;
+
+    $self->{'catch'}->parent_try($parent_try);
     $self->{'catch'}->parent( $self->parent );
   }
+  
   $self->{'catch'};
 }
 
@@ -55,41 +62,43 @@ sub finalize {
   my ( $self, $tx, @context ) = @_;
 
   my %options;
+  
   my @argv = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
-
-  if ($verbose) {
-    my ( $key, $value );
-    my $str = "$self: Options are\n";
-    while ( ( $key, $value ) = each %options ) {
-      $str .= "\t$key .. ($value)\n";
-    }
-    $str .= "Arguments are (@argv)";
-    &log_message( $self, $str );
-  }
-
+  $self->dump_options(\%options, @argv);
+  
   my $frame = $tx->out_handle->create_frame;
 
-  &log_message( $self, "Entering <TRY> block .." ) if $verbose;
+  DEBUG 'Entering <TRY> block ..';
+
   eval { $self->SUPER::finalize( $tx, @context ); };
-  &log_message( $self, "Exited <TRY> block .." ) if $verbose;
-  if ($@) {
-    &log_message( $self, "Exception in <TRY> block\n$@" ) if $verbose;
-    $tx->param( '@' => $@ );
+
+  DEBUG  'Exited <TRY> block ..';
+  
+  if ($EVAL_ERROR) {
+    DEBUG sub {
+      "Exception in <TRY> block\n"
+        . $EVAL_ERROR;
+    };
+
+    $tx->param( '@' => $EVAL_ERROR );
     $tx->out_handle->empty_frame;
+
     if ( $self->catch ) {
-      &log_message( $self, "Entering <CATCH> block .." ) if $verbose;
+      DEBUG 'Entering <CATCH> block ..';
+      
       $self->catch->finalize( $tx, @context );
-      &log_message( $self, "Exited <CATCH> block .." ) if $verbose;
+      
+      DEBUG 'Exited <CATCH> block ..';
     }
     else {
-      &log_message( $self, "No exception handler .. propagating exception" )
-      if $verbose;
+      DEBUG 'No exception handler .. propagating exception';
+
       die;
     }
   }
-  &log_message( $self, "Completed try/catch sequence successfully" )
-  if $verbose;
+
+  DEBUG 'Completed try/catch sequence successfully';
+
   $frame->end;
 }
 

@@ -135,7 +135,9 @@ BEDROCK_TEXT_TAGX=$(perl5bedrocktexttagxlib_DATA:.pm=.pm.in)
 perl5bedrocktexttagxtaglib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody.pm \
     Bedrock/Text/TagX/TAG/WithBody.pm \
-    Bedrock/Text/TagX/TAG/SQLHandler.pm
+    Bedrock/Text/TagX/TAG/SQLHandler.pm \
+    Bedrock/Text/TagX/TAG/SQLConnector.pm
+
 
 BEDROCK_TEXT_TAGX_TAG=$(perl5bedrocktexttagxtaglib_DATA:.pm=.pm.in)
 
