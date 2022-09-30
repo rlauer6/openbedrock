@@ -280,6 +280,7 @@ subtest 'date_format' => sub {
   ) or diag( Dumper( [$date] ) );
 
   $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', -4 );
+
   ok( $date eq ( scalar localtime time ), 'localtime formatted correctly' )
     or diag(
     Dumper(

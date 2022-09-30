@@ -13,31 +13,34 @@ BEGIN {
 }
 
 my $dbi;
+my $user = $ENV{DBI_USER};
+my $pass = $ENV{DBI_PASS};
 
 eval {
-  $dbi = DBI->connect( 'dbi:mysql:', 'root', undef,
+  $dbi = DBI->connect( 'dbi:mysql:', $user, $pass,
     { PrintError => 0, RaiseError => 1 } );
   $dbi->do('create database foo');
 
-  my $create_table = <<eot;
+  my $create_table = <<'SQL';
 create table foo (
   id  int          auto_increment primary key,
   firstname varchar(50),
   lastname varchar(50),
   nickname varchar(50)
 )
-eot
+SQL
 
   $dbi->do('use foo');
   $dbi->do($create_table);
 };
 
-BAIL_OUT("could not create database and table for test: $@\n")
-  if $@;
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
+}
 
 my $ith = eval { new BLM::IndexedTableHandler( $dbi, 0, undef, 'foo' ); };
 
-isa_ok( $ith, 'BLM::IndexedTableHandler' ) or BAIL_OUT($@);
+isa_ok( $ith, 'BLM::IndexedTableHandler' ) or BAIL_OUT($EVAL_ERROR);
 
 my $count = 0;
 
@@ -72,8 +75,8 @@ $ac = $ith->autocomplete(
 
 ok( @$ac == 5, 'all rows, all columns not like "k"' );
 
-BAIL_OUT("Could not write records...$@\n")
-  if $@;
+BAIL_OUT("Could not write records...$EVAL_ERROR\n")
+  if $EVAL_ERROR;
 
 END {
   eval { $dbi->do('drop database foo'); };

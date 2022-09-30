@@ -23,7 +23,7 @@ my $host     = $ENV{DBI_HOST} || 'localhost';
 
 eval {
   $dbi = DBI->connect(
-    sprintf('dbi:mysql:host=%s;'),
+    sprintf( 'dbi:mysql:host=%s;', $host ),
     $user,
     $password,
     { PrintError => $FALSE,
@@ -148,7 +148,7 @@ subtest delete => sub {
 
   my $ith = ITH::Foo->new( $dbi, $id );
 
-  $ith->delete('foo');  # delete 1 column
+  $ith->delete('foo'); # delete 1 column
   my @columns = $ith->get_fields( { exists_only => $TRUE } );
   ok( @columns == 3, 'delete column' );
 

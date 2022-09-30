@@ -16,8 +16,11 @@ BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
+my $user = $ENV{DBI_USER} || 'root';
+my $pass = $ENV{DBI_PASS};
+
 my $dbi = eval {
-  DBI->connect( 'dbi:mysql:', 'root', undef,
+  DBI->connect( 'dbi:mysql:', $user, $pass,
     { PrintError => 0, RaiseError => 1 } );
 };
 
