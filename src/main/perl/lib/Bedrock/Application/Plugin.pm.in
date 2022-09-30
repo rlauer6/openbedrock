@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -27,11 +25,243 @@ use warnings;
 
 use TagX::Log;
 
-use parent qw/Bedrock::Hash/;
+use parent qw{ Bedrock::Hash };
 
+use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
+  MSG_ABORT    => 1 << 0,
+  MSG_DEBUG    => 1 << 1,
+  MSG_INFO     => 1 << 2,
+  MSG_STATUS   => 1 << 3,
+  MSG_WARNING  => 1 << 4,
+  MSG_ERROR    => 1 << 5,
+  MSG_SYSERROR => 1 << 6,
+  MSG_FATAL    => 1 << 7,
+  TRUE         => 1,
+  FALSE        => 0,
+};
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+our %LEVELSTRINGS = (
+  MSG_DEBUG    => q{MSG_DEBUG},
+  MSG_INFO     => q{MSG_INFO},
+  MSG_STATUS   => q{MSG_STATUS},
+  MSG_WARNING  => q{MSG_WARNING},
+  MSG_ERROR    => q{MSG_ERROR},
+  MSG_SYSERROR => q{MSG_SYSERROR},
+  MSG_FATAL    => q{MSG_FATAL},
+);
+
+########################################################################
+sub TIEHASH {
+########################################################################
+  my ( $class, $ctx, $config ) = @_;
+
+  my $self = bless {}, $class;
+
+  $self->context($ctx);
+
+  $self->config($config);
+
+  # keep in mind this object may not exist because it is not pre-bound
+  $self->input( $self->context->{'INPUT'} );
+
+  die "plugin $class failed to initialize properly\n"
+    if !$self->init_plugin;
+
+  return $self;
+} ## end sub TIEHASH
+
+########################################################################
+sub config {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->set( '__config', @args );
+  }
+
+  return $self->get('__config');
+} ## end sub config
+
+########################################################################
+sub context {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->set( '__context', @args );
+  }
+
+  return $self->get('__context');
+} ## end sub context
+
+########################################################################
+sub dbi {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->set( '__dbi', @args );
+  }
+
+  return $self->get('__dbi');
+} ## end sub dbi
+
+########################################################################
+sub global_config {
+########################################################################
+  my ($self) = @_;
+
+  return $self->context->{'CONFIG'};
+} ## end sub global_config
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->config->{'DBI_DSN'} ) {
+    require DBI;
+
+    my $options = {};
+
+    foreach my $o (qw{RaiseError PrintError AutoCommit}) {
+      $options->{$o} = $self->config->{$o} // TRUE;
+    }
+
+    my @args = @{ $self->config }{qw{ DBI_DSN DBI_USER DBI_PASS }};
+
+    $self->dbi( DBI->connect( @args, $options ) );
+  } ## end if ( $self->config->{'DBI_DSN'...})
+
+  my $log4perl_config = $self->config->{'log4perl'};
+
+  if ( $log4perl_config && ref $log4perl_config ) {
+    require Log::Log4perl;
+
+    my $config = $log4perl_config;
+
+    if ( ref $log4perl_config eq 'Bedrock::Hash' ) {
+      $config = $log4perl_config->devolve;
+    }
+
+    Log::Log4perl->init_once($config);
+  } ## end if ( $log4perl_config ...)
+
+  return TRUE;
+} ## end sub init_plugin
+
+########################################################################
+sub get_logger {
+########################################################################
+  my ( $self, $category ) = @_;
+
+  my $logger;
+
+  if ( $self->config->{'log4perl'} ) {
+    $logger = Log::Log4perl::get_logger($category);
+  }
+
+  return $logger;
+} ## end sub get_logger
+
+########################################################################
+sub input {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->set( '__input', @args );
+  }
+
+  return $self->{'__input'};
+} ## end sub input
+
+########################################################################
+sub _log {
+########################################################################
+  my ( $level, $self, $message ) = @_;
+
+  my $cutoff = MSG_INFO;
+
+  while ( my ( $key, $val ) = each %LEVELSTRINGS ) {
+    $cutoff = $val eq $self->global_config->{'LOGLEVEL'} ? $key : 0;
+    last if $cutoff;
+  }
+
+  # Check that level is valid and return if below cut off level
+  if ( !defined $level || !$LEVELSTRINGS{$level} ) {
+    $level = MSG_INFO;
+  }
+
+  if ( $level >= $cutoff ) {
+
+    # Convert level to string
+    my $level_string = $LEVELSTRINGS{$level};
+
+    TagX::Log::log_message( undef, "[$level_string]: $message\n" );
+  } ## end if ( $level >= $cutoff)
+
+  return;
+} ## end sub _log
+
+########################################################################
+sub log_info   { my (@args) = @_; return _log( MSG_INFO,    @args ) }
+sub log_debug  { my (@args) = @_; return _log( MSG_DEBUG,   @args ) }
+sub log_status { my (@args) = @_; return _log( MSG_STATUS,  @args ) }
+sub log_error  { my (@args) = @_; return _log( MSG_ERROR,   @args ) }
+sub log_warn   { my (@args) = @_; return _log( MSG_WARNING, @args ) }
+########################################################################
+
+########################################################################
+sub session {
+########################################################################
+  my ($self) = @_;
+
+  return $self->context->{'SESSION'};
+} ## end sub session
+
+########################################################################
+sub header {
+########################################################################
+  my ($self) = @_;
+
+  return $self->context->{'HEADER'};
+} ## end sub header
+
+# fix compatibility issue with previous versions of Bedrock.
+########################################################################
+sub FETCH {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $key eq 'config' ? $self->{'__config'} : $self->{$key};
+} ## end sub FETCH
+
+########################################################################
+sub closeBLM {  ## no critic (NamingConventions::Capitalization)
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
+
+  # disconnect from database if connected
+  if ( $self->dbi && ref $self->dbi =~ /DBI/xsm ) {
+    if ( $self->dbi->ping ) {
+      $self->dbi->disconnect;
+    }
+  }
+
+  return TRUE;
+} ## end sub closeBLM
+
+1;
+
+__END__
 =pod
 
-=head1 PUBLIC
+=head1 NAME
 
 Bedrock::Application::Plugin
 
@@ -168,32 +398,7 @@ The logging methods respect the C<LOGLEVEL> value in F<tagx.xml>.
 
 =back
 
-=cut
-
-sub TIEHASH {
-  my ( $class, $ctx, $config ) = @_;
-
-  my $self = bless {}, $class;
-
-  $self->context( $ctx );
-
-  $self->config( $config );
-  
-  # keep in mind this object may not exist because it is not pre-bound
-  $self->input( $self->context->{INPUT} );
-
-  die "plugin $class failed to initialize properly\n"
-    unless $self->init_plugin;
-
-  return $self;
-}
-
-=pod
-
-=head1 METHODS
-
-
-=pod
+=head1 METHODS AND SUBROUTINES
 
 =head2 config
 
@@ -214,20 +419,6 @@ definition.
      </object>
  </object> 
 
-=cut
-
-sub config {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->set('__config', @_);
-  }
-
-  return $self->get( '__config' );
-}
-
-=pod
-
 =head2 context
 
  context()
@@ -236,40 +427,11 @@ Sets or returns the context object (see C<Bedrock::Context>).  The
 value of the C<context> object is set during the invocation of the
 C<TIEHASH> method when Bedrock instantiates the BLM.
 
-=cut
-
-sub context {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->set('__context', @_);
-  }
-
-  return $self->get('__context');
-}
-
-
-=pod
-
 =head2 dbi
 
  dbi( [dbi] )
 
 Set or return a DBI handle.
-
-=cut
-
-sub dbi {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->set('__dbi', shift);
-  }
-
-  return $self->get('__dbi');
-}
-
-=pod
 
 =head2 global_config
 
@@ -277,14 +439,6 @@ sub dbi {
 
 Returns the Bedrock F<tagx.xml> config object.  Note this is the final
 merged configuration object.
-
-=cut
-
-sub global_config {
-  return $_[0]->context->{CONFIG};
-}
-
-=pod
 
 =head2 init_plugin
 
@@ -337,33 +491,6 @@ configuration.
    <scalar name="log4perl.appender.LOGFILE.layout.ConversionPattern">[%r] %F %L %c - %m%n</scalar>
  </object>
 
-=cut
-
-sub init_plugin {
-  my $self = shift;
-
-  if ( $self->config->{DBI_DSN} ) {
-    require DBI;
-
-    my $options = {
-		   RaiseError => defined $self->config->{RaiseError} ? $self->config->{RaiseError} : 1,
-		   PrintError => defined $self->config->{PrintError} ? $self->config->{PrintError} : 1,
-		   AutoCommit => defined $self->config->{AutoCommit} ? $self->config->{AutoCommit} : 1
-		  };
-    
-    $self->dbi(DBI->connect(@{$self->config}{qw/DBI_DSN DBI_USER DBI_PASS/}, $options));
-  }
-
-  if ( $self->config->{log4perl} && ref($self->config->{log4perl}) ) {
-    require Log::Log4perl;
-    Log::Log4perl->init({ %{$self->config->{log4perl}} });
-  }
-
-  return 1;
-}
-
-=pod
-
 =head get_logger
 
  get_logger( category )
@@ -383,14 +510,6 @@ Note that without the C<--output> option, the output is ONLY sent to
 the page log and not to the final output page, so this is another way
 to produce log information.
 
-=cut
-
-sub get_logger {
-  $_[0]->config->{log4perl} ? Log::Log4perl::get_logger($_[1] ? $_[1] : ()) : undef;
-}
-
-=pod
-
 =head2 input
 
  input( $input )
@@ -406,18 +525,6 @@ from the Bedrock page.
 
  <null $my_object.my_method($input)>
 
-=cut
-
-sub input {
-  my $self = shift;
-  
-  $self->{__input} = $_[0]
-    if @_;
-  
-  return $self->{__input};
-}
-
-=pod
 
 =head2 log
 
@@ -428,56 +535,6 @@ level.
 
 Alternately, use the short-cut methods.
 
-=cut
-
-use constant MSG_ABORT    => 1 << 0;
-use constant MSG_DEBUG    => 1 << 1;
-use constant MSG_INFO     => 1 << 2;
-use constant MSG_STATUS   => 1 << 3;
-use constant MSG_WARNING  => 1 << 4;
-use constant MSG_ERROR    => 1 << 5;
-use constant MSG_SYSERROR => 1 << 6;
-use constant MSG_FATAL    => 1 << 7;
-
-
-my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
-		     &MSG_INFO     => q(MSG_INFO),
-		     &MSG_STATUS   => q(MSG_STATUS),
-		     &MSG_WARNING  => q(MSG_WARNING),
-		     &MSG_ERROR    => q(MSG_ERROR),
-		     &MSG_SYSERROR => q(MSG_SYSERROR),
-		     &MSG_FATAL    => q(MSG_FATAL)
-		   );
-
-sub _log {
-  my $level = shift;
-
-  my $self = shift;
-  my $message = shift;
-
-  my $cutoff = MSG_INFO;
-
-  while ( my ($key, $val) = each %LevelStrings ) {
-    last if 
-      $cutoff = ($val eq $self->global_config->{LOGLEVEL}) ? $key : 0;
-  }
-
-  # Check that level is valid and return if below cut off level
-  $level = MSG_INFO unless defined($level) and $LevelStrings{$level};
-
-  if ( $level >= $cutoff ) {
-
-    # Convert level to string
-    my $level_string = $LevelStrings{$level};
-
-    TagX::Log::log_message( undef, "[$level_string]: $message\n" );
-  }
-
-  return;
-}
-
-=pod
-
 =head2 log_debug
 
 =head2 log_error
@@ -487,16 +544,6 @@ sub _log {
 =head2 log_status
 
 =head2 log_warn
-
-=cut
-
-sub log_info   { _log( MSG_INFO,    @_ ) };
-sub log_debug  { _log( MSG_DEBUG,   @_ ) };
-sub log_status { _log( MSG_STATUS,  @_ ) };
-sub log_error  { _log( MSG_ERROR,   @_ ) };
-sub log_warn   { _log( MSG_WARNING, @_ ) };
-
-=pod
 
 =head2 session
 
@@ -544,33 +591,11 @@ Plugin objects of arbritary type.  Currently, Bedrock treats the
 C<$session> and C<$header> objects as the only objects that it will
 instantiate when the Bedrock handler is invoked.>
 
-=cut
-
-sub session {
-  return $_[0]->context->{SESSION};
-}
-
-=pod
-
 =head2 header
 
  header()
 
 Returns the C<BLM::Startup::Header> object.
-
-=cut
-
-sub header {
-  return $_[0]->context->{HEADER};
-}
-
-=cut
-
-# fix compatibility issue with previous versions of Bedrock.
-sub FETCH {
-  return $_[1] eq 'config' ? $_[0]->{__config} : $_[0]->{$_[1]};
-}
-
 
 =head2 closeBLM
 
@@ -597,29 +622,13 @@ The default implementation is shown below.
    }
  }
 
-=cut
+=head1 SEE ALSO
 
-sub closeBLM {
-  my $obj = shift;
-    
-  my $self = tied(%{$obj});
-  
-  # disconnect from database if connected
-  if ( $self->dbi && ref($self->dbi) =~/DBI/ && $self->dbi->ping ) {
-    $self->dbi->disconnect;
-  }
-}
-
-=pod
+C<Bedrock::Plugin>, C<Bedrock::Context>, C<Bedrock::Hash>
 
 =head1 AUTHOR
 
 Rob Lauer - <rclauer@gmail.com>
 
-=head1 SEE ALSO
-
-C<Bedrock::Plugin>, C<Bedrock::Context>, C<Bedrock::Hash>
-
 =cut
 
-1;

@@ -24,603 +24,421 @@ use strict;
 use warnings;
 
 use DBI;
+use Data::Dumper;
 
 use Bedrock::Array;
+use Bedrock::Hash;
+
+use Bedrock::Constants qw{:booleans :chars};
+
 use Scalar::Util qw/reftype/;
 use Carp;
 
 use parent qw/Bedrock::Hash/;
 
-=pod
+use Readonly;
 
-=head1 PUBLIC
+Readonly our $DEFAULT_MAX_ROWS    => 100;
+Readonly our $MAX_HISTORY_ENTRIES => 5;
+Readonly our $ISO_8601_FORMAT     => '%Y-%m-%dT%TZ';
 
-C<BLM::DBHandler> - Provides support for MySQL database operations in
-a Bedrock environment.  Typically used as the base class for a perl
-module package used when building a Bedrock application.
+__PACKAGE__->_create_accessors(
+  qw{
+    rows
+    mysql_insertid
+    return_bedrock_refs
+    _query
+    max_history
+  }
+);
 
-=head1 SYNOPSIS
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
- package BLM::MyJunk;
-
- use parent qw/BLM::DBHandler/;
-
- 1;
-
-..and voila your C<BLM::MyJunk> now has some nifty data access methods.
-
-or in a standalone situation...
-
- my $dbi = DBI->connect('dbi:mysql:mydb', 'user', 'password');
-
- my $dbhandler = BLM::DBHandler->new( $dbi );
-
- my $results = $dbhandler->select_list("select * from custmr where name acct = ?", $acct);
-
-=head1 METHODS
-
-=head2 CONSTRUCTOR
-
-=head3 new
-
- new( dbi, [options] )
- 
-Create a new C<DBHandler object>.
-
-  my $dbhandler = BLM::DBHandler->new( $dbi, max_rows => 100 );
-
-B<dbi> is a C<DBI> handle to an open MySQL database.
-
-Options
-
-=over 5
-
-=item max_rows 
-
-Limit the number of rows returned in a query.  The default is 100.
-
-=back
-
-=cut
-
+########################################################################
 sub new {
-  my ($class, $dbi, %options) = @_;
+########################################################################
+  my ( $class, $dbi, %options ) = @_;
 
-  die "usage: BLM::DBHandler->new(dbi-handle, key, value, ...)"
-    unless ref($dbi) && ref($dbi) =~/DBI::db/;
-  
-  my $max_rows = exists $options{max_rows} ? $options{max_rows} : 100;
-  
-  $class->SUPER::new( _db => $dbi, _dbi => $dbi,  _max_rows => $max_rows);
-}
+  die 'usage: BLM::DBHandler->new(dbi-handle, key, value, ...)'
+    if !ref $dbi || ref($dbi) !~ /DBI::db/xsm;
 
-=pod
+  $options{max_rows}            //= $DEFAULT_MAX_ROWS;
+  $options{return_bedrock_refs} //= $TRUE;
+  $options{max_history}         //= $MAX_HISTORY_ENTRIES;
 
-=head2 SETTER/GETTER METHODS
-
-=cut
-
-=pod
-
-=head3 dbi
-
- dbi()
-
-Set/get the current C<DBI> handle.
-
-=cut
-
-sub dbi {
-  my $self = shift;
-  
-  if ( @_ ) {
-    $self->{_dbi} = shift;
+  foreach ( keys %options ) {
+    $options{"_$_"} = delete $options{$_};
   }
 
-  return $self->{_dbi};
+  my $self = $class->SUPER::new(
+    _db        => $dbi,
+    _dbi       => $dbi,
+    __query    => [],   # setting __{var} tells _set_get to track history of _{var}
+    __args     => [],
+    __arg_list => [],
+    %options,
+  );
+
+  return $self;
 }
 
-=pod
+# aliases for legacy CamelCased method names
+########################################################################
+sub SelectList  { goto &select_list; }  ## no critic (Capitalization)
+sub Select      { goto &select; }       ## no critic (Capitalization)
+sub Prepare     { goto &prepare; }      ## no critic (Capitalization)
+sub setBindVars { goto &bind_vars; }    ## no critic (Capitalization)
+sub setQuery    { goto &query; }        ## no critic (Capitalization)
+sub setErr      { goto &errstr; }       ## no critic (Capitalization)
+sub Do          { goto &do; }           ## no critic (Capitalization)
+########################################################################
 
-=head3 errstr
+# aliases to encourage use of set/get methods
+########################################################################
+sub set_bind_vars { goto &bind_vars; }
+sub get_bind_vars { goto &bind_vars; }
+sub set_err       { goto &errstr; }
+sub get_err       { goto &errstr; }
+sub get_dbi       { goto &dbi; }
+sub set_dbi       { goto &dbi; }
+########################################################################
 
- errstr()
-
-Sets/get the error message from the last executed statement.
-
-=cut
-
-sub setErr  { goto &errstr; }
-sub set_err { goto &errstr; }
-sub get_err { goto &errstr; }
-
-sub errstr {
-  my $self = shift;
-  
-  if ( @_ ) {
-    $self->{_err} = shift;
-  }
-  
-  return $self->{_err};
+########################################################################
+# setters/getters
+########################################################################
+{
+  ## no critic (RequireArgUnpacking)
+  sub query     { return shift->_set_get( '_query', @_ ); }
+  sub get_query { return shift->_set_get( '_query', @_ ); }
+  sub set_query { return shift->_set_get( '_query', @_ ); }
+########################################################################
+  sub get_args { return shift->_set_get( '_args', @_ ); }
+  sub set_args { return shift->_set_get( '_args', @_ ); }
+########################################################################
+  sub max_rows     { return shift->_set_get( '_max_rows', @_ ); }
+  sub set_max_rows { return shift->_set_get( '_max_rows', @_ ); }
+  sub get_max_rows { return shift->_set_get( '_max_rows', @_ ); }
+########################################################################
+  sub get_arg_list { return shift->_set_get( '_arg_list', @_ ); }
+  sub set_arg_list { return shift->_set_get( '_arg_list', @_ ); }
+########################################################################
+  # getter/setters for these created by create_accessors()
+  sub mysql_insert_id { return shift->_set_get( 'mysql_insert_id', @_ ); }
+  sub errstr          { return shift->_set_get( '_err',            @_ ); }
+  sub rows            { return shift->_set_get( 'rows',            @_ ); }
+  sub arg_list        { return shift->_set_get( '_arg_list',       @_ ); }
 }
+########################################################################
 
-=pod
-
-=head3 get_bind_vars
-
- get_bind_vars()
-
-Return an array containing the last bind variables used.  Helpful in debugging.
-
-=cut
-
-sub _dbGetBindVars { goto &bind_vars; }
-sub get_bind_vars  { goto &bind_vars; }
-sub setBindVars    { goto &bind_vars; }
-sub set_bind_vars  { goto &bind_vars; }
-
-sub bind_vars {
-  my $self = shift;
-  my @args = @_;
-  
-  if ( @args ) {
-    $self->{__args} = $self->{_args};
-    $self->{_args} = \@args;
-    $self->arg_list(join("|", map { defined $_ ? $_ : 'null'} @args));
-  }
-  
-  return $self->{_args} ? @{$self->{_args}} : ();
-}
-
-sub arg_list {
-  my $self = shift;
-  
-  if ( @_ ) {
-    $self->{_arg_list} = shift;
-  }
-  
-  return $self->{_arg_list};
-}
-
-=pod
-
-=head3 get_query
-
- get_query()
-
-Return the last query executed. Helpful in debugging.
-
-=cut
-
-sub _dbGetQuery { goto &query; }
-sub get_query   { goto &query; }
-sub setQuery    { goto &query; }
-sub set_query   { goto &query; }
-
-sub query {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->{__query} = $self->{_query};
-    $self->{_query} = shift;
-  }
-
-  return $self->{_query};
-}
-
-=pod
-
-=head3 max_rows
-
- max_rows( [rows] )
-
-Set or retrieve the maximum number of rows to return in a C<SelectList> call.  The default is 100.
-
-=cut
-
-sub max_rows {
-  my $self = shift;
-  
-  if ( @_ ) {
-    $self->{_max_rows} = shift;
-  }
-  
-  return $self->{_max_rows};
-}
-
-
-sub mysql_insertid {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->{mysql_insertid} = shift;
-  }
-  
-  return $self->{mysql_insertid};
-}
-
-sub rows {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->{rows} = shift;
-  }
-  
-  return $self->{rows};
-}
-
-
-=pod
-
-=head2 SQL METHODS
-
-=cut
-
-=pod
-
-=head3 commit
-
- commit()
-
-Commit a transaction if C<AutoCommit> is not set.
-
-=cut
-
-sub commit {
-  my $self = shift;
-
-  $self->dbi->commit 
-    unless $self->dbi->{AutoCommit};
-}
-
-
-=pod
-
-=head3 date_format
-
- date_format( date, format-string, [utc-flag] )
-
-Returns the result of the MySQL DATE_FORMAT function.
-
-  <var $tb.date_format('2011-01-01', '%a')>
-
- Sat
-
-=over 5
-
-=item date
-
-A MySQL date field.
-
-=item format-string
-
-MySQL format string.  See MySQL C<DATE_FORMAT> documentation.
-
-=item utc-flag
-
-Indicates the date is a UTC date and should be adjusted this many
-hours.
-
-=back
-
-=cut
-
+########################################################################
 sub date_format {
-  my $self = shift;
-  my ($date, $fmt, $utc) = @_;
-  
-  my $hour = $utc || 0;
+########################################################################
+  my ( $self, $date, $format, $utc_offset ) = @_;
 
-  my $dbh = $self->dbhandler;
-  
-  my $ref = $dbh->Select("select date_format( date_add(?, INTERVAL ? HOUR), ?) date_fmt",$date, $hour, $fmt);
+  $date //= time;
 
-  return $ref->{date_fmt};
+  die 'not a valid date'
+    if !( $date =~ /^\d{4}-\d{2}-\d{2}/xsm || $date !~ /\D/xsm );
+
+  $format //= $ISO_8601_FORMAT;
+
+  my $hour = $utc_offset || 0;
+
+  my $query = <<'SQL';
+select date_format( date_add(%s, INTERVAL ? HOUR), ?) formatted_date
+SQL
+
+  $query = sprintf $query, $date =~ /^\d+$/xsm ? 'from_unixtime(?)' : q{?};
+
+  my $result = $self->select( $query, $date, $hour, $format );
+
+  return $result->{formatted_date};
 }
 
-=pod
+########################################################################
+sub dbi {
+########################################################################
+  my ( $self, @args ) = @_;
 
-=head3 Do
+  if (@args) {
+    push @args, sub {  # argument checker
+      die 'not a DBI::db object'
+        if !ref $args[0] || ref( $args[0] ) !~ /DBI::db/xsm;
 
-Deprecated.  See C<do()>
+      return $args[0];
+    };
+  }
 
-=head3 do
-
- do( query, [args] )
-
-Execute a SQL statement.
-
-  $dbhandler->do("update results set status='1' where order_num = ?", $order_num);
-
-=over 5
-
-=item query
-
-The SQL statement to execute.
-
-=item args
-
-The bind variables to use in the query.
-
-=back
-
-Returns a non-zero value if there was an error.  Use
-C<errstr()> to retrieve error message.  Also sets C<-E<gt>{rows}> to
-the number of rows affected by the statement.
-
-=cut
-
-sub Do { goto &do; }
-
-sub do {
-  my $self = shift;
-
-  $self->_dbDo( $self->dbi, @_);
+  return $self->_set_get( '_dbi', @args );
 }
 
-sub _dbDo {
-  my ($self, $db, $query, @args) = @_;
-  
+########################################################################
+sub do {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->_db_do( $self->dbi, @args );
+}
+
+########################################################################
+sub select {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->_db_select( $self->dbi, @args );
+}
+
+########################################################################
+sub select_list {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->_db_select_list( $self->dbi, @args );
+}
+
+########################################################################
+sub prepare {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->_db_prepare( $self->dbi, @args );
+}
+
+########################################################################
+sub bind_vars {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->set_args( \@args );
+    $self->set_arg_list( join q{|}, map { defined $_ ? $_ : 'null' } @args );
+  }
+
+  return $self->get_args ? @{ $self->get_args } : ();
+}
+
+########################################################################
+sub commit {
+########################################################################
+  my ($self) = @_;
+
+  if ( !$self->get_dbi->{AutoCommit} ) {
+    return $self->dbi->commit;
+  }
+
+  return $TRUE;
+}
+
+########################################################################
+sub rollback {
+########################################################################
+  my ($self) = @_;
+
+  if ( !$self->dbi->{AutoCommit} ) {
+    return $self->dbi->rollback;
+  }
+
+  return $TRUE;
+}
+
+# +-----------------+
+# | PRIVATE METHODS |
+# +-----------------+
+
+########################################################################
+sub _create_accessors {
+########################################################################
+  my ( $self, @accessors ) = @_;
+
+  no strict 'refs';  ## no critic
+
+  my $class = ref $self || $self;
+
+  foreach my $sub (@accessors) {
+    *{ $class . q{::set_} . $sub } = sub {
+      shift->_set_get( "_$sub", @_ );
+    };
+
+    *{ $class . q{::get_} . $sub } = sub {
+      shift->_set_get( "_$sub", @_ );
+    };
+  }
+
+  return;
+}
+
+########################################################################
+# Usage      : _set_get(var, value);
+#            : _set_get(var, value, sub { }); # custom setter
+#            : _set_get(var, value, [ ]);     # lookup
+#            : _set_get(var, value, { });     # transform
+#            : _set_get(var, value, SCALAR);  # r/o
+# Parameters :
+# Returns    :
+# Errors     :
+########################################################################
+sub _set_get {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args > 1 ) {
+    if ( @args == 3 ) {
+      if ( reftype( $args[2] ) eq 'CODE' ) {  ## no critic (ProhibitCascadingIfElse)
+                                              # checker/scrubber of value
+        $args[1] = $args[2]->( $args[1] );
+      }
+      elsif ( reftype( $args[2] ) eq 'ARRAY' ) {
+        die 'not a valid value'
+          if none { $args[1] eq $_ } @{ $args[2] };
+      }
+      elsif ( reftype( $args[2] ) eq 'HASH' ) {  # transformation?
+        $args[1] = $args[2]->{ $args[1] };
+      }
+      elsif ( !ref $args[2] ) {                  # flag indication r/o ?
+        die 'attempt to set a r/o var';
+      }
+    }
+
+    my $history_var = '_' . $args[0];
+
+    if ( $args[0] =~ /^_[^_]/xsm && exists $self->{$history_var} ) {
+
+      $self->{$history_var} //= [];
+
+      unshift @{ $self->{$history_var} }, $args[1];  # save last value in history
+
+      # only keep $MAX_HISTORY_ENTRIES
+      if ( @{ $self->{$history_var} } > $self->get_max_history ) {
+        pop @{ $self->{$history_var} };
+      }
+    }
+
+    $self->{ $args[0] } = $args[1];
+  }
+
+  return $self->{ $args[0] };
+}
+
+########################################################################
+sub _db_do {
+########################################################################
+  my ( $self, $dbi, $query, @args ) = @_;
+
   $self->set_bind_vars(@args);
 
-  my $sth = $self->_dbPrepare($db, $query);
-  my $rv = $sth->err();
-  $self->set_err($sth->errstr());
-  
+  my $sth = $self->_db_prepare( $dbi, $query );
+  my $rv  = $sth->err();
+  $self->set_err( $sth->errstr() );
+
   # make sure we start out with 0
   $self->rows(0);
-  
-  unless ( $sth->err() ) {
-    $sth->execute( @args );
+
+  if ( !$sth->err() ) {
+    $sth->execute(@args);
     $rv = $sth->err();
-    
-    $self->rows($sth->rows());
+
+    $self->rows( $sth->rows() );
     $self->set_err( $sth->errstr() );
   }
-  
-  $self->mysql_insertid($sth->{mysql_insertid});
-  
+
+  $self->set_mysql_insertid( $sth->{mysql_insertid} );
+
   $sth->finish;
-  
+
   return $rv;
 }
 
-=pod
+########################################################################
+sub _db_prepare {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, $dbi, $statement ) = @_;
 
-=head3 prepare
+  $self->set_query($statement);
 
- prepare( query )
+  croak sprintf 'no database handle for: [%s]:[%s]', $statement, ref $dbi
+    if !ref $dbi || ref($dbi) !~ /DBI::db/xsm;
 
-Prepare a statement for execution. Returns a statement handle.
+  my $sth = $dbi->prepare($statement);
 
-=over 5
-
-=item query
-
-The query to execute.
-
-=back
-
-Example:
-
- my $sth = $dbhandler->prepare("select * from my_table where ...");
- $sth->execute;
-
-Why would you do this instead of:
-
-   my $sth = $dbi->prepare("select * from my_table where ....");
-   $sth->execute;
-
-...well because this class handles errors, saves querys, etc. (see below).
-
-=cut
-
-sub Prepare {  goto &prepare; }
-
-sub prepare {
-  my $self = shift;
-
-  return $self->_dbPrepare($self->dbi, @_);
-}
-
-sub _dbPrepare {
-  my ($self, $db, $stmt) = @_;
-  
-  $self->set_query( $stmt );
-  
-  my $sth;
-  die "no database handle for: [$stmt]:[" . ref($db) . "]" 
-    unless ref($db) && ref($db) =~/DBI::db/;
-  
-  $sth = $db->prepare($stmt);
-  
   return $sth;
 }
 
-=pod
+########################################################################
+sub _db_select {  ## no critic Capitalization
+########################################################################
+  my ( $self, $dbi, $query, @args ) = @_;
 
-=head3 rollback
+  $self->set_bind_vars(@args);
 
- rollback()
+  my $sth = $self->_db_prepare( $dbi, $query );
+  $sth->execute(@args);
 
-Rollback a transaction if C<AutoCommit> is not enabled.
+  if ( !$dbi->{RaiseError} ) {
+    if ( $sth->err() ) {
+      my $error_message = sprintf "MySQL error (%d): %s\n",
+        $dbi->{mysql_errno}, $sth->errstr() // $EMPTY;
 
-=cut
-
-sub rollback {
-  my $self = shift;
-
-  $self->dbi->rollback 
-    unless $self->dbi->{AutoCommit};
-}
-
-sub _dbSelect {
-  my $self = shift;
-  my $db = shift;
-  my $query = shift;
-  
-  $self->set_bind_vars(@_);
-  
-  my $sth = $self->_dbPrepare($db, $query);
-  $sth->execute(@_);
-  
-  # probably bad design to throw an error here...since the caller
-  # should probably indicate how errors should be handled using
-  # RaiseError when connecting...
-  if ( $db->{mysql_errno} ) {
-    die "$query - [" . $_[0] . "] " . $self->bind_vars();
+      $self->set_err($error_message);
+    }
+    else {
+      $self->set_err($EMPTY);
+    }
   }
-  
-  my $ref = $sth->fetchrow_hashref;
-  
+
+  my $result = $sth->fetchrow_hashref;
   $sth->finish;
-  
-  return $ref;
-}
 
-=pod
-
-=head3 Select
-
-Deprecated.  See C<select()>.
-
-=head3 select
-
- select( query, [args] )
-
-Select a record from a database. Returns a C<Bedrock::Hash> containing
-the fields of the record.  Returns C<undef> if the query does not
-return a result.
-
-Example:
-
-  my $rec = $dbhandler->select("select * from custmr where acct = ?", 1);
-
-  printf "%s\n", $rec->{'NAME'};
-
-=over 5
-
-=item query
-
-The SQL query to execute.
-
-=item args
-
-The bind variables to use in the query.
-
-=back
-
-=cut
-
-sub select {
-  my $self = shift;
-
-  $self->_dbSelect($self->dbi, @_);
-}
-
-sub Select {
-  carp "Select deprecated: use 'select()'\n";
-  goto &select;
-}
-
-sub _dbSelectList {
-  my $self = shift;
-  my $db = shift;
-  my $query = shift;
-  
-  $self->set_bind_vars(@_);
-  my $sth = $self->_dbPrepare($db, $query);
-  $sth->execute(@_);
-  
-  my @list;
-  my $ref;
-  my $nrows = 0 ;
-  
-  while ($ref = $sth->fetchrow_hashref) {
-    push @list, new Bedrock::Hash(%$ref);
-    last if $self->max_rows() && $nrows++ >= $self->max_rows();
+  if ( $result && $self->get_return_bedrock_refs ) {
+    my $self = bless {}, 'Bedrock::Hash';
+    tie %{$self}, 'Bedrock::Hash', %{$result};  ## no critic (ProhibitTies)
+    return $self;
   }
-  
+
+  return $result;
+}
+
+########################################################################
+sub _db_select_list {  ## no critic Capitalization
+########################################################################
+  my ( $self, $dbi, $query, @args ) = @_;
+
+  $self->set_bind_vars(@args);
+
+  my $sth = $self->_db_prepare( $dbi, $query );
+  $sth->execute(@args);
+
+  my $max_rows = $self->get_max_rows;
+
+  my $result = [];
+
+  my $return_bedrock_refs = $self->get_return_bedrock_refs;
+
+  while ( my $row = $sth->fetchrow_hashref ) {
+
+    if ($return_bedrock_refs) {
+
+      my $self = bless {}, 'Bedrock::Hash';
+      tie %{$self}, 'Bedrock::Hash', %{$row};  ## no critic (ProhibitTies)
+
+      push @{$result}, $self;
+    }
+    else {
+      push @{$result}, $row;
+    }
+
+    last if $max_rows && @{$result} >= $max_rows;
+  }
+
   $sth->finish;
-  
-  return new Bedrock::Array(@list);
-}
 
-=pod
-
-=head3 SelectList
-
-Deprecated. See C<select_list()>.
-
-=head3 select_list
-
- select_list( query, [args] )
-
-Selects multiple records from a database.  Returns a C<Bedrock::Array>
-of C<Bedrock::Hash> objects.
-
-  my $list = $dbhandler->select_list("select * from custmr where name like 'TEST%'");
-
-  foreach $rec (@$list) {
-    printf "%s\n", $rec->{'NAME'};
+  if ($return_bedrock_refs) {
+    return Bedrock::Array::Reference->new($result);
   }
-
-Returns a 0 length C<Bedrock::Array> object if no records are selected.
-
-=over 5
-
-=item query
-
-The query to execute.
-
-=item args
-
-The bind variables to use in the query.
-
-=back
-
-=cut
-
-sub SelectList {  goto &select_list; }
-
-sub select_list {
-  my $self = shift;
-  
-  $self->_dbSelectList($self->dbi, @_);
+  else {
+    return $result;
+  }
 }
-
-=pod
-
-=head2 ATTRIBUTES
-
-Several attributes are stored within this class that you might find useful.
-
-=head3 err
-
-Last error message returned by an executed statement. Can be retrieved with the C<errstr()> method.
-
-=head3 max_rows
-
-Maximum number of rows to return on a C<SelectList> call.  Can be set
-or retrieved via the C<max_rows()> method.
-
-=head3 mysql_insertid
-
-Updated after a C<Do> just in case you were doing an insert on a table
-with an C<auto_increment> field.
-
-=head3 rows
-
-Number of rows affected by the last execute statement.
-
-=head1 SEE ALSO
-
-C<DBI>, C<BLM::IndexedTableHandler>
-
-=head1 AUTHOR
-
-Rob Lauer - rlauer6@comcast.net
-
-=cut
 
 1;
+
+__END__

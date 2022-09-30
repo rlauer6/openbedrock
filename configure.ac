@@ -1,6 +1,12 @@
-dnl -*-Autoconf-*-
-
-AC_INIT([bedrock], [3.1.0], [rclauer@gmail.com])
+AC_INIT([bedrock],
+        m4_esyscmd_s([
+if test -z "$VERSION"; then \
+  VERSION=$(test -e VERSION && cat VERSION); \
+  VERSION=${VERSION:-0.0.0}; \
+fi; \
+echo $VERSION
+]),
+        m4_esyscmd_s([if test -z "$EMAIL"; then EMAIL=rclauer@gmail,com; fi; echo $EMAIL]),[bedrock])
 
 dnl Ensure that a recent-enough version of Autoconf is being used
 AC_PREREQ([2.61])
@@ -95,14 +101,14 @@ if test -z "$PROVE" ; then
   AC_MSG_WARN([prove not found?])
 fi
 
-apache_layout=Debian
+apache_layout=RedHat
 
 dnl ...for Debian layouts, we use a2ensite to enable a virtual host, a2enconf for configuations, etc.
 AC_PATH_PROG([A2ENSITE],
         [a2ensite])
 
 AC_ARG_WITH(
-        [apache-layout],[  --with-apache-layout=LAYOUT Apache layout style (Debian or RedHat), default=Debian],
+        [apache-layout],[  --with-apache-layout=LAYOUT Apache layout style (Debian or RedHat), default=RedHat],
         [
          case "$withval" in
 
@@ -477,6 +483,7 @@ printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
 printf "\n"
+printf "               Package Version: %s\n"   "${PACKAGE_VERSION}"
 
 
 ## DEBUG: Show all variables set in the shell at the end of 'configure' run

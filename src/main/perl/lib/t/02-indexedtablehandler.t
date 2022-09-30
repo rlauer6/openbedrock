@@ -1,3 +1,4 @@
+## no critic (RequireVersionVar)
 use strict;
 use warnings;
 
@@ -5,102 +6,140 @@ use Test::More tests => 13;
 
 use DBI;
 use Data::Dumper;
+use English qw{-no_match_vars};
+use Readonly;
+
+Readonly my $TRUE  => 1;
+Readonly my $FALSE => 0;
 
 BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
-my $dbi;
+my $dbi = eval {
+  DBI->connect( 'dbi:mysql:', 'root', undef,
+    { PrintError => 0, RaiseError => 1 } );
+};
 
-eval{
-  $dbi = DBI->connect('dbi:mysql:', 'root', undef, { PrintError => 0, RaiseError => 1} );
-  $dbi->do('create database foo');
+if ( !$dbi || $EVAL_ERROR ) {
+  BAIL_OUT("could not create database and table for test: $EVAL_ERROR");
+}
 
-  my $create_table =<<eot;
+$dbi->do('create database foo');
+
+my $create_table = <<'SQL';
 create table foo (
   id  int          auto_increment primary key,
   biz varchar(10)  not null,
   baz varchar(10)  null,
   buz varchar(10)  not null default 'buzzzz'
 )
-eot
+SQL
 
-  $dbi->do('use foo');
-  $dbi->do($create_table);
-};
+$dbi->do('use foo');
+$dbi->do($create_table);
 
-BAIL_OUT("could not create database and table for test: $@\n")
-  if $@;
+my $ith
+  = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
-my $ith = eval {
-  new BLM::IndexedTableHandler($dbi, 0, undef, 'foo');
-};
+isa_ok( $ith, 'BLM::IndexedTableHandler' )
+  or BAIL_OUT($EVAL_ERROR);
 
-isa_ok($ith,'BLM::IndexedTableHandler') or BAIL_OUT($@);
+is( $ith->get_upsert_mode(), $FALSE, 'upsert default 0?' )
+  or diag( $ith->get_upsert_mode );
 
-is($ith->get_upsert_mode(), 0, 'upsert default 0?') or diag($ith->get_upsert_mode);
-$ith->set_upsert_mode(1);
+$ith->set_upsert_mode($TRUE);
 
-is($ith->get_upsert_mode(), 1, 'set_upsert_mode') or diag($ith->get_upsert_mode);
+is( $ith->get_upsert_mode(), $TRUE, 'set_upsert_mode' )
+  or diag( $ith->get_upsert_mode );
 
 my $id = eval {
-  $ith->set('biz', 'bizzzz');
+  $ith->set( biz => 'bizzzz' );
   $ith->save();
 };
 
-ok(! $@ && defined $id, 'upsert') or BAIL_OUT($@);
+ok( !$EVAL_ERROR && defined $id, 'upsert' )
+  or do {
+  diag( Dumper( [$ith] ) );
+  BAIL_OUT($EVAL_ERROR);
+  };
 
-like($id, qr/\d+/, 'upsert') or diag("id not returned ($id): $@");
+like( $id, qr/^\d+$/xsm, 'upsert' )
+  or diag("id not returned ($id): $EVAL_ERROR");
 
 $id = eval {
-  $ith->reset(1);
-  $ith->set_upsert_mode(0);
-  $ith->set('biz', 'bizzz');
+  $ith->reset($TRUE);
+  $ith->set_upsert_mode($FALSE);
+  $ith->set( 'biz', 'bizzz' );
   $ith->save();
 };
 
-like($@, qr/cannot be null/i, 'null exception') or diag("$@");
+like( $EVAL_ERROR, qr/cannot be null/smi, 'null exception' )
+  or diag("$EVAL_ERROR");
 
 $id = eval {
-  $ith->set('buz', 'buzzz');
+  $ith->set( 'buz', 'buzzz' );
   $ith->save();
 };
 
-ok(! $@ && $id =~/\d+/, 'insert all columns');
+ok( !$EVAL_ERROR && $id =~ /^\d+$/xsm, 'insert all columns' );
 
 subtest 'select' => sub {
   my $rows = $ith->select();
-  isa_ok($rows, 'BLM::IndexedTableHandler::RecordSet');
-  is(@$rows, 2, 'all rows read');
+  isa_ok( $rows, 'BLM::IndexedTableHandler::RecordSet' );
+  is( @{$rows}, 2, 'all rows read' );
 };
 
 subtest 'search exact' => sub {
-  my $rows = $ith->search({ buz => 'buzzz'}, 1);
-  is(@$rows, 1, 'found a record');
+  my $rows = $ith->search( { buz => 'buzzz' }, 1 );
 
- SKIP: {
-    skip "search failed",1 unless @$rows;
-    is($rows->[0]->{buz}, 'buzzz', 'found correct record') or diag(Dumper [ $rows ]);
+  is( @{$rows}, 1, 'found a record' )
+    or diag( Dumper( [$rows] ) );
+
+  SKIP: {
+    if ( !@{$rows} ) {
+      skip 'search failed', 1;
+    }
+
+    is( $rows->[0]->{buz}, 'buzzz', 'found correct record' )
+      or diag( Dumper [$rows] );
   }
 };
 
 subtest 'search wilcard' => sub {
-  my $rows = $ith->search({ buz => 'buzz'});
-  is(@$rows, 2, 'found all records');
+  my $rows = $ith->search( { buz => 'buzz' } );
+  is( @{$rows}, 2, 'found all records' );
 };
 
 subtest 'find exact' => sub {
-  my $rows = $ith->find(1, 'buz', 'buzzz');
-  is(@$rows, 1, 'found 1 record');
-  is($rows->[0]->{buz}, 'buzzz', 'found correct record') or diag(Dumper $rows->[0]->as_ref());
+  my $rows = $ith->find( 1, 'buz', 'buzzz' );
+
+  is( @{$rows}, 1, 'found 1 record' );
+
+  SKIP: {
+    if ( !@{$rows} ) {
+      skip 'search failed', 1;
+    }
+
+    is( $rows->[0]->{buz}, 'buzzz', 'found correct record' )
+      or diag( Dumper $rows->[0]->as_ref() );
+  }
 };
 
 subtest 'find wildcard' => sub {
-  my $rows = $ith->find(0, 'buz', 'buzzz');
-  is(@$rows, 2, 'found 2 records');
+  my $rows = $ith->find( 0, 'buz', 'buzzz' );
+  is( @{$rows}, 2, 'found 2 records' );
 };
 
 END {
-  eval { $dbi->do('drop database foo'); };
-  $dbi->disconnect;
+  eval {
+    if ( $dbi && $dbi->ping ) {
+      $dbi->do('drop database foo');
+      $dbi->disconnect;
+    }
+  };
 }
+
+1;
+
+__END__

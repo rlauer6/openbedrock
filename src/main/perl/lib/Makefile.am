@@ -57,6 +57,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Context.pm \
+    Bedrock/Constants.pm \
     Bedrock/Dump.pm \
     Bedrock/Handle.pm \
     Bedrock/Handler.pm \

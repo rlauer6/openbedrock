@@ -7,4 +7,6 @@ BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
-like($BLM::IndexedTableHandler::VERSION, qr/3\.\d{2}/, 'version');
+like( $BLM::IndexedTableHandler::VERSION, qr/\A[\d.]+\z/xsm, 'version' );
+
+1;

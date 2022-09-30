@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -26,21 +25,421 @@ package Bedrock::Hash;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  ($VERSION) = split "-", "@VERSION@"; $VERSION =~s/^(.*)\.(\d+)$/$1_$2/; $VERSION = eval $VERSION;
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
 use Bedrock::Array;
-use Bedrock::Dump;
 use Bedrock::BedrockJSON;
-use Bedrock::XML;
+use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::Dump;
+use English qw{-no_match_vars};
+use Scalar::Util qw{reftype};
+use List::Util qw{ pairs };
+use Tie::IxHash;
 use XML::Simple;
 
-use Tie::IxHash;
-use Scalar::Util qw/reftype/;
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+
+{
+## no critic (RequireArgUnpacking, RequireFinalReturn)
+
+  sub FIRSTKEY { my $a = scalar CORE::keys %{ $_[0] }; each %{ $_[0] } }
+  sub NEXTKEY  { each %{ $_[0] } }
+  sub FETCH    { $_[0]->{ $_[1] } }
+  sub EXISTS   { exists $_[0]->{ $_[1] } }
+  sub STORE    { $_[0]->{ $_[1] } = $_[2] }
+  sub DELETE   { delete $_[0]->{ $_[1] } }
+  sub CLEAR    { %{ $_[0] } = () }
+}
+
+########################################################################
+sub TIEHASH {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my %ordered;
+
+  tie %ordered, 'Tie::IxHash';  ## no critic (ProhibitTies)
+
+  my $self = bless \%ordered, $class;
+
+  %{$self} = @args;
+
+  return $self;
+}
+
+########################################################################
+sub _regular_dump {
+########################################################################
+  goto &Bedrock::Dump::regular;
+}
+
+########################################################################
+sub _compact_dump {
+########################################################################
+  goto &Bedrock::Dump::compact;
+}
+
+########################################################################
+sub exists {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return CORE::exists $self->{$key};
+}
+
+########################################################################
+sub map {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $fmt, @parms ) = @_;
+
+  if ( !@parms ) {
+    @parms = qw(key value);
+  }
+
+  my @out;
+
+  foreach ( keys %{$self} ) {
+    push @out, sprintf $fmt, @{ { key => $_, value => $self->{$_} } }{@parms};
+  }
+
+  return Bedrock::Array->new(@out);
+}
+
+########################################################################
+sub xml {
+########################################################################
+  my ( $self, %options ) = @_;
+
+  return XMLout( $self, %options );
+}
+
+########################################################################
+sub bedrock_xml {
+########################################################################
+  my ($self) = @_;
+
+  require Bedrock::XML;
+
+  return Bedrock::XML::writeXML($self);
+}
+
+########################################################################
+sub devolve {
+########################################################################
+  my $this = shift;
+
+  if ( ref $this =~ /^(HASH|ARRAY)$/xsm ) {
+    return $this;
+  }
+  elsif ( ref $this =~ /Bedrock::Hash/xsm ) {
+    my $that = {};
+
+    foreach ( keys %{$this} ) {
+      $that->{$_} = devolve( $this->{$_} );
+    }
+    return $that;
+  }
+  elsif ( ref $this =~ /Bedrock::Array/xsm ) {
+    my $that = [];
+
+    foreach ( @{$this} ) {
+      push @{$that}, devolve($_);
+    }
+    return $that;
+  }
+  else {
+    return $this;
+  }
+}
+
+########################################################################
+sub length {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ($self) = @_;
+
+  return scalar keys %{$self};
+}
+
+########################################################################
+sub matches {
+########################################################################
+  my ( $self, $str, $flags ) = @_;
+
+  die 'invalid flags: only i,m or s'
+    if $flags && $flags !~ /^[ims]+$/xsm;
+
+  my $re;
+
+  eval q{$re = qr/$str/} . $flags;  ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars)
+
+  die "invalid regexp: $str\n$EVAL_ERROR\n"
+    if !$re;
+
+  my @result = grep { $self->{$_} =~ /$re/xsm } keys %{$self};
+
+  return Bedrock::Array->new(@result);
+}
+
+########################################################################
+sub grep {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $pattern ) = @_;
+
+  my $re = $pattern =~ /^qr/xsm ? eval $pattern : eval q{qr/$pattern/};  ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars)
+
+  die "Invalid pattern - $EVAL_ERROR"
+    if $EVAL_ERROR;
+
+  my @found = grep { $self->{$_} =~ /$re/xsm } keys %{$self};
+
+  return Bedrock::Array->new(@found);
+}
+
+########################################################################
+sub find {
+########################################################################
+  my ( $self, $value ) = @_;
+
+  my %obj = reverse %{$self};
+
+  return $obj{$value};
+}
+
+########################################################################
+sub sort {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $sort_dir, $sort_type ) = @_;
+
+  return $self->names( $sort_dir || 'asc', $sort_type || 'alpha' );
+}
+
+########################################################################
+sub slice {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my @keys;
+
+  push @keys, map { ref $_ ? @{$_} : $_ } @args;
+
+  my $ref = Bedrock::Hash->new;
+
+  @{$ref}{@keys} = @{$self}{@keys};
+
+  return $ref;
+}
+
+########################################################################
+sub json {
+########################################################################
+  my ( $self, $pretty ) = @_;
+
+  $pretty //= 0;
+
+  return Bedrock::JSON::encode( $self->devolve, $pretty );
+}
+
+########################################################################
+sub flatten {
+########################################################################
+  my ( $self, $path, $href ) = @_;
+
+  # Starter condition
+  $href //= {};
+  $path //= $EMPTY;
+
+  for my $key ( keys %{$self} ) {
+    $href->{ $path . $SLASH . $key } = $self->{$key};
+
+    if ( ref( $self->{$key} ) ) {
+      $self->{$key}->flatten( $path . $SLASH . $key, $href );
+    }
+  }
+
+  return wantarray ? %{$href} : $href;
+}
+
+########################################################################
+sub new {
+########################################################################
+  my ( $proto, @args ) = @_;
+
+  my $class = ref $proto || $proto;
+
+  my $self = bless {}, $class;
+
+  tie %{$self}, $class, @args;  ## no critic (ProhibitTies)
+
+  return $self;
+}
+
+########################################################################
+sub set {  ## no critic (ProhibitAmbiguousNames)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $num_args = @args;
+
+  if ( $num_args == 1 ) {
+    if ( ref $args[0] ) {
+      my $arg = shift @args;
+
+      if ( ref $arg && reftype($arg) eq 'ARRAY' ) {
+        @args = @{$arg};
+      }
+      elsif ( ref $arg && reftype($arg) eq 'HASH' ) {
+        @args = %{$arg};
+      }
+    }
+    else {
+      die
+        "Invalid type of single argument for assignment: must be an object or an array to be merged.\n";
+    }
+  }
+  elsif ( $num_args % 2 ) {
+    die "Odd number of elements($num_args) in prop assignment list.\n";
+  }
+
+  foreach my $p ( pairs @args ) {
+
+    my ( $key, $value ) = @{$p};
+    $self->{$key} = $value;
+  }
+
+  return;
+}
+
+# Method to delete one or more keys from hash
+
+########################################################################
+sub delete {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args == 1 ) {
+    return delete $self->{ $args[0] };
+  }
+  else {
+    for (@args) {
+      delete $self->{$_};
+    }
+  }
+
+  return;
+}
+
+#
+# Method for extracting a value -- useful as the method of a subclass
+#
+
+########################################################################
+sub get {
+########################################################################
+  my ( $obj, @keys ) = @_;
+
+  if ( @keys > 1 ) {
+    return Bedrock::Array->new( @{$obj}{@keys} );
+  }
+  elsif ( @keys == 1 ) {
+    return $obj->{ $keys[0] };
+  }
+  else {
+    return $obj;  # doesn't really make sense...
+  }
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $file ) = @_;
+
+  my $str = _regular_dump($self);
+
+  return $str if !$file;
+
+  open my $fh, '>', $file
+    or die "Could not create $file: $OS_ERROR";
+
+  print {$fh} $str;
+
+  return close $fh;
+}
+
+########################################################################
+sub print_compact {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $str = _compact_dump($self);
+
+  return $str
+    if !@args > 0;
+
+  open my $fh, '>', $args[0]
+    or die "$self->print_compact: Could not create $args[0]: $OS_ERROR";
+
+  print {$fh} $str;
+
+  return close $fh;
+}
+
+#
+# Deprecated methods
+#
+
+########################################################################
+sub value {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my ( $pack, $file, $line ) = caller;
+  warn "$self->value: Usage of deprecated method at $file($line)\n";
+
+  if ( @args > 0 ) {
+    return wantarray ? @{$self}{@args} : $self->{ $args[0] };
+  }
+  else {
+    return CORE::keys %{$self};
+  }
+}
+
+########################################################################
+sub keys {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  goto &names;
+}
+
+########################################################################
+sub names {
+########################################################################
+  my ( $self, $sort_dir, $sort_type ) = @_;
+
+  my @names = CORE::keys %{$self};
+
+  my $keys = Bedrock::Array->new(@names);
+
+  return $sort_dir ? $keys->sort( $sort_dir, $sort_type ) : $keys;
+}
+
+########################################################################
+sub values {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ($self) = @_;
+
+  my @values = CORE::values %{$self};
+
+  return Bedrock::Array->new(@values);
+}
+
+########################################################################
+sub isEmpty {  ## no critic (Capitalization, RequireArgUnpacking)
+########################################################################
+  return CORE::keys %{ $_[0] } > 0 ? 0 : 1;
+}
+
+1;
+
+__END__
 
 =pod
 
@@ -50,635 +449,69 @@ C<Bedrock::Hash>
 
 =head1 SYNOPSIS
 
- my $bh = Bedrock::Hash->new( foo => bar );
- my $bh = Bedrock::Hash->new( %hash );
+ my $ref = Bedrock::Hash->new( foo => bar );
 
 =head1 DESCRIPTION
 
 Create a Bedrock hash object.  Implements a key/value storage object
 with various useful methods.
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
-=cut
-
-sub FIRSTKEY { my $a = scalar CORE::keys %{ $_[0] }; each %{ $_[0] } }
-sub NEXTKEY { each %{ $_[0] } }
-sub FETCH   { $_[0]->{ $_[1] } }
-sub EXISTS  { exists $_[0]->{ $_[1] } }
-sub STORE   { $_[0]->{ $_[1] } = $_[2] }
-sub DELETE  { delete $_[0]->{ $_[1] } }
-sub CLEAR   { %{ $_[0] } = () }
-
-sub TIEHASH {
-  my $class = shift;
-  my %ordered;
-  tie %ordered, 'Tie::IxHash';
-  my $self = bless \%ordered, $class;
-  %{$self} = @_;
-  $self;
-}
-
-
-sub _regular_dump {
-  goto &Bedrock::Dump::regular;
-}
-
-sub _compact_dump {
-  goto &Bedrock::Dump::compact;
-}
-
-=pod
-
-=head2 exists
-
- exists( key )
-
-Returns 1 if the key exists or 0 if the key does not exist in the
-hash.
-
-=cut
-
-sub exists {
-  my $self = shift;
-  my $key = shift;
-
-  return CORE::exists $self->{$key};
-}
-
-
-=pod
-
-=head2 map
-
-=cut
-
-sub map {
-  my $self = shift;
-  my $fmt  = shift;
-
-  my @parms = @_;
-  @parms = qw(key value) unless @parms;
-
-  my @out;
-  foreach ( keys %{$self} ) {
-    push @out, sprintf( $fmt, @{ { key => $_, value => $self->{$_} } }{@parms} );
-  }
-
-  return Bedrock::Array->new(@out);
-}
-
-=pod
-
-=head2 xml
-
-=cut
-
-sub xml {
-  my $self    = shift;
-  my %options = @_;
-
-  return XMLout( $self, %options );
-}
-
-
-=pod
+Listed here but documented in C<Bedrock::Text::Tagx::TAG::NoBody::Hash>
 
 =head2 bedrock_xml
 
-=cut
-
-sub bedrock_xml {
-  my $self = shift;
-
-  return Bedrock::XML::writeXML($self);
-}
-
-=pod
+=head2 delete
 
 =head2 devolve
 
-=cut
-
-sub devolve {
-  my $this = shift;
-
-  if ( ref($this) =~ /^(HASH|ARRAY)$/ ) {
-    return $this;
-  }
-  elsif ( ref($this) =~ /Bedrock::Hash/ ) {
-    my $that = {};
-    foreach ( keys %$this ) {
-      $that->{$_} = devolve( $this->{$_} );
-    }
-    return $that;
-  }
-  elsif ( ref($this) =~ /Bedrock::Array/ ) {
-    my $that = [];
-    foreach (@$this) {
-      push @$that, devolve($_);
-    }
-    return $that;
-  }
-  else {
-    return $this;
-  }
-}
-
-=pod
-
-=head2 length
-
-=cut
-
-sub length {
-  my $self = shift;
-
-  return scalar(keys %{$self});
-}
-
-=pod
-
-=head2 matches
-
-=cut
-
-sub matches {
-  my ($self, $str, $flags) = @_;
-
-  die "invalid flags: only i,m or s" 
-    if $flags && $flags !~/^[ims]+$/;
-
-  my $re;
-  eval "\$re = qr/\$str/" . $flags;
-  die "invalid regexp: $str\n$@\n"
-    unless $re;
-
-  my @result = grep { $self->{$_} =~ /$re/ } keys %{$self};
-
-  return Bedrock::Array->new( @result );
-}
-
-=pod
-
-=head2 grep
-
- grep( pattern )
-
-=cut
-
-sub grep {
-  my $self    = shift;
-  my $pattern = shift;
-  my $re      = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
-
-  die "Invalid pattern - $@ "
-    if $@;
-
-  my @found = grep { $self->{$_} =~ /$re/ } keys %{$self};
- 
-  return Bedrock::Array->new( @found );
-}
-
-=pod
+=head2 exists
 
 =head2 find
 
-=cut
-
-sub find {
-  my ($self, $key) = @_;
-
-  return { reverse (%$self) }->{$key};
-}
-
-=pod
-
-=head2 sort
-
-=cut
-
-sub sort {
-  my $self = shift;
-  my ( $sort_dir, $sort_type) = @_;
-
-  return  $self->names( $sort_dir || 'asc', $sort_type || 'alpha');
-}
-
-=pod
-
-=head2 slice
-
- slice( keys )
-
-=cut
-
-sub slice {
-  my $self = shift;
-
-  my @keys;
-
-  push @keys,  map { (ref $_ ) ? @{$_} : $_ } @_;
-
-  my $ref = new Bedrock::Hash;
-
-  @{$ref}{@keys} = @{$self}{@keys};
-
-  return $ref;
-}
-
-=pod
-
-=head2 json
-
-=cut
-
-sub json {
-  my $self = shift;
-  my $pretty = shift || 0;
-
-  Bedrock::JSON::encode( $self->devolve, $pretty );
-}
-
-=pod
-
 =head2 flatten
-
-=cut
-
-sub flatten {
-  my $self = shift;
-  my $path = shift;
-  my $href = shift;
-
-  # Starter condition
-  $href = {} unless defined($href);
-  $path = '' unless defined($path);
-
-  for my $key ( keys %{$self} ) {
-    $href->{ $path . '/' . $key } = $self->{$key};
-    if ( ref( $self->{$key} ) ) {
-      $self->{$key}->flatten( $path . '/' . $key, $href );
-    }
-  }
-
-  wantarray ? %{$href} : $href;
-}
-
-=pod
-
-=head2 new
-
-=cut
-
-sub new {
-  my $proto = shift;
-  my $class = ref($proto) || $proto;
-  my $self  = bless {}, $class;
-  tie %{$self}, $class, @_;
-  $self;
-}
-
-=pod
-
-=head2 set
-
- set( list-ref )
- set( list )
- set( hash-ref)
-
-Set hash element.
-
-Examples:
-
- <hash:h a 1 b 2 c 3>
-
- <array:a a 1 b 2 c 3>
- <hash:h $a>
- 
- <hash:b a 1 b 2 c 3>
- <hash:h $b>
-
-=cut
-
-sub set {
-  my $self  = shift;
-  my $num_args = @_;
-
-  my %args;
-  
-  if ( $num_args == 1 ) {
-    if ( ref($_[0] )) {
-      my $arg = shift;
-
-      if ( ref($arg) && reftype($arg) eq 'ARRAY' ) {
-	%args = @{$arg};
-      }
-      elsif ( ref($arg) && reftype($arg) eq 'HASH' ) {
-	%args = %{$arg};
-      }
-    }
-    else {
-      die "Invalid type of single argument for assignment: must be an object or an array to be merged.\n";
-    }
-  }
-  elsif ( $num_args % 2 ) {
-    die "Odd number of elements($num_args) in prop assignment list.\n"
-  }
-  else {
-    %args = @_;
-  }
-  
-  my ( $key, $value );
-
-  while ( ( $key, $value ) = each %args ) {
-    $self->{$key} = $value;
-  }
-}
-
-# Method to delete one or more keys from hash
-
-=pod
-
-=head2 delete
-
-=cut
-
-sub delete {
-  my $self = shift;
-  if ( @_ == 1 ) {
-    return delete $self->{ $_[0] };
-  }
-  else {
-    for (@_) {
-      delete $self->{$_};
-    }
-  }
-}
-
-#
-# Method for extracting a value -- useful as the method of a subclass
-#
-=pod
 
 =head2 get
 
-=cut
-
-sub get {
-  my $obj = shift;
-  return @_ == 1 ? $obj->{ $_[0] } : Bedrock::Array->new( @{$obj}{@_} );
-}
-
-=pod
-
-=head2 print
-
-=cut
-
-sub print {
-  my $self = shift;
-  my $str  = &_regular_dump($self);
-  return $str unless @_ > 0;
-  open( FILE, "> $_[0]" ) or die "$self->print: Could not create $_[0]: $!";
-  print FILE $str;
-  close FILE;
-}
-
-=pod
-
-=head2 print_compact
-
-=cut
-
-sub print_compact {
-  my $self = shift;
-  my $str  = &_compact_dump($self);
-  return $str unless @_ > 0;
-  open( FILE, "> $_[0]" )
-  or die "$self->print_compact: Could not create $_[0]: $!";
-  print FILE $str;
-  close FILE;
-}
-
-#
-# Deprecated methods
-#
-
-=pod
-
-=head2 value
-
-=cut
-
-sub value {
-  my $self = shift;
-  my ( $pack, $file, $line ) = caller;
-  warn "$self->value: Usage of deprecated method at $file($line)\n";
-  if ( @_ > 0 ) {
-    wantarray ? @{$self}{@_} : $self->{ $_[0] };
-  }
-  else {
-    CORE::keys %{$self};
-  }
-}
-
-=pod
-
-=head2 keys
-
-=cut
-
-sub keys {
-  goto &names;
-}
-
-=pod
-
-=head2 names
-
-=cut
-
-
-sub names {
-  my $self = shift;
-  my ($sort_dir, $sort_type) = @_;
-
-  my @names = CORE::keys %{ $self };
-
-  my $keys = new Bedrock::Array( @names );
-
-  return $sort_dir ? $keys->sort( $sort_dir, $sort_type ) : $keys ;
-}
-
-=pod
-
-=head2 values
-
-=cut
-
-sub values {
-  my @a = CORE::values %{ $_[0] };
-
-  Bedrock::Array->new(@a);
-}
-
-=pod
+=head2 grep
 
 =head2 isEmpty
 
-=cut
+=head2 json
 
-sub isEmpty {
-  return CORE::keys %{ $_[0] } > 0 ? 0 : 1;
-}
+=head2 keys
 
-=pod
+=head2 length
+
+=head2 map
+
+=head2 matches
+
+=head2 names
+
+=head2 new
+
+=head2 print
+
+=head2 print_compact
+
+=head2 set
+
+=head2 slice
+
+=head2 sort
+
+=head2 value
+
+=head2 values
+
+=head2 xml
 
 =head1 AUTHOR
 
 Jay Srhidhar
 
+Rob Lauer
+
 =cut
-
-1;
-
-#
-# Name of Release: $Name:  $
-# $Log: Hash.pm.in,v $
-# Revision 1.18  2012/12/27 20:21:09  rlauer
-# - updated the slice() method to take a list of keys
-#
-# Revision 1.17  2012/09/15 12:27:15  rlauer
-# - added new sort() method and beefed up names() method so that it takes sort-dir, sort-type.  names() is synomous with keys()
-#
-# Revision 1.16  2012/09/14 22:05:27  rlauer
-# - allow array or array ref for slice()
-#
-# Revision 1.15  2011/09/21 20:22:56  eutl420
-# - support 's' flag for matches
-# - slight optmization for slice(), create Bedrock hash object first
-# - use compiled regexp properly within //
-#
-# Revision 1.14  2011/09/16 12:53:01  eutl420
-# - added new methods:
-#   matches() - return array of keys where a pattern matches a value
-#   find() - return the key given a value
-#   grep() - return an array of keys where a pattern matches a value
-#   length() - return length of hash, should obviate need for isEmpty()
-#
-# Revision 1.13  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.12  2011/09/09 18:11:55  eutl420
-# - added a bedrock_xml() method that returns a bedrock xml representation of object
-#
-# Revision 1.11  2011/08/30 12:33:18  eutl420
-# - added the slice() method for returing a hash object given an array of keys
-#
-# Revision 1.10  2011/08/07 16:06:49  eutl420
-# use Bedrock::BedrockJSON instead of Bedrock::JSON to avoid namespace collisions with JSON when use Bedrock; is employed
-#
-# Revision 1.9  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.8  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.7  2010/11/29 15:57:52  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.6  2010/11/23 00:00:18  rlauer
-# - use Tie::IxHash since it is more standard and has a .deb
-#
-# Revision 1.5  2010/11/17 02:30:04  rlauer
-#  added values()
-#
-# Revision 1.4  2010/01/04 02:26:28  rlauer
-# add method xml()
-#
-# Revision 1.3  2009/12/30 12:43:08  rlauer
-# add map()
-#
-# Revision 1.2  2009/12/28 20:31:34  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.1  2009/12/28 19:30:15  rlauer
-# removing SIS:stuff, moving to Bedrock::stuff
-#
-# Revision 1.15  2009/12/26 15:38:37  rlauer
-# use CORE:keys
-#
-# Revision 1.14  2009/12/18 12:55:32  rlauer
-# - use Tie::Hash::Indexed to force every SIS::Hash to effectively be an ordered object
-# - change use of CORE:keys to support use of Tie::Hash:Indexed
-#
-# Revision 1.13  2009/12/06 23:56:13  rlauer
-# JSON support
-#
-# Revision 1.12  2008/12/03 14:01:19  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.11  2008/02/28 18:14:41  rlauer
-# Applying Rob's patches to make Bedrock work on Apache 2.x
-# (plus a few other obvious bug fixes).
-#
-# Revision 1.10  2001/02/14 15:35:48  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.9  2001/01/09 20:27:24  sridhar
-# Method `get()' can be invoked with multiple params -- caller gets an
-# array of corresponding values
-#
-# Revision 1.8  2000/12/08 20:04:57  sridhar
-# Method `delete()' returns the deleted value if a single item was
-# deleted.
-#
-# Revision 1.7  2000/11/29 20:52:56  sridhar
-# 1. Bug fix: Method `names()' creates and returns a SIS::Array
-# 2. Added method `isEmpty()'
-# 3. Can pass a single argument to method `set()' which means to take
-# the properties to set from the array or object arg.
-#
-# Revision 1.6  2000/11/22 15:57:02  sridhar
-# Method `keys()' superceded in favor of `names()'
-#
-# Revision 1.5  2000/11/13 14:50:42  sridhar
-# Added `delete()' to delete one or more properties from objects
-#
-# Revision 1.4  2000/11/07 13:55:16  sridhar
-# Fixed method `keys()' to return an array ref instead of an array.
-#
-# Revision 1.3  2000/10/12 14:15:27  sridhar
-# 1. Method `set()' simplified -- expects to get a list of name-value
-# pairs.
-# 2. Get simplified.
-# 3. Keys returns all the property names without carping.
-#
-# Revision 1.2  2000/10/06 15:40:05  sridhar
-# Foolish decision to initialize hash in new() after doing tie(). Should
-# be done in TIEHASH() instead.
-#
-# Revision 1.1  2000/09/18 14:20:26  sridhar
-# Moved some generally useful modules under Perl/SIS to Perl/Bedrock/SIS.
-#
-# Revision 1.3  2000/07/05 17:54:35  sridhar
-# Moved out regular_dump and compact_dump to a separate module.
-#
-# Revision 1.2  2000/06/21 15:58:16  sridhar
-# 1. Added method CLEAR() for emptying the hash
-# 2. Can initialize hash at construction
-# 3. Added method get() to get a value
-#
-# Revision 1.1  2000/06/06 19:49:18  sridhar
-# Tied module for managing hashes
-#
-#

@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -26,43 +25,46 @@ package Bedrock::JSON;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
-use Bedrock::Array;
-use Bedrock::Hash;
 use Bedrock::Dump;
 use Data::Dumper;
+use English qw{-no_match_vars};
 
 use JSON -support_by_pp;
-use Scalar::Util qw/reftype/;
 
+use Scalar::Util qw{reftype};
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+
+########################################################################
 sub new {
+########################################################################
   my ( $class, $thingy ) = @_;
-  bless \$thingy, ref($class) || $class;
+
+  return bless \$thingy, ref $class || $class;
 }
 
 # convert Bedrock objects -> regular perl objects
+########################################################################
 sub devolve {
-  my $this = shift;
+########################################################################
+  my ($this) = @_;
 
-  if ( ref($this) && reftype($this) eq 'HASH' ) {
+  if ( ref $this && reftype($this) eq 'HASH' ) {
     my $that = {};
-    
-    eval { keys %$this; };
 
-    die ref($this) . ' trapped.' if $@;
+    eval { keys %{$this}; };
+
+    die ref($this) . ' trapped.' if $EVAL_ERROR;
 
     foreach ( keys %{$this} ) {
-      $that->{$_} = &devolve( $this->{$_} );
+      $that->{$_} = devolve( $this->{$_} );
     }
 
     return $that;
   }
-  elsif ( UNIVERSAL::isa($this, 'ARRAY') ) { 
+  elsif ( UNIVERSAL::isa( $this, 'ARRAY' ) ) {
     my $that = [];
 
     foreach ( @{$this} ) {
@@ -71,7 +73,7 @@ sub devolve {
 
     return $that;
   }
-  elsif ( ref($this) ) {
+  elsif ( ref $this ) {
     die "invalid object\n";
   }
   else {
@@ -80,27 +82,34 @@ sub devolve {
 }
 
 # promote regular perl objects -> Bedrock objects
+########################################################################
 sub evolve {
-  my $this = shift;
+########################################################################
+  my ($this) = @_;
 
-  if ( ref($this) eq 'HASH' ) {
-    foreach ( keys %$this ) {
+  require Bedrock::Array;
+  require Bedrock::Hash;
+
+  if ( ref $this eq 'HASH' ) {
+    foreach ( keys %{$this} ) {
       $this->{$_} = evolve( $this->{$_} );
     }
 
-    return Bedrock::Hash->new(%$this);
+    return Bedrock::Hash->new( %{$this} );
   }
-  elsif ( ref($this) eq 'ARRAY' ) {
-    for ( my $idx = 0 ; $idx < @$this ; $idx++ ) {
+  elsif ( ref $this eq 'ARRAY' ) {
+    foreach my $idx ( 0 .. $#{$this} ) {
+
       $this->[$idx] = evolve( $this->[$idx] );
     }
-    return Bedrock::Array->new(@$this);
+
+    return Bedrock::Array->new( @{$this} );
   }
-  elsif ( ref($this) =~/boolean/i ) {
-    return ( $this ) ? 1 : 0; 
+  elsif ( ref $this =~ /boolean/xsmi ) {
+    return ($this) ? 1 : 0;
   }
-  elsif ( ref($this) ) {
-    die "Invalid object during promotion: " . ref($this);
+  elsif ( ref $this ) {
+    die 'Invalid object during promotion: ' . ref $this;
   }
   else {
     return $this;
@@ -108,8 +117,12 @@ sub evolve {
 }
 
 # convert a JSON string into a Bedrock object
+########################################################################
 sub decode {
-  my $this = ( ref( $_[0] ) =~ /Bedrock::JSON/ ) ? ${ $_[0] } : $_[0];
+########################################################################
+  my ($this) = @_;
+
+  $this = ref $this =~ /Bedrock::JSON/xsm ? ${$this} : $this;
 
   my $json = JSON->new;
 
@@ -117,51 +130,54 @@ sub decode {
   $json->loose(JSON::true);
   $json->allow_barekey(JSON::true);
   $json->allow_singlequote(JSON::true);
-  
-  my $obj = eval {
-    $json->decode($this);
-  };
 
-  die "There was a problem converting your JSON string ($this) to a Bedrock object - $@"
-    if $@;
+  my $obj = eval { $json->decode($this); };
 
-  if ( $obj && ref($obj) =~ /(array|hash)/i ) {
-    $obj = &evolve($obj);
+  die
+    "There was a problem converting your JSON string ($this) to a Bedrock object - $EVAL_ERROR"
+    if $EVAL_ERROR;
+
+  if ( $obj && ref $obj =~ /(array|hash)/xsmi ) {
+    $obj = evolve($obj);
   }
 
   return $obj;
 }
 
 # convert a Bedrock object to a JSON string
+########################################################################
 sub encode {
-  my ($this, $pretty_print) = @_;
+########################################################################
+  my ( $this, $pretty_print ) = @_;
 
-  $this = ( ref($this)  =~ /Bedrock::JSON/ ) ? ${ $this } : $this;
-  
+  $this = ref $this =~ /Bedrock::JSON/xsm ? ${$this} : $this;
+
   my $json = JSON->new;
 
   # help the Bedrock programmer out with a more appropriate error message
-  $this = &devolve( $this );
+  $this = devolve($this);
 
   my $json_string;
 
-  eval { 
-    $json_string = $json->pretty($pretty_print)->encode( $this );
-  };
+  eval { return $json_string = $json->pretty($pretty_print)->encode($this); };
 
-  die "There was a problem converting your Bedrock object ("
+  die 'There was a problem converting your Bedrock object ('
     . Bedrock::Dump::compact($this)
-      . ") to a JSON string - $@"
-	if $@;
-  
+    . ") to a JSON string - $EVAL_ERROR"
+    if $EVAL_ERROR;
+
   return $json_string;
 }
+
+1;
+
+__END__
 
 =pod
 
 =head1 NAME
 
-C<Bedrock::JSON> - encode/decode Bedrock/JSON objects.
+Bedrock::JSO> - encode/decode Bedrock/JSON objects.
 
 =head1 SYNOPSIS
 
@@ -186,7 +202,7 @@ the methods and features of the underlying JSON modules.  Enough has
 been implemented to allow the Bedrock developer to use most JSON
 representations within Bedrock to be fairly dangerous.
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
@@ -233,70 +249,7 @@ to construct more complex objects is consistent with that philosophy.
 
 =head1 AUTHOR
 
-Rob Lauer - rlauer@signatureinfo.com
+Rob Lauer - <rlauer6@comcast.net>
 
 =cut
 
-1;
-
-#
-# Revision 1.14  2012/09/23 12:43:28  rlauer
-# - pod and typos
-#
-# Revision 1.13  2012/09/15 12:21:23  rlauer
-# - devolve was not properly diving into regular ARRAYs and HASHEs
-#
-# Revision 1.12  2012/07/18 13:42:24  lauerrc
-# - devolve() method now handles objects other than Bedrock::Hash and Bedrock::Array
-#
-# Revision 1.11  2011/11/14 14:14:50  eutl420
-# - -support_by_pp was appended to previous string by tidy
-#
-# Revision 1.10  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.9  2011/08/07 16:28:54  eutl420
-# - renamed this file from JSON.pm.in to BedrockJSON.pm.in
-# - JSON::true not JSON::PP::true
-# - eval the decode to get a Bedrock error message along with JSON error message
-# - update pod to reflect the fact that JSON hash objects will no longer be ordered
-#
-# Revision 1.8  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.7  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.6  2010/12/12 17:13:31  eutl420
-# - remove use of Data::Dumper
-#
-# Revision 1.5  2010/11/29 15:57:52  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.4  2010/11/23 00:01:01  rlauer
-# - no dependency on Tie::Hash::Indexed here
-#
-# Revision 1.3  2009/12/28 23:30:45  rlauer
-# use constants from JSON::PP package
-#
-# Revision 1.2  2009/12/28 20:31:34  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.1  2009/12/28 19:30:16  rlauer
-# removing SIS:stuff, moving to Bedrock::stuff
-#
-# Revision 1.5  2009/12/26 15:38:36  rlauer
-# remove BLM::OrderedObject, all objects now ordered
-#
-# Revision 1.4  2009/12/18 13:01:36  rlauer
-# revert to SIS:Hash for promotiions in evolve, remove debugging stuff
-#
-# Revision 1.3  2009/12/17 23:22:49  rlauer
-# use singlequote, ordered objects?
-#
-# Revision 1.2  2009/12/16 23:26:05  rlauer
-# pod, use SIS::JSON_PP_Ix
-#
-# Revision 1.1  2009/12/15 23:05:54  rlauer
-# first check-in
-#

@@ -5,133 +5,211 @@ use Test::More tests => 12;
 
 use DBI;
 use Data::Dumper;
+use English qw{-no_match_vars};
+use List::Util qw{none};
+use Readonly;
+
+Readonly my $TRUE  => 1;
+Readonly my $FALSE => 0;
 
 BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
 my $dbi;
+my $user     = $ENV{DBI_USER} || 'root';
+my $password = $ENV{DBI_PASS} || undef;
+my $host     = $ENV{DBI_HOST} || 'localhost';
 
-eval{
-  $dbi = DBI->connect('dbi:mysql:', 'root', undef, { PrintError => 0, RaiseError => 1} );
+eval {
+  $dbi = DBI->connect(
+    sprintf('dbi:mysql:host=%s;'),
+    $user,
+    $password,
+    { PrintError => $FALSE,
+      RaiseError => $TRUE,
+      AutoCommit => $TRUE
+    }
+  );
+
   $dbi->do('create database foo');
-  
-  my $create_table =<<eot;
+
+  my $create_table = <<'SQL';
 create table foo (
  id int auto_increment primary key,
  name varchar(100) not null default '',
  foo  varchar(100) not null,
  bar_phone varchar(10) not null default ''
 )
-eot
+SQL
 
   $dbi->do('use foo');
   $dbi->do($create_table);
 };
 
-BAIL_OUT("could not create database and table for test: $@\n")
-  if $@;
-
-my $ith = eval {
-  new BLM::IndexedTableHandler($dbi, 0, undef, 'foo');
-};
-
-isa_ok($ith,'BLM::IndexedTableHandler') or BAIL_OUT($@);
-
-my @columns;
-
-subtest 'get_fields' => sub {
-  @columns = sort $ith->get_fields();
-  is_deeply(\@columns, [qw/bar_phone foo id name/], 'get_fields()');
-
-  is($ith->get_field_type('name'), 'varchar(100)', 'get_field_type') or diag($ith->get_field_type('name'));
-};
-
-subtest 'set/get' => sub {
-  $ith->set('name', 'Bill');
-  is($ith->{name}, 'Bill', 'set scalar');
-
-  $ith->set({ name => 'William', id => 0, foo => 'foo', bar_phone => 'bar'});
-  ok($ith->{name} eq 'William' &&
-     $ith->{id} == 0 &&
-     $ith->{foo} eq 'foo' &&
-     $ith->{bar_phone} eq 'bar', 'set hash ref');
-
-  my $row = $ith->get(qw/id name foo bar_phone/);
-  isa_ok($row, 'Bedrock::Array');
-  is(join('',@$row), '0Williamfoobar', 'get array');
-};
-
-$ith->set('id', 0);
-$ith->set('foo', undef); # cannot be null - should throw exception
-$ith->set('bar_phone', undef); # cannot be null - should throw exception
-
-# this should produce an error, foo cannot be null
-eval {
-  $ith->save();
-};
-
-like($@, qr/cannot be null/i, 'save() - not null field');
-
-my $id;
-
-subtest 'save' => sub {
-  $id = eval {
-    $ith->set({ id => 0, name => 'William', bar_phone => '8001234567', foo => 'bar'});
-    $ith->save();
-  };
-  
-  ok(! $@ && defined $id && $id > 0, 'save');
-  is($ith->get('id'), $id, 'returns, sets id');
-  
-  my $ith2 = BLM::IndexedTableHandler->new($dbi, $id, undef, $ith->get_table_name);
-  ok($ith2->{id} == $ith->{id} &&
-     $ith2->{name} eq $ith->{name} &&
-     $ith2->{foo} eq $ith->{foo} &&
-     $ith2->{bar_phone} eq $ith2->{bar_phone}, 'saved record');
-};
-
-subtest 'reset' => sub {
-  $ith->reset();
-  my $count = 0;
-  
-  foreach (@columns) {
-    $count++
-      if exists $ith->{$_} && ! $ith->{$_};
-  }
-  
-  cmp_ok($count, '==', 4, 'reset()');
-  
-  $ith->reset(1);
-  $count = 0;
-
-  foreach (@columns) {
-    $count++
-      if exists $ith->{$_};
-  }
-
-  cmp_ok($count, '==', 0, 'reset(1)');
-};
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
+}
 
 # sub-class BLM::IndexedTablehandler
 {
   no strict 'refs';
+
   push @{'ITH::Foo::ISA'}, 'BLM::IndexedTableHandler';
 }
 
-$ith = new ITH::Foo($dbi, $id);
-isa_ok($ith, 'ITH::Foo') or BAIL_OUT($@);
-ok(exists $ith->{name} && $ith->{name} eq 'William', 'new() - fetch inserted record');
+Readonly::Hash our %TEST_RECORD => (
+  id        => 0,
+  name      => 'test',
+  foo       => 'bar',
+  bar_phone => '8888888888',
+);
 
-my $ref = $ith->asref();
-isa_ok($ref, 'Bedrock::Hash');
+subtest 'new - 4 argument' => sub {
 
-@columns = sort keys %$ref;
-is_deeply(\@columns, [qw/bar_phone foo id name/], 'asref() - keys');
+  my $ith = eval { BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
-my $values = join('',@{$ref}{@columns});
-is($values, "8001234567bar$id" . 'William', 'asref() - values');
+  isa_ok( $ith, 'BLM::IndexedTableHandler' )
+    or BAIL_OUT($EVAL_ERROR);
+};
+
+subtest 'new - sub-classed' => sub {
+
+  my $ith = ITH::Foo->new($dbi);
+
+  isa_ok( $ith, 'ITH::Foo' )
+    or do {
+    diag($EVAL_ERROR);
+    bail_out('could not create BLM::IndexedTableHandler instance');
+    };
+};
+
+subtest 'get_fields' => sub {
+  my $ith = ITH::Foo->new($dbi);
+
+  my @columns = sort $ith->get_fields();
+  is_deeply( \@columns, [qw/bar_phone foo id name/], 'get_fields() - all ' );
+};
+
+subtest 'get_field_type' => sub {
+  my $ith = ITH::Foo->new($dbi);
+
+  is( $ith->get_field_type('name'), 'varchar(100)', 'get_field_type' )
+    or diag( $ith->get_field_type('name') );
+};
+
+subtest 'set/get' => sub {
+  my $ith = ITH::Foo->new($dbi);
+
+  $ith->set(%TEST_RECORD);
+
+  foreach my $field ( $ith->get_fields ) {
+    ok( $ith->get($field) eq $TEST_RECORD{$field}, 'get ' . $field );
+  }
+
+};
+
+subtest 'save' => sub {
+  my $ith = ITH::Foo->new($dbi);
+
+  $ith->set(%TEST_RECORD);
+
+  my $id = $ith->save();
+
+  like( $id, qr/\A\d+\z/xsm, 'save returned integer id' );
+};
+
+subtest 'new - id' => sub {
+  my $id = $dbi->last_insert_id();
+
+  my $ith = ITH::Foo->new( $dbi, $id );
+
+  foreach my $field ( $ith->get_fields ) {
+    next if $field eq 'id';
+
+    ok( $ith->get($field) eq $TEST_RECORD{$field}, 'get ' . $field );
+  }
+};
+
+subtest 'new - query' => sub {
+  my $id = $dbi->last_insert_id();
+
+  my $ith = ITH::Foo->new( $dbi, { id => $id, foo => 'bar' } );
+
+  foreach my $field ( $ith->get_fields ) {
+    next if $field eq 'id';
+
+    ok( $ith->get($field) eq $TEST_RECORD{$field}, 'get ' . $field );
+  }
+};
+
+subtest delete => sub {
+  my $id = $dbi->last_insert_id();
+
+  my $ith = ITH::Foo->new( $dbi, $id );
+
+  $ith->delete('foo');  # delete 1 column
+  my @columns = $ith->get_fields( { exists_only => $TRUE } );
+  ok( @columns == 3, 'delete column' );
+
+  ok( $ith->delete($id), 'delete record from table' );
+
+  ok( ( none { exists $ith->{$_} } $ith->get_fields ),
+    'delete fields from record' );
+
+  my ($deleted_record)
+    = $dbi->selectall_array( 'select * from foo where id = ?', undef, $id );
+
+  ok( !$deleted_record, 'verify record deleted' )
+    or diag( Dumper( [$deleted_record] ) );
+};
+
+subtest 'null exceptions' => sub {
+  my $ith = ITH::Foo->new($dbi);
+
+  $ith->set(
+    id        => 0,
+    foo       => undef,
+    bar_phone => undef,
+  );
+
+  # this should produce an error, foo cannot be null
+  my $id = eval { return $ith->save(); };
+
+  ok( !$id, 'no id returned from save' );
+  like( $EVAL_ERROR, qr/cannot be null/ism, 'save() - not null field' );
+};
+
+subtest 'reset' => sub {
+  my $count;
+
+  my $id = $dbi->last_insert_id();
+
+  my $ith = ITH::Foo->new( $dbi, $id );
+
+  $ith->reset();
+
+  $count = grep { exists $ith->{$_} && !defined $ith->{$_} } $ith->get_fields;
+
+  ok( $count == 4, 'reset() - undef' );
+########################################################################
+
+  $ith->reset( { delete => $TRUE } );
+
+  $count = grep { exists $ith->{$_} } $ith->get_fields;
+
+  ok( !$count, 'reset(1) - delete fields' );
+########################################################################
+
+  $ith->new( $dbi, $id );
+};
 
 END {
-  eval { $dbi->do('drop database foo'); };
+  eval {
+    if ( $dbi && $dbi->ping ) {
+      $dbi->do('drop database foo');
+    }
+  };
 }
+
+1;

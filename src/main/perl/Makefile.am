@@ -15,7 +15,9 @@ BEDROCK_TESTS = \
     t/open.yml \
     t/plugin.yml \
     t/reftype.yml \
+    t/multi-line.yml \
     t/sink.yml \
+    t/snippet.yml \
     t/sqlconnect.yml \
     t/sql.yml \
     t/try.yml \
@@ -58,5 +60,5 @@ test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
-	$(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
+	CONFIG_PATH=config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"

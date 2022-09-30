@@ -1,5 +1,3 @@
-#!@perlrun@
-
 package Bedrock::Model::Importer;
 
 use strict;
@@ -17,22 +15,31 @@ use Bedrock::Model::ReservedWords::MySQL;
 use Carp;
 use DBI;
 use Data::Dumper;
+use English qw{-no_match_vars};
+
 use JSON::PP;
 use IO::Handle;
-use Number::Format qw/format_number/;
-use Scalar::Util qw/looks_like_number/;
+use Number::Format qw{format_number};
+use Scalar::Util qw{looks_like_number reftype};
+
 use Term::ANSIColor;
 use Text::ASCIITable;
 use Text::CSV_XS;
 
-use constant PADDING_THRESHOLD => 6;         # power of 2 (64)
-use constant TEXT_THRESHOLD    => 64;
-use constant ENUM_THRESHOLD    => 50;
-use constant DECIMAL_THRESHOLD => 1000000;
+use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
+  PADDING_THRESHOLD => 6,         # power of 2 (64)
+  TEXT_THRESHOLD    => 64,
+  ENUM_THRESHOLD    => 50,
+  DECIMAL_THRESHOLD => 1_000_000,
+  TRUE              => 1,
+  FALSE             => 0,
+  EMPTY             => q{},
+  MAX_KEYS          => 5,
+  RIGHT_BRACKET     => q{]},
+  LEFT_BRACKET      => q{[},
+};
 
-use vars qw/$OS_ERROR/;
-
-use parent qw/Class::Accessor::Fast/;
+use parent qw{ Class::Accessor::Fast};
 
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(
@@ -42,21 +49,28 @@ __PACKAGE__->mk_accessors(
     infile csv stats model model_definition model-file
     reserved_words format statistics-file table allow-keywords headings
     type clear drop verbose rename length
-    }
+  }
 );
 
-__PACKAGE__->main(@ARGV) unless caller();
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
+caller or __PACKAGE__->main(@ARGV);
+
+########################################################################
 sub new {
-  my $class = shift;
-  my $self  = $class->SUPER::new(@_);
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $self = $class->SUPER::new(@args);
 
   $self->set_reserved_words( Bedrock::Model::ReservedWords::MySQL->new );
 
   return $self;
-} ## end sub new
+}
 
+########################################################################
 sub create_model {
+########################################################################
   my ($self) = @_;
 
   if ( $self->get_model_definition ) {
@@ -64,13 +78,15 @@ sub create_model {
       Bedrock::Model->new( { model => $self->get_model_definition } ) );
   }
   else {
-    croak "no model definition\n";
+    croak 'no model definition';
   }
 
   return $self;
-} ## end sub create_model
+}
 
+########################################################################
 sub dbconnect {
+########################################################################
   my ($self) = @_;
 
   my $dbi = _dbconnect(
@@ -84,17 +100,19 @@ sub dbconnect {
   $self->set_dbi($dbi);
 
   return $self;
-} ## end sub dbconnect
+}
 
+########################################################################
 sub create_table {
+########################################################################
   my ($self) = @_;
 
   my $dbi = $self->dbconnect->get_dbi;
-  
+
   if ( $self->get_drop ) {
-    $dbi->do('drop table if exists ' . $self->get_table );
+    $dbi->do( 'drop table if exists ' . $self->get_table );
   }
-  
+
   my $model = Bedrock::Model->new(
     { dbi   => $dbi,
       table => $self->get_table,
@@ -107,41 +125,49 @@ sub create_table {
   $model->create_table();
 
   return $self;
-} ## end sub create_table
+}
 
+########################################################################
 sub read_model_definition {
+########################################################################
   my ($self) = @_;
 
   my $model_file = $self->get('model-file');
-  
-  if ( $model_file ) {
+
+  if ($model_file) {
     open my $fh, '<', $model_file
-      or croak "could not open " . $model_file . "for reading.\n$OS_ERROR\n";
-    
-    local $/;
-    
+      or croak sprintf 'could not open % for reading: ', $model_file,
+      $OS_ERROR;
+
+    local $RS = undef;
+
     my $model_def = <$fh>;
-    
-    my $model = eval $model_def;
+
+    close $fh;
+
+    my $model = eval $model_def;  ## no critic (BuiltinFunctions::ProhibitStringyEval)
 
     $self->set_model_definition($model);
   }
   else {
-    croak "no model set. use --model to specify model file";
+    croak 'no model set. use --model to specify model file';
   }
-  
+
   return $self;
 }
 
+########################################################################
 sub create_model_definition {
+########################################################################
   my ($self) = @_;
 
   my $stats = $self->get_stats;
 
-  if ( !ref($stats) || ref($stats) ne 'HASH' ) {
-    croak "no stats for creating model\n";
+  if ( !ref $stats || reftype($stats) ne 'HASH' ) {
+    croak 'no stats for creating model';
   }
 
+  ## no critic (Variables::ProhibitPackageVars)
   my %model_def = %Bedrock::Model::Field::Id;
 
   my $default_types = {
@@ -150,98 +176,98 @@ sub create_model_definition {
     %Bedrock::Model::Field::Phone, %Bedrock::Model::Field::Address,
   };
 
-  foreach my $stat ( values %$stats ) {
+  foreach my $stat ( values %{$stats} ) {
     my $type = $stat->{mysql_type};
 
     my $column_name = $stat->{mysql_name};
-    $column_name =~s/`//g;
+    $column_name =~ s/`//xsmg;
 
     if ( $stat->{logical_type} ) {
-      $model_def{ $column_name }
+      $model_def{$column_name}
         = $default_types->{ $stat->{logical_type} };
     }
     else {
-      
+
       my %args = (
         field => $stat->{mysql_name},
         null  => 'yes',
-        type  => $stat->{mysql_type}
+        type  => $stat->{mysql_type},
       );
 
-      for ($type) {
-        /varchar/ && do {
-          $args{type} = sprintf( 'varchar(%s)', $stat->{mysql_length} );
-          last;
-        };
-
-        /int/ && do {
-          $args{type} = 'int';
-          last;
-        };
-
-        /boolean|tiny/ && do {
+      my %actions = (
+        varchar => sub {
+          $args{type} = sprintf 'varchar(%s)', $stat->{mysql_length};
+        },
+        enum => sub {
+          $args{type} = sprintf 'enum(%s)', join ', ',
+            map {qq{'$_'}} grep {/./xsm} sort keys %{ $stat->{values} };
+        },
+        tinyint => sub {
           $args{type} = 'boolean';
-          last;
-        };
+        },
+        boolean => sub {
+          $args{type} = 'boolean';
+        },
+      );
 
-        /enum/ && do {
-          $args{type} = sprintf(
-            "enum(%s)",
-            join( ', ',
-              map {qq{'$_'}} grep /./,
-              sort keys %{ $stat->{values} } )
-          );
-          last;
-        };
-      } ## end for ($type)
+      if ( defined $actions{type} ) {
+        $actions{type}->();
+      }
 
-      $model_def{ $column_name }
-        = Bedrock::Model::Field->new( \%args );
-    } ## end else [ if ( $stat->{logical_type...})]
+      $model_def{$column_name} = Bedrock::Model::Field->new( \%args );
+    }
 
-  } ## end foreach my $stat ( values %$stats)
+  }
 
   $self->set_model_definition( \%model_def );
 
   return $self;
-} ## end sub create_model_definition
+}
 
+########################################################################
 sub read_stats {
+########################################################################
   my ($self) = @_;
 
   my $statfile = $self->get('statistics-file');
-  
-  if ( $statfile ) {
-    open my $fh, '<', $statfile 
-      or croak "could not open stat file " . $statfile . "for reading.\n$OS_ERROR\n";
 
-    local $/;
+  if ($statfile) {
+    open my $fh, '<', $statfile
+      or croak sprintf 'could not open stat file % for reading: %s',
+      $statfile, $OS_ERROR;
+
+    local $RS = undef;
+
     my $stats = <$fh>;
+
+    close $fh;
 
     $self->set_stats( decode_json $stats);
   }
-  
-  return $self;
-} ## end sub read_stats
 
+  return $self;
+}
+
+########################################################################
 sub print_stats {
+########################################################################
   my ($self) = @_;
 
   my $stats = $self->get_stats;
 
   if ( !$stats ) {
-    croak "no stats available\n";
+    croak 'no stats available';
   }
 
-  if ( $self->get_format =~ /json/i ) {
+  if ( $self->get_format =~ /json/ixsm ) {
     print JSON::PP->new->utf8->pretty->encode($stats);
   }
-  elsif ( $self->get_format =~ /text/i ) {
-    my @columns = sort keys %$stats;
+  elsif ( $self->get_format =~ /text/ixsm ) {
+    my @columns = sort keys %{$stats};
 
     my $t = Text::ASCIITable->new(
       { headingText => colored( 'Statistics', 'bold white' ),
-        allowANSI   => 1
+        allowANSI   => TRUE
       }
     );
 
@@ -253,132 +279,150 @@ sub print_stats {
       # range
       my $range;
 
-      if ( $r->{mysql_type} =~ /^(int|dec)/ ) {
-        $range = sprintf( "%s - %s",
+      if ( $r->{mysql_type} =~ /^int|dec/xsm ) {
+        $range = sprintf '%s - %s',
           format_number( $r->{min} + 0 ),
-          format_number( $r->{max} + 0 ) );
+          format_number( $r->{max} + 0 );
       }
       else {
-        $range = '';
+        $range = EMPTY;
       }
 
       # values
-      my $values = $r->{mysql_type} eq 'enum' ? $r->{values} : '';
+      my $values = $r->{mysql_type} eq 'enum' ? $r->{values} : EMPTY;
 
-      if ( $values && keys %$values > 5 ) {
-        $values = [ sort keys %$values ];
-        $values = [ @{$values}[ 0 .. 4 ], '...[' . scalar(@$values) . ']' ];
+      if ( $values && keys %{$values} > MAX_KEYS ) {
+        $values = [ sort keys %{$values} ];
+        $values = [ @{$values}[ 0 .. 4 ],
+          '...[' . scalar @{$values} . RIGHT_BRACKET ];
       }
       elsif ($values) {
-        $values = [ sort keys %$values ];
+        $values = [ sort keys %{$values} ];
       }
 
       if ($values) {
-        $values = join( ', ', grep /./, @$values );
+        $values = join ', ', grep {/./xsm} @{$values};
       }
 
       # type (w/colors!)
-      my $type  = $r->{mysql_type};
-      my $color = "white";
+      my $type = $r->{mysql_type};
 
-      $color = 'bold green'   if $type =~ /int/;
-      $color = 'bold yellow'  if $type =~ /varchar/;
-      $color = 'bold green'   if $type =~ /dec/;
-      $color = 'bold red'     if $type =~ /date/;
-      $color = 'bold cyan'    if $type =~ /enum/;
-      $color = 'bold magenta' if $type =~ /(bool|tiny)/;
+      my %color_wheel = (
+        int        => 'bold green',
+        varchar    => 'bold yellow',
+        dec        => 'bold green',
+        date       => 'bold red',
+        enum       => 'bold cyan',
+        boolean    => 'bold magenta',
+        'tiny int' => 'bold magenta',
+      );
 
-      $type = colored( $type, $color );
+      $type = colored( $type, $color_wheel{$type} // 'white' );
 
       my @row
         = ( $r->{mysql_name}, $type, $range, $values, $r->{mysql_length} );
 
       $t->addRow(@row);
-    } ## end foreach my $r ( @{$stats}{@columns...})
+    }
 
     print $t;
-  } ## end elsif ( $self->get_format...)
+  }
 
   return $self;
-} ## end sub print_stats
+}
 
+########################################################################
 sub _init_csv_reader {
-  my ($fh, $headings) = @_;
+########################################################################
+  my ( $fh, $headings ) = @_;
 
   my $csv = Text::CSV_XS->new();
-  
+
   my $header;
-  
-  if ( $headings ) {
-    $header = [ split /,\s*/, $headings ];
+
+  if ($headings) {
+    $header = [ split /,\s*/xsm, $headings ];
   }
   else {
     $header = $csv->getline($fh);
   }
-  
-  my @columns = map {
-    my $s = $_;
-    $s =~ s/^\s*(.*?)$/$1/;
-    $s =~ s/[^0-9a-z_]/_/ig;
-    uc $s;
-  } @{$header};
+
+  my @columns;
+
+  foreach my $s ( @{$header} ) {
+
+    $s =~ s/^\s*(.*?)$/$1/xsm;
+    $s =~ s/[^\d[:lower:]]/_/ixsmg;
+
+    push @columns, uc $s;
+  }
 
   my $row = {};
-  $csv->bind_columns(\@{$row}{@columns});
+  $csv->bind_columns( \@{$row}{@columns} );
 
-  return ($csv, $row, @columns);
-} ## end sub _init_csv_reader
+  return ( $csv, $row, @columns );
+}
 
+########################################################################
 sub load_table {
+########################################################################
   my ($self) = @_;
 
   croak "set table first!\n"
-      unless $self->get('table');
+    if !$self->get('table');
 
   $self->dbconnect;
 
   if (
-    !_table_exists( { table => $self->get_table, dbi => $self->get_dbi } ) ) {
-    croak "table " . $self->get_table . " does not exist!\n";
+    !_table_exists(
+      { table => $self->get_table,
+        dbi   => $self->get_dbi
+      }
+    )
+  ) {
+    croak sprintf '%s does not exist.', $self->get_table;
   }
 
   my $fh = $self->_get_input_fh;
 
-  my ($csv, $line, @columns) = _init_csv_reader($fh, $self->get_headings);
+  my ( $csv, $line, @columns ) = _init_csv_reader( $fh, $self->get_headings );
 
   my $model = Bedrock::Model->new(
     { dbi   => $self->get_dbi,
       table => $self->get_table,
-    })->fetch_model;
-  
+    }
+  )->fetch_model;
+
   {
-    no warnings 'once';
+    no warnings 'once';  ## no critic (TestingAndDebugging::ProhibitNoWarnings)
     $Bedrock::Model::Handler::MODEL = $model;
   }
-      
+
   my $handler = Bedrock::Model::Handler->new( $self->get_dbi,
     { table_name => $self->get_table } );
-  
+
   if ( $self->get_clear ) {
-    $handler->do("delete from " . $self->get_table);
+    $handler->do( 'delete from ' . $self->get_table );
   }
-  
+
   my $count = 0;
-  
+
   while ( $csv->getline($fh) ) {
     ++$count;
-    
-    if ( @columns != grep { defined } values %$line ) {
+
+    if ( @columns != grep {defined} values %{$line} ) {
       croak "not enough values at line $count";
     }
 
     last if $self->get_limit && $self->get_limit <= $count;
-    
-    foreach my $column (keys %$line) {
-      if ( $self->get_reserved_words->is_reserved($column) && ! $self->get('allow-keywords') ) {
-        croak "column $_ is a keyword...rename column or set --allow-keywords\n";
+
+    foreach my $column ( keys %{$line} ) {
+      if ( $self->get_reserved_words->is_reserved($column)
+        && !$self->get('allow-keywords') ) {
+        croak
+          "column $_ is a keyword...rename column or set --allow-keywords\n";
       }
-      
+
       $handler->set( 'id',        0 );
       $handler->set( lc($column), $line->{$column} );
     }
@@ -387,389 +431,433 @@ sub load_table {
   }
 
   $fh->close;
+
+  return;
 }
 
+########################################################################
 sub analyze {
-    my ($self) = @_;
+########################################################################
+  my ($self) = @_;
 
-    my $fh = $self->_get_input_fh;
+  my $fh = $self->_get_input_fh;
 
-    my ($csv, $line, @columns) = _init_csv_reader($fh);
+  my ( $csv, $line, @columns ) = _init_csv_reader($fh);
 
-    my %stats;
-    $self->set_stats( \%stats );
+  my %stats;
+  $self->set_stats( \%stats );
 
-    foreach my $column (@columns) {
-      $stats{$column} = {
-        'count'      => 0,
-        'type',      => '',
-        'max'        => 0,
-        'min'        => 0,
-        'values'     => {},
-        'max_length' => 0,
-        'column'     => $column,
-      };
-    } ## end foreach my $column (@columns)
+  foreach my $column (@columns) {
+    $stats{$column} = {
+      'count'      => 0,
+      'type',      => EMPTY,
+      'max'        => 0,
+      'min'        => 0,
+      'values'     => {},
+      'max_length' => 0,
+      'column'     => $column,
+    };
+  }
 
-    my $count = 0;
+  my $count = 0;
 
-    while ( my $row = $csv->getline($fh) ) {
-      $count++;
+  while ( my $row = $csv->getline($fh) ) {
+    $count++;
 
-      if ( @columns != grep { defined } values %$line ) {
-        croak "not enough values at line $count";
-      }
-      
-      last if $self->get_limit && $self->get_limit <= $count;
+    if ( @columns != grep {defined} values %{$line} ) {
+      croak "not enough values at line $count";
+    }
 
-      foreach my $column ( keys %$line ) {
-        my $stat  = $stats{$column};
-        my $value = $line->{$column};
+    last if $self->get_limit && $self->get_limit <= $count;
 
-        _length( $stat, $value );
-        _type( $stat, $value );
-        _range( $stat, $value );
-        _count_uniq( $stat, $value );
-        _count( $stat, $value );
+    foreach my $column ( keys %{$line} ) {
+      my $stat  = $stats{$column};
+      my $value = $line->{$column};
 
-      } ## end foreach my $column ( keys %$line)
-    } ## end while ( my $line = $csv->...)
-    
-    $fh->close;
+      _length( $stat, $value );
+      _type( $stat, $value );
+      _range( $stat, $value );
+      _count_uniq( $stat, $value );
+      _count( $stat, $value );
 
-    $self->finalize_stats;
+    }
+  }
 
-    return $self;
+  $fh->close;
 
-} ## end sub analyze
+  $self->finalize_stats;
+
+  return $self;
+}
 
 # +-----------------+
 # | PRIVATE METHODS |
 # +-----------------+
 
+########################################################################
 sub _table_exists {
-    my ($args) = @_;
+########################################################################
+  my ($args) = @_;
 
-    my ( $dbi, $table ) = @{$args}{qw/dbi table/};
+  my ( $dbi, $table ) = @{$args}{qw/dbi table/};
 
-    my $sth = $dbi->prepare("show tables like ?");
-    $sth->execute($table);
+  my $sth = $dbi->prepare('show tables like ?');
+  $sth->execute($table);
 
-    my ($result) = $sth->fetchrow_array;
+  my ($result) = $sth->fetchrow_array;
 
-    return $result && lc($result) eq lc($table);
-} ## end sub _table_exists
+  return $result && lc($result) eq lc $table;
+}
 
+########################################################################
 sub _dbconnect {
-    my ($args) = @_;
+########################################################################
+  my ($args) = @_;
 
-    foreach (qw/database user/) {
-      croak "set $_ first!\n"
-        unless $args->{$_};
-    }
+  foreach (qw/database user/) {
+    croak "set $_ first!\n"
+      if !$args->{$_};
+  }
 
-    $args->{host} = $args->{host} || '127.0.0.1';
-    
-    my @db = grep {$_} @{$args}{qw/database host user password/};
+  $args->{host} = $args->{host} || '127.0.0.1';
 
-    my $dsn = sprintf( "dbi:mysql:%s:%s", @{$args}{qw/database host/} );
+  my @db = grep {$_} @{$args}{qw/database host user password/};
 
-    return DBI->connect( $dsn, @{$args}{qw/user password/},
-      { RaiseError => 1 } );
-} ## end sub _dbconnect
+  my $dsn = sprintf 'dbi:mysql:%s:%s', @{$args}{qw/database host/};
 
+  return DBI->connect( $dsn, @{$args}{qw/user password/},
+    { RaiseError => TRUE } );
+}
+
+########################################################################
 sub _max {
-    return ( defined $_[0] && $_[0] > $_[1] ) ? $_[0] : $_[1];
+########################################################################
+  my ( $a, $b ) = @_;
+
+  return ( defined $a && $a > $b ) ? $a : $b;
 }
 
+########################################################################
 sub _min {
-    return ( defined $_[0] && $_[0] < $_[1] ) ? $_[0] : $_[1];
+########################################################################
+  my ( $a, $b ) = @_;
+
+  return ( defined $a && $a < $b ) ? $a : $b;
 }
 
+########################################################################
 sub _length {
-    my ( $s, $v ) = @_;
+########################################################################
+  my ( $s, $v ) = @_;
 
-    # length
-    $s->{max_length} = _max( $s->{max_length}, length($v) );
-} ## end sub _length
+  return $s->{max_length} = _max( $s->{max_length}, length $v );
+}
 
+########################################################################
 sub _type {
-    my ( $s, $v ) = @_;
+########################################################################
+  my ( $s, $v ) = @_;
 
-    if ( $v =~ /^\d{5}\-\d{4}$/ ) {
-      $s->{type} = 'varchar';    # zip code?
-    }
-    elsif ( length( $v // '' ) && looks_like_number($v) ) {
+  if ( $v =~ /^\d{5}\-\d{4}$/xsm ) {  ## no critic (ControlStructures::ProhibitCascadingIfElse)
+    $s->{type} = 'varchar';           # zip code?
+  }
+  elsif ( length( $v // EMPTY ) && looks_like_number($v) ) {
 
-      if ( $v =~ /^[0-9]+$/ ) {
-        $s->{type} = 'int';
-      }
-      elsif ( $v =~ /^[0-9\.]+$/ ) {
-        $v = 'decimal';
-      }
-    } ## end elsif ( length( $v // '' ...))
-    elsif ( $v =~ /^[0-9\-]+$/ && $v =~ /^\d{4}\-\d{2}\-\d{2}$/ ) {
-      $s->{type} = 'date';
+    if ( $v =~ /^\d+$/xsm ) {
+      $s->{type} = 'int';
     }
-    elsif ( $v =~ /^[0-9\/]+$/ && $v =~ /^\d{2}\/\d{2}\/\d{2,4}$/ ) {
-      $s->{type} = 'date';
+    elsif ( $v =~ /^[\d.]+$/xsm ) {
+      $v = 'decimal';
     }
-    elsif ( $v =~ /^[0-9\-]+$/
-      && $v =~ /^\d{4}\-\d{2}\-\d{2}\s+[0-9:]{2}[0-9:]{2}[0-9:]{2}$/ ) {
-      $s->{type} = 'datetime';
-    }
-    elsif ( $v =~ /^[0-9\-]+$/
-      && $v =~ /^\d{4}\/\d{2}\/\d{2}\s+[0-9:]{2}[0-9:]{2}[0-9:]{2}$/ ) {
-      $s->{type} = 'datetime';
-    }
-    elsif ( length($v) && length($v) <= TEXT_THRESHOLD ) {
-      $s->{type} = 'varchar';
-    }
-    elsif ( length($v) && length($v) > TEXT_THRESHOLD ) {
-      $s->{type} = 'text';
-    }
-    else {
-      # we don't know yet
-    }
-} ## end sub _type
+  }
+  elsif ( $v =~ /^[\d-]+$/xsm && $v =~ /^\d{4}\-\d{2}\-\d{2}$/xsm ) {
+    $s->{type} = 'date';
+  }
+  elsif ( $v =~ /^[\d\/]+$/xsm && $v =~ /^\d{2}\/\d{2}\/\d{2,4}$/xsm ) {
+    $s->{type} = 'date';
+  }
+  elsif ( $v =~ /^[\d\-]+$/xsm
+    && $v =~ /^\d{4}\-\d{2}\-\d{2}\s+[\d:]{2}[\d:]{2}[\d:]{2}$/xsm ) {
+    $s->{type} = 'datetime';
+  }
+  elsif ( $v =~ /^[\d\-]+$/xsm
+    && $v =~ /^\d{4}\/\d{2}\/\d{2}\s+[\d:]{2}[\d:]{2}[\d:]{2}$/xsm ) {
+    $s->{type} = 'datetime';
+  }
+  elsif ( length($v) && length($v) <= TEXT_THRESHOLD ) {
+    $s->{type} = 'varchar';
+  }
+  elsif ( length($v) && length($v) > TEXT_THRESHOLD ) {
+    $s->{type} = 'text';
+  }
+  else {
+    # we don't know yet
+  }
 
+  return;
+}
+
+########################################################################
 sub _count {
-    my ( $s, $v ) = @_;
+########################################################################
+  my ( $s, $v ) = @_;
 
-    $s->{count}++;
+  return $s->{count}++;
 }
 
+########################################################################
 sub _count_uniq {
-    my ( $s, $v ) = @_;
+########################################################################
+  my ( $s, $v ) = @_;
 
-    if ( $s->{values} ) {
-      my $count = scalar( keys %{ $s->{values} } );
+  if ( $s->{values} ) {
+    my $count = scalar keys %{ $s->{values} };
 
-      if ( $count > ENUM_THRESHOLD ) {
-        $s->{values} = undef;
-      }
-      else {
-        $s->{values}->{$v}++;
-      }
-    } ## end if ( $s->{values} )
-} ## end sub _count_uniq
-
-sub _range {
-    my ( $s, $v ) = @_;
-
-    if ( $s->{type} =~ /(int|dec)/ && looks_like_number($v) ) {
-      _range_max( $s, $v );
-      _range_min( $s, $v );
-
+    if ( $count > ENUM_THRESHOLD ) {
+      $s->{values} = undef;
     }
-} ## end sub _range
-
-sub _range_max {
-    my ( $s, $v ) = @_;
-
-    $s->{max} = _max( $s->{max} || 0, $v );
-}
-
-sub _range_min {
-    my ( $s, $v ) = @_;
-
-    $s->{min} = _min( $s->{min} || 0, $v );
-}
-
-sub _set_type {
-    my ($stat) = @_;
-
-    my $type   = $stat->{type};
-    my $max    = $stat->{max};
-    my $min    = $stat->{min};
-    my $length = $stat->{max_length};
-
-    my @values = $stat->{values} ? keys %{ $stat->{values} } : ();
-
-    for ($type) {
-      /varchar/ && @values && do {
-        $type = 'enum';
-        last;
-      };
-
-      /varchar/ && do {
-        # pad to next power of 2...why?...just seems right  ¯\_(ツ)_/¯
-        $length = _pad( $length, PADDING_THRESHOLD );
-        last;
-      };
-
-      /int/ && @values == 2 && do {
-        if ( $min == 0 && $max == 1 ) {
-          $type = 'tinyint';
-        }
-        else {
-          $type = 'enum';
-        }
-        last;
-      };
-
-      /int/ && @values && do {
-        $type = 'enum';
-        last;
-      };
-
-      /int/ && $max > DECIMAL_THRESHOLD && do {
-        $type = 'decimal';
-        last;
-      };
-    } ## end for ($type)
-
-    $stat->{mysql_type}   = $type;
-    $stat->{mysql_length} = $length;
-
-    return $stat;
-} ## end sub _set_type
-
-sub _set_logical_type {
-    my ($stat) = @_;
-
-    $stat->{logical_type} = '';
-
-    for ( $stat->{column} ) {
-      /^email/i && do {
-        $stat->{logical_type} = 'email';
-        last;
-      };
-
-      /^state$/i && do {
-        $stat->{logical_type} = 'state';
-        $stat->{type}         = 'varchar';
-        last;
-      };
-
-      /^zip/i && do {
-        $stat->{logical_type} = 'zip';
-        last;
-      };
-
-      /^city/i && do {
-        $stat->{logical_type} = 'city';
-        last;
-      };
-      /^town/i && do {
-        $stat->{logical_type} = 'city';
-        last;
-      };
-
-      /^phone/i && do {
-        $stat->{logical_type} = 'phone';
-        last;
-      };
-
-      /^cell/i && do {
-        $stat->{logical_type} = 'phone';
-        last;
-      };
-    } ## end for ( $stat->{column} )
-
-} ## end sub _set_logical_type
-
-sub _pad {
-    my ( $length, $limit ) = @_;
-
-    my $pad;
-
-    for ( map { 2**$_ } ( 0 .. $limit ) ) {
-      if ( $_ > $length ) {
-        $pad = $_;
-        last;
-      }
-    } ## end for ( map { 2**$_ } ( 0...))
-
-    if ( !$pad ) {
-      $pad = ( $length / 2 + 1 ) * 2;
-    }
-
-    return $pad;
-} ## end sub _pad
-
-sub _get_input_fh {
-    my ($self) = @_;
-
-    my $fh;
-
-    if ( !$self->get_infile ) {
-      $fh = IO::Handle->new();
-
-      if ( !$fh->fdopen( fileno(STDIN), "r" ) ) {
-        croak "could not open STDIN for reading.\n\n";
-      }
-    } ## end if ( !$self->get_infile)
     else {
+      $s->{values}->{$v}++;
+    }
+  }
 
-      if ( !-e $self->get_infile ) {
-        croak "no such file " . $self->get_infile . "\n";
-      }
+  return;
+}
 
-      open( $fh, '<', $self->get_infile )
-        or croak "could not open " . $self->get_infile . " for reading.\n";
-    } ## end else [ if ( !$self->get_infile)]
+########################################################################
+sub _range {
+########################################################################
+  my ( $s, $v ) = @_;
 
-    return $fh;
-} ## end sub _get_input_fh
+  if ( $s->{type} =~ /int|dec/xsm && looks_like_number($v) ) {
+    _range_max( $s, $v );
+    _range_min( $s, $v );
+  }
 
+  return;
+}
+
+########################################################################
+sub _range_max {
+########################################################################
+  my ( $s, $v ) = @_;
+
+  $s->{max} = _max( $s->{max} || 0, $v );
+
+  return;
+}
+
+########################################################################
+sub _range_min {
+########################################################################
+  my ( $s, $v ) = @_;
+
+  $s->{min} = _min( $s->{min} || 0, $v );
+
+  return;
+}
+
+########################################################################
+sub _set_type {
+########################################################################
+  my ($stat) = @_;
+
+  my $type   = $stat->{type};
+  my $max    = $stat->{max};
+  my $min    = $stat->{min};
+  my $length = $stat->{max_length};
+
+  my @values = $stat->{values} ? keys %{ $stat->{values} } : ();
+
+  if ( $type eq 'varchar' && @values ) {
+    $type = 'enum';
+  }
+  elsif ( $type eq 'varchar' ) {
+    # pad to next power of 2...why?...just seems right  ¯\_(ツ)_/¯
+    $length = _pad( $length, PADDING_THRESHOLD );
+  }
+
+  if ( $type eq 'int' && @values == 2 ) {
+    if ( $min == 0 && $max == 1 ) {
+      $type = 'tinyint';
+    }
+    else {
+      $type = 'enum';
+    }
+  }
+  elsif ( $type eq 'int' && @values ) {
+    $type = 'enum';
+  }
+  elsif ( $type eq 'int' && $max > DECIMAL_THRESHOLD ) {
+    $type = 'decimal';
+  }
+
+  $stat->{mysql_type}   = $type;
+  $stat->{mysql_length} = $length;
+
+  return $stat;
+}
+
+########################################################################
+sub _set_logical_type {
+########################################################################
+  my ($stat) = @_;
+
+  $stat->{logical_type} = EMPTY;
+
+  for ( $stat->{column} ) {
+    /^email/ixsm && do {
+      $stat->{logical_type} = 'email';
+      last;
+    };
+
+    /^state$/ixsm && do {
+      $stat->{logical_type} = 'state';
+      $stat->{type}         = 'varchar';
+      last;
+    };
+
+    /^zip/ixsm && do {
+      $stat->{logical_type} = 'zip';
+      last;
+    };
+
+    /^city/ixsm && do {
+      $stat->{logical_type} = 'city';
+      last;
+    };
+    /^town/ixsm && do {
+      $stat->{logical_type} = 'city';
+      last;
+    };
+
+    /^phone/ixsm && do {
+      $stat->{logical_type} = 'phone';
+      last;
+    };
+
+    /^cell/ixsm && do {
+      $stat->{logical_type} = 'phone';
+      last;
+    };
+  }
+
+  return;
+}
+
+########################################################################
+sub _pad {
+########################################################################
+  my ( $length, $limit ) = @_;
+
+  my $pad;
+
+  for ( map { 2**$_ } ( 0 .. $limit ) ) {
+    if ( $_ > $length ) {
+      $pad = $_;
+      last;
+    }
+  }
+
+  if ( !$pad ) {
+    $pad = ( $length / 2 + 1 ) * 2;
+  }
+
+  return $pad;
+}
+
+########################################################################
+sub _get_input_fh {
+########################################################################
+  my ($self) = @_;
+
+  my $fh;
+
+  if ( !$self->get_infile ) {
+    $fh = IO::Handle->new();
+
+    if ( !$fh->fdopen( fileno(STDIN), 'r' ) ) {
+      croak "could not open STDIN for reading.\n\n";
+    }
+  }
+  else {
+
+    if ( !-e $self->get_infile ) {
+      croak sprintf 'no such file %s', $self->get_infile;
+    }
+
+    open $fh, '<', $self->get_infile  ## no critic (InputOutput::RequireBriefOpen)
+      or croak sprintf 'could not open %s for reading: ', $self->get_infile,
+      $OS_ERROR;
+  }
+
+  return $fh;
+}
+
+########################################################################
 sub _set_column_name {
-    my ( $stat, $column, $is_reserved ) = @_;
+########################################################################
+  my ( $stat, $column, $is_reserved ) = @_;
 
-    $stat->{mysql_name} = $is_reserved ? "`$column`" : $column;
+  $stat->{mysql_name} = $is_reserved ? "`$column`" : $column;
 
-    return $stat->{mysql_name};
-} ## end sub _set_column_name
+  return $stat->{mysql_name};
+}
 
+########################################################################
 sub finalize_stats {
-    my ($self) = @_;
+########################################################################
+  my ($self) = @_;
 
-    my $stats = $self->get_stats;
+  my $stats = $self->get_stats;
 
-    foreach my $column ( keys %$stats ) {
-      my $stat = $stats->{$column};
+  foreach my $column ( keys %{$stats} ) {
+    my $stat = $stats->{$column};
 
-      $column = lc $column;
+    $column = lc $column;
 
-      if ( $self->get_rename && $self->get_rename->{$column} ) {
-        $column = $self->get_rename->{$column};
+    if ( $self->get_rename && $self->get_rename->{$column} ) {
+      $column = $self->get_rename->{$column};
+    }
+
+    if ( $self->get_reserved_words->is_reserved($column)
+      && !$self->get('allow-keywords') ) {
+      croak
+        "set --allow-keywords if you want to allow $column as a column name\n";
+    }
+
+    _set_column_name( $stat, $column,
+      $self->get_reserved_words->is_reserved($column) );
+
+    _set_logical_type($stat);
+
+    _set_type($stat);
+
+    # overrides
+    if ( $self->get_type && $self->get_type->{$column} ) {
+      my $type = $self->get_type->{$column};
+
+      if ( !any {/^$type$/xsm}
+        qw{int tinyint boolean date datetime timestamp enum varchar} ) {
+        croak "invalid type: [$type]";
       }
-      
-      if ( $self->get_reserved_words->is_reserved($column)
-           && !$self->get('allow-keywords') ) {
-        croak
-          "set --allow-keywords if you want to allow $column as a column name\n";
-      }
 
-      _set_column_name( $stat, $column,
-                        $self->get_reserved_words->is_reserved($column) );
+      $stat->{mysql_type} = $self->get_type->{$column};
+    }
 
-      _set_logical_type($stat);
-      
-      _set_type($stat);
-      
-      # overrides
-      if ( $self->get_type && $self->get_type->{$column} ) {
-        my $type = $self->get_type->{$column};
-        if ( !grep {/^$type$/}
-          qw/int tiny_int boolean date datetime timestamp enum varchar/ ) {
-          croak "invalid type: [$type]";
-        }
-        
-        $stat->{mysql_type} = $self->get_type->{$column};
-      }
-
-      if ( $self->get_length && $self->get_length->{$column} ) {
-        $stat->{mysql_length} = $self->get_length->{$column};
-      }
-  } ## end foreach my $column ( keys %$stats)
+    if ( $self->get_length && $self->get_length->{$column} ) {
+      $stat->{mysql_length} = $self->get_length->{$column};
+    }
+  }
 
   return $self;
-} ## end sub finalize_stats
+}
 
+########################################################################
 sub help {
-    print <<eot;
-Usage: $0 options command
+########################################################################
+  print <<"EOT";
+Usage: $PROGRAM_NAME options command
 
 Utility for creating MySQL tables from .csv files.
 
@@ -804,7 +892,7 @@ Recipes
 
    bedrock-model-importer analyze < some-file.csv
 
-   bedrock-model-iimporter --infile some-file.csv analyze
+   bedrock-model-importer --infile some-file.csv analyze
 
 2. Analyze the .csv file and create a MySQL table based on the .csv
    file contents
@@ -834,45 +922,39 @@ Recipes
        --user foo --password boo --host mysql-host --port 3306 --database mysql-database \
        create
 
-eot
-    
-    return 1;
-}
+EOT
 
+  return 1;
+}
 
 # +--------------------------+
 # | MAIN PROGRAM STARTS HERE |
 # +--------------------------+
 
+########################################################################
 sub main {
-  my ($package, @args) = @_;
-  
+########################################################################
+  my ( $package, @args ) = @_;
+
   my %options;
 
   require Getopt::Long;
+
   Getopt::Long->import(qw/GetOptionsFromArray/);
-  
-  GetOptionsFromArray(\@args, \%options,
-                      "allow-keywords",
-                      "clear",
-                      "database=s",
-                      "drop",
-                      "format=s",
-                      "headings=s",
-                      "help|h",
-                      "host=s",
-                      "infile|i=s",
-                      "length=s%",
-                      "limit=i",
-                      "model-file=s",
-                      "password=s",
-                      "rename=s%",
-                      "statistics-file=s",
-                      "table|t=s",
-                      "type=s%",
-                      "user=s",
-                     );
-  
+
+  GetOptionsFromArray(
+    \@args,              \%options,
+    'allow-keywords',    'clear',
+    'database=s',        'drop',
+    'format=s',          'headings=s',
+    'help|h',            'host=s',
+    'infile|i=s',        'length=s%',
+    'limit=i',           'model-file=s',
+    'password=s',        'rename=s%',
+    'statistics-file=s', 'table|t=s',
+    'type=s%',           'user=s',
+  );
+
   if ( $options{help} ) {
     help();
     return 1;
@@ -884,20 +966,27 @@ sub main {
   $options{user}     = $options{user}     || $ENV{MYSQL_USER};
   $options{database} = $options{database} || $ENV{MYSQL_DATABASE};
   $options{format}   = $options{format}   || 'text';
-  
-  my $importer = __PACKAGE__->new(\%options);
-  
+
+  my $importer = __PACKAGE__->new( \%options );
+
   my $command = shift @args;
-  my $arg = shift @args // '';
+  my $arg     = shift @args // EMPTY;
+
+  $command //= 'help';
 
   for ($command) {
+    /help/xsm && do {
+      help();
+      last;
+    };
+
     # equivalent to 'print stats'
-    /^analyze/ && do {
+    /^analyze/xsm && do {
       $importer->analyze->print_stats;
       last;
     };
-        
-    /create/ && do {
+
+    /create/xsm && do {
       if ( $importer->get('model-file') ) {
         $importer->read_model_definition->create_table;
       }
@@ -907,38 +996,38 @@ sub main {
       else {
         $importer->analyze->create_model_definition->create_table;
       }
-      
+
       last;
     };
 
-    /load/ && do {
+    /load/xsm && do {
       $importer->load_table();
-      
+
       last;
     };
-    
-      
-    /print/ && do {
+
+    /print/xsm && do {
       if ( $importer->get('statistics-file') ) {
         $importer->read_stats;
       }
       else {
         $importer->analyze;
       }
-      
+
       if ( $arg eq 'model' ) {
-        print $importer->create_model_definition->create_model->get_model->as_string;
+        print $importer->create_model_definition->create_model->get_model
+          ->as_string;
       }
       elsif ( $arg eq 'stats' ) {
         $importer->read_stats->print_stats;
       }
       else {
-        croak "usage: $0 print stats|json\n";
+        croak "usage: $PROGRAM_NAME print stats|json\n";
       }
-      
+
       last;
     };
-      
+
     croak "unknown command $command\n";
   }
 
@@ -946,3 +1035,5 @@ sub main {
 }
 
 1;
+
+__END__

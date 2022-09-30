@@ -19,15 +19,14 @@ package Apache::Bedrock;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-BEGIN {
-  require Apache2::compat
-    if defined $ENV{MOD_PERL};
-}
-
 use strict;
 use warnings;
 
-no warnings qw/uninitialized/;
+BEGIN {
+  if ( defined $ENV{MOD_PERL} ) {
+    require Apache2::compat;
+  }
+}
 
 use Apache2::Const -compile => qw(
   HTTP_UNSUPPORTED_MEDIA_TYPE
@@ -47,13 +46,17 @@ use APR::Const -compile => qw(:error SUCCESS);
 # Define the following mod_perl constants since we could be using
 # this module both as a mod_perl module and in a CGI
 #
-use constant NOT_FOUND    => Apache2::Const::NOT_FOUND;
-use constant SERVER_ERROR => Apache2::Const::SERVER_ERROR;
-use constant FORBIDDEN    => Apache2::Const::FORBIDDEN;
-use constant OK           => Apache2::Const::OK;
-use constant DECLINED     => Apache2::Const::DECLINED;
-use constant REDIRECT     => Apache2::Const::REDIRECT;
-use constant UNSUPPORTED  => Apache2::Const::HTTP_UNSUPPORTED_MEDIA_TYPE;
+use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
+  NOT_FOUND    => Apache2::Const::NOT_FOUND,
+  SERVER_ERROR => Apache2::Const::SERVER_ERROR,
+  FORBIDDEN    => Apache2::Const::FORBIDDEN,
+  OK           => Apache2::Const::OK,
+  DECLINED     => Apache2::Const::DECLINED,
+  REDIRECT     => Apache2::Const::REDIRECT,
+  UNSUPPORTED  => Apache2::Const::HTTP_UNSUPPORTED_MEDIA_TYPE,
+  EMPTY        => q{},
+  SLASH        => q{/},
+};
 
 use Bedrock;
 use Bedrock::BedrockConfig;
@@ -70,106 +73,72 @@ use Text::URLEncode;
 
 use Benchmark qw/:all/;
 use Data::Dumper;
-use English;
+use English qw{-no_match_vars};
 use File::Basename;
 use File::Spec;
 use File::Temp;
 use IO::File;
 use IO::Scalar;
+use List::Util qw{ any };
 use Log::Log4perl;
 use Symbol;
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
 
 {
   my $logger;
 
   # try to initialize Log::Log4perl
   foreach my $path ( $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
+    next if !$path;
+
     my $conf = "$path/log4perl.conf";
 
     if ( -e $conf ) {
-      $logger = eval { Log::Log4perl->init($conf); };
+      $logger = eval { Log::Log4perl->init_once($conf); };
     }
 
     last if $EVAL_ERROR || $logger;
   } ## end foreach my $path ( $ENV{CONFIG_PATH...})
 
-  if ( !$logger ) {
-    print STDERR "WARNING: **********************************";
-    print STDERR "WARNING: * no or invalid log4perl.conf file\n";
-    print STDERR "WARNING: * ERROR    => [$EVAL_ERROR]\n";
-    print STDERR "WARNING: * OS_ERROR => [$OS_ERROR]\n";
-    print STDERR "WARNING: * using default configuration\n";
-    print STDERR "WARNING: **********************************\n";
+  if ( !$logger && $EVAL_ERROR ) {
+    print {*STDERR} "ERROR: [$EVAL_ERROR]\n";
 
-    my $log4perl_conf = <<eot;
+    my $log4perl_conf = <<'EOT';
 log4perl.rootLogger=DEBUG, Bedrock
 log4perl.appender.Bedrock=Log::Log4perl::Appender::Screen
 log4perl.appender.Bedrock.mode=append
 log4perl.appender.Bedrock.layout=PatternLayout
 log4perl.appender.Bedrock.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
-eot
+EOT
     Log::Log4perl->init( \$log4perl_conf );
-  } ## end if ( !$logger )
+  } ## end if ( !$logger && $EVAL_ERROR)
 }
 
-=pod
-
-=head1 NAME
-
-C<Apache::Bedrock> - Apache handler for serving Bedrock pages.
-
-=head1 SYNOPSIS
-
- <IfModule mod_perl.c>
-   PerlRequire /usr/lib/bedrock/config/startup.pl
-   AddHandler    perl-script .roc .jroc
-   PerlHandler   Apache::Bedrock
- </IfModule>
-
- use Apache::Bedrock;
-
- &Apache::Bedrock::handler( new Apache::Request_cgi );
-
- &Apache::Bedrock::handler( new Apache::Request_shell );
-
-I<See bedrock.cgi or bedrock.pl> if you want to see how this module can be used stand alone.>
-
-=head1 DESCRIPTION
-
-Handler for parsing Bedrock files.  Can be used with Apache as a
-mod_perl handler or in other configurations including a shell
-interpreter.
-
-=head1 METHODS
-
-=head2 require_module
-
-Parse a module name and 'require' it.  Used to load BLMs.
-
-=cut
-
+########################################################################
 sub require_module {
-  my $modfile = shift;
+########################################################################
+  my ($modfile) = @_;
 
-  $modfile =~ s!::!/!g;
-  $modfile =~ s!$!.pm! unless $modfile =~ /\.pm$/;
+  $modfile =~ s/::/\//xsmg;
 
-  require $modfile;
+  if ( $modfile !~ /[.]pm\z/xsm ) {
+    $modfile =~ s/\z/\.pm/xsm;
+  }
+
+  return require $modfile;
 } ## end sub require_module
 
-=pod
-
-=head2 bind_module
-
-=cut
-
+########################################################################
 sub bind_module {
-  my %args = @_;
+########################################################################
+  my (%args) = @_;
 
-  require_module( $args{module} );
+  require_module $args{module};
 
   my $obj;
 
+  ## no critic (Miscellanea::ProhibitTies)
   if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
     $obj = bless {}, $args{module};
     tie %{$obj}, $args{module}, $args{context}, $args{config};
@@ -183,30 +152,25 @@ sub bind_module {
     tie *{$obj}, $args{module}, $args{context}, $args{config};
   }
 
-  my $func = tied( %{$obj} );
+  my $func = tied %{$obj};
+
   $func->can('init_plugin')
     && $func->init_plugin( $args{context}, $args{config} );
 
   return $obj;
 } ## end sub bind_module
 
-=pod
-
-=head2 is_bedrock_shell
-
-=cut
-
+########################################################################
 sub is_bedrock_shell {
-  return Scalar::Util::blessed( $_[0] ) eq 'Apache::Request_shell';
-}
+########################################################################
+  my ($ref) = @_;
 
-=pod
+  return Scalar::Util::blessed($ref) eq 'Apache::Request_shell';
+} ## end sub is_bedrock_shell
 
-=head2 is_mod_perl
-
-=cut
-
+########################################################################
 sub is_mod_perl {
+########################################################################
   return defined $ENV{MOD_PERL};
 }
 
@@ -214,83 +178,89 @@ sub is_mod_perl {
 # | HANDLER STARTS HERE |
 # +---------------------+
 
+########################################################################
 sub handler {
-  my $r = shift;
+########################################################################
+  my ($r) = @_;
 
   # start HiRes timer
-  my $t0 = Benchmark->new
-    if get_loglevel($r) eq 'debug';
+  my $t0;
+
+  if ( get_loglevel($r) eq 'debug' ) {
+    $t0 = Benchmark->new;
+  }
+
+  my $bedrock_handler = init_bedrock_handler($r);
 
   # errors are handled in the init_bedrock_handler() subroutine
-  my $bedrock_handler = init_bedrock_handler($r) or return OK;
+  return OK if !$bedrock_handler;
 
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
 
   # make sure that the LOG directories are present and writable, otherwise try /tmp
-  foreach my $k (qw(LOGDIR HTML_LOGDIR)) {
+  foreach my $k (qw{LOGDIR HTML_LOGDIR}) {
     my $dir = $conf->{$k};
 
-    if ( -d $dir && !-w $dir) {
+    if ( -d $dir && !-w $dir ) {
       $bedrock_handler->log_error("$dir is not writeable, using /tmp");
       $conf->{$k} = '/tmp';
     }
-    elsif ( !-d $dir) {
-      eval { mkdir $dir };
-      
-      if ($@) {
+    elsif ( !-d $dir ) {
+      eval { return mkdir $dir };
+
+      if ($EVAL_ERROR) {
         $bedrock_handler->log_error(
           "could not create $dir:[$OS_ERROR] - using [/tmp]");
         $conf->{$k} = '/tmp';
       }
-    }
-  }
-  
-  $bedrock_handler->log_info(
-    sprintf( "Bedrock log directory is ..........[%s]", $conf->{LOGDIR} ) );
+    } ## end elsif ( !-d $dir )
+  } ## end foreach my $k (qw{LOGDIR HTML_LOGDIR})
 
   $bedrock_handler->log_info(
-    sprintf(
-      "Bedrock's HTML log directory is ...[%s]", $conf->{HTML_LOGDIR}
-    )
-  );
+    sprintf 'Bedrock log directory is ..........[%s]',
+    $conf->{LOGDIR} );
 
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir; # typically /bedrock
+  $bedrock_handler->log_info(
+    sprintf q{Bedrock's HTML log directory is ...[%s]},
+    $conf->{HTML_LOGDIR} );
+
+  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;  # typically /bedrock
 
   my $file = $bedrock_handler->{file};
 
   if ($file) {
+
     # check mime-type
-    unless (
-      $r->content_type =~ /(text\/html|application\/json|text\/plain)/ ) {
-      $bedrock_handler->error( sprintf "content type: [%s] not supported\n",
+    if ( $r->content_type !~ /text\/html|application\/json|text\/plain/xsm ) {
+      $bedrock_handler->error( sprintf 'content type: [%s] not supported',
         $r->content_type );
 
       return UNSUPPORTED;
-    } ## end unless ( $r->content_type ...)
+    } ## end if ( $r->content_type ...)
 
-    unless ( -e $r->filename ) {
-      $bedrock_handler->error(
-        sprintf( "file does not exist: [%s]", $file ) );
+    if ( !-e $r->filename ) {
+      $bedrock_handler->error( sprintf 'file does not exist: [%s]', $file );
 
       return NOT_FOUND;
-    } ## end unless ( -e $r->filename )
+    }
 
-    unless ( -r $r->filename ) {
-      $bedrock_handler->error(
-        sprintf( "file permissions deny access: [%s]", $file ) );
+    if ( !-r $r->filename ) {
+      $bedrock_handler->error( sprintf 'file permissions deny access: [%s]',
+        $file );
 
       return FORBIDDEN;
-    } ## end unless ( -r $r->filename )
+    } ## end if ( !-r $r->filename )
   } ## end if ($file)
   else {
-    $bedrock_handler->error(
-      sprintf( "attempt to serve directory: [%s]", $r->uri ) );
+    $bedrock_handler->error( sprintf 'attempt to serve directory: [%s]',
+      $r->uri );
 
     return FORBIDDEN;
   } ## end else [ if ($file) ]
 
-  local ( $SIG{__DIE__}, $SIG{__WARN__} );
+  local $SIG{__DIE__}  = undef;
+  local $SIG{__WARN__} = undef;
 
   # Shove the URI params in environment.
   local $ENV{'BEDROCK_URI'}     = $r->uri;
@@ -330,13 +300,13 @@ sub handler {
   my $app_dir = $bedrock_handler->{path};
 
   if ( !chdir $app_dir ) {
-    return $bedrock_handler->error(
-      sprintf( " chdir(%s) failed: [%s]", $app_dir, $! ) );
+    return $bedrock_handler->error( sprintf 'chdir(%s) failed: [%s]',
+      $app_dir, $OS_ERROR );
   }
 
   my $ctx
     = Bedrock::Context->new( 'APACHE_HANDLER' => $r, 'CONFIG' => $conf );
-    
+
   my $tx = Text::TagX->new( $file, $ctx );
 
   # -- setup logging
@@ -353,7 +323,7 @@ sub handler {
   }
   else {
     $page_log = $bedrock_handler->{filename};
-    $page_log =~s/\.(.*)$//;
+    $page_log =~ s/[.](.*)\z//xsm;
   }
 
   # not sure this should ever happen, however if we've parsed the
@@ -363,10 +333,10 @@ sub handler {
     $page_log = 'bedrock-page-' . time;
   }
 
-  if ( $page_log !~/^STDERR$/ ) {
-    $page_log = $html_logdir . '/' . $page_log;
+  if ( $page_log ne 'STDERR' ) {
+    $page_log = $html_logdir . q{/} . $page_log;
   }
-  
+
   # the TagX::Log start_logger() method redirects STDERR to the page
   # log after this call has been executed
   $tx->options(
@@ -374,7 +344,7 @@ sub handler {
     INCLUDE_DIR        => $ENV{BEDROCK_INCLUDE_DIR},
     PEBBLE_DIR         => $ENV{BEDROCK_PEBBLE_DIR},
     ALLOW_SNIPPET_TAG  => $conf->{ALLOW_SNIPPET_TAG},
-    LOGFORMAT          => $conf->{LOGFORMAT} || '%t [%p] [%a]: %L ',
+    LOGFORMAT          => $conf->{LOGFORMAT}       || '%t [%p] [%a]: %L ',
     LOG_MAXSIZE        => $conf->{HTML_LOGMAXSIZE} || $conf->{'LOG_MAXSIZE'},
     LOG_SPOOLER        => $conf->{HTML_LOGSPOOLER},
     LOG_PREFIX         => $page_log,
@@ -382,20 +352,29 @@ sub handler {
 
   if ( get_loglevel($r) eq 'debug' ) {
     {
-      no warnings 'uninitialized';
-    
-      $bedrock_handler->log_debug(sprintf("HTML_LOGDIR.......[%s]", $conf->{HTML_LOGDIR}));
-      $bedrock_handler->log_debug(sprintf("HTML_LOGFILE......[%s]", $conf->{HTML_LOGFILE}));
-      $bedrock_handler->log_debug(sprintf("INCLUDE_DIR.......[%s]", $conf->{INCLUDE_DIR}));
-      $bedrock_handler->log_debug(sprintf("PEBBLE_DIR........[%s]", $conf->{PEBBLE_DIR}));
-      $bedrock_handler->log_debug(sprintf("ALLOW_SNIPPET_TAG.[%s]", $conf->{ALLOW_SNIPPET_TAG}));
-      $bedrock_handler->log_debug(sprintf("LOGFORMAT.........[%s]", $conf->{LOGFORMAT}));
-      $bedrock_handler->log_debug(sprintf("LOG_MAXSIZE.......[%s]", $conf->{LOG_MAXSIZE}));
-      $bedrock_handler->log_debug(sprintf("LOG_SPOOLER.......[%s]", $conf->{LOG_SPOOLER}));
-      $bedrock_handler->log_debug(sprintf("LOG_PREFIX........[%s]", $conf->{LOG_PREFIX}));
+      $bedrock_handler->log_debug( sprintf 'HTML_LOGDIR.......[%s]',
+        $conf->{HTML_LOGDIR} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'HTML_LOGFILE......[%s]',
+        $conf->{HTML_LOGFILE} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'INCLUDE_DIR.......[%s]',
+        $conf->{INCLUDE_DIR} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'PEBBLE_DIR........[%s]',
+        $conf->{PEBBLE_DIR} // EMPTY );
+      $bedrock_handler->log_debug(
+        sprintf 'ALLOW_SNIPPET_TAG.[%s]',
+        $conf->{ALLOW_SNIPPET_TAG} // EMPTY
+      );
+      $bedrock_handler->log_debug( sprintf 'LOGFORMAT.........[%s]',
+        $conf->{LOGFORMAT} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'LOG_MAXSIZE.......[%s]',
+        $conf->{LOG_MAXSIZE} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'LOG_SPOOLER.......[%s]',
+        $conf->{LOG_SPOOLER} // EMPTY );
+      $bedrock_handler->log_debug( sprintf 'LOG_PREFIX........[%s]',
+        $conf->{LOG_PREFIX} // EMPTY );
     }
-  }
-  
+  } ## end if ( get_loglevel($r) ...)
+
   # load generic startup BLMs
   my $modules = $conf->get_module_config();
 
@@ -406,11 +385,12 @@ sub handler {
 
   # custom plugins
   if ( exists $conf->{PLUGIN_PATH} && defined $conf->{PLUGIN_PATH} ) {
-    my @plugin_inc = split /:/, $conf->{PLUGIN_PATH};
+    my @plugin_inc = split /:/xsm, $conf->{PLUGIN_PATH};
 
     foreach my $path (@plugin_inc) {
-      push @INC, $path
-        unless grep {/$path/} @INC;
+      if ( !any {/$path/xsm} @INC ) {
+        push @INC, $path;
+      }
     }
   } ## end if ( exists $conf->{PLUGIN_PATH...})
 
@@ -421,7 +401,7 @@ sub handler {
 
   my @startup = @{$modules};
 
-  for ( my $idx = 0; $idx < @startup; $idx++ ) {
+  foreach my $idx ( 0 .. $#startup ) {
     my $modconf = $startup[$idx];
 
     my ( $config, $binding, $module, $header, $session, $type,
@@ -433,11 +413,13 @@ sub handler {
 
     if ( !$binding ) {
       return $bedrock_handler->error(
-        "'binding' not defined for module ($idx)");
+        sprintf q{'binding' not defined for module (%s)}, $idx );
     }
 
-    if ( $type !~ /^(hash|array|handle|object)$/ ) {
-      return $bedrock_handler->error("invalid type ($type) in module ($idx)");
+    if ( !any {/$type/xsm} qw{ hash array handle object} ) {
+      return $bedrock_handler->error(
+        sprintf 'invalid type (%s) in module (%s)',
+        $type, $idx );
     }
 
     # BLM specific configuration
@@ -452,7 +434,7 @@ sub handler {
         my $errstr = "multiple modules defined for $pre_bound_module module";
 
         if ( is_bedrock_shell($r) ) {
-          print STDERR $errstr;
+          print {*STDERR} $errstr;
           exit -1;
         }
         else {
@@ -477,21 +459,24 @@ sub handler {
 
       if ($bind_error) {
 
-        $errstr = "could not bind module ($module) as '$binding'";
+        $errstr = sprintf q{could not bind module (%s) as '%s'}, $module,
+          $binding;
+
         $bedrock_handler->log_error($errstr);
         $bedrock_handler->log_error($bind_error);
-        
+
         if ($abort_if_error) {
 
           if ( is_bedrock_shell($r) ) {
-            print STDERR $errstr;
+            print {*STDERR} $errstr;
+
             exit -1;
           }
           else {
             $r->content_type('text/html');
             $r->send_http_header;
 
-            print <<eom;
+            print <<"EOM";
 <html>
 <head>
 <title>Bedrock Initialization Error</title>
@@ -505,7 +490,7 @@ $errstr
 </pre>
 </body>
 </html>
-eom
+EOM
             return OK;
           } ## end else [ if ( is_bedrock_shell(...))]
         } ## end if ($abort_if_error)
@@ -542,21 +527,20 @@ eom
         }
       );
     } ## end else [ if ( $header || $session)]
-  } ## end for ( my $idx = 0; $idx...)
+  } ## end foreach my $idx ( 0 .. $#startup)
 
   # Croak if no header module
   if ( !$pre_bound{HEADER} ) {
     return $bedrock_handler->error(
-      sprintf("error in config file: No header module") );
+      sprintf 'error in config file: No header module' );
   }
 
-  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );
+  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );  ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
 
-  
   # this is where Bedrock starts parsing the template
   eval { $tx->output };
 
-  my $err = $@;
+  my $err = $EVAL_ERROR;
 
   if ($err) {
     if ( is_bedrock_shell($r) ) {
@@ -566,21 +550,21 @@ eom
       my $file = $tx->{'error'}->file;
       my $source;
 
-      if ( ref($file) ) {
-        $source = tied( *{$file} );
+      if ( ref $file ) {
+        $source = tied *{$file};
         $line--;
         $file = $tx->pebble($file);
       }
 
-      open FILE, '<', $file
-        or die "Could not open source file " . $file;
+      open my $fh, '<', $file
+        or die 'Could not open source file ' . $file;  ## no critic (ErrorHandling::RequireCarping)
 
       {
-        local $/;
-        $source = <FILE>;
+        local $RS = undef;
+        $source = <$fh>;
       }
 
-      close FILE;
+      close $fh;
 
       my @lines;
 
@@ -597,32 +581,31 @@ eom
         $fd->close;
       }
 
-      unless ( $err =~ /^snippet/ ) {
-        $r->log_error(
-          sprintf( "Error on line [%d] (%s) - %s", $line, $file, $err ) );
+      if ( $err !~ /\Asnippet/xsm ) {
+        $r->log_error( sprintf 'Error on line [%d] (%s) - %s',
+          $line, $file, $err );
 
         # print the lines surrounding error
-        $r->log_error(
-          sprintf( "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ] ) )
-          unless $line <= 1;
+        if ( $line > 1 ) {
+          $r->log_error( sprintf "  [%3d] %s\n",
+            $line - 1, $lines[ $line - 2 ] );
+        }
 
-        $r->log_error(
-          sprintf( ">>[%3d] %s\n", $line, $lines[ $line - 1 ] ) );
+        $r->log_error( sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ] );
 
-        $r->log_error( sprintf( "  [%3d] %s\n", $line + 1, $lines[$line] ) )
-          unless $line == @lines;
-      } ## end unless ( $err =~ /^snippet/)
+        if ( $line != @lines ) {
+          $r->log_error( sprintf "  [%3d] %s\n", $line + 1, $lines[$line] );
+        }
+      } ## end if ( $err !~ /\Asnippet/xsm)
       else {
         $r->log_error("$err");
       }
     } ## end if ( is_bedrock_shell(...))
     else {
       $bedrock_handler->log_error(
-        sprintf(
-          "script [%s] with mime-type [%s] encountered the following error:",
-          $bedrock_handler->{file},
-          $r->content_type
-        )
+        sprintf
+          'script [%s] with mime-type [%s] encountered the following error:',
+        $bedrock_handler->{file}, $r->content_type
       );
 
       $bedrock_handler->log_error("$err");
@@ -634,7 +617,7 @@ eom
 
       # if we are serving up JSON content, then we need to return a
       # proper error code, not 200
-      if ( $r->content_type =~ /json/ ) {
+      if ( $r->content_type =~ /json/xsm ) {
         $bedrock_handler->restore_dir;
 
         if ( is_mod_perl() ) {
@@ -647,9 +630,10 @@ eom
         }
 
         chomp $err;
-        print <<eom;
+
+        print <<"EOM";
 { error : "$err" }
-eom
+EOM
         return OK;
       } ## end if ( $r->content_type ...)
       else {
@@ -666,36 +650,92 @@ eom
 
   # Apache 2 hack for redirection...let's not send unnecessary content
   # to the browser if a redirect header has been set.
-  unless ( is_bedrock_shell($r) ) {
+  if ( !is_bedrock_shell($r) ) {
+
     if ( is_mod_perl() ) {
+
       if ( exists ${ $r->err_headers_out }{Location}
         || exists ${ $r->err_headers_out }{location} ) {
         $r->status(Apache2::Const::REDIRECT);
       }
+
       if ( exists ${ $r->err_headers_out }{Status}
         || exists ${ $r->err_headers_out }{status} ) {
+
         my $status = ${ $r->err_headers_out }{status}
           || ${ $r->err_headers_out }{Status};
-        $r->status($1) if $status =~ /^\s*(\d+)/;
+
+        if ( $status =~ /\A\s*(\d+)/xsm ) {
+          $r->status($1);
+        }
       } ## end if ( exists ${ $r->err_headers_out...})
     } ## end if ( is_mod_perl() )
-  } ## end unless ( is_bedrock_shell(...))
+  } ## end if ( !is_bedrock_shell...)
 
   # benchmark
   my $t1 = Benchmark->new;
 
   if ( get_loglevel($r) eq 'debug' ) {
-    $bedrock_handler->log_debug( "log level " . get_loglevel($r) );
+
+    $bedrock_handler->log_debug( 'log level ' . get_loglevel($r) );
+
     $bedrock_handler->log_debug(
-      "processing complete: " . timestr( timediff( $t1, $t0 ), 'all' ) );
-  }
+      'processing complete: ' . timestr( timediff( $t1, $t0 ), 'all' ) );
+  } ## end if ( get_loglevel($r) ...)
 
   return OK;
 } ## end sub handler
 
 1;
 
+__END__
+
 =pod
+
+=head1 NAME
+
+Apache::Bedrock - Apache handler for serving Bedrock pages
+
+=head1 SYNOPSIS
+
+ <IfModule mod_perl.c>
+   PerlRequire /usr/lib/bedrock/config/startup.pl
+   AddHandler    perl-script .roc .jroc
+   PerlHandler   Apache::Bedrock
+ </IfModule>
+
+ use Apache::Bedrock;
+
+ Apache::Bedrock::handler->new( Apache::Request_cgi->new );
+
+ Apache::Bedrock::handler->new( Apache::Request_shell->new );
+
+I<See F<bedrock.cgi> or F<bedrock.pl> if you want to see how this module
+can be used stand alone.>
+
+=head1 DESCRIPTION
+
+Handler for parsing Bedrock files.  Can be used with Apache as a
+C<mod_perl> handler or in other configurations including a shell
+interpreter.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 require_module
+
+Parse a module name and 'require' it.  Used to load BLMs.
+
+=head2 bind_module
+
+Binds a Bedrock variable to a loadable module.
+
+=head2 is_bedrock_shell
+
+Returns true if running as bedrock shell.
+
+=head2 is_mod_perl
+
+Returns true if running under mod_perl.
 
 =head1 AUTHOR
 

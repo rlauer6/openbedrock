@@ -1,6 +1,5 @@
 #!@PERL@ -w
 
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -26,18 +25,388 @@ package Bedrock::XML;
 use strict;
 use warnings;
 
+use Bedrock::Constants qw(:chars :booleans);
+
 use Bedrock::XML::Container::Scalar;
 use Bedrock::XML::Container::Object;
 use Bedrock::XML::Container::Array;
 
-use IO::Scalar;
+use English qw{-no_match_vars};
 use FileHandle;
-use Scalar::Util qw/reftype/;
+use IO::Scalar;
+use Scalar::Util qw{reftype};
 use Symbol;
+use Data::Dumper;
+
+## no critic (RequireCarping)
+
+sub start_handler {
+  my ( $self, $p, $e, @args ) = @_;
+
+  my $obj = $self->{'obj'};
+
+  if ( lc $e eq 'object' ) {
+    my $new_obj = Bedrock::XML::Container::Object->new( $p, @args );
+    $obj = $obj ? $obj->new_object( $p, $e, $new_obj ) : $new_obj;
+  }
+  elsif ( lc $e eq 'array' ) {
+    my $new_array = Bedrock::XML::Container::Array->new( $p, @args );
+    $obj = $obj ? $obj->new_array( $p, $e, $new_array ) : $new_array;
+  }
+  elsif ( lc $e eq 'scalar' ) {
+    if ( !$obj ) {
+      $p->xpcroak('<scalar> must be contained in <object> or <array>');
+    }
+
+    my $new_scalar = Bedrock::XML::Container::Scalar->new( $p, @args );
+    $obj = $obj->new_scalar( $p, $e, $new_scalar );
+  }
+  else {
+    $p->xpcroak("unsupported tag <$e> encountered");
+  }
+
+  return $self->{'obj'} = $obj;
+}
+
+sub end_handler {
+  my ( $self, @args ) = @_;
+
+  my $obj = $self->{'obj'};
+
+  my $parent = $obj->end_body(@args);
+
+  if ( defined $parent ) {
+    $self->{'obj'} = $parent;
+  }
+
+  return $self->{obj};
+}
+
+sub char_handler {
+  my ( $self, @args ) = @_;
+
+  return $self->{'obj'}->text(@args);
+}
+
+sub final_handler {
+  my ($self) = @_;
+
+  return $self->{'obj'}->finalize;
+}
+
+sub unquote_xml {
+  my ($xml) = @_;
+
+  $xml && do {
+    $xml =~ s/&lt;/</g;
+    $xml =~ s/&gt;/>/g;
+    $xml =~ s/&apos;/\'/g;
+    $xml =~ s/&quot;/\"/g;
+    $xml =~ s/&amp;/\&/g;
+  };
+
+  return $xml;
+}
+
+sub quote_xml {
+  my ($xml) = @_;
+
+  $xml && do {
+    $xml =~ s/&/&amp;/g;
+    $xml =~ s/</&lt;/g;
+    $xml =~ s/>/&gt;/g;
+    $xml =~ s/\'/&apos;/g;
+    $xml =~ s/\"/&quot;/g;
+  };
+
+  return $xml;
+}
+
+sub split_opts {
+  my ($str) = @_;
+
+  return if !length $str;
+
+  local $_ = $str;
+
+  my @options;
+
+  while (length) {
+    s/^\s+//xsm and next;
+
+    if (s/^([\w-]+)\s*=\s*//xsm) {
+      push @options, $1;
+    }
+    else {
+      die "Invalid option name at: [$_]";
+    }
+
+    if (s/^(\x22([^\x22]*)\x22|\x27([^\x27]*)\x27)//xsm) {
+      push @options, unquote_xml( $2 || $3 );
+    }
+    else {
+      die "Invalid option value at: [$_]";
+    }
+  }
+
+  return @options;
+}
+
+sub parse {
+  my ($self) = @_;
+
+  my $newscan = $TRUE;
+
+  my $input = $self->{'input'};
+
+  my $optstring = $EMPTY;
+  my $text      = $EMPTY;
+
+  my ($element);
+
+  my $tag_start = '^(scalar|object|array)(?=\W)';
+  my $tag_end   = '^(/scalar|/object|/array)>';
+  my $opt_esc   = '^([^>]*)>';
+
+  INPUT:
+  while (<$input>) {
+    MAIN: {
+
+      #
+      # Check whether we are into a new scan or collecting options
+      # for a matched tag
+      #
+      if ( !$newscan ) {
+
+        # Collecting options for a matched tag -- Look for tag end which is
+        # an un-escaped '>'
+        if (s/$opt_esc//o) {
+
+          # Found an un-escaped '>', which terminates the current tag and its options
+          # $optstring contains the options collected so far
+          $optstring .= $1;
+          $self->start_handler( $self, $element, &split_opts($optstring) );
+          $element = $optstring = $EMPTY;
+
+          # Start a new scan after this
+          $newscan = 1;
+
+          # Handle possible left over stuff after the '>'
+          redo MAIN;
+        }
+        else {
+
+          # No terminating '>' in entire line -- start by reading input again
+          $optstring .= $_;
+          next INPUT;
+        }
+      }
+
+      # New scan from here -- scan afresh for tags.
+      # if no '<' found in line, skip line
+      if ( !s/^(.*?)<//oi ) {
+        $text .= $_;
+        next INPUT;
+      }
+
+      # We did find a '<' -- could be we have a possible supported tag next
+      # The text before the '<' needs to be processed.
+      $text .= $1;
+
+      $self->char_handler( $self, $text ) if length($text);
+      $text = '';
+
+      # Check if we have a supported tag
+      if (s/$tag_start//oi) {
+        $element = $1;
+
+        # After creating object of suitable type depending on the tag, check
+        # if the tag ends on the same line. Tag ending is an un-escaped '>'.
+        if (s/$opt_esc//oi) {
+
+          # The tag definition ended on same line -- all options specified on
+          # one line
+          $optstring = $1;
+          $self->start_handler( $self, $element, &split_opts($optstring) );
+          $element = $optstring = '';
+
+          # And rescan the string for more tags -- Note that $newscan is unchanged
+          # from its value of 1, so we don't need to set it here
+          redo MAIN;
+        }
+        else {
+
+          # Tag definition did not end on one line -- Further input is consumed for
+          # looking for the tag ending
+          $newscan = 0;
+
+          # Start collection of the options string
+          $optstring = $_;
+        }
+
+      }
+      elsif (s/$tag_end//oi) {
+
+        # Check whether we have hit a tag-body-ending tag
+        # and if so, end the current object
+        $self->end_handler($self);
+
+        # And rescan string for more tags
+        redo MAIN;
+      }
+      elsif (s/^!--//) {
+
+        # Consume comments
+        do {
+          last if (s/.*?-->//);
+        } while (<$input>);
+        redo MAIN;
+      }
+      else {
+
+        # Unsupported tag hit -- croak hard
+        die "What is this: <$_>\n";
+      }
+    }
+  }
+  $self->final_handler($self);
+}
+
+sub new {
+  my ( $class, $file ) = @_;
+
+  my $self = bless {}, $class;
+
+  if ( ref($file) && ( -r $file || $file->can('getline') ) ) {
+    $self->{'input'} = $file;
+  }
+  else {
+    open my $fh, '<', $file  ## no critic (RequireBriefOpen)
+      or die "Unable to open $file: $OS_ERROR\n";
+
+    $self->{'input'} = $fh;
+  }
+
+  my $ref = $self->parse;
+
+  $self->{'input'}->close;
+
+  return $ref;
+}
+
+sub newFromString {  ## no critic (Capitalization)
+  my ( $class, $string ) = @_;
+
+  return
+    if !$string;
+
+  my $self = bless {}, $class;
+  my $fd   = gensym;
+
+  tie *{$fd}, 'IO::Scalar', \$string;
+  $self->{'input'} = $fd;
+
+  # this is new behavior and may break something that might have been
+  # relying on getting an exception?
+  my $ref = eval { $self->parse; };
+
+  return $EVAL_ERROR ? undef : $ref;
+}
+
+sub printxml {
+  my ( $fd, $id, $ref, $nspaces ) = @_;
+
+  $nspaces //= 0;
+
+  my $spaces = $SPACE x $nspaces;
+
+  if ( reftype($ref) eq 'HASH' ) {
+    print {$fd} $spaces, qq(<object $id>\n);
+
+    for my $key ( sort keys %{$ref} ) {
+      if ( !$key ) {
+        warn "object name cannot be null\n";
+        next;
+      }
+
+      my $value = $ref->{$key};
+      quote_xml($key);
+
+      if ( ref $value ) {
+        printxml( $fd, qq(name="$key"), $value, $nspaces + 1 );
+      }
+      else {
+        quote_xml($value);
+        print {$fd} $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
+      }
+    }
+    print {$fd} $spaces, "</object>\n";
+  }
+  elsif ( reftype($ref) eq 'ARRAY' ) {
+    print {$fd} $spaces, qq(<array $id>\n);
+
+    for my $value ( @{$ref} ) {
+      if ( ref $value ) {
+        printxml( $fd, $EMPTY, $value, $nspaces + 2 );
+      }
+      else {
+        quote_xml($value);
+        print {$fd} $spaces, ' <scalar>', $value, "</scalar>\n";
+      }
+    }
+    print {$fd} $spaces, "</array>\n";
+  }
+  else {
+    print {$fd} $EMPTY;
+  }
+}
+
+sub writeXML {  ## no critic (Capitalization)
+  my ( $ref, $file ) = @_;
+
+  if ( defined $file && ref $file ) {
+    return printxml( $file, $EMPTY, $ref );
+  }
+
+  if ( defined $file && $file ) {
+    open my $fh, '>', $file
+      or die "Unable to open $file: $OS_ERROR\n";
+
+    my $retval = printxml( $fh, $EMPTY, $ref );
+
+    close $fh;
+
+    return $retval;
+  }
+
+  return writeXMLString($ref);
+}
+
+sub writeXMLString {  ## no critic (Capitalization)
+  my ($ref) = @_;
+
+  my $string;
+
+  my $fd = gensym;
+  tie *{$fd}, 'IO::Scalar', \$string;
+
+  printxml( $fd, $EMPTY, $ref );
+
+  return $string;
+}
+
+sub xpcroak {
+  my $self = shift;
+  die "Error encountered: @_";
+}
+
+1;
+
+__END__
 
 =pod
 
-=head1 PUBLIC
+=head1 NAME
 
 C<Bedrock::XML> - perl module for creating an XML version of perl data
 structures.  Primarily used for serializing data in Bedrock
@@ -91,219 +460,7 @@ For example, give the perl hash:
   </object>
  </object>
 
-=head1 METHODS
-
-=cut
-
-sub start_handler {
-  my $self = shift;
-  my $p    = shift;
-  my $e    = shift;
-  my $obj  = $self->{'obj'};
-  if ( lc($e) eq 'object' ) {
-    my $newObj = Bedrock::XML::Container::Object->new( $p, @_ );
-    $obj = $obj ? $obj->new_object( $p, $e, $newObj ) : $newObj;
-  }
-  elsif ( lc($e) eq 'array' ) {
-    my $newArray = Bedrock::XML::Container::Array->new( $p, @_ );
-    $obj = $obj ? $obj->new_array( $p, $e, $newArray ) : $newArray;
-  }
-  elsif ( lc($e) eq 'scalar' ) {
-    $p->xpcroak("<scalar> must be contained in <object> or <array>")
-    unless $obj;
-    my $newScalar = Bedrock::XML::Container::Scalar->new( $p, @_ );
-    $obj = $obj->new_scalar( $p, $e, $newScalar );
-  }
-  else {
-    $p->xpcroak("unsupported tag <$e> encountered");
-  }
-  $self->{'obj'} = $obj;
-}
-
-sub end_handler {
-  my $self   = shift;
-  my $obj    = $self->{'obj'};
-  my $parent = $obj->end_body(@_);
-  $self->{'obj'} = $parent if defined($parent);
-}
-
-sub char_handler {
-  my $self = shift;
-  $self->{'obj'}->text(@_);
-}
-
-sub final_handler {
-  my $self = shift;
-  $self->{'obj'}->finalize;
-}
-
-sub unquote_xml {
-  $_[0] && do {
-    $_[0] =~ s/&lt;/</g;
-    $_[0] =~ s/&gt;/>/g;
-    $_[0] =~ s/&apos;/\'/g;
-    $_[0] =~ s/&quot;/\"/g;
-    $_[0] =~ s/&amp;/\&/g;
-  };
-  
-  $_[0];
-}
-
-sub quote_xml {
-  $_[0] && do {
-    $_[0] =~ s/&/&amp;/g;
-    $_[0] =~ s/</&lt;/g;
-    $_[0] =~ s/>/&gt;/g;
-    $_[0] =~ s/\'/&apos;/g;
-    $_[0] =~ s/\"/&quot;/g;
-  };
-
-  $_[0];
-}
-
-
-sub split_opts {
-  my $str = shift;
-  return unless length($str) > 0;
-  local ($_);
-  $_ = $str;
-  my @options;
-  while (length) {
-    s/^\s+// and next;
-
-    unless (s/^([\w-]+)\s*=\s*//) {
-      die "Invalid option name at: [$_]";
-    }
-    push @options, $1;
-
-    unless (s/^(\x22([^\x22]*)\x22|\x27([^\x27]*)\x27)//) {
-      die "Invalid option value at: [$_]";
-    }
-    my $value = $2 || $3;
-    push @options, &unquote_xml($value);
-  }
-  @options;
-}
-
-sub parse {
-  my $self    = shift;
-  my $newscan = 1;
-
-  my $input = $self->{'input'};
-
-  my $optstring = '';
-  my $text      = '';
-  my ($element);
-
-  my $tag_start = '^(scalar|object|array)(?=\W)';
-  my $tag_end   = '^(/scalar|/object|/array)>';
-  my $opt_esc   = '^([^>]*)>';
-
-  INPUT:
-  while (<$input>) {
-    MAIN: {
-
-      #
-      # Check whether we are into a new scan or collecting options
-      # for a matched tag
-      #
-      unless ($newscan) {
-
-        # Collecting options for a matched tag -- Look for tag end which is
-        # an un-escaped '>'
-        if (s/$opt_esc//o) {
-
-     # Found an un-escaped '>', which terminates the current tag and its options
-     # $optstring contains the options collected so far
-          $optstring .= $1;
-          $self->start_handler( $self, $element, &split_opts($optstring) );
-          $element = $optstring = '';
-
-          # Start a new scan after this
-          $newscan = 1;
-
-          # Handle possible left over stuff after the '>'
-          redo MAIN;
-        }
-        else {
-
-          # No terminating '>' in entire line -- start by reading input again
-          $optstring .= $_;
-          next INPUT;
-        }
-      }
-
-      # New scan from here -- scan afresh for tags.
-      # if no '<' found in line, skip line
-      unless (s/^(.*?)<//oi) {
-        $text .= $_;
-        next INPUT;
-      }
-
-      # We did find a '<' -- could be we have a possible supported tag next
-      # The text before the '<' needs to be processed.
-      $text .= $1;
-
-      $self->char_handler( $self, $text ) if length($text);
-      $text = '';
-
-      # Check if we have a supported tag
-      if (s/$tag_start//oi) {
-        $element = $1;
-
-        # After creating object of suitable type depending on the tag, check
-        # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-        if (s/$opt_esc//oi) {
-
-          # The tag definition ended on same line -- all options specified on
-          # one line
-          $optstring = $1;
-          $self->start_handler( $self, $element, &split_opts($optstring) );
-          $element = $optstring = '';
-
-        # And rescan the string for more tags -- Note that $newscan is unchanged
-        # from its value of 1, so we don't need to set it here
-          redo MAIN;
-        }
-        else {
-
-       # Tag definition did not end on one line -- Further input is consumed for
-       # looking for the tag ending
-          $newscan = 0;
-
-          # Start collection of the options string
-          $optstring = $_;
-        }
-
-      }
-      elsif (s/$tag_end//oi) {
-
-        # Check whether we have hit a tag-body-ending tag
-        # and if so, end the current object
-        $self->end_handler($self);
-
-        # And rescan string for more tags
-        redo MAIN;
-      }
-      elsif (s/^!--//) {
-
-        # Consume comments
-        do {
-          last if (s/.*?-->//);
-        } while (<$input>);
-        redo MAIN;
-      }
-      else {
-
-        # Unsupported tag hit -- croak hard
-        die "What is this: <$_>\n";
-      }
-    }
-  }
-  $self->final_handler($self);
-}
-
-=pod
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
@@ -323,30 +480,6 @@ Open file descriptor of a Bedrock XML file.
 
 =back
 
-=cut
-
-sub new {
-  my $class = shift;
-  my $file  = shift;
-  my $self  = bless {}, $class;
-
-  if ( ref($file) && ( -r $file || $file->can('getline') ) ) {
-    $self->{'input'} = $file;
-  }
-  else {
-    local (*FILE);
-    open( FILE, $file ) or die "Unable to open $file: $!\n";
-    $self->{'input'} = *FILE;
-  }
-
-  my $ref = $self->parse;
-
-  $self->{'input'}->close;
-  $ref;
-}
-
-=pod
-
 =head2 newFromString
 
  newFromString( string )
@@ -355,76 +488,6 @@ Returns a hash reference to the parsed Bedrock XML string. Returns
 undef if error parsing string or string is empty.
 
  my $ref =  Bedrock::XML->newFromString( '<object><scalar name="foo">test</scalar>' );
-
-=cut
-
-sub newFromString {
-  my $class  = shift;
-  my $string = shift;
-
-  return undef unless $string;
-
-  my $self   = bless {}, $class;
-  my $fd     = gensym;
-
-  tie *{$fd}, 'IO::Scalar', \$string;
-  $self->{'input'} = $fd;
-
-  # this is new behavior and may break something that might have been
-  # relying on getting an exception?
-  my $ref = eval { 
-    $self->parse;
-  };
-
-  $@ ? undef : $ref;
-}
-
-sub printxml {
-  my ( $fd, $id, $ref, $nspaces ) = @_;
-
-  $nspaces = 0 unless defined($nspaces);
-  my $spaces = ' ' x $nspaces;
-  if ( reftype($ref) eq 'HASH' ) {
-    print $fd $spaces, qq(<object $id>\n);
-    for my $key ( sort keys %{$ref} ) {
-      warn "object name cannot be null\n"
-	unless $key;
-      next unless $key;
-
-      my $value = $ref->{$key};
-      &quote_xml($key);
-      if ( ref($value) ) {
-        &printxml( $fd, qq(name="$key"), $value, $nspaces + 1 );
-      }
-      else {
-        &quote_xml($value);
-        print $fd $spaces, qq( <scalar name="$key">), $value, "</scalar>\n";
-      }
-    }
-    print $fd $spaces, "</object>\n";
-  }
-  elsif ( reftype($ref) eq 'ARRAY') {
-    print $fd $spaces, qq(<array $id>\n);
-    for my $value ( @{$ref} ) {
-      if ( ref($value) ) {
-        &printxml( $fd, '', $value, $nspaces + 2 );
-      }
-      else {
-        &quote_xml($value);
-        print $fd $spaces, " <scalar>", $value, "</scalar>\n";
-      }
-    }
-    print $fd $spaces, "</array>\n";
-  }
-  elsif ( ref($ref) ) {
-    die "Invalid reference type encountered: <$ref>";
-  }
-  else {
-    print $fd '';
-  }
-}
-
-=pod
 
 =head2 writeXML
 
@@ -453,28 +516,6 @@ Name of a file to which the serialized output will be written.
 
 If no file descriptor or file name is given, the serialized string is returned.
 
-=cut
-
-sub writeXML {
-  my $ref = shift;
-
-  if ( @_ == 1 ) {
-    if ( ref( $_[0] ) ) {
-      &printxml( $_[0], '', $ref );
-    }
-    else {
-      my $file = shift;
-      open( FILE, ">$file" ) or die "Unable to open $file: $!\n";
-      &printxml( *FILE, '', $ref );
-      close FILE;
-    }
-  }
-  else {
-    return writeXMLString( $ref );
-  }
-}
-
-=pod
 
 =head2 writeXMLString
 
@@ -482,27 +523,6 @@ sub writeXML {
 
 Returns the serialized Bedrock XML version of an object.
 
-=cut
-
-sub writeXMLString {
-  my $ref = shift;
-
-  my $string;
-
-  my $fd = gensym;
-  tie *{$fd}, 'IO::Scalar', \$string;
-
-  &printxml( $fd, '', $ref );
-
-  $string;
-}
-
-sub xpcroak {
-  my $self = shift;
-  die "Error encountered: @_";
-}
-
-=pod
 
 =head1 AUTHOR
 
@@ -511,51 +531,3 @@ Jay Sridhar
 =cut
 
 1;
-
-#
-# Revision 1.13  2012/06/13 13:39:26  eutl420
-# - added pod - finally
-#
-# Revision 1.12  2011/11/30 18:49:45  eutl420
-# - avoid writing XML with null names
-#
-# Revision 1.11  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.10  2011/09/09 18:29:42  eutl420
-# - allow the new constructor to accept a file handle
-#
-# Revision 1.9  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.8  2011/07/06 18:11:24  eutl420
-# - use logical or, not bitwise or ($2 || $3, not $2 | $2)
-#
-# Revision 1.7  2011/07/05 15:10:08  eutl420
-# - support for single quotes in XML options like name='foo' did not work, although the clear
-#   intent of the code was to support single quotes.  The regexp matching used an 'or' in two
-#   different matching groups - i.e. ((regexp)|(regexp)) but the subsequent assignment did not
-#   use the correct match group if it matched on $3 and not $2.  Hence the fix: $value = $2 | $3
-#
-# Revision 1.6  2010/11/29 15:57:52  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.5  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.4  2001/02/14 15:35:42  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.3  2000/11/09 19:12:03  sridhar
-# Kicked out usage of XML::Parser -- was giving SIGSEGV inside
-# mod_perl. Using a limited parser based on Bedrock's parser.
-#
-# Revision 1.2  2000/11/07 13:51:18  sridhar
-# Added methods for reading making an object from XML in string, and
-# writing XML to a string.
-#
-# Revision 1.1  2000/11/01 18:37:44  sridhar
-# Adding XML capability to Bedrock. Basically we have a class here which
-# can read and write arbitrary perl data structures in XML format.
-#
-#

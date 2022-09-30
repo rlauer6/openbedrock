@@ -1,134 +1,180 @@
 package BLM::Startup::SQLSession;
 
 use strict;
+use warnings;
 
-use DBI;
 use BLM::Startup::SessionManager;
-use File::Path;
+use Bedrock::Constants qw{:magic_numbers :booleans};
 use Bedrock::Dump;
+use DBI;
+use File::Path;
+use Log::Log4perl;
 use TagX::Log;
-use Log::Log4perl qw/:easy get_logger/;
 
-use vars qw ( @ISA %SQL );
+use parent qw( BLM::Startup::SessionManager );
 
-@ISA = qw( BLM::Startup::SessionManager );
+# SQL queries or this class variable should be supplied by the subclass...
 
-# the actual data for this class variable is supplied
-# by the subclass...
 our %SQL;
 
+use Readonly;
+
+Readonly our $BAD_QUERY   => "Unable to prepare SQL statement: %s\n%s";
+Readonly our $SQL_ERROR   => "Error executing SQL statement: %s\n%s";
+Readonly our $NOT_UNIQUE  => "Query found more than 1 row (found %s rows).\n";
+Readonly our $BIND_ERROR  => "Could not bind parameter %d (%s): %s\n";
+Readonly our $FETCH_ERROR => "Error extracting data from SQL query: %s\n";
+Readonly our $BAD_LOGIN   => "Unable to login user: %s\n";
+Readonly our $UPDATE_ERROR  => "Could not update settings for user [%s]\n";
+Readonly our $CONNECT_ERROR => "Could not connect to database %s: %s\n";
+Readonly our $DUPLICATE_USERNAME => "username exists\n";
+Readonly our $USERNAME_NOT_FOUND => "username does not exist\n";
+
+Readonly our $NO_DATASOURCE =>
+  "%s->CONNECT(): param 'data_source' must be specified in config\n";
+
+Readonly our $PASSWORD_CHANGE_ERROR =>
+  "Cannot change password for '%s': could not authenticate user.\n";
+
+########################################################################
 sub startSession {
-  my $self   = shift;
-  my $config = shift;
-  
+########################################################################
+  my ( $self, $config ) = @_;
+
   # we copy the SQL statements over from the subclass which defines
   # them and store them in this class instance...
   my $sql = {};
 
   foreach ( keys %SQL ) {
-    $sql->{$_}->{sql} = sprintf( $SQL{$_}->{sql}, $config->{table_name} );
+    $sql->{$_}->{sql}  = sprintf $SQL{$_}->{sql}, $config->{table_name};
     $sql->{$_}->{args} = $SQL{$_}->{args};
   }
 
   $self->{'sql'} = $sql;
-  $self->SUPER::startSession($config);
-} ## end sub startSession
 
+  return $self->SUPER::startSession($config);
+}
+
+########################################################################
 sub do_sql {
-  my $self    = shift;
-  my $what    = shift;
-  my %options = @_;
+########################################################################
+  my ( $self, $what, %options ) = @_;
 
   my $sql = $self->{'sql'}->{$what}->{sql};
   return 0 if !$sql;
 
   my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
 
-  DEBUG sub { "do_sql: $sql bindvars: " . join( ",", @args ) };
+  #DEBUG sub { "do_sql: $sql bindvars: " . join( ",", @args ) };
 
-  $self->_do_sql( $sql, @args );
-} ## end sub do_sql
+  return $self->_do_sql( $sql, @args );
+}
 
+########################################################################
 sub do_select_set {
-  my $self    = shift;
-  my $what    = shift;
-  my %options = @_;
-
+########################################################################
+  my ( $self, $what, %options ) = @_;
   my $sql = $self->{'sql'}->{$what}->{sql};
 
   my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
 
-  $self->_do_select_set( $sql, @args );
-} ## end sub do_select_set
+  return $self->_do_select_set( $sql, @args );
+}
 
+########################################################################
 sub do_select {
-  my $self    = shift;
-  my $what    = shift;
-  my %options = @_;
+########################################################################
+  my ( $self, $what, %options ) = @_;
 
   my $sql = $self->{'sql'}->{$what}->{sql};
 
   my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
 
-  $self->_do_select( $sql, @args );
-} ## end sub do_select
+  return $self->_do_select( $sql, @args );
+}
 
+########################################################################
 sub _do_sql {
-  my $self = shift;
-  my $stm  = shift;
+########################################################################
+  my ( $self, $stm, @args ) = @_;
 
   my $dbh = $self->{'dbh'};
 
   my $sth = $dbh->prepare($stm);
-  die "Unable to prepare SQL statement: $stm\n", $dbh->errstr, "\n"
+
+  die sprintf $BAD_QUERY, $stm, $dbh->errstr
     if !$sth;
 
-  for ( my $i = 1; $i <= @_; $i++ ) {
-    $sth->bind_param( $i, $_[ $i - 1 ] )
-      || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
-  }
+  _bind_args( $sth, @args );
 
   my $rows = $sth->execute;
-  die "Error executing SQL statement: $stm\n", $sth->errstr, "\n"
+
+  die sprintf $SQL_ERROR, $stm, $sth->errstr
     if !defined $rows;
-  $rows;
-} ## end sub _do_sql
 
+  return $rows;
+}
+
+########################################################################
 sub db_handle {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
+########################################################################
+  my ($obj) = @_;
 
-  $self->{'dbh'};
-} ## end sub db_handle
+  my $self = tied %{$obj};
 
+  return $self->{'dbh'};
+}
+
+########################################################################
 sub _do_select {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  my $rows  = $self->_do_select_set(@_);
-  my $nrows = scalar(@$rows);
-  die "Query found more than 1 row (found $nrows rows).\n" if $nrows > 1;
+  my $rows  = $self->_do_select_set(@args);
+  my $nrows = scalar @{$rows};
+
+  die sprintf $NOT_UNIQUE, $nrows
+    if $nrows > 1;
+
   return $rows->[0];
-} ## end sub _do_select
+}
 
-sub _do_select_set {
-  my $self = shift;
-  my $stm  = shift;
-  
-  my $dbh  = $self->{'dbh'};
+########################################################################
+sub _bind_args {
+########################################################################
+  my ( $sth, @bind_args ) = @_;
 
-  my $sth = $dbh->prepare($stm);
-  die "Unable to prepare SQL query: $stm\n", $dbh->errstr, "\n"
-    if !$sth;
+  my $bind_idx = 1;
 
-  get_logger->debug("statement: $stm\n" );
-  
-  for ( my $i=1; $i <= @_; $i++ ) {
-    $sth->bind_param( $i, $_[ $i - 1 ] )
-      || die "Could not bind parameter $i ($_[$i-1]): ", $sth->errstr, "\n";
+  foreach my $bind_arg (@bind_args) {
+    $sth->bind_param( $bind_idx, $bind_arg )
+      or die sprintf $BIND_ERROR, $bind_idx, $bind_arg, $sth->errstr;
+
+    $bind_idx++;
   }
 
+  return;
+}
+
+########################################################################
+sub _do_select_set {
+########################################################################
+  my ( $self, $stm, @args ) = @_;
+
+  my $dbh = $self->{'dbh'};
+
+  my $sth = $dbh->prepare($stm);
+
+  die $BAD_QUERY, $stm, $dbh->errstr
+    if !$sth;
+
+  Log::Log4perl->get_logger( ref $self )->debug("statement: $stm\n");
+
+  _bind_args( $sth, @args );
+
   my $success = $sth->execute;
-  die "Error executing SQL statement: $stm\n", $sth->errstr, "\n"
+
+  die $SQL_ERROR, $stm, $sth->errstr
     if !defined $success;
 
   my @rows;
@@ -137,11 +183,11 @@ sub _do_select_set {
     push @rows, $ref;
   }
 
-  die "Error extracting data from SQL query: ", $sth->errstr, "\n"
+  die $FETCH_ERROR, $sth->errstr
     if $sth->err;
 
   return \@rows;
-} ## end sub _do_select_set
+}
 
 # +---------------------------------------------------------------+
 # | ->CONNECT( %options )                                         |
@@ -154,22 +200,23 @@ sub _do_select_set {
 # | Returns: none                                                 |
 # +---------------------------------------------------------------+
 sub CONNECT {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
+
+  my %config = %{ $options{config} };
+
+  my $dsn = $config{data_source};
 
   # Get the required database params
-  die ref($self),
-    "->CONNECT(): param `data_source' must be specified in config\n"
-    if !$options{config}->{data_source};
+  die sprintf $NO_DATASOURCE, ref $self
+    if !$dsn;
 
-  $self->{dbh} = DBI->connect(
-    @{ $options{config} }{qw(data_source username password)} );
+  $self->{dbh} = DBI->connect( $dsn, @config{qw(username password)} );
 
-  die "Could not connect to database `"
-    . $options{config}->{data_source}
-    . "': ", $DBI::errstr, "\n"
+  die sprintf $CONNECT_ERROR, $dsn, $self->{dbh}->errstr
     if !$self->{dbh};
-} ## end sub CONNECT
+
+  return;
+}
 
 # +---------------------------------------------------------------+
 # | ->DISCONNECT( %options )                                      |
@@ -182,9 +229,13 @@ sub CONNECT {
 # | Returns: none                                                 |
 # +---------------------------------------------------------------+
 sub DISCONNECT {
-  my $self = shift;
+  my ($self) = @_;
 
-  $self->{dbh}->disconnect if $self->{dbh};
+  if ( $self->{dbh} && $self->{dbh}->ping ) {
+    $self->{dbh}->disconnect;
+  }
+
+  return;
 }
 
 # +---------------------------------------------------------------+
@@ -198,11 +249,10 @@ sub DISCONNECT {
 # | Returns: reference to session data                            |
 # +---------------------------------------------------------------+
 sub FETCH_LOGIN_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   return $self->do_select( 'FETCH_LOGIN_SESSION', %options );
-} ## end sub FETCH_LOGIN_SESSION
+}
 
 # +---------------------------------------------------------------+
 # | ->FETCH_LOGIN_SESSION_BY_USERNAME( %options )                 |
@@ -215,11 +265,10 @@ sub FETCH_LOGIN_SESSION {
 # | Returns: reference to session data                            |
 # +---------------------------------------------------------------+
 sub FETCH_LOGIN_SESSION_BY_USERNAME {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   return $self->do_select( 'FETCH_LOGIN_SESSION_BY_USERNAME', %options );
-} ## end sub FETCH_LOGIN_SESSION_BY_USERNAME
+}
 
 # +---------------------------------------------------------------+
 # | ->KILL_SESSION( %options )                                    |
@@ -231,11 +280,10 @@ sub FETCH_LOGIN_SESSION_BY_USERNAME {
 # | Returns: 1 if delete is successful                            |
 # +---------------------------------------------------------------+
 sub KILL_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   return $self->do_sql( 'KILL_SESSION', %options );
-} ## end sub KILL_SESSION
+}
 
 # +---------------------------------------------------------------+
 # | ->STORE_LOGIN_SESSION( %options )                             |
@@ -259,18 +307,19 @@ sub KILL_SESSION {
 # | Returns: 1 if successfully updated session data               |
 # +---------------------------------------------------------------+
 sub STORE_LOGIN_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
-  $options{expires} = 0 if !exists $options{expires};
+  if ( !exists $options{expires} ) {
+    $options{expires} = 0;
+  }
 
   if ( $options{username} ) {
-    $self->do_sql( 'STORE_LOGIN_SESSION_BY_USERNAME', %options );
+    return $self->do_sql( 'STORE_LOGIN_SESSION_BY_USERNAME', %options );
   }
   else {
-    $self->do_sql( 'STORE_LOGIN_SESSION_BY_LOGIN_ID', %options );
+    return $self->do_sql( 'STORE_LOGIN_SESSION_BY_LOGIN_ID', %options );
   }
-} ## end sub STORE_LOGIN_SESSION
+}
 
 # +---------------------------------------------------------------+
 # | ->UPDATE_LOGIN_SESSION( %options )                            |
@@ -287,15 +336,15 @@ sub STORE_LOGIN_SESSION {
 # | Returns: 1 if successfully updated session data               |
 # +---------------------------------------------------------------+
 sub UPDATE_LOGIN_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   my $rows = $self->do_sql( 'UPDATE_LOGIN_SESSION', %options );
-  die "Could not update settings for user `" . $options{username} . "'\n"
+
+  die sprintf $UPDATE_ERROR, $options{username}
     if !$rows == 1;
 
-  $rows;
-} ## end sub UPDATE_LOGIN_SESSION
+  return $rows;
+}
 
 # +---------------------------------------------------------------+
 # | ->FETCH_SESSION( %options )                                   |
@@ -308,13 +357,12 @@ sub UPDATE_LOGIN_SESSION {
 # | Returns: reference to session data if successful              |
 # +---------------------------------------------------------------+
 sub FETCH_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
-  get_logger->debug("fetching session\n");
+  Log::Log4perl->get_logger( ref $self )->debug("fetching session\n");
 
-  $self->do_select( 'FETCH_SESSION', %options );
-} ## end sub FETCH_SESSION
+  return $self->do_select( 'FETCH_SESSION', %options );
+}
 
 # +---------------------------------------------------------------+
 # | ->SESSION_CLEANUP( %options )                                 |
@@ -327,17 +375,16 @@ sub FETCH_SESSION {
 # | Returns: reference to session data if successful              |
 # +---------------------------------------------------------------+
 sub SESSION_CLEANUP {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
-  DEBUG sub {
-    Bedrock::Dump::compact( $options{config} );
-  };
+  #DEBUG sub {
+  #  Bedrock::Dump::compact( $options{config} );
+  #};
 
   if ( $self->cleanup_session_dir ) {
     my $session_dir = $self->{'ctx'}->{'CONFIG'}->{'SESSION_DIR'};
 
-    DEBUG "Session dir: $session_dir";
+    # DEBUG "Session dir: $session_dir";
 
     if ( -d "$session_dir" ) {
       my $session_ids = $self->FETCH_EXPIRED_SESSIONS(%options);
@@ -346,25 +393,26 @@ sub SESSION_CLEANUP {
         my $id = $session->[0];
         next if !$id;
 
-        DEBUG "Removing $session_dir/$id";
+        #DEBUG "Removing $session_dir/$id";
 
-        rmtree("$session_dir/$id")
-          if -d "$session_dir/$id";
-      } ## end foreach my $session ( @{$session_ids...})
-    } ## end if ( -d "$session_dir")
-  } ## end if ( $self->cleanup_session_dir)
+        if ( -d "$session_dir/$id" ) {
+          rmtree("$session_dir/$id");
+        }
+      }
+    }
+  }
 
   # remove data from login sessions
   if ( exists $options{config}->{cleanup_login_sessions}
-    && $options{config}->{cleanup_login_sessions} =~ /y/i ) {
+    && $options{config}->{cleanup_login_sessions} =~ /y/xsmi ) {
     $self->do_sql( 'LOGIN_SESSION_SANITIZE', %options );
   }
   else {
     $self->do_sql( 'LOGIN_SESSION_CLEANUP', %options );
   }
 
-  $self->do_sql( 'SESSION_CLEANUP', %options );
-} ## end sub SESSION_CLEANUP
+  return $self->do_sql( 'SESSION_CLEANUP', %options );
+}
 
 # +---------------------------------------------------------------+
 # | ->FETCH_EXPIRED_SESSIONS( %options )                          |
@@ -376,11 +424,10 @@ sub SESSION_CLEANUP {
 # | Returns: reference to array of session ids if successful      |
 # +---------------------------------------------------------------+
 sub FETCH_EXPIRED_SESSIONS {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
-  $self->do_select_set( 'FETCH_EXPIRED_SESSIONS', %options );
-} ## end sub FETCH_EXPIRED_SESSIONS
+  return $self->do_select_set( 'FETCH_EXPIRED_SESSIONS', %options );
+}
 
 # +---------------------------------------------------------------+
 # | ->STORE_SESSION( %options )                                   |
@@ -398,13 +445,13 @@ sub FETCH_EXPIRED_SESSIONS {
 # | Returns: none                                                 |
 # +---------------------------------------------------------------+
 sub STORE_SESSION {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   $options{expires}
     = $options{expires}
     || $options{config}->{'cookie'}->{'expiry_secs'}
-    || 86400;
+    || $SECONDS_IN_A_DAY;
+
   $options{prefs}     = $options{prefs}     || $options{data}->{prefs};
   $options{firstname} = $options{firstname} || $options{data}->{firstname};
   $options{lastname}  = $options{lastname}  || $options{data}->{lastname};
@@ -412,33 +459,36 @@ sub STORE_SESSION {
 
   if ( $options{new} ) {
     my $rows = $self->do_sql( 'STORE_SESSION_INSERT', %options );
-    
-    DEBUG sub { "Inserting session [" . $options{session} . "]: rows = [$rows]" };
+
+    #DEBUG
+    #  sub { "Inserting session [" . $options{session} . "]: rows = [$rows]" };
 
     if ( $options{'expires'} ) {
       my $rows = $self->do_sql( 'UPDATE_SESSION', %options );
-      DEBUG sub { "Updated expiry date for session ["
-                    . $options{session}
-                    . "]: rows = [$rows]"
-                  };
+      # DEBUG sub {
+      #   "Updated expiry date for session ["
+      #     . $options{session}
+      #     . "]: rows = [$rows]";
+      # };
 
-    } ## end if ( $options{'expires'...})
-  } ## end if ( $options{new} )
+    }
+  }
   else {
     my $rows = $self->do_sql( 'STORE_SESSION_UPDATE', %options );
 
-    DEBUG sub {
-      'Updated session ['
-        . $options{session}
-        . "] with\n"
-        . $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}
-        . "\nBind values are ("
-        . @options{qw{expires prefs firstname lastname email session}}
-        . "]"
-       };
+    #DEBUG sub {
+    #  'Updated session ['
+    #    . $options{session}
+    #    . "] with\n"
+    #    . $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}
+    #    . "\nBind values are ("
+    #    . @options{qw{expires prefs firstname lastname email session}} . "]";
+    #};
 
-  } ## end else [ if ( $options{new} ) ]
-} ## end sub STORE_SESSION
+  }
+
+  return;
+}
 
 # +---------------------------------------------------------------+
 # | ->REGISTER( %options )                                        |
@@ -456,15 +506,14 @@ sub STORE_SESSION {
 # | Returns: 1 if successfully added user                         |
 # +---------------------------------------------------------------+
 sub REGISTER {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   if ( $self->do_select( 'LOOKUP_USER', %options ) ) {
-    die "username exists\n";
+    die $DUPLICATE_USERNAME;
   }
 
   return $self->do_sql( 'REGISTER', %options );
-} ## end sub REGISTER
+}
 
 # +---------------------------------------------------------------+
 # | ->REMOVE_USER( %options )                                     |
@@ -477,15 +526,14 @@ sub REGISTER {
 # | Returns: 1 if successfully added user                         |
 # +---------------------------------------------------------------+
 sub REMOVE_USER {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   if ( !$self->do_select( 'LOOKUP_USER', %options ) ) {
-    die "username does not exist\n";
+    die $USERNAME_NOT_FOUND;
   }
 
   return $self->do_sql( 'REMOVE_USER', %options );
-} ## end sub REMOVE_USER
+}
 
 # +---------------------------------------------------------------+
 # | ->UPDATE_LOGIN_PASSWORD( %options )                           |
@@ -502,22 +550,17 @@ sub REMOVE_USER {
 # | Returns: 1 if successfully added user                         |
 # +---------------------------------------------------------------+
 sub UPDATE_LOGIN_PASSWORD {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   $options{password} = $options{password}->[0];
 
   my $rows = $self->do_sql( 'UPDATE_LOGIN_PASSWORD', %options );
 
-  die "Cannot change password for `"
-    . $options{username}
-    . "': could not authenticate user.\n"
-    . "session: "
-    . $options{session}
-    . "username: "
-    . $options{username}
-    if $rows == 1;
-} ## end sub UPDATE_LOGIN_PASSWORD
+  die $PASSWORD_CHANGE_ERROR, $options{username}
+    if $rows != 1;
+
+  return $rows;
+}
 
 # +---------------------------------------------------------------+
 # | ->LOGOUT( %options )                                          |
@@ -535,8 +578,7 @@ sub UPDATE_LOGIN_PASSWORD {
 # | Returns: 1 if successfully added user                         |
 # +---------------------------------------------------------------+
 sub LOGOUT {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   # Expire the session (either login or anonymous)
   if ( $options{username} ) {
@@ -545,7 +587,9 @@ sub LOGOUT {
   else {
     $self->do_sql( 'LOGOUT_ANON', %options );
   }
-} ## end sub LOGOUT
+
+  return;
+}
 
 # +---------------------------------------------------------------+
 # | ->LOGIN( %options )                                           |
@@ -559,18 +603,18 @@ sub LOGOUT {
 # | Returns: reference to session data if successful              |
 # +---------------------------------------------------------------+
 sub LOGIN {
-  my $self    = shift;
-  my %options = @_;
+  my ( $self, %options ) = @_;
 
   my $aref = $self->do_select( 'LOGIN', %options );
 
-  die "Unable to login `"
-    . $options{username}
-    . "': invalid username/password.\n"
-    if !defined($aref);
+  die $BAD_LOGIN, $options{username}
+    if !defined $aref;
 
   return $aref;
-
-} ## end sub LOGIN
+}
 
 1;
+
+__DATA__
+
+

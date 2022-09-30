@@ -25,116 +25,485 @@ package Bedrock::Config;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION);
+use Bedrock::Dump;
+use Bedrock::Serializer qw{ evolve devolve};
+use Bedrock::XML;
+
+use Carp;
+use English qw{ -no_match_vars };
+use File::Basename;
+use JSON::PP qw{ decode_json encode_json };
+use List::Util qw{ pairs };
+use Scalar::Util qw{ reftype };
+use YAML qw{ LoadFile Dump };
+
+use parent qw{ Exporter Bedrock::Hash };
+
+our @EXPORT_OK = qw{is_array is_hash is_scalar};
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+
+# Note: Logging is not used in this module since this class may be
+# called prior to logging being configured. Bedrock::Config is used
+# to get configuration information, which includes logging
+# configuration so it is premature to assume logging is available.
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $file ) = @_;
+
+  $class = ref $class || $class;
+
+  my $self = $file ? _load_config($file) : {};
+  $self = bless $self, $class;
+
+  return $self;
 }
 
-use IO::File;
-use File::Basename;
+########################################################################
+sub newFromXML {  ## no critic (NamingConventions::Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
 
-use Bedrock::XML;
-require JSON::PP;
-use YAML qw/LoadFile Dump/;
-use Bedrock::Dump;
-use Data::Dumper;
-use Scalar::Util qw/reftype/;
-use Bedrock::Serializer qw/evolve devolve/;
+  carp 'deprecated: use new() instead.';
 
-use parent qw/Bedrock::Hash/;
+  return $self->new(@args);
+}
 
-# Note: 'warn' is used instead of a logging function in this module,
-# since this function may be called prior to logging being configured
-# - Bedrock::Config is used to get configuration information, which
-# includes logging configuration thus its premature to assume logging
-# is available.
+########################################################################
+sub newFromString {  ## no critic (NamingConventions::Capitalization)
+########################################################################
+  my ( $class, @args ) = @_;
 
-sub new {
-  my $class = shift;
-  $class = ref($class) || $class;
+  $class = ref $class || $class;
 
-  my $file = shift;
-  
-  $file = &_locate_file($file)
-    if $file;
+  my $self = Bedrock::XML->newFromString(@args);
 
-  my $self;
-
-  my $this = $file;
-  
-  for ($this) {
-    
-    /\.xml$/ && do {
-      $self = Bedrock::XML->new($file);
-
-      $self->{_config_path} = $file;
-      last;
-    };
-
-    /\.json$/ && do {
-      local $/;
-      my $json;
-      
-      open (my $fh, '<', $file)
-        or die "could not open $file for reading";
-
-      $json = <$fh>;
-      
-      close $fh;
-      
-      $self = JSON::PP->new->utf8->decode($json);
-      $self->{_config_path} = $file;
-      
-      last;
-    };
-
-    /\.yaml$/ && do {
-
-      $self = LoadFile($file);
-      $self->{_config_path} = $file;
-      
-      last;
-    };
-      
-    $self = {};
-  }
-  
   return bless $self, $class;
 }
 
-# misnamed
-sub newFromXML { 
-  warn "deprecated: no need to use this! use new() instead.\n";
-  goto &new;
-}
-
-sub newFromString {
-  my $class = shift;
-  $class = ref($class) || $class;
-  my $self = Bedrock::XML->newFromString(shift);
-
-  bless $self, $class;
-}
-
+########################################################################
 sub dbnames {
-  my $self = shift;
+########################################################################
+  my (@args) = @_;
 
-  if ( @_ ) {
-    $self->{'_dbnames'} = shift;
+  return _set_get( 'dbnames', @args );
+}
+
+########################################################################
+sub get_module_config {
+########################################################################
+  my ( $self, $module_name ) = @_;
+
+  my $modules = $self->{MODULES};
+
+  my $config;
+
+  if ( !$module_name ) {
+    $config = $modules;
+  }
+  elsif ( $modules && reftype($modules) eq 'ARRAY' ) {
+    foreach my $m ( @{$modules} ) {
+      next if !$m || reftype($m) ne 'HASH';
+
+      if ( $m->{module} =~ /$module_name$/xsmi ) {
+        $config = $m->{config};
+        last;
+      }
+    }
   }
 
-  $self->{'_dbnames'};
+  return $config;
 }
+
+########################################################################
+sub locate_file {
+########################################################################
+  goto &_locate_file;
+}
+
+########################################################################
+sub merge_config {
+########################################################################
+  my ( $self, $config ) = @_;
+
+  return $self
+    if !$config;
+
+  if ($config) {
+
+    # merge source-config with master
+    foreach my $key ( keys %{$config} ) {
+      next if $key eq 'MODULES';
+
+      $self->{$key} = $config->{$key};
+    }
+
+    # merge modules separately
+    $self->merge_modules($config);
+  }
+
+  return $self;
+}
+
+########################################################################
+sub get_module {
+########################################################################
+  my ($self) = @_;
+
+  return $self->{MODULES};
+}
+
+########################################################################
+sub is_array {
+########################################################################
+  my ($thing) = @_;
+
+  return _is( $thing, 'ARRAY' );
+}
+
+########################################################################
+sub is_hash {
+########################################################################
+  my ($thing) = @_;
+
+  return _is( $thing, 'HASH' );
+}
+
+########################################################################
+sub is_scalar {
+########################################################################
+  my ($thing) = @_;
+
+  return !ref $thing;
+}
+
+########################################################################
+sub merge_modules {
+########################################################################
+  my ( $self, $config ) = @_;
+
+  my $config_modules = $config->{MODULES};
+  my $modules        = $self->{MODULES};
+
+  if ( is_array($config_modules) && @{$config_modules} ) {
+
+    if ( is_array($modules) && @{$modules} ) {
+      # use the binding names to create a merged hash of modules
+      my %merged_modules = map { ( $_->{binding}, $_ ); } @{$modules};
+
+      # possible overrwite modules from source
+      foreach my $m ( @{$config_modules} ) {
+        $merged_modules{ $m->{binding} } = $m;
+      }
+
+      $self->{MODULES} = [ values %merged_modules ];
+    }
+    else {
+      $self->{MODULES} = $config_modules;
+    }
+  }
+
+  return $self;
+}
+
+########################################################################
+sub merge {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  croak "no such file ($file) or empty"
+    if !$file || !-s $file;
+
+  my $config = eval { return Bedrock::XML->new($file); };
+
+  croak "could not read $file\n$EVAL_ERROR"
+    if !$config;
+
+  return $self->merge_config($config);
+}
+
+########################################################################
+sub to_json {
+########################################################################
+  my ($self) = @_;
+
+  return JSON::PP->new->utf8->pretty->encode( devolve $self);
+}
+
+########################################################################
+sub to_yaml {
+########################################################################
+  my ($self) = @_;
+
+  return Dump( devolve $self);
+}
+
+########################################################################
+sub to_xml {
+########################################################################
+  my ($self) = @_;
+
+  return Bedrock::XML::writeXMLString($self);
+}
+
+########################################################################
+sub XML {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $in_out = shift @args;
+
+  croak q{Usage: $config.XML('in|out', option, value, ...)}  ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
+    if $in_out !~ /^in|out$/xsm;
+
+  croak 'XML config object not set in tagx.xml'
+    if !$self->{XML}->{$in_out};
+
+  my $xml_config = $self->{XML}->{$in_out};
+
+  # set or get values from XML config object
+  my $last_value;
+
+  if ( @args == 1 || @args % 2 ) {
+    $last_value = $xml_config->{ $args[0] };
+  }
+  else {
+
+    foreach my $p ( pairs @args ) {
+      my ( $key, $value ) = @{$p};
+
+      $last_value = $xml_config->{$key};
+
+      $xml_config->{$key} = $value;
+    }
+  }
+
+  return $last_value;
+}
+
+# + --------------- +
+# | PRIVATE METHODS |
+# + --------------- +
+
+########################################################################
+sub _set_get {
+########################################################################
+  my ( $key, $self, @args ) = @_;
+
+  if (@args) {
+    $self->{$key} = $args[0];
+  }
+
+  return $self->{$key};
+}
+
+########################################################################
+{
+  my %config_readers = (
+    xml => sub {
+      my ($file) = @_;
+      return Bedrock::XML->new($file);
+    },
+    json => sub {
+      my ($file) = @_;
+      local $RS = undef;
+
+      my $json;
+
+      open my $fh, '<', $file
+        or croak "could not open $file for reading";
+
+      $json = <$fh>;
+
+      close $fh;
+
+      return decode_json($json);
+    },
+
+    yaml => sub {
+      my ($file) = @_;
+      return LoadFile($file);
+    },
+
+  );
+
+########################################################################
+  sub _load_config {
+########################################################################
+    my ($file) = @_;
+
+    $file = _locate_file($file);
+
+    my $ext;
+
+    if ( $file =~ /[.](xml|json|yaml)$/xsm ) {
+      $ext = $1;
+    }
+
+    croak 'config files must have .xml, .json or .yaml extension'
+      if !$ext;
+
+    my $config = eval { return $config_readers{$ext}->($file); };
+
+    croak "could not load $file\n$EVAL_ERROR"
+      if !$config;
+
+    $config->{_config_path} = $file;
+
+    return $config;
+  }
+}
+
+########################################################################
+sub _locate_file {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  if ( !ref $self ) {
+    $file = $self;
+    undef $self;
+  }
+
+  my $path;
+
+  # search for config files unless absolute file
+  if ( $file && $file =~ m{^/}xsm ) {
+    $path = $file;
+  }
+  elsif ( $file && !-e $file ) {
+
+    # search for config file in path
+    my @search_paths = (
+      $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
+      '@libdir@/bedrock/config',  ## no critic  ValuesAndExpressions::RequireInterpolationOfMetachars
+    );
+
+    # remove undefined and ''
+    @search_paths = map { $_ ? $_ : () } @search_paths;
+
+    # add corresponding config.d sub-directories to search
+    push @search_paths, map { /config$/xsm ? "$_.d" : () } @search_paths;
+
+    for my $dir (@search_paths) {
+      if ( -d "$dir" && -e "$dir/$file" ) {
+        $path = "$dir/$file";
+        last;
+      }
+    }
+  }
+
+  croak "_locate_file: Config file $file not found"
+    if !$path;
+
+  croak "_locate_file: Cannot open config file $path for reading."
+    if !-r $path;
+
+  return $path;
+}
+
+########################################################################
+sub _is {
+########################################################################
+  my ( $thing, $type ) = @_;
+
+  return ref $thing && reftype($thing) eq $type;
+}
+
+1;
+
+__END__
 
 =pod
 
-=head2 _locate_file
+=head1 NAME
 
- _locate_file( file )
+Bedrock::Config
 
-Searches the Bedrock path hierarchy looking for the specified
+=head1 SYNOPSIS
+
+ use Bedrock::BedrockConfig;
+ Bedrock::Config->import(qw{is_array is_hash});
+
+ my $config = Bedrock::Config->new($config_file);
+
+=head1 DESCRIPTION
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+=head2 dbnames
+
+=head2 locate_file
+
+=head2 merge
+
+=head2 merge_config
+
+=head2 merge_modules
+
+=head2 newFromString
+
+=head2 newFromXML
+
+=head2 to_json
+
+ to_json(object)
+
+=head2 to_xml
+
+ to_xml(object)
+
+=head2 to_yaml
+
+ to_yaml(object)
+
+=head2 get_module_config
+
+ get_module_config([module-name])
+
+Returns a startup module's configuration object or the entire array of
+module configurations.
+
+=cut
+
+=head2 XML
+
+ XML([in|out], key)
+ XML([in|out], key, value, key, value, ...)
+
+Get or set values from the XML configuration object. The first
+parameter indicates either the XMLin or XMLout configuration.
+
+  <!-- XML Options -->
+  <object name="XML">
+    <scalar name="handler">Bedrock::Serializer::XML</scalar>
+    <object name="out">
+      <scalar name="NoAttr">1</scalar>
+      <scalar name="KeepRoot">0</scalar>
+      <scalar name="RootName">response</scalar>
+      <scalar name="NoSort">1</scalar>
+      <array name="KeyAttr"></array>
+      <scalar name="XMLDecl">1</scalar>
+      <scalar name="NoEscape">1</scalar>
+    </object>
+    <object name="in">
+      <scalar name="NoAttr">0</scalar>
+      <scalar name="KeepRoot">1</scalar>
+      <array name="KeyAttr"></array>
+    </object>
+  </object>
+
+=head2 locate_file
+
+ locate_file( file )
+ $self->locate_file( file )
+
+Searches the Bedrock config path hierarchy looking for the specified
 configuration file. If any of the directories specfied ends with
-"config" then the C<_locate> will also look in directories the
+"config" then C<locate_file> will also look in the
 C<config.d> sub-directory.
 
 =over 5
@@ -147,172 +516,10 @@ C<config.d> sub-directory.
 
 =back
 
-=cut
+=head1 AUTHOR
 
-sub _locate_file {
-  my ($self, $file) = @_;
-  
-  if ( ! ref($self) ) {
-    $file = $self;
-    undef $self;
-  }
-  
-  my $path;
-  
-  if ( $file && $file =~ m!^/! ) {
-    # No search for config file if filename specified with path
-    $path = $file;
-  }
-  elsif ( $file && !-e $file ) {
-    
-    # search for config file in path
-    my @search_paths = (@ENV{qw/CONFIG_PATH BEDROCK_CONFIG_PATH/}, '@libdir@/bedrock/config');
-    @search_paths = grep { defined $_ && /./ } @search_paths;
-    push @search_paths, map { /config$/ ? "$_.d" : () } @search_paths;
-    
-    for my $dir (@search_paths) {
-      if ( -d "$dir" && -e "$dir/$file" ) {
-        $path = "$dir/$file";
-        last;
-      }
-    }
-  }
+Rob Lauer - <rlauer6@comcast.net>
 
-  if ($path) {
-    # found it but it's unreadable
-    die "_locate_file: Cannot open config file $path for reading."
-      if !-r $path;
-  }
-  else {
-    die "_locate_file: Config file $file not found";
-  }
-  
-  return $path;
-}
-
-sub merge_config {
-  my ($self, $config) = @_;
-
-  if ( $config ) {
-    
-    # merge source-config with master
-    map { $self->{$_} = $config->{$_} if  $_ ne 'MODULES'; } keys %$config;
-    
-    # merge modules separately
-    $self->merge_modules($config);
-  }
-  
-  return $self;
-}
-
-sub merge_modules {
-  my ($self, $config) = @_;
-
-  # no modules in source or config
-  unless ( $self->{MODULES} && @{$self->{MODULES}} ) {
-    $self->{MODULES} = $config->{MODULES}
-      if exists $config->{MODULES};
-  }
-  elsif ( exists $config->{MODULES} && @{$config->{MODULES}} ) {
-    # get the binding names for existing modules as these should be
-    # unique and use these to create a hash of all module configurations
-    my %modules;
-    map { $modules{$_->{binding}} = $_; } @{$self->{MODULES}};
-    
-    # possible overrwite modules from source
-    map { $modules{$_->{binding}} = $_; } @{$config->{MODULES}};
-    
-    $self->{MODULES} = [ values %modules ];
-  }
-
-  return $self;
-}
-
-sub merge {
-  my ($self, $file) = @_;
-
-  if ( -s $file ) {
-    my $config = Bedrock::XML->new($file);
-    $self->merge_config($config);
-  }
-
-  return $self;
-}
-
-sub to_json {
-  my ($self) = @_;
-
-  return JSON::PP->new->utf8->pretty->encode(devolve $self);
-}
-
-sub to_yaml {
-  my ($self) = @_;
-
-  return Dump $self;
-}
-
-sub to_xml {
-  my ($self) = @_;
-  
-  return Bedrock::XML::writeXMLString($self);
-}
-
-sub XML {
-  my $self = shift;
-  my $in_out = shift;
-
-  warn ref($self) . "::XML() has been deprecated, consider using <var --xml>\n";
-
-  die "Usage: \$config.XML('in|out', option, value, ...)"
-    unless $in_out =~ /^(in|out)$/;
-
-  die "XML config object not set in tagx.xml"
-    unless $self->{XML}->{$in_out};
-
-  if ( @_ == 1 || @_ % 2 ) {
-    return $self->{XML}->{$in_out}->{ $_[0] };
-  }
-  else {
-    my $config = $self->{XML}->{$in_out};
-    my $last;
-    my %options = @_;
-
-    while ( my ( $opt, $value ) = each %options ) {
-      $last = $config->{$opt};
-      $config->{$opt} = $value;
-    }
-
-    return $last;
-  }
-}
-
-=pod
-
-=head2 get_module_config
-
- get_module_config([module-name])
-
-Returns a startup module's configuration object or the entire array of
-module configurations.
+=head1 SEE ALSO
 
 =cut
-
-sub get_module_config {
-  my ($self, $module_name) = @_;
-
-  return $self->{MODULES}
-    if ! $module_name;
-  
-  return undef
-    if $self->{MODULES} || reftype($self->{MODULES}) ne 'ARRAY';
-  
-  foreach my $m (@{$self->{MODULES}}) {
-    return $m->{config}
-      if $m && reftype($m) eq 'HASH' && $m->{module} =~ /^$module_name$/i;
-  }
-  
-  return undef;
-}
-
-1;
-

@@ -24,45 +24,659 @@ use strict;
 use warnings;
 
 BEGIN {
-  use Exporter ();
-  @Bedrock::Context::ISA = qw (Exporter);
+  use Bedrock::BedrockConfig;
+  Bedrock::Config->import(qw{is_hash is_array});
 }
 
-use Bedrock;
-use Bedrock::BedrockConfig;
-use Bedrock::Log;
-use Bedrock::Dump;
+use parent qw{Exporter};
+
 use Bedrock::Array;
-
-use Text::URLEncode;
-
-use Carp;
+use Bedrock::Constants qw{:chars};
+use Bedrock::Dump;
+use Bedrock::Log;
+use Bedrock;
 use CGI;
+use Carp;
 use Crypt::CBC;
 use Crypt::DES;
+use Data::Dumper;
 use File::Basename;
 use IO::File;
+use List::Util qw{ none pairs };
+use Scalar::Util qw{ reftype };
+use Text::URLEncode;
 
-use Scalar::Util qw/reftype/;
+use Readonly;
+
+Readonly my $UPLOAD_BUFFER_SIZE => 4 * 1024;
+Readonly my $UPLOAD_FILE_PERMS  => oct 777;
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  die "$class->new(): CONFIG or CONFIG_FILE parameter must be specified."
+    if !$args{'CONFIG'} && !$args{'CONFIG_FILE'};
+
+  die "$class->new(): APACHE_HANDLER parameter must be specified."
+    if !$args{'APACHE_HANDLER'};
+
+  my $self = bless {}, $class;
+
+  my $config;
+
+  if ( $args{'CONFIG'} ) {
+    $config = $self->config( $args{'CONFIG'} );
+  }
+  else {
+    $config = $self->config( Bedrock::Config->new( $args{'CONFIG_FILE'} ) );
+  }
+
+  # FIXME: we need to replace the notion of "APACHE_HANDLER" in favor
+  # of the request object and detangle code from knowing about
+  # upstream HTTP request initiators...i.e. could be Apache, Nginx, etc
+  $self->request( $args{'APACHE_HANDLER'} );
+  $self->apache_handler( $args{'APACHE_HANDLER'} );
+
+  # ditto for response...
+  if ( $args{'OUTPUT_HANDLER'} ) {
+    $self->output_handler( $args{'OUTPUT_HANDLER'} );
+    $self->response( $args{'OUTPUT_HANDLER'} );
+  }
+  else {
+    $self->output_handler( $args{'APACHE_HANDLER'} );
+    $self->response( $self->request );
+  }
+
+  # At some point it was decided not to use the Apache error_log to
+  # log message, so where should Bedrock startup messages being going?
+  #
+  # This logger records all non-page events...primarily used for
+  # starting up Bedrock. Once a page is being processed, Bedrock uses
+  # the TagX::Log module.
+
+  #  eval {
+  #    Bedrock::Log::StartLogger(
+  #      LOGDIR    => $config->{'LOGDIR'},
+  #      LOGLEVEL  => $config->{'LOGLEVEL'},
+  #      LOGFORMAT => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
+  #      LOGFILE   => $config->{'LOGFILE'}   || 'bedrock.log'
+  #    );
+  #  };
+
+  if ( !$self->logger ) {
+    require Log::Log4perl;
+
+    if ( !Log::Log4perl->initialized() ) {
+      use vars qw{$INFO};
+
+      eval {
+        Log::Log4perl->import(qw{:easy});
+        Log::Log4perl->easy_init( $self->{log_level} || $INFO );
+      };
+    }
+
+    $self->logger( Log::Log4perl->get_logger( ref $self ) );
+  }
+
+  return $self;
+}
+
+{
+  ## no critic (RequireArgUnpacking)
+  sub debug { return shift->logger->debug(@_); }
+  sub info  { return shift->logger->info(@_); }
+  sub warn  { return shift->logger->warn(@_); }  ## no critic (ProhibitBuiltinHomonyms)
+  sub error { return shift->logger->error(@_); }
+}
+
+########################################################################
+sub upload_file {
+########################################################################
+  my ( $self, $form_var, @args ) = @_;
+
+  my $options = {};
+
+  my $fh = $self->cgi->param($form_var);
+
+  my $platform = $self->cgi->param('platform');
+
+  die 'upload_file upload error: ', $self->cgi->cgi_error() if !$fh;
+
+  if ( is_hash( $args[0] ) ) {
+    $options = $args[0];
+  }
+  else {
+    $options = {@args};
+  }
+
+  $options->{path} //= $self->config->{UPLOAD_PATH} // '/tmp';
+
+  $self->debug( 'upload_file options: ' . Bedrock::Dump::compact($options) );
+
+  my $upload_content_type = $self->cgi->uploadInfo($fh)->{'Content-Type'};
+  $options->{'content-type'} //= $options->{'Content-type'};
+
+  # check to see if this is a valid mime-type to be uploaded
+  if ( $options->{'content-type'} ) {
+
+    my $content_type = $options->{'content-type'};
+
+    my @content_types;
+
+    push @content_types,
+      is_array($content_type) ? @{$content_type} : $content_type;
+
+    $self->debug(
+      sub {
+        return sprintf 'upload_file acceptable content-types: %s',
+          join $COMMA,
+          @content_types;
+      }
+    );
+
+    if ( none { $_ eq $upload_content_type } @content_types ) {
+      my $err
+        = sprintf
+        'upload_file content_type error: uploading (%s), must be one of (%s)',
+        $upload_content_type,
+        join $COMMA, @content_types;
+      die $err;
+    }
+  }
+
+  # if the file came from a WinDoze machine...set the parsing appropriately
+  if ( $platform && $platform =~ /win/xsmi
+    || $self->cgi->param($form_var) =~ /^[[:lower:]]:.*$/ixsm ) {
+
+    fileparse_set_fstype('MSWin32');
+  }
+
+  my ( $name, $path, $ext )
+    = fileparse( $self->cgi->param($form_var), qr/[.][^.]*/xsm );
+
+  my $upload_path = $options->{path};
+
+  if ( !-d $upload_path ) {
+    die "unable to create path: $upload_path\n"
+      if !mkdir $upload_path, $UPLOAD_FILE_PERMS;
+  }
+
+  if ( !-w $upload_path ) {
+    die "unable to write to path: $upload_path\n";
+  }
+
+  my $upload_filename = $options->{filename} || ( $name . $ext );
+
+  my $uploaded_file = sprintf '%s/%s', $upload_path, $upload_filename;
+
+  $self->info(
+    sprintf "upload_file processing: file => [%s], content-type => [%s]\n",
+    $uploaded_file, $upload_content_type );
+
+  my $maxsize = $options->{maxsize};
+
+  # allow 1k, 1m, etc.
+  if ($maxsize) {
+    if ( $maxsize =~ /^(\d+)k/xsmi ) {
+      $maxsize = $1 * 1024;
+    }
+
+    if ( $maxsize =~ /^(\d+)m/xsmi ) {
+      $maxsize = $1 * 1024 * 1024;
+    }
+  }
+
+  my $cipher;
+
+  if ( $options->{passkey} ) {
+    $options->{'cipher'} = $options->{'cipher'} || 'DES';
+
+    $cipher = Crypt::CBC->new(
+      -cipher => $options->{cipher},
+      -key    => $options->{passkey}
+    );
+
+    $cipher->start('encrypting');
+    $uploaded_file .= '.enc';
+  }
+
+  open my $tmp_fh, '>', $uploaded_file  ## no critic (RequireBriefOpen)
+    or die "could not open $uploaded_file for writing";
+
+  my $size;
+
+  while ( my $bytesread = read $fh, my $buffer, $UPLOAD_BUFFER_SIZE ) {
+    $size += $bytesread;
+
+    die "File size limit reached.\n"
+      if $maxsize && $size >= $maxsize;
+
+    $self->debug( sprintf 'upload_file bytes read: %d', $bytesread );
+
+    if ($cipher) {
+      print {$tmp_fh} $cipher->crypt($buffer);
+    }
+    else {
+      print {$tmp_fh} $buffer;
+    }
+  }
+
+  if ($cipher) {
+    print {$tmp_fh} $cipher->finish;
+  }
+
+  close $tmp_fh;
+
+  return if !-s $uploaded_file;
+
+  my %stats;
+
+  my @file_info = stat $uploaded_file;
+
+  @stats{
+    qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)}
+    = @file_info;
+
+  %stats = (
+    %stats,
+    ( file           => $uploaded_file,
+      $form_var      => "$name$ext",
+      'content-type' => $upload_content_type,
+      'cipher'       => $options->{'cipher'} // $EMPTY,
+    )
+  );
+
+  return Bedrock::Hash->new(%stats);
+}
+
+########################################################################
+sub cgi {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->{cgi} = $args[0];
+  }
+
+  if ( !$self->{cgi} ) {
+    $self->{cgi} = CGI->new;
+  }
+
+  return $self->{cgi};
+}
+
+########################################################################
+sub getInputValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( !defined $self->input ) {
+
+    # Collect the input
+
+    # - a mod_perl 1.x -> 2.x gotcha... $r->args, $r->content in array
+    # context no longer supported, does not return parsed results.
+    # Replaced with Apache::Request_cgi args/contents although I have a
+    # feeling there is a more better faster way to do this...
+    # my @args = ($self->args, $self->content);
+
+    my @args = $self->cgi->param;
+
+    my $input = {};
+
+    foreach my $name (@args) {
+      my @values = $self->cgi->param($name);
+      if ( @values > 1 ) {
+        $input->{$name} = Bedrock::Array->new(@values);
+      }
+      else {
+        $input->{$name} = $values[0];
+      }
+    }
+    $self->input($input);
+  }
+
+  if ( @args > 0 ) {
+    # Have some parameters -- need the values
+    return @{ $self->input }{@args};
+  }
+  else {
+    # No parameters -- need the names of all parameters
+    return keys %{ $self->input };
+  }
+}
+
+#
+# Close method is used when CGI wants to close browser connection and go off
+# to do something else and not keep the user waiting
+#
+########################################################################
+sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+########################################################################
+  my ($self) = @_;
+
+  return $self->output_handler->close;
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->output_handler->print(@args);
+}
+
+########################################################################
+sub cgi_header_in {
+########################################################################
+  my ($self) = @_;
+
+  my $r = $self->apache_handler;
+
+  return ref $r =~ /Apache2/xsm ? %{ $r->headers_in } : $r->headers_in;
+}
+
+########################################################################
+sub cgi_header_out {
+########################################################################
+  my ( $self, @headers ) = @_;
+
+  my $r = $self->apache_handler;
+
+  # mod_perl 1/2
+  return ref $r =~ /Apache2/xsm
+    ? $r->err_headers_out->add(@headers)
+    : $r->header_out(@headers);
+}
+
+########################################################################
+sub send_http_header {
+########################################################################
+  my ( $self, @headers ) = @_;
+
+  my $r = $self->apache_handler;
+
+  return $r->send_http_header;
+}
+
+########################################################################
+sub getOutputValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return if !defined $self->output_vars;
+
+  if ( @args == 1 ) {
+    return $self->output_vars->{ $args[0] };
+  }
+  elsif (@args) {
+    if ( !wantarray ) {
+      confess
+        'Scalar context is not valid here: should be array context only';
+    }
+
+    return @{ $self->output_vars }{@args};
+  }
+  else {
+    if ( !wantarray ) {
+      confess
+        'Scalar context is not valid here: should be array context only';
+    }
+    return keys %{ $self->output_vars };
+  }
+}
+
+########################################################################
+sub setOutputValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( !defined $self->output_vars ) {
+    $self->output_vars = {};
+  }
+
+  for my $p ( pairs @args ) {
+    my ( $key, $value ) = @{$p};
+    $self->output_vars->{$key} = $value;
+  }
+
+  return $self;
+}
+
+########################################################################
+sub getConfigValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args > 0 ) {
+    return
+      wantarray ? @{ $self->config }{@args} : $self->config->{ $args[0] };
+  }
+  else {
+    return keys %{ $self->config };
+  }
+}
+
+########################################################################
+sub getCookieValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return if !exists $ENV{'HTTP_COOKIE'};
+
+  my $raw_cookie = $ENV{'HTTP_COOKIE'};
+
+  if ( !exists $self->{'__cookies__'} ) {
+
+    $self->{'__cookies__'} = {};
+
+    for my $cookie ( split /[;,]\s?/xsm, $raw_cookie ) {
+      $cookie =~ s/^\s*(.*?)\s*$/$1/xsm;
+
+      my ( $key, $value ) = split /=/xsm, $cookie;
+
+      $self->{'__cookies__'}->{$key} = Text::URLEncode::Decode($value);
+    }
+  }
+
+  if ( @args == 1 ) {
+    return $self->{'__cookies__'}->{ $args[0] };
+  }
+  elsif ( @args > 1 ) {
+    my @values = map { $self->{'__cookies__'}->{$_} } @args;
+    return @values;
+  }
+  else {
+    return sort keys %{ $self->{'__cookies__'} };
+  }
+}
+
+########################################################################
+sub setCookieValue {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, $cookie ) = @_;
+
+  die q{something's wrong, no HEADER object defined in the context object!}
+    if !$self->header;
+
+  return $self->header->set( 'Set-Cookie', $cookie );
+}
+
+########################################################################
+sub output_handler {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'OUTPUT_HANDLER' );
+}
+
+########################################################################
+sub apache_handler {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'APACHE_HANDLER' );
+}
+
+########################################################################
+sub session {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'SESSION' );
+}
+
+########################################################################
+sub logger {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'logger' );
+}
+
+########################################################################
+sub config {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'CONFIG' );
+}
+
+########################################################################
+sub input {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'INPUT' );
+}
+
+########################################################################
+sub header {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'HEADER' );
+}
+
+########################################################################
+sub output_vars {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'output_vars' );
+}
+
+########################################################################
+sub request {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, '_request' );
+}
+
+########################################################################
+sub response {
+  my (@args) = @_;
+########################################################################
+
+  return _set( @args, '_response' );
+}
+
+# deprecated
+########################################################################
+sub set_header {
+########################################################################
+  my (@args) = @_;
+
+  return _set( @args, 'HEADER' );
+}
+
+########################################################################
+sub _set {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $key;
+  my $value;
+
+  if ( @args > 1 ) {
+    ( $value, $key ) = @args;
+    $self->{$key} = $value;
+  }
+  else {
+    $key = $args[0];
+  }
+
+  return $self->{$key};
+}
+
+1;
+
+__END__
 
 =pod
 
 =head1 NAME
 
-C<Bedrock::Context>
+Bedrock::Context - provides contextual methods for web applications
 
 =head1 SYNOPSIS
 
  use Bedrock::Context;
 
- my $ctx = new Bedrock::Context( CONFIG => $config, APACHE_HANDLER => $handler );
+ my $ctx = Bedrock::Context->new( CONFIG => $config, APACHE_HANDLER => $handler );
 
-=head1 METHODS
+=head1 DESCRIPTION
 
-=cut
+The context object handles the task of gathering input and writing
+output based on the context (web, cli) of the application.
 
+=head1 METHODS AND SUBROUTINES
 
-=pod
+=head2 new
+
+ new( args )
+
+Constructor for Apache modules.  Returns the created object.
+
+Mandatory arguments are as follows:
+
+=over 5
+
+=item  APACHE_HANDLER
+
+Apache handler object
+
+=item OUTPUT_HANDLER
+
+Output handler supporting a `print()' method. Defaults to APACHE_HANDLER if not specified.
+
+=item CONFIG
+
+Hash containing config info
+
+=item CONFIG_FILE
+
+Name of the configuration file.
+
+=back
+
+=head2 print
+
+ print( list );
+
+Sends the array of output to the destination.
+
+=head2 cgi_header_in
+
+ cgi_header_in()
+
+Reads the headers.
+
 
 =head2 upload_file
 
@@ -101,484 +715,6 @@ Encryption cipher (defaults to DES)
 
 =back
 
-=cut
-
-sub upload_file {
-  my ($self, $form_var) = (shift, shift);
-
-  my $options  = {};
-
-  my $fh = $self->cgi->param($form_var);
-
-  my $platform = $self->cgi->param('platform');
-
-  die "upload_file upload error: ", $self->cgi->cgi_error() unless $fh;
-
-  if ( ref($_[0]) && reftype($_[0]) eq 'HASH' ) {
-    $options = shift;
-  }
-  else {
-    $options = { @_ };
-  }
-
-  &LOG_MESSAGE( MSG_DEBUG, "upload_file options: " . Bedrock::Dump::compact($options) );
-
-  my $upload_content_type = $self->cgi->uploadInfo($fh)->{'Content-Type'};
-
-  # check to see if this is a valid mime-type to be uploaded
-  if ( $options->{'Content-type'} || $options->{'content-type'} ) {
-    my $content_type = $options->{'Content-type'} || $options->{'content-type'};
-    my @content_types;
-
-    push @content_types,  ( ref($content_type) && reftype($content_type) eq 'ARRAY' ) ? @$content_type : $content_type;
-
-    &LOG_MESSAGE(MSG_DEBUG, sprintf( "upload_file acceptable content-types: %s", join( ",", @content_types )));
-
-    die sprintf( "upload_file content_type error: uploading (%s), must be one of (%s)",
-		 $self->cgi->uploadInfo($fh)->{'Content-Type'},
-		 join( ",", @content_types ) )
-      unless grep { $_ eq $self->cgi->uploadInfo($fh)->{'Content-Type'} } @content_types;
-  }
-
-  # if the file came from a WinDoze machine...set the parsing appropriately
-  if ( $platform =~ /win/i || $self->cgi->param($form_var) =~ /^[a-z]:.*$/i ) {
-    fileparse_set_fstype('MSWin32');
-  }
-
-  my ( $name, $path, $ext ) =
-  fileparse( $self->cgi->param($form_var), qr/\.[^.]*/ );
-
-  my $upload_path;
-  my $upload_filename;
-
-  $upload_path = $options->{path} || ( $self->config->{UPLOAD_PATH} || '/tmp' );
-  unless ( -d $upload_path ) {
-    die "unable to create path: $upload_path\n"
-      unless mkdir $upload_path, 0777;
-  }
-
-  unless (-w $upload_path ) {
-    die "unable to write to path: $upload_path\n";
-  }
-
-  $upload_filename = $options->{filename} || ( $name . $ext );
-
-  my $uploaded_file = sprintf( "%s/%s", $upload_path, $upload_filename );
-  &LOG_MESSAGE( MSG_INFO, sprintf( "upload_file processing: file => [%s], content-type => [%s]\n",
-				   $uploaded_file, $self->cgi->uploadInfo($fh)->{'Content-Type'}
-				 )
-              );
-
-  my $buffer;
-  my $bytesread;
-  my $size;
-  my $maxsize = $options->{maxsize};
-
-  # allow 1k, 1m, etc.
-  if ($maxsize) {
-    $maxsize = $1 * 1024        if $maxsize =~ /^(\d+)k/i;
-    $maxsize = $1 * 1024 * 1024 if $maxsize =~ /^(\d+)m/i;
-  }
-
-  my $cipher;
-
-  if ( $options->{passkey} ) {
-    $options->{'cipher'} = $options->{'cipher'} || 'DES';
-    $cipher = Crypt::CBC->new( -cipher => $options->{cipher},
-			       -key => $options->{passkey}
-			     );
-
-    $cipher->start('encrypting');
-    $uploaded_file .= '.enc';
-  }
-    
-  open TEMPFILE, ">$uploaded_file";
-
-  while ( $bytesread = read( $fh, $buffer, 4096 ) ) {
-    $size += $bytesread;
-    die "File size limit reached.\n"
-    if $maxsize && $size >= $maxsize;
-    &LOG_MESSAGE( MSG_DEBUG,
-                  sprintf( "upload_file bytes read: %d", $bytesread ) );
-
-    if ( $cipher ) {
-      print TEMPFILE $cipher->crypt( $buffer );
-    }
-    else {
-      print TEMPFILE $buffer;
-    }
-  }
-
-  print TEMPFILE $cipher->finish
-    if $cipher;
-
-  close TEMPFILE;
-
-  if ( -s $uploaded_file ) {
-    my @l    = stat($uploaded_file);
-
-    my $stat = Bedrock::Hash->new;
-    @{$stat}{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @l;
-
-    $stat->{file}           = $uploaded_file;
-    $stat->{$form_var}      = "$name$ext";
-    $stat->{'content-type'} = $upload_content_type;
-    $stat->{'cipher'}       = $options->{'cipher'} if $options->{'cipher'};
-
-    return $stat;
-  }
-  else {
-    return undef;
-  }
-}
-
-=pod
-
-=head2 cgi
-
- cgi()
-
-Returns a CGI object.
-
-=cut
-
-sub cgi {
-  $_[0]->{cgi} = $_[0]->{cgi} ? $_[0]->{cgi} : new CGI;
-}
-
-=pod
-
-=head2 getInputValue
-
- getInputValue( key )
-
-Method to get input parameter(s)/value(s). Invoked either with
-
-- A list of parameter names. Returns the value of the parameters requested
-
-- No args. Returns the names of all parameters in the input
-
-=cut
-
-sub getInputValue {
-  my $self = shift;
-
-  unless ( defined $self->input ) {
-
-    # Collect the input
-
-    my $r = $self->apache_handler;
-
-    # - a mod_perl 1.x -> 2.x gotcha... $r->args, $r->content in array
-    # context no longer supported, does not return parsed results.
-    # Replaced with Apache::Request_cgi args/contents although I have a
-    # feeling there is a more better faster way to do this...
-    # my @args = ($self->args, $self->content);
-    
-    my @args = $self->cgi->param;
-
-    my $input = {};
-    foreach my $name (@args) {
-      my @values = $self->cgi->param($name);
-      if ( @values > 1 ) {
-        $input->{$name} = Bedrock::Array->new(@values);
-      }
-      else {
-        $input->{$name} = $values[0];
-      }
-    }
-    $self->input($input);
-  }
-
-  if ( @_ > 0 ) {
-
-    # Have some parameters -- need the values
-    return @{ $self->input }{@_};
-  }
-  else {
-
-    # No parameters -- need the names of all parameters
-    return keys %{ $self->input };
-  }
-}
-
-=pod
-
-=head2 new
-
- new( args )
-
-Constructor for Apache modules.  Returns the created object.
-
-Mandatory arguments are as follows:
-
-=over 5
-
-=item  APACHE_HANDLER
-
-Apache handler object
-
-=item OUTPUT_HANDLER
-
-Output handler supporting a `print()' method. Defaults to APACHE_HANDLER if not specified.
-
-=item CONFIG
-
-Hash containing config info
-
-=item CONFIG_FILE
-
-Name of the configuration file.
-
-=back
-
-=cut
-
-sub new {
-  my $class = shift;
-  my %args  = @_;
-
-  die "$class->new(): CONFIG or CONFIG_FILE parameter must be specified."
-    unless ($args{'CONFIG'} || $args{'CONFIG_FILE'});
-
-  die "$class->new(): APACHE_HANDLER parameter must be specified."
-    unless $args{'APACHE_HANDLER'};
-  
-  my $self = bless {}, $class;
-
-  my $config;
-
-  if ( $args{'CONFIG'} ) {
-    $config = $self->config($args{'CONFIG'});
-  }
-  else {
-    $config = $self->config( Bedrock::Config->new( $args{'CONFIG_FILE'} ) );
-  }
-
-  # FIXME: we need to replace the notion of "APACHE_HANDLER" in favor
-  # of the request object and detangle code from knowing about
-  # upstream HTTP request initiators...i.e. could be Apache, Nginx, etc
-  $self->request( $args{'APACHE_HANDLER'} );
-  $self->apache_handler( $args{'APACHE_HANDLER'} );
-
-  # ditto for response...
-  if ( $args{'OUTPUT_HANDLER'} ) {
-    $self->output_handler($args{'OUTPUT_HANDLER'});
-    $self->response($args{'OUTPUT_HANDLER'});
-  }
-  else {
-    $self->output_handler( $args{'APACHE_HANDLER'} );
-    $self->response($self->request);
-  }
-
-  # At some point it was decided not to use the Apache error_log to
-  # log message, so where should Bedrock startup messages being going?
-  #
-  # This logger records all non-page events...primarily used for
-  # starting up Bedrock. Once a page is being processed, Bedrock uses
-  # the TagX::Log module.
-
-  eval {
-    &Bedrock::Log::StartLogger(
-			       LOGDIR     => $config->{'LOGDIR'},
-			       LOGLEVEL   => $config->{'LOGLEVEL'},
-			       LOGFORMAT  => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
-			       LOGFILE    => $config->{'LOGFILE'} || 'bedrock.log'
-			      );
-  };
-
-  $self;
-}
-
-#
-# Close method is used when CGI wants to close browser connection and go off
-# to do something else and not keep the user waiting
-#
-sub close {
-  shift->output_handler->close;
-}
-
-=pod
-
-=head2 print
-
- print( list );
-
-Sends the array of output to the destination.
-
-=cut
-
-sub print {
-  shift->output_handler->print(@_);
-}
-
-
-=pod
-
-=head2 cgi_header_in
-
- cgi_header_in()
-
-Reads the headers.
-
-=cut
-
-
-sub cgi_header_in {
-  my $self = shift;
-  my $r  = $self->apache_handler;
-
-  ref($r) =~ /Apache2/ ? %{ $r->headers_in } : $r->headers_in;
-}
-
-=pod
-
-=head2 cgi_header_out
-
- cgi_header_out( headers )
-
-Sends the headers to the header cache for output.
-
-=cut
-
-sub cgi_header_out {
-  my $self = shift;
-  my $r = $self->apache_handler;
-
-  # mod_perl 1/2
-  ref($r) =~ /Apache2/ ? $r->err_headers_out->add(@_) : $r->header_out(@_);
-}
-
-
-=pod
-
-=head2 send_http_headers
-
-Outputs the headers.
-
-=cut
-
-sub send_http_header {
-  shift->apache_handler->send_http_header;
-}
-
-=pod
-
-=head2 getOutputValue
-
- getOutputValue( list )
-
-Returns a list of output values or a list of keys if no list is given.
-
-=cut
-
-sub getOutputValue {
-  my $self = shift;
-
-  return unless defined $self->output_vars;
-
-  if ( @_ == 1 ) {
-    return $self->output_vars->{ $_[0] };
-  }
-  elsif (@_) {
-    &confess("Scalar context is not valid here: should be array context only")
-    unless wantarray;
-    return @{ $self->output_vars }{@_};
-  }
-  else {
-    &confess("Scalar context is not valid here: should be array context only")
-    unless wantarray;
-    return keys %{ $self->output_vars };
-  }
-}
-
-=pod
-
-=head2 setOutputValue
-
- setOutputValue(key, value)
-
-=cut
-
-sub setOutputValue {
-  my $self = shift;
-
-  $self->output_vars = {} unless defined $self->output_vars;
-
-  my %args = @_;
-  my ( $key, $value );
-
-  while ( ( $key, $value ) = each %args ) {
-    $self->output_vars->{$key} = $value;
-  }
-}
-
-=pod
-
-=head2 getConfigValue
-
- getConfigValue( key || key-list )
-
-Method returns a config parameter value. Used to hide the config
-object from the public.
-
-=cut
-
-sub getConfigValue {
-  my $self = shift;
-
-  if ( @_ > 0 ) {
-    wantarray ? @{ $self->config }{@_} : $self->config->{ $_[0] };
-  }
-  else {
-    keys %{ $self->config };
-  }
-}
-
-=pod
-
-=head2 getCookieValue
-
- getCookieValue( cookie || cookie-list )
-
-Method returns one or more cookies.
-
-=cut
-
-sub getCookieValue {
-  my $self = shift;
-
-  return unless exists $ENV{'HTTP_COOKIE'};
-
-  my $raw_cookie = $ENV{'HTTP_COOKIE'};
-
-  unless ( exists $self->{'__cookies__'} ) {
-
-    $self->{'__cookies__'} = {};
-
-    for my $cookie ( split( "[;,] ?", $raw_cookie ) ) {
-      $cookie =~ s/^\s*(.*?)\s*$/$1/;
-      my ( $key, $value ) = split( '=', $cookie );
-      $self->{'__cookies__'}->{$key} = &Text::URLEncode::Decode($value);
-    }
-  }
-
-  if ( @_ == 1 ) {
-    $self->{'__cookies__'}->{ $_[0] };
-  }
-  elsif ( @_ > 1 ) {
-    my @values;
-    for (@_) {
-      push @values, $self->{'__cookies__'}->{$_};
-    }
-
-    @values;
-  }
-  else {
-    sort keys %{ $self->{'__cookies__'} };
-  }
-}
-
 =pod
 
 =head2 setCookieValue
@@ -587,29 +723,11 @@ sub getCookieValue {
 
 Set a cookie.
 
-=cut
-
-
-sub setCookieValue {
-  my $self = shift;
-
-  die "something's wrong, no HEADER object defined in the context object!"
-    unless $self->header;
-  
-  $self->header->set('Set-Cookie', shift);
-}
-
-=pod
-
 =head1 SETTERS/GETTERS
 
 These will set or get the value associated with the name of the
 method. e.g. C<output_handler()> returns the value of the
 OUTPUT_HANDLER key.
-
-=cut
-
-=pod
 
 =head2 apache_handler
 
@@ -639,68 +757,54 @@ Hash of output values.
 
 Session object if available.
 
-=cut
+=head2 cgi
 
-sub output_handler {
-  _set(@_, 'OUTPUT_HANDLER');
-}
+ cgi()
 
-sub apache_handler {
-  _set(@_, 'APACHE_HANDLER');
-}
+Returns a CGI object.
 
-sub session {
-  _set( @_, 'SESSION');
-}
+=head2 getInputValue
 
-sub config {
-  _set(@_, 'CONFIG');
-}
+ getInputValue( key )
 
-sub input {
-  _set(@_, 'INPUT');
-}
+Method to get input parameter(s)/value(s). Invoked either with
 
-sub header {
-  _set( @_, 'HEADER');
-}
+- A list of parameter names. Returns the value of the parameters requested
 
-sub output_vars {
-  _set( @_, 'output_vars');
-}
+- No args. Returns the names of all parameters in the input
 
-sub request {
-  _set(@_, '_request');
-}
+=head2 send_http_headers
 
-sub response {
-  _set(@_, '_response');
-}
+Outputs the headers.
 
-# deprecated
-sub set_header {
-  _set(@_, 'HEADER');
-}
+=head2 getOutputValue
 
-sub _set {
-  my $self = shift;
+ getOutputValue( list )
 
-  my $key;
-  my $value;
+Returns a list of output values or a list of keys if no list is given.
 
-  if ( @_ > 1 ) {
-    ($value, $key) = @_;
-    $self->{$key} = $value;
-  }
-  else {
-    $key = $_[0];
-  }
+=head2 setOutputValue
 
-  $self->{$key};
-}
+ setOutputValue(key, value)
 
+=head2 getConfigValue
 
-=pod
+ getConfigValue( key || key-list )
+
+Method returns a config parameter value. Used to hide the config
+object from the public.
+
+=head2 cgi_header_out
+
+ cgi_header_out( headers )
+
+Sends the headers to the header cache for output.
+
+=head2 getCookieValue
+
+ getCookieValue( cookie || cookie-list )
+
+Method returns one or more cookies.
 
 =head1 AUTHOR
 
@@ -709,5 +813,3 @@ J. Sridhar
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-1;
