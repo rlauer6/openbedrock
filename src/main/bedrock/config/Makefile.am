@@ -7,13 +7,14 @@ VERSION = @VERSION@
 @do_subst_command@
 
 CONFIG = \
-    tagx.xml.in \
+    bedrock-rest-framework.conf.in \
+    data-sources.xml.in \
     mysql-session.xml.in \
-    tagx_apps.xml.in \
     perl_bedrock.conf22.in \
     perl_bedrock.conf24.in \
-    bedrock-rest-framework.conf.in \
-    startup.pl.in
+    startup.pl.in \
+    tagx.xml.in \
+    tagx_apps.xml.in
 
 CONFFILES = \
     log4perl.conf

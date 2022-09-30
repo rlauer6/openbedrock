@@ -60,5 +60,11 @@ test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
-	CONFIG_PATH=config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
+	CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
+
+CLEANFILES = \
+    foo.inc \
+    foo.txt \
+    bedrock-page-log.txt
+
