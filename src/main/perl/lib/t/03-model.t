@@ -21,8 +21,8 @@ BEGIN {
 }
 
 my $model_def = <<'EOT';
-our $MODEL = new Bedrock::Hash(
-    id => new Bedrock::Model::Field(
+our $MODEL = Bedrock::Hash->new(
+    id => Bedrock::Model::Field->new(
         {
             field => 'id',
             type  => 'int(11)',
@@ -31,7 +31,7 @@ our $MODEL = new Bedrock::Hash(
             key   => 'pri'
         }
     ),
-    email => new Bedrock::Model::Field(
+    email => Bedrock::Model::Field->new(
         {
             field => 'email',
             type  => 'varchar(100)',
@@ -39,14 +39,14 @@ our $MODEL = new Bedrock::Hash(
             key   => 'uni'
         }
     ),
-    lname => new Bedrock::Model::Field(
+    lname => Bedrock::Model::Field->new(
         {
             field => 'lname',
             type  => 'varchar(32)',
             null  => 'no'
         }
     ),
-    fname => new Bedrock::Model::Field(
+    fname => Bedrock::Model::Field->new(
         {
             field => 'fname',
             type  => 'varchar(32)',
@@ -65,7 +65,7 @@ close $fh;
 
 my $dbi;
 
-my $user = $ENV{DBI_USER};
+my $user = $ENV{DBI_USER} || 'root';
 my $pass = $ENV{DBI_PASS};
 
 eval {
@@ -82,12 +82,15 @@ if ($EVAL_ERROR) {
 
 eval { MyApp::Users->_create_model($dbi); };
 
-ok( !$EVAL_ERROR, "create table with .mdl file" )
-  or BAIL_OUT("could not create table 'users'");
+ok( !$EVAL_ERROR, 'create table with .mdl file' )
+  or do {
+  diag($EVAL_ERROR);
+  BAIL_OUT(q{could not create table 'users'});
+  };
 
-my $rows = $dbi->do("describe users");
-is( $rows, 4, "table looks sane" )
-  or BAIL_OUT("could not create table 'users'");
+my $rows = $dbi->do('describe users');
+is( $rows, 4, 'table looks sane' )
+  or BAIL_OUT(q{could not create table 'users'});
 
 my $model = MyApp::Users->_add_field(
   $dbi,
@@ -104,21 +107,23 @@ is( $migration->should_migrate(), 1, 'should migrate' )
 eval { $migration->execute(); };
 
 ok( !$EVAL_ERROR, 'execute migration' )
-  or BAIL_OUT( "migration failed - $EVAL_ERROR - "
-    . join( "\n", @{ $migration->get_migration() } ) );
-is( $dbi->do("describe users"), 5, 'add new column to table' );
+  or BAIL_OUT( "migration failed - $EVAL_ERROR - " . join "\n",
+  @{ $migration->get_migration() } );
+
+is( $dbi->do('describe users'), 5, 'add new column to table' );
 
 my $users = bless $model, 'MyApp::Users';
 $users = $users->new($dbi);
 
-$users->set( 'email',   'someuser@example.com' );
-$users->set( 'fname',   'fred' );
-$users->set( 'lname',   'flintstone' );
-$users->set( 'address', '123 Rockaway Drive' );
+$users->set( email   => 'someuser@example.com' );
+$users->set( fname   => 'fred' );
+$users->set( lname   => 'flintstone' );
+$users->set( address => '123 Rockaway Drive' );
 
 my $id = $users->save();
 
-like( $id, qr/\d+/, 'save a record' ) or BAIL_OUT("could not write record");
+like( $id, qr/\d+/xsm, 'save a record' )
+  or BAIL_OUT('could not write record');
 
 subtest 'read record' => sub {
   my $new_user = $users->new( $dbi, $id );
@@ -134,3 +139,7 @@ END {
     $dbi->disconnect;
   };
 }
+
+1;
+
+__END__

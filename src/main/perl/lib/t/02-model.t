@@ -5,8 +5,8 @@ use warnings;
 
 use parent qw/Bedrock::Model::Handler/;
 
-our $MODEL = new Bedrock::Hash(
-  id => new Bedrock::Model::Field(
+our $MODEL = Bedrock::Hash->new(
+  id => Bedrock::Model::Field->new(
     { field => 'id',
       type  => 'int(11)',
       null  => 'no',
@@ -14,19 +14,19 @@ our $MODEL = new Bedrock::Hash(
       key   => 'pri'
     }
   ),
-  email => new Bedrock::Model::Field(
+  email => Bedrock::Model::Field->new(
     { field => 'email',
       type  => 'varchar(100)',
       null  => 'no'
     }
   ),
-  lname => new Bedrock::Model::Field(
+  lname => Bedrock::Model::Field->new(
     { field => 'lname',
       type  => 'varchar(32)',
       null  => 'no'
     }
   ),
-  fname => new Bedrock::Model::Field(
+  fname => Bedrock::Model::Field->new(
     { field => 'fname',
       type  => 'varchar(32)',
       null  => 'no'
@@ -41,25 +41,29 @@ use Test::More tests => 4;
 
 use DBI;
 use Data::Dumper;
+use English qw{-no_match_vars};
 
 BEGIN {
   use_ok('Bedrock::Model::Handler');
 }
 
+########################################################################
+
 my $dbi;
 
-my $user = $ENV{DBI_USER};
+my $user = $ENV{DBI_USER} || 'root';
 my $pass = $ENV{DBI_PASS};
 
 eval {
   $dbi = DBI->connect( 'dbi:mysql:', $user, $pass,
     { PrintError => 0, RaiseError => 1 } );
+
   $dbi->do('create database foo');
   $dbi->do('use foo');
 };
 
-if ($@) {
-  BAIL_OUT("could not create database 'foo': $@\n");
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
 
 MyApp::Users->_create_model($dbi);
@@ -68,14 +72,20 @@ is( $rows, 4, "create table users" )
   or BAIL_OUT("could not create table 'users'");
 
 my $users = MyApp::Users->new($dbi);
-$users->set( 'email', 'someuser@example.com' );
-$users->set( 'fname', 'fred' );
-$users->set( 'lname', 'flintstone' );
-my $id = $users->save();
-like( $id, qr/\d+/, 'save a record' ) or BAIL_OUT("could not write record");
+$users->set( email => 'someuser@example.com' );
+$users->set( fname => 'fred' );
+$users->set( lname => 'flintstone' );
 
+my $id = $users->save();
+
+like( $id, qr/\d+/xsm, 'save a record' )
+  or BAIL_OUT('could not write record');
+
+########################################################################
 subtest 'read record' => sub {
+########################################################################
   my $new_user = $users->new( $dbi, $id );
+
   is( $new_user->get('email'), 'someuser@example.com' );
   is( $new_user->get('fname'), 'fred' );
   is( $new_user->get('lname'), 'flintstone' );
@@ -84,3 +94,7 @@ subtest 'read record' => sub {
 END {
   eval { $dbi->do('drop database foo'); };
 }
+
+1;
+
+__END__

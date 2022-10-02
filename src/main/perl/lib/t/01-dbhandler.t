@@ -280,13 +280,13 @@ subtest 'date_format' => sub {
   ) or diag( Dumper( [$date] ) );
 
   $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', -4 );
+  my $perl_date = scalar localtime time;
 
-  ok( $date eq ( scalar localtime time ), 'localtime formatted correctly' )
-    or diag(
-    Dumper(
-      [ $dbh->get_args, $dbh->get_query, $date, scalar localtime time ]
-    )
-    );
+  while ( $perl_date =~ s/\s\s/ /xsmg ) { };  # remove multiple whitespace
+
+  ok( $date eq $perl_date, 'localtime formatted correctly' )
+    or
+    diag( Dumper( [ $dbh->get_args, $dbh->get_query, $date, $perl_date ] ) );
 };
 
 ########################################################################

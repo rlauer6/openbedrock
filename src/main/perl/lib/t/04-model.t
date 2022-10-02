@@ -5,8 +5,8 @@ use warnings;
 
 use parent qw/Bedrock::Model::Handler/;
 
-our $MODEL = new Bedrock::Hash(
-  id => new Bedrock::Model::Field(
+our $MODEL = Bedrock::Hash->new(
+  id => Bedrock::Model::Field->new(
     { field => 'id',
       type  => 'int(11)',
       null  => 'no',
@@ -14,26 +14,26 @@ our $MODEL = new Bedrock::Hash(
       key   => 'pri'
     }
   ),
-  email => new Bedrock::Model::Field(
+  email => Bedrock::Model::Field->new(
     { field => 'email',
       type  => 'varchar(100)',
       null  => 'no'
     }
   ),
-  nick_name => new Bedrock::Model::Field(
+  nick_name => Bedrock::Model::Field->new(
     { field   => 'nick_name',
       type    => 'varchar(32)',
       null    => 'no',
-      default => "'anonymouse'"
+      default => '"anonymouse"'
     }
   ),
-  lname => new Bedrock::Model::Field(
+  lname => Bedrock::Model::Field->new(
     { field => 'lname',
       type  => 'varchar(32)',
       null  => 'no'
     }
   ),
-  fname => new Bedrock::Model::Field(
+  fname => Bedrock::Model::Field->new(
     { field => 'fname',
       type  => 'varchar(32)',
       null  => 'no'
@@ -57,7 +57,8 @@ BEGIN {
 }
 
 my $dbi;
-my $user = $ENV{DBI_USER};
+
+my $user = $ENV{DBI_USER} || 'root';
 my $pass = $ENV{DBI_PASS};
 
 eval {
@@ -74,22 +75,29 @@ if ($EVAL_ERROR) {
 
 eval { MyApp::Users->_create_model($dbi); };
 
-ok( !$EVAL_ERROR, "create table" )
-  or BAIL_OUT("could not create table 'users'");
+ok( !$EVAL_ERROR, 'create table' )
+  or do {
+  diag( Dumper( [$EVAL_ERROR] ) );
+  BAIL_OUT(q{could not create table 'users'});
+  };
 
-my $rows = $dbi->do("describe users");
-is( $rows, 5, "table looks sane" )
-  or BAIL_OUT("could not create table 'users'");
+my $rows = $dbi->do('describe users');
+is( $rows, 5, 'table looks sane' )
+  or BAIL_OUT(q{could not create table 'users'});
 
 my $users = MyApp::Users->new($dbi);
-$users->set( 'email', 'someuser@example.com' );
-$users->set( 'fname', 'fred' );
-$users->set( 'lname', 'flintstone' );
+$users->set(
+  email => 'someuser@example.com',
+  fname => 'fred',
+  lname => 'flintstone',
+);
+
 $users->set_upsert_mode(1);
+
 my $id = $users->save();
 
-like( $id, qr/\d+/, 'add a record with default value' )
-  or BAIL_OUT("could not write record");
+like( $id, qr/\d+/xsm, 'add a record with default value' )
+  or BAIL_OUT('could not write record');
 
 subtest 'read record' => sub {
   my $new_user = $users->new( $dbi, $id );
@@ -105,3 +113,7 @@ END {
     $dbi->disconnect;
   };
 }
+
+1;
+
+__END__

@@ -11,12 +11,14 @@ BEGIN {
 }
 
 my $dbi;
-my $user = $ENV{DBI_USER};
+
+my $user = $ENV{DBI_USER} || 'root';
 my $pass = $ENV{DBI_PASS};
 
 eval {
   $dbi = DBI->connect( 'dbi:mysql:', $user, $pass,
     { PrintError => 0, RaiseError => 1 } );
+
   $dbi->do('create database foo');
 
   my $create_table = <<'SQL';
@@ -29,22 +31,26 @@ SQL
   $dbi->do($create_table);
 };
 
-BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n")
-  if $EVAL_ERROR;
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
+}
 
-my $ith = eval { new BLM::IndexedTableHandler( $dbi, 0, undef, 'foo' ); };
+my $ith
+  = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
-isa_ok( $ith, 'BLM::IndexedTableHandler' ) or BAIL_OUT($EVAL_ERROR);
+isa_ok( $ith, 'BLM::IndexedTableHandler' )
+  or BAIL_OUT($EVAL_ERROR);
 
 eval {
   foreach ( 1 .. 10 ) {
-    $ith->set( 'id', 0 );
+    $ith->set( id => 0 );
     $ith->save();
   }
 };
 
-BAIL_OUT("Could not write records...$EVAL_ERROR\n")
-  if $EVAL_ERROR;
+if ($EVAL_ERROR) {
+  BAIL_OUT("Could not write records...$EVAL_ERROR\n");
+}
 
 is( $ith->max_id(), 10, 'max_id()' );
 
@@ -52,3 +58,5 @@ END {
   eval { $dbi->do('drop database foo'); };
   $dbi->disconnect;
 }
+
+1;
