@@ -5,7 +5,7 @@ ADD perl-aws.repo /etc/yum.repos.d/perl-aws.repo
 RUN amazon-linux-extras install epel -y
 
 # Perl dependencies
-RUN yum install -y perl-core less tree
+RUN yum install -y perl-core less tree gcc
 
 # Apache
 RUN yum install -y httpd mod_perl

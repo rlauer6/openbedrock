@@ -9,11 +9,12 @@ Bedrock framework.
 # Overview
 
 Bedrock is a server side web development framework that can be used
-with Apache probably web servers. It allows fullstack web
+with Apache (and probably other web servers). It allows fullstack web
 developers to create dynamic web pages through the use of a small set
-of HTML-like tags. Bedrock is an enabling technology that glues
-together HTML pages and dynamic data (HTML form data, data from
-databases, and system services) to create web applications.
+of HTML-like tags that implement a robust templating system. Bedrock
+is an enabling technology that glues together HTML pages and dynamic
+data (HTML form data, data from databases, and system services) to
+create web applications.
 
 Developers can extend Bedrock in interesting ways through the use of
 Perl plugins.
@@ -22,7 +23,7 @@ Bedrock differs significantly from most web application development
 environments that either generate HTML pages as output (e.g. CGIs,
 Servlets) or are themselves programs embedded within HTML pages
 (e.g. PHP, Mason, ASP, etc). By allowing the developer to assemble
-pages from object oriented components Bedrock allows front-end web
+pages from object oriented components, Bedrock allows front-end web
 developers and back-end developers to collaborate effectively using
 familiar, well documented interfaces.
 

@@ -4,11 +4,41 @@ Makefile for creating a Docker image for Bedrock.
 
 # Building the Image
 
-The Bedrock Docker image is built by installing the Bedrock rpms from the
+The Bedrock Docker image is built by installing the *Bedrock rpms* from the
 Bedrock repo to an Amazon Linux 2 image.
+
+> Let me repeat that ...__from the Bedrock repo__...did you re-build
+> Bedrock and create the rpms? If you've forgotten how to do that 
+> try running `./build -h`  in the project root directory.
 
 The image implements an Apache based web sever enviroment you can use
 for development.
+
+Before you build the image take a look at these files as they have
+been customized for the Docker environment:
+
+* `perl_bedrock.conf.in`
+   * basic Bedrock Apache configuration
+   * to stream logs to STDOUT (console) set the environment variable
+     STREAM_LOGS to any value - example `STREAM_LOGS=1 make docker-image`
+* `mysql-session.xml.in`
+  * configuration for `BLM::User::Session`
+  * to specify a database other than `bedrock` set the environment
+    variable DBI_DB
+  * to specify a user other than `fred` set the environment variable
+    DB_USER 
+  * to specify a password other than `flintstone` set the environment variable
+    DB_PASS 
+  * to specify a host other than `docker_db_1` set the environment variable
+    DB_DB
+* `data-sources.xml.in`
+  * data source configuration used by `<sqlconnect>`
+  * set environment variables as describe above to
+    `mysql-session.xml.in`
+* `httpd.conf.in`
+  * basic Apache configuration
+* `tagx.xml.in`
+  * Bedrock configuration
 
 To build the image:
 
@@ -23,7 +53,7 @@ A `docker-compose.yml` file will bring up the web server listening on
 port 80.
 
 ```
-BEDROCK=~/git/openbedrock docker-compose-up
+BEDROCK=~/git/openbedrock docker-compose up
 ```
 
 # Local Bedrock Development with Docker
@@ -66,10 +96,10 @@ port 8080.  Looks something like this...
 
 ```
 
-To accomplish this I use the command below in Linux runnining on my Chromebook.
+To accomplish this I use the command below in Linux running on my Chromebook.
 
 ```
-ssh -i ~/.ssh/isa_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_BASTION -v 
+ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_BASTION -v 
 ```
 
 *Explanation:*

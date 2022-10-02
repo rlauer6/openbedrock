@@ -68,7 +68,8 @@ $(GBEDROCK_CONF): $(BEDROCK_CONF)
 	  access_log="/var/www/log/access_log"; \
 	fi; \
 	sed -e 's,@error_log@,'$$error_log',' \
-	    -e 's,@access_log@,'$$access_log',' < $< >$@
+	    -e 's,@access_log@,'$$access_log',' \
+	    -e 's,\@PACKAGE_VERSION\@,'@PACKAGE_VERSION@',' < $< >$@
 
 GXML_FILES = $(XML_FILES:.xml.in=.xml)
 
@@ -78,7 +79,7 @@ $(GXML_FILES): % : %.in
 	DBI_PASS="$(DBI_PASS)";\
 	DBI_PASS=$${DBI_PASS:-flintstone}; \
 	DBI_HOST="$(DBI_HOST)";\
-	DBI_HOST=$${DBI_HOST:-127.0.0.1}; \
+	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
 	DBI_DB="$(DBI_DB)";\
 	DBI_DB=$${DBI_DB:-bedrock}; \
 	sed -e 's/@dbi_user@/'$$DBI_USER'/' \

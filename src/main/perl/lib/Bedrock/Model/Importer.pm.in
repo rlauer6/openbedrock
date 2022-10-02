@@ -3,6 +3,8 @@ package Bedrock::Model::Importer;
 use strict;
 use warnings;
 
+use 5.010;
+
 BEGIN {
   use lib '/usr/lib/bedrock/perl5';
 }
@@ -16,12 +18,10 @@ use Carp;
 use DBI;
 use Data::Dumper;
 use English qw{-no_match_vars};
-
-use JSON::PP;
 use IO::Handle;
+use JSON::PP;
 use Number::Format qw{format_number};
 use Scalar::Util qw{looks_like_number reftype};
-
 use Term::ANSIColor;
 use Text::ASCIITable;
 use Text::CSV_XS;
@@ -44,12 +44,35 @@ use parent qw{ Class::Accessor::Fast};
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(
   qw{
-    padding_threshold text_threshold enum_threshold decimal_threshold
-    dbi database host user password limit
-    infile csv stats model model_definition model-file
-    reserved_words format statistics-file table allow-keywords headings
-    type clear drop verbose rename length
-  }
+    allow-keywords
+    clear
+    csv
+    database
+    dbi
+    decimal_threshold
+    drop
+    enum_threshold
+    format
+    headings
+    host
+    infile
+    length
+    limit
+    model
+    model-file
+    model_definition
+    padding_threshold
+    password
+    rename
+    reserved_words
+    statistics-file
+    stats
+    table
+    text_threshold
+    type
+    user
+    verbose
+  },
 );
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
@@ -93,8 +116,8 @@ sub dbconnect {
     { database => $self->get_database,
       user     => $self->get_user,
       password => $self->get_password,
-      host     => $self->get_host
-    }
+      host     => $self->get_host,
+    },
   );
 
   $self->set_dbi($dbi);
@@ -116,8 +139,8 @@ sub create_table {
   my $model = Bedrock::Model->new(
     { dbi   => $dbi,
       table => $self->get_table,
-      model => $self->get_model_definition
-    }
+      model => $self->get_model_definition,
+    },
   );
 
   $self->set_model($model);
@@ -143,7 +166,8 @@ sub read_model_definition {
 
     my $model_def = <$fh>;
 
-    close $fh;
+    close $fh
+      or croak 'could not close ' . $model_file;
 
     my $model = eval $model_def;  ## no critic (BuiltinFunctions::ProhibitStringyEval)
 
@@ -240,7 +264,8 @@ sub read_stats {
 
     my $stats = <$fh>;
 
-    close $fh;
+    close $fh
+      or croak 'could not close ' . $statfile;
 
     $self->set_stats( decode_json $stats);
   }
@@ -260,15 +285,16 @@ sub print_stats {
   }
 
   if ( $self->get_format =~ /json/ixsm ) {
-    print JSON::PP->new->utf8->pretty->encode($stats);
+    my $json = JSON::PP->new->utf;
+    print {*STDOUT} $json->pretty->encode($stats);
   }
   elsif ( $self->get_format =~ /text/ixsm ) {
     my @columns = sort keys %{$stats};
 
     my $t = Text::ASCIITable->new(
       { headingText => colored( 'Statistics', 'bold white' ),
-        allowANSI   => TRUE
-      }
+        allowANSI   => TRUE,
+      },
     );
 
     $t->setCols( map { colored $_, 'bold white' }
@@ -325,7 +351,7 @@ sub print_stats {
       $t->addRow(@row);
     }
 
-    print $t;
+    print {*STDOUT} $t;
   }
 
   return $self;
@@ -376,8 +402,8 @@ sub load_table {
   if (
     !_table_exists(
       { table => $self->get_table,
-        dbi   => $self->get_dbi
-      }
+        dbi   => $self->get_dbi,
+      },
     )
   ) {
     croak sprintf '%s does not exist.', $self->get_table;
@@ -390,7 +416,7 @@ sub load_table {
   my $model = Bedrock::Model->new(
     { dbi   => $self->get_dbi,
       table => $self->get_table,
-    }
+    },
   )->fetch_model;
 
   {
@@ -430,7 +456,8 @@ sub load_table {
     $handler->save;
   }
 
-  $fh->close;
+  $fh->close
+    or croak 'could not close input file';
 
   return;
 }
@@ -450,7 +477,7 @@ sub analyze {
   foreach my $column (@columns) {
     $stats{$column} = {
       'count'      => 0,
-      'type',      => EMPTY,
+      'type'       => EMPTY,
       'max'        => 0,
       'min'        => 0,
       'values'     => {},
@@ -483,7 +510,8 @@ sub analyze {
     }
   }
 
-  $fh->close;
+  $fh->close
+    or croak 'could not close input file';
 
   $self->finalize_stats;
 
@@ -856,7 +884,7 @@ sub finalize_stats {
 ########################################################################
 sub help {
 ########################################################################
-  print <<"EOT";
+  print {*STDOUT} <<"EOT";
 Usage: $PROGRAM_NAME options command
 
 Utility for creating MySQL tables from .csv files.
@@ -1015,8 +1043,10 @@ sub main {
       }
 
       if ( $arg eq 'model' ) {
-        print $importer->create_model_definition->create_model->get_model
-          ->as_string;
+        $importer->create_model_definition;
+        $importer->create_model;
+
+        print {*STDOUT} $importer->get_model->as_string;
       }
       elsif ( $arg eq 'stats' ) {
         $importer->read_stats->print_stats;
