@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,118 +23,219 @@ package TagX::TAG::SQLConnector;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
+use Bedrock::Constants qw{:chars};
+use Carp;
 use DBI;
 use Data::Dumper;
-use Carp;
-
 use TagX::TAG::NoBody;
 
-use Log::Log4perl qw/:easy/;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
 use Scalar::Util qw/reftype blessed/;
 
+########################################################################
 sub ANONYMOUS {
-  '*anonymous*';
+########################################################################
+  return '*anonymous*';
 }
 
+########################################################################
 sub fetch_dsn {
-  my ($self, $dsn_source) = @_;
+########################################################################
+  my ( $self, $dsn_source ) = @_;
 
-  my ($dsn, $user, $pass, $host);
-  
+  my ( $dsn, $user, $pass, $host );
+
   if ( ref($dsn_source) && reftype($dsn_source) eq 'HASH' ) {
-    ($dsn, $user, $pass, $host) =  @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
+    ( $dsn, $user, $pass, $host )
+      = @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
   }
-  
-  DEBUG sub {
-    "user: [$user]\n"
-      . "pass: [" . ('-' x length($pass)) . "]\n"
-      . "host: [$host]\n"
-      . "dsn: [$dsn]\n";
-    };
 
-  return ($dsn, $user, $pass, $host);
+  my $logger = $self->get_logger( ref $self );
+
+  $logger->debug(
+    sub {
+      return sprintf 'source: [%s] dsn:[%s] user: [%s] pass: [%s] host:[%s]',
+        $dsn_source, $dsn, $user,
+        ( $ASTERISK x length $pass ), $host;
+    }
+  );
+
+  return ( $dsn, $user, $pass, $host );
 }
 
 # returns (dsn, username, password)
+########################################################################
 sub get_dsn_from_config {
-  my ($self, $tx, $options) = @_;
+########################################################################
+  my ( $self, $tx, $options ) = @_;
 
   my %dsn_spec;
 
   foreach my $var (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/) {
     $dsn_spec{$var} = $tx->config->get($var);
   }
-  
-  return $self->fetch_dsn(\%dsn_spec);
+
+  return $self->fetch_dsn( \%dsn_spec );
 }
 
+########################################################################
 sub get_dsn_from_data_sources {
-  my ($self, $tx, %options) = @_;
-  
+########################################################################
+  my ( $self, $tx, %options ) = @_;
+
   my $dsn_name = $options{dsn};
 
-  my ($dsn, $user, $pass, $host);
-  
-  if ( $dsn_name ) {
+  my ( $dsn, $user, $pass, $host );
+
+  if ($dsn_name) {
     my $dbnames = $tx->config->dbnames() || {};
-    
-    if ( ! $dbnames->{$dsn_name} ) {
-      die "sqlconnect: no named connection '" . $options{dsn} . "' found.\n";
+
+    if ( !$dbnames->{$dsn_name} ) {
+      die sprintf "no named connection %s found\n", $options{dsn};
     }
-    
-    ($dsn, $user, $pass, $host ) = $self->fetch_dsn($dbnames->{$dsn_name});
-    
-    return ($dsn, $user, $pass, $host );
+
+    ( $dsn, $user, $pass, $host ) = $self->fetch_dsn( $dbnames->{$dsn_name} );
+
+    return ( $dsn, $user, $pass, $host );
   }
 
-  return ($dsn, $user, $pass, $host);
+  return ( $dsn, $user, $pass, $host );
 }
 
+########################################################################
 sub get_dsn_from_options {
-  my ($self, $tx, %options) = @_;
+########################################################################
+  my ( $self, $tx, %options ) = @_;
 
-  return @options{qw/data-source username password/};
+  return @options{qw/data-source username password hostname/};
 }
 
+########################################################################
 sub get_dsn_from_environment {
-  my ($self, $tx, %options) = @_;
+########################################################################
+  my ( $self, $tx, %options ) = @_;
 
-  return $self->fetch_dsn(\%ENV);
+  return $self->fetch_dsn( \%ENV );
 }
 
+########################################################################
 sub get_dsn {
-  my ($self, $tx, %options) = @_;
+########################################################################
+  my ( $self, $tx, %options ) = @_;
+
+  my $logger = $self->get_logger( ref $self );
 
   my %source = (
+    'environment'  => \&get_dsn_from_environment,
     'options'      => \&get_dsn_from_options,
     'data-sources' => \&get_dsn_from_data_sources,
-    'environment'  => \&get_dsn_from_environment,
     'config'       => \&get_dsn_from_config,
   );
-                
-  my ($dsn, $user, $pass, $host);
-  
-  foreach my $src (keys %source) {
-    ($dsn, $user, $pass, $host) = $source{$src}->($self, $tx, %options);
+
+  my ( $dsn, $user, $pass, $host );
+
+  foreach my $src (qw{ environment options data-sources config }) {
+    my @connection = $source{$src}->( $self, $tx, %options );
+    $logger->debug( Dumper( [ \@connection ] ) );
 
     # if anything was set then let's try to connect
     # potential problems with this approach...
     # a. short circuits potential succesful connection strings
     # b. partially configured connection options might trip us up
-    
-    if ( $dsn || $user || $pass || $host ) {
+
+    $dsn  //= $connection[0];
+    $user //= $connection[1];
+    $pass //= $connection[2];
+    $host //= $connection[3];
+
+    if ( $dsn && $user ) {
+      $logger->debug( Dumper( [ 'got user and dsn', [ $user, $dsn ] ] ) );
       $tx->{DB_DSN_SOURCE} = $src;
       last;
     }
   }
 
-  return ($dsn, $user, $pass, $host);
+  # weird pathologic case when DBI_HOST set in environment in order to
+  # set the DSN in a Bedrock script
+  #
+  # <null:dsn dbi:mysql:bedrock:%s>
+  # <null:dsn $dsn.sprintf($env.DBI_HOST)>
+  #
+
+  if ($dsn) {
+    $host = $EMPTY;
+  }
+
+  return ( $dsn, $user, $pass, $host );
 }
 
 1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
+
+=begin
+
+In order to connect to a database we need:
+
+ data source name (e.g. dbi:mysql:database)
+ username
+ password
+ host
+
+Note that a data source name (DSN) can include the database name.  If
+the host parameter is set it will be appended to the DSN.
+
+All of this can be sourced from several places:
+
+=over 10
+
+=item * Environment
+
+ DBI_HOST
+ DBI_USER
+ DBI_PASS
+ DBI_DSN
+
+=item * Options and Argument
+
+ --data-source
+ --username
+ --password
+ --hostname
+
+You can set the DSN as an argument in the tag, e.g.:
+
+ <sqlconnect --username=fred --password=flintstone dbi:mysql:bedrock:localhost>
+
+=item * Data Sources
+
+Retrieve the connection parameters from F<data-sources.xml>.
+
+ <sqlconnect --dsn=bedrock>
+
+ <object>
+   <object name="bedrock">
+    <scalar name="DBI_DSN">dbi:mysql:bedrock:localhost</scalar>
+    <scalar name="DBI_USER">fred</scalar>
+    <scalar name="DBI_PASS">flintstone</scalar>
+   </object>
+ </object>
+
+=item * Config Object
+
+ <scalar name="DBI_USER">fred</scalar>
+ <scalar name="DBI_PASS">flintstone</scalar>
+ <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
+ <scalar name="DBI_HOST">localhost</scalar>
+
+=end
+
+=cut

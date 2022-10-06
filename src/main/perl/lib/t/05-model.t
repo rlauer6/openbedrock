@@ -47,15 +47,17 @@ BEGIN {
   use_ok('Bedrock::Model::Handler');
 }
 
-my $dbi;
+########################################################################
+require 't/db-setup.pl';
 
-my $user = $ENV{DBI_USER} || 'root';
-my $pass = $ENV{DBI_PASS};
+my $dbi = eval { return connect_db(); };
+
+if ( !$dbi || $EVAL_ERROR ) {
+  diag($EVAL_ERROR);
+  BAIL_OUT("could not connect to database\n");
+}
 
 eval {
-  $dbi = DBI->connect( 'dbi:mysql:', $user, $pass,
-    { PrintError => 0, RaiseError => 1, AutoCommit => 0 } );
-
   $dbi->do('create database foo');
   $dbi->do('use foo');
 };
@@ -63,6 +65,7 @@ eval {
 if ($EVAL_ERROR) {
   BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
+########################################################################
 
 eval { MyApp::Users->_create_model($dbi); };
 

@@ -16,23 +16,19 @@ BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
-my $dbi;
-my $user     = $ENV{DBI_USER} || 'root';
-my $password = $ENV{DBI_PASS} || undef;
-my $host     = $ENV{DBI_HOST} || 'localhost';
+########################################################################
+require 't/db-setup.pl';
+
+my $dbi = eval { return connect_db(); };
+
+if ( !$dbi || $EVAL_ERROR ) {
+  diag($EVAL_ERROR);
+  BAIL_OUT("could not connect to database\n");
+}
 
 eval {
-  $dbi = DBI->connect(
-    sprintf( 'dbi:mysql:host=%s;', $host ),
-    $user,
-    $password,
-    { PrintError => $FALSE,
-      RaiseError => $TRUE,
-      AutoCommit => $TRUE
-    }
-  );
-
   $dbi->do('create database foo');
+  $dbi->do('use foo');
 
   my $create_table = <<'SQL';
 create table foo (
@@ -43,17 +39,17 @@ create table foo (
 )
 SQL
 
-  $dbi->do('use foo');
   $dbi->do($create_table);
 };
 
 if ($EVAL_ERROR) {
-  BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
+  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
+########################################################################
 
 # sub-class BLM::IndexedTablehandler
 {
-  no strict 'refs';
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
 
   push @{'ITH::Foo::ISA'}, 'BLM::IndexedTableHandler';
 }
@@ -65,15 +61,20 @@ Readonly::Hash our %TEST_RECORD => (
   bar_phone => '8888888888',
 );
 
+########################################################################
 subtest 'new - 4 argument' => sub {
+########################################################################
 
-  my $ith = eval { BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
+  my $ith
+    = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
   isa_ok( $ith, 'BLM::IndexedTableHandler' )
     or BAIL_OUT($EVAL_ERROR);
 };
 
+########################################################################
 subtest 'new - sub-classed' => sub {
+########################################################################
 
   my $ith = ITH::Foo->new($dbi);
 
@@ -84,21 +85,27 @@ subtest 'new - sub-classed' => sub {
     };
 };
 
+########################################################################
 subtest 'get_fields' => sub {
+########################################################################
   my $ith = ITH::Foo->new($dbi);
 
   my @columns = sort $ith->get_fields();
   is_deeply( \@columns, [qw/bar_phone foo id name/], 'get_fields() - all ' );
 };
 
+########################################################################
 subtest 'get_field_type' => sub {
+########################################################################
   my $ith = ITH::Foo->new($dbi);
 
   is( $ith->get_field_type('name'), 'varchar(100)', 'get_field_type' )
     or diag( $ith->get_field_type('name') );
 };
 
+########################################################################
 subtest 'set/get' => sub {
+########################################################################
   my $ith = ITH::Foo->new($dbi);
 
   $ith->set(%TEST_RECORD);
@@ -109,7 +116,9 @@ subtest 'set/get' => sub {
 
 };
 
+########################################################################
 subtest 'save' => sub {
+########################################################################
   my $ith = ITH::Foo->new($dbi);
 
   $ith->set(%TEST_RECORD);
@@ -119,7 +128,9 @@ subtest 'save' => sub {
   like( $id, qr/\A\d+\z/xsm, 'save returned integer id' );
 };
 
+########################################################################
 subtest 'new - id' => sub {
+########################################################################
   my $id = $dbi->last_insert_id();
 
   my $ith = ITH::Foo->new( $dbi, $id );
@@ -131,7 +142,9 @@ subtest 'new - id' => sub {
   }
 };
 
+########################################################################
 subtest 'new - query' => sub {
+########################################################################
   my $id = $dbi->last_insert_id();
 
   my $ith = ITH::Foo->new( $dbi, { id => $id, foo => 'bar' } );
@@ -143,12 +156,14 @@ subtest 'new - query' => sub {
   }
 };
 
+########################################################################
 subtest delete => sub {
+########################################################################
   my $id = $dbi->last_insert_id();
 
   my $ith = ITH::Foo->new( $dbi, $id );
 
-  $ith->delete('foo'); # delete 1 column
+  $ith->delete('foo');  # delete 1 column
   my @columns = $ith->get_fields( { exists_only => $TRUE } );
   ok( @columns == 3, 'delete column' );
 
@@ -164,7 +179,9 @@ subtest delete => sub {
     or diag( Dumper( [$deleted_record] ) );
 };
 
+########################################################################
 subtest 'null exceptions' => sub {
+########################################################################
   my $ith = ITH::Foo->new($dbi);
 
   $ith->set(
@@ -180,7 +197,9 @@ subtest 'null exceptions' => sub {
   like( $EVAL_ERROR, qr/cannot be null/ism, 'save() - not null field' );
 };
 
+########################################################################
 subtest 'reset' => sub {
+########################################################################
   my $count;
 
   my $id = $dbi->last_insert_id();
@@ -204,6 +223,7 @@ subtest 'reset' => sub {
   $ith->new( $dbi, $id );
 };
 
+########################################################################
 END {
   eval {
     if ( $dbi && $dbi->ping ) {

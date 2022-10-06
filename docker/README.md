@@ -50,10 +50,41 @@ make docker-image
 # Running the Server
 
 A `docker-compose.yml` file will bring up the web server listening on
-port 80.
+port 80. It will also bring up a MySQL server running on
+port 3306. Disable the servie and update `mysql-session.xml` and
+`data-sources.xml` to use a different database server.
 
 ```
 BEDROCK=~/git/openbedrock docker-compose up
+```
+
+To connect to the MySQL server running in the container without using
+TCP you need to expose the socket to your host.  The
+`docker-compose.yml` file will export mount
+`/tmp/mysqld` locally to `/var/run/mysqld` on the container. This will
+allow you to connect to the container's MySQL instance on `localhost`.
+You must however provide the path to socket file when connecting.
+
+```
+mysql -u root -p -h localhost -S /tmp/mysqld/mysqld.sock
+```
+
+Using DBI:
+
+```
+use DBI;
+
+  my %mysql_options = (
+    host         => $ENV{DBI_HOST},
+    mysql_socket => $ENV{DBI_SOCKET},
+    database     => $ENV{DBI_DB},
+  );
+ 
+  my $dsn = 'dbi:mysql:';
+  $dsn .= join q{;}, map { "$_=" . $dsn_options{$_} } keys %mysql_options;
+
+  my $dbi = DBI->connect($dsn, $user, $password);
+
 ```
 
 # Local Bedrock Development with Docker

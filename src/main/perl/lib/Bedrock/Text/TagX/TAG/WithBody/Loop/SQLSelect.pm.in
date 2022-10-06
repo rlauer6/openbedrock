@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,27 +23,26 @@ package TagX::TAG::WithBody::Loop::SQLSelect;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
 use Bedrock::Array;
 use Bedrock::Hash;
 
 use DBI;
 use Data::Dumper;
-use Scalar::Util qw/reftype/;
-use TagX::Log;
+use Scalar::Util qw{reftype};
+use List::Util qw{ pairs };
+
 use TagX::TAG::WithBody::Loop;
 use TagX::TAG::SQLHandler;
-#use Log::Log4perl qw/get_logger/;
 
-@ISA = qw (TagX::TAG::WithBody::Loop TagX::TAG::SQLHandler);
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use parent qw (TagX::TAG::WithBody::Loop TagX::TAG::SQLHandler);
+
+our $VERSION = '3.1.1';  ## no critic (RequireInterpolationOfMetachars)
 
 sub closure {
-  '/sqlselect';
+  return '/sqlselect';
 }
 
 sub define_options {
@@ -69,15 +66,11 @@ sub finalize {
 
   my %options = $self->define_options;
 
-  my @argv    = $self->parse_options( \%options, @context );
-  my $verbose = $self->verbose;
+  my @argv = $self->parse_options( \%options, @context );
 
-  my $logger = Log::Log4perl->get_logger( ref $self );
+  my $logger = $self->get_logger( ref $self );
 
-  $logger->info("logging with log4perl!\n");
-
-  $logger->debug( sub { Dumper \%options } )
-    if $verbose;
+  $logger->debug( sub { Dumper \%options } );
 
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
@@ -104,35 +97,34 @@ sub finalize {
     $statement = "@argv";
   }
 
-  die "<sqlselect>: no statement specified.\n" unless length($statement);
+  die "<sqlselect>: no statement specified.\n" if !length $statement;
 
   if ( exists $options{'arg'} ) {
     my @args
-      = ref( $options{arg} )
-      && ref( $options{arg} eq 'ARRAY' )
+      = ref $options{arg} && reftype( $options{arg} eq 'ARRAY' )
       ? @{ $options{arg} }
       : ( $options{arg} );
 
-    &log_message( $self,
-      "Substituting following args into statement:\n@args" )
-      if $verbose;
+    $logger->debug("Substituting following args into statement:\n@args");
 
-    $statement = sprintf( $statement, @args );
+    $statement = sprintf $statement, @args;
 
-    &log_message( $self, "Statement after arg-substitution\n$statement" )
-      if $verbose;
+    $logger->debug("Statement after arg-substitution\n$statement");
   }
 
   my $sth = $dbh->prepare($statement);
-  die "Error in SQL Statement: `", $dbh->errstr, "'\n$statement\n"
-    unless $sth;
+  die 'Error in SQL Statement: `', $dbh->errstr, "'\n$statement\n"
+    if !$sth;
 
   my $nParams = $sth->{NUM_OF_PARAMS};
 
   my @bind;
+
   if ( exists $options{'bind'} ) {
     my $bind = $options{'bind'};
+
     if ( ref($bind) && reftype($bind) eq 'ARRAY' ) {
+
       for my $item ( @{$bind} ) {
         if ( ref($item) && reftype($item) eq 'ARRAY' ) {
           push @bind, @{$item};
@@ -150,7 +142,7 @@ sub finalize {
       die @bind - $nParams, " extra bind variable(s) specified.\n";
     }
     elsif ( $nParams > @bind ) {
-      die "Insufficient bind variables: need ", $nParams - @bind, " more.\n";
+      die 'Insufficient bind variables: need ', $nParams - @bind, " more.\n";
     }
   }
   elsif ($nParams) {
@@ -158,11 +150,16 @@ sub finalize {
   }
 
   my $i   = 1;
-  my $str = "Bind variables:\n" if $verbose;
-  for my $bindval (@bind) {
-    my $type = $1 if $bindval =~ s/\(\%\s*(\d+)\s*\%\)\s*$//;
+  my $str = "Bind variables:\n";
 
-    if ( defined($type) ) {
+  for my $bindval (@bind) {
+    my $type;
+
+    if ( $bindval =~ s/[(][%]\s*(\d+)\s*[%][)]\s*$//xsm ) {
+      $type = $1;
+    }
+
+    if ( defined $type ) {
       $sth->bind_param( $i, $bindval, { TYPE => $type } )
         || die "Failure binding param $i, TYPE $type: `", $sth->errstr, "'\n";
     }
@@ -171,36 +168,35 @@ sub finalize {
         || die "Failure binding param $i: `", $sth->errstr, "'\n";
     }
 
-    if ($verbose) {
-      $str .= "Bound ($i";
-      $str .= ", $type"    if defined($type);
-      $str .= ", $bindval" if defined($bindval);
-      $str .= ")";
-    }
+    $str .= sprintf 'Bound (%s, %s, %s)', $i,
+      ( defined $type ? ", $type" : q{} ),
+      defined $bindval ? ", $bindval" : q{};
   }
   continue {
     $i++;
   }
 
-  &log_message( $self, $str )
-    if $verbose;
+  $logger->debug($str);
 
   my $rows = $sth->execute;
-  die "Error executing SQL statement: ", $sth->errstr, "\n$statement\n"
-    unless defined($rows);
+  die 'Error executing SQL statement: ', $sth->errstr, "\n$statement\n"
+    if !defined $rows;
 
   my $meta_info;
+
   if ( $options{'meta-info'} ) {
-    &log_message( $self,
-      "Need to define meta information variable $options{'meta-info'}" )
-      if $verbose;
+    $logger->debug(
+      "Need to define meta information variable $options{'meta-info'}");
+
     $meta_info = {
       'NUM_OF_FIELDS' => $sth->{NUM_OF_FIELDS},
       'NUM_OF_PARAMS' => $sth->{NUM_OF_PARAMS},
       'STATEMENT'     => $sth->{Statement}
     };
+
     my @names = @{ $sth->{NAME_uc} };
-    for ( my $i = 0; $i < @names; $i++ ) {
+
+    foreach my $i ( 0 .. $#names ) {
       $meta_info->{FIELDS}->[$i] = {
         'NAME'      => $names[$i],
         'TYPE'      => $sth->{TYPE}->[$i],
@@ -215,31 +211,33 @@ sub finalize {
 
   if ( exists $options{'define-var'} ) {
     $defined = $options{'define-var'};
-    &log_message( $self, "Need to define <$defined>" ) if $verbose;
+    $logger->debug("Need to define <$defined>");
   }
 
   $i = 0;
-  &log_message( $self, "we have [", scalar( @{ $self->{'subobjs'} } ),
-    "] children" )
-    if $verbose;
+  $logger->debug( sprintf 'we have [%d] children',
+    scalar( @{ $self->{'subobjs'} } ) );
 
   while ( defined( $href = $sth->fetchrow_hashref ) ) {
 
     my $href = Bedrock::Hash->new( %{$href} );
-    if ( defined($defined) ) {
+
+    if ( defined $defined ) {
       push @rows, $href;
     }
 
-    if ($verbose) {
-      my ( $key, $value );
-      my $str = '';
-      while ( ( $key, $value ) = each %{$href} ) {
-        $str .= "\t$key = (";
-        $str .= $value if defined($value);
-        $str .= "\n";
+    $logger->debug(
+      sub {
+        my @message;
+
+        foreach my $p ( pairs %{$href} ) {
+          my ( $key, $value ) = @{$p};
+          push @message, sprintf "\t%s = %s", $key, $value // q{};
+        }
+
+        return sprintf "Row...%s\n%s\n", $i, join "\n", @message;
       }
-      &log_message( $self, "Row .. $i\n$str" );
-    }
+    );
 
     # note we add '_' and 'rownum' and $hashref to local context
     $self->{'finalize_children'}->(
@@ -248,10 +246,10 @@ sub finalize {
     );
     $i++;
   }
-  &log_message( $self, "Found <$i> row(s)." ) if $verbose;
-  &log_message( $self, "we have [", scalar( @{ $self->{'subobjs'} } ),
-    "] children" )
-    if $verbose;
+
+  $logger->debug( sprintf 'Found <%d> row(s).', $rows );
+  $logger->debug( sprintf 'we have [%d] children',
+    scalar( @{ $self->{'subobjs'} } ) );
 
   if ( $options{'meta-info'} ) {
     $meta_info->{'COUNT'} = $i;
@@ -259,9 +257,11 @@ sub finalize {
   }
 
   if ( $options{'need-rows'} ) {
-    if ( $options{'need-rows'} =~ /^([\+\-]?)(\d+)$/oi ) {
+
+    if ( $options{'need-rows'} =~ /^([+\-]?)(\d+)$/oixsm ) {
       my ( $sgn, $num ) = ( $1, $2 );
-      if ( $sgn eq '+' ) {
+
+      if ( $sgn eq q{+} ) {
 
         # need at least $num rows
         if ( $i < $num ) {
@@ -274,11 +274,13 @@ sub finalize {
           }
         }
       }
-      elsif ( $sgn eq '-' ) {
+      elsif ( $sgn eq q{-} ) {
 
         # need max of $num rows
         if ( $i > $num ) {
+
           $tx->error->location( $self->start_location );
+
           if ( $options{'raise'} ) {
             die "$options{'raise'}\n";
           }
@@ -291,6 +293,7 @@ sub finalize {
 
         # need exactly $num rows
         $tx->error->location( $self->start_location );
+
         if ( $options{'raise'} ) {
           die "$options{'raise'}\n";
         }
@@ -307,16 +310,27 @@ sub finalize {
   }
 
   # return a Bedrock::Array or a Bedrock::RecordSet
+  my $obj;
+
   if ($defined) {
-    my $obj
+    $obj
       = $options{recordset}
-      ? new Bedrock::RecordSet( \@rows )
-      : new Bedrock::Array::Reference( \@rows );
+      ? Bedrock::RecordSet->( \@rows )
+      : Bedrock::Array::Reference->( \@rows );
     $tx->param( $defined => $obj );
   }
+
+  return $obj;
 }
 
+1;
+
+## no critic (Documentation::RequirePodSections)
+
+__END__
+
 =pod
+
 
 =head1 TAG - C<E<lt>sqlselectE<gt>>
 
@@ -469,149 +483,3 @@ C<E<lt>sqlE<gt>>, C<E<lt>sqlconnectE<gt>>
 
 =cut
 
-#
-# Revision 1.34  2012/07/29 18:42:07  lauerrc
-# - support for --recordset option
-#
-# Revision 1.33  2011/12/01 17:12:37  eutl420
-# - use methods from Text::TagX::TAG::SQLHandler, get_db_handle(), etc
-#
-# Revision 1.32  2011/09/15 14:53:19  eutl420
-# - perltidy
-# - expose rownum, $_ inside <sqlselect> scope
-#
-# Revision 1.31  2011/09/14 18:39:11  eutl420
-# minor pod tweak
-#
-# Revision 1.30  2011/07/17 16:50:30  eutl420
-# @PERL@, log_message if verbose
-#
-# Revision 1.29  2011/07/12 19:10:37  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.28  2010/12/12 16:20:09  eutl420
-# - use dump_options
-# - attempt auto connect if no current DBI connection
-#
-# Revision 1.27  2010/11/29 15:57:55  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.26  2010/11/17 02:28:28  rlauer
-# - pod cleanup
-# - allow a Bedrock array for --arg
-#
-# Revision 1.25  2010/11/13 17:27:12  rlauer
-# - now --define-var returns a Bedrock::Array object
-#
-# Revision 1.24  2010/11/08 03:09:49  rlauer
-# - documentation changes only
-#
-# Revision 1.23  2009/12/31 18:38:45  rlauer
-# updated docs
-#
-# Revision 1.22  2009/12/31 12:43:40  rlauer
-# docs tweaks, allow <sqlselect:name syntax
-#
-# Revision 1.21  2009/12/28 20:31:35  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.20  2008/12/03 14:01:21  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.19  2008/12/02 15:02:33  rlauer
-# Added pod for tag reference
-#
-# Revision 1.18  2001/02/14 15:35:51  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.17  2001/01/09 20:25:34  sridhar
-# Removed an unnecessary check for extra bind variables.
-#
-# Revision 1.16  2000/12/15 14:29:07  sridhar
-# Bug fix for reporting error when using --need-rows: the script line
-# number was not being reported correctly.
-#
-# Revision 1.15  2000/11/21 19:25:14  sridhar
-# 1. Support for passing a database handle using the option --db.
-# 2. Error messages cleaned.
-# 3. More error checks.
-# 4. --dbname option deprecated.
-#
-# Revision 1.14  2000/11/16 19:05:48  sridhar
-# Using function stored under `finalize-children' which is set by the
-# parent object.
-#
-# Revision 1.13  2000/10/25 17:26:49  sridhar
-# Argument to --bind can be an array. The array is expanded and used with
-# the other bind arguments appropriately.
-#
-# Revision 1.12  2000/09/22 20:24:12  sridhar
-# Argument is treated as SQL select statement to execute if --statement
-# is not present.
-#
-# Revision 1.11  2000/08/11 14:13:34  sridhar
-# Bugfix: was previously killing all children after first pass through.
-# Was failing to properly generate output since there were no children
-# in the second and subsequent loops when invoked in a loop. Fixed by
-# not killing children after finishing the loop.
-#
-# Revision 1.10  2000/07/06 17:21:09  sridhar
-# Had to swap computation of meta-info from after `fetch' to before
-# `fetch' to accomodate mySQL which seems to treat meta-info retrieval
-# after all fetches as invalid.
-#
-# Revision 1.9  2000/06/21 16:08:16  sridhar
-# 1. Added new option `meta-info' for defining variable with query
-# information
-# 2. Using SIS::Hash for making a hash instead of {}
-#
-# Revision 1.8  2000/05/31 14:47:34  sridhar
-# Rigorous version numbering and usage
-#
-# Revision 1.7  2000/04/27 20:01:23  sridhar
-# Execute was returning undef and *NOT* throwing an exception due to an SQL
-# error. Has been fixed now.
-#
-# Revision 1.6  2000/04/24 12:49:34  sridhar
-# Using TagX::Log for logging messages
-#
-# Revision 1.5  2000/04/13 15:21:07  sridhar
-# Using new parse_options method with support for expressions
-#
-# Revision 1.4  2000/03/13 15:47:29  sridhar
-# Added two options --need-rows and --raise, first for raising exception
-# when required number of rows are not found, second for specifying the
-# error message to throw as an exception.
-#
-# Revision 1.3  2000/03/09 14:21:40  sridhar
-# Using Output handle object for printing which enables buffering.
-#
-# Revision 1.2  2000/03/06 18:37:24  sridhar
-# Replaced all ad-hoc message logging with message logging only on
-# demand, by the use of --verbose option.
-#
-# Revision 1.1  2000/03/02 15:00:04  sridhar
-# Moved WithBody/SQLSelect.pm to WithBody/Loop/SQLSelect.pm. SQLSelect.pm
-# is now a subclass of Loop, which overrides `parent' method to force own
-# finalize_children function.
-#
-# Revision 1.3  2000/02/23 13:43:52  sridhar
-# Removed some commented useless code.
-#
-# Revision 1.2  2000/02/08 15:37:46  sridhar
-# Added support for being able to use Exporter version numbers
-#
-# Revision 1.1  2000/02/08 15:25:03  sridhar
-# Added TagX
-#
-#
-
-1;

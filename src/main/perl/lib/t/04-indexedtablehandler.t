@@ -12,16 +12,19 @@ BEGIN {
     or BAIL_OUT($EVAL_ERROR);
 }
 
-my $dbi;
+########################################################################
+require 't/db-setup.pl';
 
-my $user = $ENV{DBI_USER} || 'root';
-my $pass = $ENV{DBI_PASS};
+my $dbi = eval { return connect_db(); };
+
+if ( !$dbi || $EVAL_ERROR ) {
+  diag($EVAL_ERROR);
+  BAIL_OUT("could not connect to database\n");
+}
 
 eval {
-  $dbi = DBI->connect( 'dbi:mysql:', $user, $pass,
-    { PrintError => 0, RaiseError => 1 } );
-
   $dbi->do('create database foo');
+  $dbi->do('use foo');
 
   my $create_table = <<'SQL';
 create table foo (
@@ -32,13 +35,13 @@ create table foo (
 )
 SQL
 
-  $dbi->do('use foo');
   $dbi->do($create_table);
 };
 
 if ($EVAL_ERROR) {
-  BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
+  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
+########################################################################
 
 my $ith
   = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };

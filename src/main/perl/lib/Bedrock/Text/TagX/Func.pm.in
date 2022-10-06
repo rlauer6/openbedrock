@@ -23,53 +23,65 @@ package TagX::Func;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
-use TagX::Log;
-use TagX::Scalar;
+use Bedrock::Constants qw{:chars :booleans};
 use Data::Dumper;
+use English qw{-no_match_vars};
+use Log::Log4perl::Level;
 use Scalar::Util qw/reftype blessed/;
+use TagX::Scalar;
 
-my $Verbose;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
+our @VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+
+########################################################################
 sub new {
-  my $class = shift;
+########################################################################
+  my ( $class, @args ) = @_;
+
   my $self = bless [], $class;
 
-  @{$self} = @_;
-  $self;
+  @{$self} = @args;
+
+  return $self;
 }
 
+########################################################################
 sub verbose {
-  my $self = shift;
-  if (@_) {
-    $Verbose = shift;
-  }
-  $Verbose;
+########################################################################
+  my ($self) = @_;
+
+  return $self->get_logger( ref $self )->level eq $DEBUG;
 }
 
-sub eval {
-  my $self = shift;
+########################################################################
+sub eval {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @function_args ) = @_;
 
-  &log_message( undef, "$self: begin eval with @{[scalar(@{$self})]} items: (@{$self})" )
-    if $Verbose;
+  my $logger = $self->get_logger( ref $self );
+
+  $logger->debug(
+    sub {
+      return sprintf 'begin eval with %s items: %s items: (%s)',
+        @{ [ scalar @{$self} ] }, @{$self};
+    }
+  );
 
   my ( $var, $func ) = @{$self}[ 0, 1 ];
-  my $obj = $var->eval(@_);
 
-  &log_message( undef, "$self: $var evaluated to [$obj]" ) 
-    if $Verbose;
+  my $obj = $var->eval(@function_args);
+
+  $logger->debug( sprintf '%s evaluated to [%s]', $var, $obj );
 
   # Create a scalar object if we do have a scalar
-  unless ( ref($obj) ) {
+  if ( !ref $obj ) {
     $obj = TagX::Scalar->new($obj);
 
-    &log_message( undef, "$self: Created object with scalar: [$obj]" )
-      if $Verbose;
+    $logger->debug( sprintf 'Created object with scalar: [%s]', $obj );
   }
 
   #
@@ -116,17 +128,24 @@ sub eval {
   #
   # will merrily do nothing except perhaps log a message in a log
   # you may never look at.
-  
-  my $funcref = $obj->can($func)
-    if blessed $obj;
 
-  unless ( $funcref ) {
+  my $funcref;
+
+  if ( blessed $obj ) {
+    $funcref = $obj->can($func);
+  }
+
+  if ( !$funcref ) {
     # let's provide a universal Bedrock Object reftype?, iow, every Bedrock object can 'reftype'.
     if ( $func eq 'reftype' ) {
       return reftype($obj);
     }
     else {
-      &log_message( undef, "$self: warning! unsupported function ($func)...if not handled by AUTOLOAD...error" );
+      $logger->debug(
+        sprintf
+          'warning! unsupported function (%s...if not handled by AUTOLOAD...error',
+        $func
+      );
     }
   }
 
@@ -134,68 +153,70 @@ sub eval {
   shift @args;
   shift @args;
 
-  &log_message( undef, "$self: Arguments to $func() are (@args)" )
-    if $Verbose;
+  $logger->debug(
+    sub {
+      return sprintf 'Arguments to %s() are (%s)', $func, join $COMMA, @args;
+    }
+  );
 
   my @funcargs;
 
-  for ( @args ) {
-    if ($Verbose) {
-      $_->verbose($Verbose);
-      my $value = $_->eval(@_);
-      $_->verbose(0);
-      push @funcargs, (ref($value) eq 'Bedrock::List') ? $value->list : $value;
-    }
-    else {
-      my $value = $_->eval(@_);
-      push @funcargs, (ref($value) eq 'Bedrock::List') ? $value->list : $value;
-    }
+  for (@args) {
+    my $value = $_->eval(@function_args);
+    push @funcargs, ref $value eq 'Bedrock::List' ? $value->list : $value;
+
   }
 
-  if ( $Verbose ) {
-    local $" = ", ";
-    &log_message( undef, "$self: Invoking $obj->$func(@args)" );
-  }
+  $logger->debug( sprintf 'Invoking %s->%s(%s)',
+    $obj, $func, join $COMMA, @args );
 
-#
-#
-# Rob's Bedrock hack...
-# Well, Jay was right...Bedrock is JUNK! Damn useful junk, but junk none-the-less...
-#
-# Okay, we're trying to execute a method on an object, but it doesn't
-# like to be called in a scalar context...say IO::File->getlines for
-# example...
-#
-# The code below forces the function to return something in an array
-# context...this could be dangerous as some clever Perl programmers
-# create those polymorphic methods that return scalars or arrays
-# depending on how (context) they are called.  My gut tells me that
-# Bedrock, in general, is not going to suffer since function
-# references being invoked here are typically BLMs and they are
-# usually far from clever.
-#
-# so instead of doing just...
-#	my $v = $funcref->($obj, @args);
-# we'll do...
-#
+  #
+  #
+  # Rob's Bedrock hack...
+  # Well, Jay was right...Bedrock is JUNK! Damn useful junk, but junk none-the-less...
+  #
+  # Okay, we're trying to execute a method on an object, but it doesn't
+  # like to be called in a scalar context...say IO::File->getlines for
+  # example...
+  #
+  # The code below forces the function to return something in an array
+  # context...this could be dangerous as some clever Perl programmers
+  # create those polymorphic methods that return scalars or arrays
+  # depending on how (context) they are called.  My gut tells me that
+  # Bedrock, in general, is not going to suffer since function
+  # references being invoked here are typically BLMs and they are
+  # usually far from clever.
+  #
+  # so instead of doing just...
+  #	my $v = $funcref->($obj, @args);
+  # we'll do...
+  #
   my @ref_v;
   my $v;
 
-  if ( $funcref ) {
+  if ($funcref) {
     @ref_v = $funcref->( $obj, @funcargs );
   }
   else {
-    &log_message(undef, "$self: eval function in case implemented via AUTOLOAD\n\@ref_v = $obj->$func(\@args);");
+    $logger->debug(
+      sub {
+        return
+          sprintf
+          'eval function in case implemented via AUTOLOAD: %s = %s->%s(%s)',
+          $obj, $func, join $COMMA, @args;
+      }
+    );
 
-    eval '@ref_v = $obj->' . $func . '(@funcargs);';
-    
-    if ( $@ ) {
-      if ( $@ =~/TagX::Scalar/ ) {
-	&log_message(undef, Dumper [ $obj, $func] );
-	die "attempt to invoke possibly non-existent method ($func) on a possibly non-existent scalar\n";
+    eval '@ref_v = $obj->' . $func . '(@funcargs);';  ## no critic (RequireInterpolationOfMetachars, ProhibitStringyEval)
+
+    if ($EVAL_ERROR) {
+      if ( $EVAL_ERROR =~ /TagX::Scalar/xsm ) {
+        $logger->debug( sub { return Dumper [ $obj, $func ] } );
+        die
+          "attempt to invoke possibly non-existent method ($func) on a possibly non-existent scalar\n";
       }
       else {
-        die "$@\n";
+        die "$EVAL_ERROR\n";
       }
     }
   }
@@ -207,10 +228,11 @@ sub eval {
     $v = $ref_v[0];
   }
 
-  &log_message( undef, "$self: Function call returned [$v]" )
-    if $Verbose;
+  $logger->debug( sprintf 'Function call returned [%s]', $v );
 
   return $v;
 }
 
 1;
+
+__END__

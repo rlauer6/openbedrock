@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -23,136 +21,169 @@
 package TagX::TAG::NoBody::Var;
 
 use strict;
-
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use warnings;
 
 use Bedrock;
-use Bedrock::HTML::Helper qw(create_xhtml_element create_xhtml_element_header);
+use Bedrock::HTML::Helper
+  qw(create_xhtml_element create_xhtml_element_header);
 use Bedrock::BedrockJSON;
-use Bedrock::Dump;
+use Bedrock::Constants qw{:chars};
 
-use TagX::Log;
+use Bedrock::Dump;
+use Bedrock::Constants qw{:booleans :chars};
+
 use TagX::TAG::NoBody;
 use Text::URLEncode;
 
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw{reftype};
+use List::Util qw{ any pairs };
+
 use Data::Dumper;
 use English qw/-no_match_vars/;
-use Log::Log4perl qw/:easy/;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 use MIME::Base64;
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw (TagX::TAG::NoBody);
 
+use Readonly;
+
+Readonly::Array our @VALID_TYPES => qw{
+  button
+  checkbox
+  file
+  radio
+  select select-group
+  submit
+  text
+  textarea
+};
+
+########################################################################
 sub create_label {
-  my $attributes = shift;
-  my $options    = shift;
+########################################################################
+  my ( $attributes, $options ) = @_;
 
   my $label_element;
 
   my $label = delete $attributes->{'label'};
 
-  unless ( exists $options->{'no_style'} ) {
-    my @style = split ";", $attributes->{'style'};
+  if ( !exists $options->{'no_style'} ) {
+    my @style = split $SEMICOLON, $attributes->{'style'};
+
     push @style, 'vertical-align:middle;';
-    $attributes->{'style'} = join( ';', @style );
+    $attributes->{'style'} = join $SEMICOLON, @style;
   }
 
   if ( $attributes->{'id'} && $label ) {
-    return create_xhtml_element( 'label', $label, "for", $attributes->{'id'} );
+    return create_xhtml_element( 'label', $label, 'for',
+      $attributes->{'id'} );
   }
 
   # auto labeling...
   return
-    if (    exists $options->{'no-label'}
-            || exists $options->{'button'}
-            || exists $options->{'submit'} );
+    if ( exists $options->{'no-label'}
+    || exists $options->{'button'}
+    || exists $options->{'submit'} );
 
   if ( ( exists $options->{'checkbox'} ) || ( exists $options->{'radio'} ) ) {
-    return
-      create_xhtml_element( 'label', $attributes->{'value'} . '&nbsp;',
-                            "for", $attributes->{'id'} );
+    return create_xhtml_element( 'label', $attributes->{'value'} . '&nbsp;',
+      'for', $attributes->{'id'} );
 
   }
   else {
-    return
-      create_xhtml_element( 'label', $attributes->{'name'} . '&nbsp;',
-                            "for", $attributes->{'id'} );
+    return create_xhtml_element( 'label', $attributes->{'name'} . '&nbsp;',
+      'for', $attributes->{'id'} );
   }
 }
 
+########################################################################
 sub create_widget_registry {
-  my $context = shift;
+########################################################################
+  my ($context) = @_;
 
-  $context->{'__widgets'} = {} unless exists $context->{'__widgets'};
+  $context->{'__widgets'} //= {};
+
   return $context->{'__widgets'};
 }
 
+########################################################################
 sub set_last_widget {
+########################################################################
   my ( $widgets, $attributes, $type ) = @_;
+
   my $attr = {};
 
-  map { $attr->{$_} = $attributes->{$_} } keys %$attributes;
+  map { $attr->{$_} = $attributes->{$_} } keys %{$attributes};
+
   $attr->{'type'} = $type;
 
   $widgets->{'__last_widget'} = $attr;
 
   $widgets->{'__last_widget_name'} = $attr->{'name'};
+
+  return $widgets->{'__last_widget_name'};
 }
 
+########################################################################
 sub get_last_widget_name {
-  my $widgets = shift;
+########################################################################
+  my ($widgets) = @_;
 
   return $widgets->{'__last_widget'}->{'name'};
 }
 
+########################################################################
 sub get_last_widget_type {
-  my $widgets = shift;
+########################################################################
+  my ($widgets) = @_;
 
   return $widgets->{'__last_widget'}->{'type'};
 }
 
+########################################################################
 sub get_last_widget_id {
-  my $widgets = shift;
+########################################################################
+  my ($widgets) = @_;
 
   return $widgets->{'__last_widget'}->{'id'};
 }
 
+########################################################################
 sub get_next_widget_id {
-  my $widgets = shift;
-  my $type    = shift;
+########################################################################
+  my ( $widgets, $type ) = @_;
 
-  $widgets->{$type}->{'__id'} = 0 unless exists $widgets->{$type}->{'__id'};
+  $widgets->{$type}->{'__id'} //= 0;
   $widgets->{$type}->{'__id'}++;
 
-  $widgets->{$type}->{'__last_widget_id'} =
-    $type . '_' . $widgets->{$type}->{'__id'};
+  $widgets->{$type}->{'__last_widget_id'}
+    = $type . '_' . $widgets->{$type}->{'__id'};
 
-  $widgets->{$type}->{'__last_widget_id'};
+  return $widgets->{$type}->{'__last_widget_id'};
 }
 
+########################################################################
 sub register_widget {
+########################################################################
   my ( $widgets, $type, $attributes ) = @_;
 
-  die "register_widget: \$attributes must be HASH"
-    unless ref($attributes) && reftype($attributes) eq 'HASH';
+  die 'register_widget: attributes must be HASH'
+    if !ref $attributes || reftype($attributes) ne 'HASH';
 
-  $widgets->{$type} = {} unless exists $widgets->{$type};
+  $widgets->{$type} //= {};
 
   set_last_widget( $widgets, $attributes, $type );
 
-  return undef if $attributes->{'id'};
+  return
+    if $attributes->{'id'};
 
-  $attributes = {} unless ref($attributes);
   $attributes->{'id'} = get_next_widget_id( $widgets, $type );
 
-  if ( $type =~
-       /(button|checkbox|file|radio|select|select-group|submit|text|textarea)/ ) {
-    $attributes->{'name'} = $attributes->{'id'} unless $attributes->{'name'};
+  if ( any { $_ eq $type } @VALID_TYPES ) {
+    $attributes->{'name'} //= $attributes->{'id'};
   }
 
   set_last_widget( $widgets, $attributes, $type );
@@ -160,20 +191,19 @@ sub register_widget {
   return $attributes->{'id'};
 }
 
+########################################################################
 sub is_form_widget {
-  my $options = shift;
+########################################################################
+  my ($options) = @_;
 
-  my $tag_type;
-
-  my @form_elements =
-    qw(button checkbox file radio select select-group text textarea);
-
-  ($tag_type) = map { exists $options->{$_} ? $_ : () } @form_elements;
+  my ($tag_type) = map { exists $options->{$_} ? $_ : () } @VALID_TYPES;
 
   return $tag_type;
 }
 
+########################################################################
 sub define_options {
+########################################################################
   return (
     'address=s'      => undef,
     'anchor=s'       => undef,
@@ -221,21 +251,32 @@ sub define_options {
     'yaml'           => undef
   );
 
-} ## end sub define_options
+}
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
 
   my @argv = $self->parse_options( \%options, @context );
+
+  my $logger = $self->get_logger( ref $self );
+
+  $logger->debug(
+    Dumper(
+      [ \@argv, \%options, ref $self, $self->get_logger( ref $self ) ]
+    )
+  );
+
   $self->dump_options( \%options, @argv );
 
   if ( exists $options{serialize} ) {
     $options{'bedrock-xml'} = 1;
   }
 
-  my $delimiter = $options{delimiter} || '';
+  my $delimiter = $options{delimiter} || $EMPTY;
 
   # create a widget registry
   my $widgets = create_widget_registry( $context[0] );
@@ -244,28 +285,31 @@ sub finalize {
   my $tag_type;
 
   if ( @argv == 0 ) {
-    WARN "No variable specified.";
+    #    WARN "No variable specified.";
 
-    DEBUG sub {
-      my $default = exists $options{default} ? $options{default} : "undefined";
-      "Value not defined, default is [$default]";
-    };
-    
-    $value = $options{'default'}
-      if exists $options{'default'};
+    $self->get_logger( ref $self )->debug(
+      sub {
+        return sprintf 'Value not defined, default is [%s]',
+          $options{default} // 'undefined';
+      }
+    );
+
+    if ( exists $options{'default'} ) {
+      $value = $options{'default'};
+    }
+
   }
   else {
     $value = shift @argv;
-    
+
     if ( exists $options{'default'} ) {
-      $value = $options{'default'}
-        if ! defined $value;
+      $value //= $options{'default'};
     }
   }
 
-  DEBUG sub {
-    "Value: <$value>";
-  };
+  #  DEBUG sub {
+  #    "Value: <$value>";
+  #  };
 
   if ( exists $options{handle} && exists $options{raw} ) {
     if ( $options{handle}->can('print') ) {
@@ -276,20 +320,22 @@ sub finalize {
 
   # encode argument before other options
   if ( defined $options{'base64'} ) {
-    if ( ! ref($value) ) {
-      $value = encode_base64( $value );
+    if ( !ref $value ) {
+      $value = encode_base64($value);
     }
     elsif ( ref($value) && reftype($value) eq 'ARRAY' ) {
       my $dummy = [];
 
-      foreach ( @$value ) {
-        push @$dummy, encode_base64($_ );
+      foreach ( @{$value} ) {
+        push @{$dummy}, encode_base64($_);
       }
+
       $value = $dummy;
     }
-    elsif ( ref($value) && reftype($value) eq 'HASH' ) {
+    elsif ( ref $value && reftype($value) eq 'HASH' ) {
       my $dummy = {};
-      foreach (keys %$value) {
+
+      foreach ( keys %{$value} ) {
         $dummy->{$_} = encoded_base64( $value->{$_} );
       }
       $value = $dummy;
@@ -297,34 +343,40 @@ sub finalize {
   }
 
   if ( defined $options{'bedrock-xml'} ) {
-    my $handler = $self->io_handler( $tx, 'BedrockXML');
-    $value = $handler->serialize($value, { @argv } );
+    my $handler = $self->io_handler( $tx, 'BedrockXML' );
+    $value = $handler->serialize( $value, {@argv} );
   }
-  elsif ( defined( $options{'json'} ) ) {
-    my $handler = $self->io_handler( $tx, 'JSON');
-    $value = $handler->serialize($value, { @argv, exists $options{pretty} ? (pretty => $options{pretty}) : () } );
+  elsif ( defined $options{'json'} ) {
+    my $handler = $self->io_handler( $tx, 'JSON' );
+
+    $value = $handler->serialize(
+      $value,
+      { @argv, exists $options{pretty} ? ( pretty => $options{pretty} ) : ()
+      }
+    );
   }
+
   if ( defined $options{'xml'} ) {
-    my $handler = $self->io_handler( $tx, 'XML');
-    $value = $handler->serialize($value, { @argv });
+    my $handler = $self->io_handler( $tx, 'XML' );
+    $value = $handler->serialize( $value, {@argv} );
   }
   elsif ( defined $options{'yaml'} ) {
-    my $handler = $self->io_handler( $tx, 'YAML');
-    $value = $handler->serialize($value, { @argv });
+    my $handler = $self->io_handler( $tx, 'YAML' );
+    $value = $handler->serialize( $value, {@argv} );
   }
   elsif ( defined $options{'serializer'} ) {
-    my $handler = $self->io_handler( $tx, $options{serializer}, { 'out' => { @argv }  });
-    $value = $handler->serialize($value, { @argv });
+    my $handler
+      = $self->io_handler( $tx, $options{serializer}, { 'out' => {@argv} } );
+    $value = $handler->serialize( $value, {@argv} );
   }
-  elsif ( defined( $options{'format'} ) ) {
+  elsif ( defined $options{'format'} ) {
     $value = sprintf $options{'format'}, $value;
   }
-  elsif ( defined( $options{'decode'} ) ) {
-    DEBUG sub {
-      "decode using "
-        . $options{'decode'};
-    };
-    
+  elsif ( defined $options{'decode'} ) {
+    #    DEBUG sub {
+    #      "decode using " . $options{'decode'};
+    #    };
+
     my $obj = Bedrock::JSON::decode( $options{'decode'} );
 
     if ( exists $obj->{$value} ) {
@@ -337,62 +389,60 @@ sub finalize {
       $value = undef;
     }
   }
-  elsif ( defined( $options{'toggle'} ) ) {
-    my ( $a, $b ) = split /\s*,\s*/, $options{'toggle'};
+  elsif ( defined $options{'toggle'} ) {
+    my ( $a, $b ) = split /\s*,\s*/xsm, $options{'toggle'};
     $value = ( $value eq $a ) ? $b : $a;
   }
   elsif ( exists $options{'anchor'} ) {
     my $attributes = get_json_attributes( 'anchor', \%options );
     register_widget( $widgets, 'anchor', $attributes );
-    
+
     if ( !$attributes->{'href'} && @argv ) {
       $attributes->{'href'} = shift @argv;
     }
-    
+
     $value = create_xhtml_element( 'a', $value, %{$attributes} );
   }
   elsif ( exists $options{'img'} ) {
     my $attributes = get_json_attributes( 'img', \%options );
     register_widget( $widgets, 'img', $attributes );
-    
-    if  ( !$attributes->{'src'} ) {
+
+    if ( !$attributes->{'src'} ) {
       $attributes->{'src'} = $value;
     }
-    
+
     $value = create_xhtml_element( 'img', undef, %{$attributes} );
   }
-  elsif ( ($tag_type) =
-	  map { exists $options{$_} ? $_ : () }
-	  qw(address blockquote code div  p pre span textarea)
-	) {
+  elsif ( ($tag_type)
+    = map { exists $options{$_} ? $_ : () }
+    qw(address blockquote code div  p pre span textarea) ) {
     my $attributes = get_json_attributes( $tag_type, \%options );
     register_widget( $widgets, $tag_type, $attributes );
     $value = create_xhtml_element( $tag_type, $value, %{$attributes} );
   }
-  elsif ( ($tag_type) =
-	  map { exists $options{$_} ? $_ : () } qw(radio checkbox)
-	) {
+  elsif ( ($tag_type)
+    = map { exists $options{$_} ? $_ : () } qw(radio checkbox) ) {
     my $attributes = get_json_attributes( $tag_type, \%options );
 
-    TRACE sub {
-      Bedrock::Dump::compact( [ $value, scalar(@argv), $attributes ] );
-    };
+    #   TRACE sub {
+    #     Bedrock::Dump::compact( [ $value, scalar(@argv), $attributes ] );
+    #   };
 
     if ( ( exists $options{'group'} ) && !$attributes->{'name'} ) {
-      WARN '--group only valid for same type of form elements'
-        if  $tag_type ne get_last_widget_type($widgets);
+      #      WARN '--group only valid for same type of form elements'
+      #        if $tag_type ne get_last_widget_type($widgets);
 
-      $attributes->{'name'} = get_last_widget_name($widgets)
-        if $tag_type eq get_last_widget_type($widgets);
+      if ( $tag_type eq get_last_widget_type($widgets) ) {
+        $attributes->{'name'} = get_last_widget_name($widgets);
+      }
 
-      DEBUG sub {
-        'group name set to: '
-          . $attributes->{'name'};
-        };
+      #      DEBUG sub {
+      #        'group name set to: ' . $attributes->{'name'};
+      #      };
     }
 
     # <var --radio/checkbox value default-value name label>
-    if ( @argv ) {
+    if (@argv) {
       if ( exists $attributes->{'value'} ) {
 
         # ignore already captured $value
@@ -409,7 +459,10 @@ sub finalize {
       else {
         $attributes->{'name'} = shift @argv;
       }
-      $attributes->{'label'} = shift @argv unless $attributes->{'label'};
+
+      if ( !$attributes->{'label'} ) {
+        $attributes->{'label'} = shift @argv;
+      }
     }
     elsif ( defined $value ) {
       $attributes->{'value'} = $value;
@@ -417,10 +470,12 @@ sub finalize {
     }
 
     if ( exists $options{'group'} && !$attributes->{'name'} ) {
-      DEBUG sub {
-        "$tag_type will have a the group's name "
-          . get_last_widget_id($widgets);
-      };
+      $logger->warn(
+        sub {
+          sprintf '%s will have a the group name : %s ', $tag_type,
+            get_last_widget_id($widgets);
+        }
+      );
     }
 
     register_widget( $widgets, $tag_type, $attributes );
@@ -429,33 +484,34 @@ sub finalize {
       $value = $value->{ $attributes->{'name'} };
     }
 
-    TRACE sub {
-      Bedrock::Dump::compact($attributes);
-    };
+    die
+      "usage: <var --$tag_type value default-value name label> or <var --$tag_type=JSON-STRING \$input.name>\n"
+      if !defined $attributes->{'name'} || !exists $attributes->{'value'};
 
-    die "usage: <var --$tag_type value default-value name label> or <var --$tag_type=JSON-STRING \$input.name>\n"
-      if  ! defined $attributes->{'name'} || ! exists $attributes->{'value'};
-
-    if ( ref($value) && reftype($value) eq 'HASH') {
+    if ( ref($value) && reftype($value) eq 'HASH' ) {
       $value = $value->{ $attributes->{'name'} };
     }
 
-    if ( ref($value) && reftype($value) eq 'ARRAY') {
-      $attributes->{checked} = 'checked'
-        if ( grep { /$attributes->{value}/ } @$value );
+    if ( ref($value) && reftype($value) eq 'ARRAY' ) {
+
+      if ( any { $_ eq $attributes->{value} } @{$value} ) {
+        $attributes->{checked} = 'checked';
+      }
     }
     else {
-      $attributes->{checked} = 'checked' if $value eq $attributes->{value};
+      if ( $value eq $attributes->{value} ) {
+        $attributes->{checked} = 'checked';
+      }
     }
 
     $attributes->{type} = $tag_type;
-    
-    DEBUG sub {
-      Bedrock::Dump::compact($value)
-          . Bedrock::Dump::compact( $attributes->{value} )
-          . Bedrock::Dump::compact($attributes);
-    };
-      
+
+    #    DEBUG sub {
+    #      Bedrock::Dump::compact($value)
+    #        . Bedrock::Dump::compact( $attributes->{value} )
+    #        . Bedrock::Dump::compact($attributes);
+    #    };
+
     $value = create_xhtml_element( 'input', undef, %{$attributes} );
     $value .= create_label( $attributes, \%options );
   }
@@ -472,70 +528,81 @@ sub finalize {
     my $cur_selected = shift @argv;
 
     if (@argv) {
-      $attributes->{'name'}  = shift @argv unless exists $attributes->{'name'};
-      $attributes->{'label'} = shift @argv unless exists $attributes->{'label'};
+      if ( !exists $attributes->{'name'} ) {
+        $attributes->{'name'} = shift @argv;
+      }
+
+      if ( !exists $attributes->{'label'} ) {
+        $attributes->{'label'} = shift @argv;
+      }
     }
 
-    DEBUG sub {
-      "attributes: "
-        . Bedrock::Dump::compact($attributes);
-    };
-    
+    #    DEBUG sub {
+    #      "attributes: " . Bedrock::Dump::compact($attributes);
+    #    };
+
     register_widget( $widgets, 'select', $attributes );
 
-    if ( !ref($value) ) {       # <var --select '["this",1,"that",2]'
+    if ( !ref $value ) {  # <var --select '["this",1,"that",2]'
 
       eval { $value = Bedrock::JSON::decode($value); };
 
-      die "possibly an invalid JSON string: " . $value . " - $EVAL_ERROR\n"
+      die sprintf "possibly an invalid JSON string: %s - %s\n", $value,
+        $EVAL_ERROR
         if $EVAL_ERROR;
 
       die
         "scalar argument to --select must be JSON string that evaluates to an array\n"
-	if ! ref($value) || reftype($value) ne 'ARRAY';
+        if !ref $value || reftype($value) ne 'ARRAY';
     }
 
-    if ( ref($cur_selected) && reftype($cur_selected) eq 'HASH' ) {
+    if ( ref $cur_selected && reftype($cur_selected) eq 'HASH' ) {
       $cur_selected = $cur_selected->{ $attributes->{'name'} };
     }
 
     my @options;
-    
-    if ( ref($value) && reftype($value) eq 'ARRAY' ) {
-      my @rows = @$value;
 
-      while (@rows) {
-        my $text = shift @rows;
-        my $key  = shift @rows;
+    if ( ref($value) && reftype($value) eq 'ARRAY' ) {
+      my @rows = @{$value};
+
+      foreach my $p ( pairs @rows ) {
+        my ( $text, $key ) = @{$p};
 
         my $item = {};
 
-        if ( reftype($key) && reftype($key) eq 'HASH' ) {
-          if ( exists $key->{'value'} && !ref($text) ) {
-            $item = { attributes => $key,
-                      text       => $text
-                    };
+        if ( ref($key) && reftype($key) eq 'HASH' ) {
+          if ( exists $key->{'value'} && !ref $text ) {
+            $item = {
+              attributes => $key,
+              text       => $text
+            };
           }
-	  else {
+          else {
             die
               "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
           }
         }
-	else {
-          $item = { attributes => { value => $key },
-                    text       => $text
-                  };
+        else {
+          $item = {
+            attributes => { value => $key },
+            text       => $text
+          };
         }
 
         # set selected if provided
         if ( defined $cur_selected ) {
-          unless ( ref($cur_selected) && reftype($cur_selected) eq 'ARRAY') {
-            $item->{'attributes'}->{'selected'} = 'selected'
-              if $cur_selected eq $item->{'attributes'}->{'value'};
+          if ( !ref $cur_selected || reftype($cur_selected) ne 'ARRAY' ) {
+
+            if ( $cur_selected eq $item->{'attributes'}->{'value'} ) {
+              $item->{'attributes'}->{'selected'} = 'selected';
+            }
           }
-	  else {		# multiple select box
-            $item->{'attributes'}->{'selected'} = 'selected'
-              if grep { /$item->{'attributes'}->{'value'}/ } @$cur_selected;
+          else {  # multiple select box
+            if ( any { $_ eq $item->{'attributes'}->{'value'} }
+              @{$cur_selected} ) {
+              $item->{'attributes'}->{'selected'} = 'selected';
+            }
+
           }
         }
 
@@ -546,21 +613,21 @@ sub finalize {
       die "usage: <var --select=attributes value default-value name label\n";
     }
 
-    DEBUG sub {
-      Bedrock::Dump::compact(@options);
-    };
+    #    DEBUG sub {
+    #      Bedrock::Dump::compact(@options);
+    #    };
 
     $value = create_label( $attributes, \%options );
     $value .= create_xhtml_element(
-                                   'select',
-                                   join(
-                                        '',
-                                        map {
-                                          create_xhtml_element( 'option', $_->{text}, %{ $_->{attributes} } )
-                                        } @options
-                                       ),
-                                   %$attributes
-                                  );
+      'select',
+      join(
+        $EMPTY,
+        map {
+          create_xhtml_element( 'option', $_->{text}, %{ $_->{attributes} } )
+        } @options
+      ),
+      %{$attributes}
+    );
   }
 
   # [ { label: "foo",  group : [ { attributes : {value : 1}, text: "this"}, { attributes: { value: 2, selected: "selected"}, text: "that"}] }
@@ -572,29 +639,33 @@ sub finalize {
     my $cur_selected = shift @argv;
 
     if (@argv) {
-      $attributes->{'name'}  = shift @argv unless exists $attributes->{'name'};
-      $attributes->{'label'} = shift @argv unless exists $attributes->{'label'};
+      if ( !exists $attributes->{'name'} ) {
+        $attributes->{'name'} = shift @argv;
+      }
+
+      if ( !exists $attributes->{'label'} ) {
+        $attributes->{'label'} = shift @argv;
+      }
     }
 
-    DEBUG sub {
-      "attributes: "
-        . Bedrock::Dump::compact($attributes);
-     };
-    
+    #    DEBUG sub {
+    #      "attributes: " . Bedrock::Dump::compact($attributes);
+    #    };
+
     register_widget( $widgets, 'select-group', $attributes );
 
     # <var --select-group '{ menu1 : ["this",1,"that",2], menu2 : [ "foo", 3, "bar", 4] }'
-    if ( !ref($value) ) {
+    if ( !ref $value ) {
 
-      eval {
-        $value = Bedrock::JSON::decode($value);
-      };
+      eval { $value = Bedrock::JSON::decode($value); };
 
-      die "possibly an invalid JSON string: " . $value . " - $EVAL_ERROR\n"
+      die sprintf "possibly an invalid JSON string: %s - %s\n", $value,
+        $EVAL_ERROR
         if $EVAL_ERROR;
 
-      die "scalar argument to --select-group must be JSON string that evaluates to a hash\n"
-	if !ref($value) || reftype($value) ne 'HASH';
+      die
+        "scalar argument to --select-group must be JSON string that evaluates to a hash\n"
+        if !ref $value || reftype($value) ne 'HASH';
     }
 
     # { "foo"  : [ {value : 1}, "this",     {value: 2}, "that"]
@@ -607,52 +678,56 @@ sub finalize {
       $cur_selected = $cur_selected->{ $attributes->{'name'} };
     }
 
-    if ( ref($value) && reftype($value) eq 'HASH' ) {
-      my @labels = keys %$value;
-      my @menus  = values %$value;
+    if ( ref $value && reftype($value) eq 'HASH' ) {
+      my @labels = keys %{$value};
+      my @menus  = values %{$value};
 
       foreach my $group (@menus) {
         my @options;
-        my @rows = @$group;
+
+        my @rows = @{$group};
+
         my $this_group = { label => shift @labels };
 
-        while (@rows) {
-          my $text = shift @rows;
-          my $key  = shift @rows;
+        foreach my $p ( pairs @rows ) {
+          my ( $text, $key ) = @{$p};
           my $item = {};
 
-          if ( ref($key) && reftype($key) eq 'HASH' ) {
-            if ( exists $key->{'value'} && !ref($text) ) {
+          if ( ref $key && reftype($key) eq 'HASH' ) {
+            if ( exists $key->{'value'} && !ref $text ) {
               $item = {
                 attributes => $key,
                 text       => $text,
               };
-            } ## end if ( exists $key->{'value'...})
+            }
             else {
               die
                 "HASH argument for --select is not well formed.  Must be {attributes}, text...\n";
             }
-          } ## end if ( ref($key) && reftype...)
+          }
           else {
             $item = {
               attributes => { value => $key },
               text       => $text,
             };
-          } ## end else [ if ( ref($key) && reftype...)]
+          }
 
           # set selected if provided
           if ( defined $cur_selected ) {
-            if ( ! ref($cur_selected) || reftype($cur_selected) ne 'ARRAY' ) {
-              $item->{'attributes'}->{'selected'} = 'selected'
-                if $cur_selected eq $item->{'attributes'}->{'value'};
+            if ( !ref $cur_selected || reftype($cur_selected) ne 'ARRAY' ) {
+              if ( $cur_selected eq $item->{'attributes'}->{'value'} ) {
+                $item->{'attributes'}->{'selected'} = 'selected';
+              }
             }
-            else {    # multiple select box
-              $item->{'attributes'}->{'selected'} = 'selected'
-                if grep {/$item->{'attributes'}->{'value'}/} @$cur_selected;
+            else {  # multiple select box
+              if ( any { $_ eq $item->{'attributes'}->{'value'} }
+                @{$cur_selected} ) {
+                $item->{'attributes'}->{'selected'} = 'selected';
+              }
             }
-          } ## end if ( defined $cur_selected)
+          }
           push @options, $item;
-        } ## end while (@rows)
+        }
 
         $this_group->{'group'} = \@options;
         push @opt_group, $this_group;
@@ -662,42 +737,42 @@ sub finalize {
       die "usage: <var --select=attributes value default-value name label\n";
     }
 
-    DEBUG sub {
-      Bedrock::Dump::compact(@opt_group);
-    };
+    #    DEBUG sub {
+    #      Bedrock::Dump::compact(@opt_group);
+    #    };
 
     $value = create_label( $attributes, \%options );
     $value = $value . create_xhtml_element(
-                                           'select',
-                                           eval {
-                                             my $text;
-                                             foreach my $group (@opt_group) {
-                                               $text .= create_xhtml_element(
-                                                                             'optgroup',
-                                                                             join(
-                                                                                  '',
-                                                                                  map {
-                                                                                    create_xhtml_element( 'option', $_->{text},
-                                                                                                          %{ $_->{attributes} } )
-                                                                                  } @{ $group->{group} }
-                                                                                 ),
-                                                                             ( label => $group->{label} )
-                                                                            );
-                                             }
-                                             $text;
-                                           },
-                                           %$attributes
-                                          );
+      'select',
+      eval {
+        my $text;
+        foreach my $group (@opt_group) {
+          $text .= create_xhtml_element(
+            'optgroup',
+            join(
+              $EMPTY,
+              map {
+                create_xhtml_element( 'option', $_->{text},
+                  %{ $_->{attributes} } )
+              } @{ $group->{group} }
+            ),
+            ( label => $group->{label} )
+          );
+        }
+        $text;
+      },
+      %{$attributes}
+    );
 
   }
-  elsif ( ($tag_type) =
-	  map { exists $options{$_} ? $_ : () } qw(button submit text file)
-	) {
+  elsif ( ($tag_type)
+    = map { exists $options{$_} ? $_ : () } qw(button submit text file) ) {
 
     my $attributes = get_json_attributes( $tag_type, \%options );
 
     if (@argv) {
       $attributes->{'value'} = $value;
+
       if ( exists $attributes->{'name'} ) {
         shift @argv;
       }
@@ -705,26 +780,30 @@ sub finalize {
         $attributes->{'name'} = shift @argv;
       }
 
-      $attributes->{'label'} = shift @argv unless $attributes->{'label'};
+      if ( !$attributes->{'label'} ) {
+        $attributes->{'label'} = shift @argv;
+      }
     }
     elsif ( ref($value) && reftype($value) eq 'ARRAY' ) {
       die "usage: <var --$tag_type\[=json-attributes] value name label>\n";
     }
 
-    unless ( $tag_type eq 'text' || $attributes->{'value'} ) {
-      $attributes->{'value'} = { submit => 'Submit',
-                                 button => 'Button',
-                                 text   => ''
-                               }->{$tag_type};
+    if ( $tag_type ne 'text' && !$attributes->{'value'} ) {
+      $attributes->{'value'} = {
+        submit => 'Submit',
+        button => 'Button',
+        text   => ''
+      }->{$tag_type};
     }
 
     if (
-        $tag_type eq 'button'
-        && ( !exists $options{'no-handler'} )
-        && (
-            !( exists $attributes->{'onClick'} || exists $attributes->{'onclick'} )
-           )
-       ) {
+         $tag_type eq 'button'
+      && ( !exists $options{'no-handler'} )
+      && (
+        !(exists $attributes->{'onClick'} || exists $attributes->{'onclick'}
+        )
+      )
+    ) {
       $attributes->{'onClick'} = 'javascript: this.form.submit();';
     }
 
@@ -732,58 +811,62 @@ sub finalize {
 
     register_widget( $widgets, $tag_type, $attributes );
 
-    if ( ref($attributes->{'value'}) && reftype($attributes->{'value'}) eq 'HASH' ) {
-      $attributes->{'value'} =
-        $attributes->{'value'}->{ $attributes->{'name'} };
+    if ( ref $attributes->{'value'}
+      && reftype( $attributes->{'value'} ) eq 'HASH' ) {
+      $attributes->{'value'}
+        = $attributes->{'value'}->{ $attributes->{'name'} };
     }
 
     $value = create_label( $attributes, \%options );
-    $value .= create_xhtml_element( 'input', undef, %$attributes );
+    $value .= create_xhtml_element( 'input', undef, %{$attributes} );
   }
   elsif ( ($tag_type) = map { exists $options{$_} ? $_ : () } qw(ol ul) ) {
     my $attributes = get_json_attributes( $tag_type, \%options );
+
     register_widget( $widgets, $tag_type, $attributes );
 
     # allow <var --ul aa bb cc>
-    $value = (ref($value) && reftype($value) eq 'ARRAY') ? $value : [ $value, @argv ];
-    $value = create_xhtml_element( $tag_type,
-                                   join( '',
-                                         map { create_xhtml_element( 'li', $_ ) }
-                                         @$value ),
-                                   %{$attributes}
-                                 );
+    $value
+      = ( ref($value) && reftype($value) eq 'ARRAY' )
+      ? $value
+      : [ $value, @argv ];
+    $value
+      = create_xhtml_element( $tag_type,
+      join( $EMPTY, map { create_xhtml_element( 'li', $_ ) } @{$value} ),
+      %{$attributes} );
   }
   # <var --columns= --table array>
-  elsif ( ( exists $options{'table'} ) && (ref($value) && reftype($value) eq 'ARRAY') ) {
+  elsif ( ( exists $options{'table'} )
+    && ( ref($value) && reftype($value) eq 'ARRAY' ) ) {
 
-    DEBUG sub {
-      "table: "
-        . Bedrock::Dump::compact($value);
-    };
-    
+    #    DEBUG sub {
+    #      "table: " . Bedrock::Dump::compact($value);
+    #    };
+
     my $column_attributes = {};
     my $header_attributes = {};
     my @column_headers;
 
     # allow a JSON string, an array, or a comma or pipe delimited string
     if ( defined $options{'columns'} ) {
-      if ( $options{'columns'} =~ /^\s*[\[]/ ) {
+      if ( $options{'columns'} =~ /^\s*[\[]/xsm ) {
         eval {
           @column_headers = @{ Bedrock::JSON::decode( $options{'columns'} ) };
         };
 
-        die "possible invalid JSON string: $@\n"
-          if $@;
+        die "possible invalid JSON string: $EVAL_ERROR\n"
+          if $EVAL_ERROR;
       }
-      elsif ( ref($options{'columns'}) && reftype($options{'columns'}) eq 'ARRAY' ) {
+      elsif ( ref( $options{'columns'} )
+        && reftype( $options{'columns'} ) eq 'ARRAY' ) {
         @column_headers = @{ $options{'columns'} };
       }
-      elsif ( !ref( $options{'columns'} ) ) {
-        @column_headers = split /[,|]+/, $options{'columns'};
+      elsif ( !ref $options{'columns'} ) {
+        @column_headers = split /[,|]+/xsm, $options{'columns'};
       }
 
       die "invalid argument for --columns\n"
-        if  !@column_headers;
+        if !@column_headers;
 
       # --columns='["foo", "bar", "baz"]'
       # --columns='[["foo", "bar", "baz"], {valign:"top", align:"right"}]'
@@ -795,106 +878,107 @@ sub finalize {
       }
     }
     else {
-      @column_headers = (ref($value->[0]) && reftype($value->[0]) eq 'HASH') ? keys %{ $value->[0] } : ();
+      @column_headers
+        = ( ref( $value->[0] ) && reftype( $value->[0] ) eq 'HASH' )
+        ? keys %{ $value->[0] }
+        : ();
     }
 
-    DEBUG sub {
-      "ref(0):"
-        . ref($value->[0])
-        . "Column headers are..."
-        . join( "|", @column_headers );
-    };
+    #    DEBUG sub {
+    #      "ref(0):"
+    #        . ref( $value->[0] )
+    #        . "Column headers are..."
+    #        . join( "|", @column_headers );
+    #    };
 
     my $table_attributes = get_json_attributes( 'table', \%options );
     register_widget( $widgets, 'table', $table_attributes );
 
-    DEBUG sub {
-      Bedrock::Dump::compact( $value, $table_attributes );
-    };
-    
+    #    DEBUG sub {
+    #      Bedrock::Dump::compact( $value, $table_attributes );
+    #    };
+
     $value = create_xhtml_element(
-                                  'table',
-                                  eval {
-                                    if (@column_headers) {
-                                      create_xhtml_element(
-                                                           'tr',
-                                                           eval {
-                                                             my $row;
-                                                             foreach (@column_headers) {
-                                                               $row .= create_xhtml_element( 'th', $_, %{$header_attributes} );
-                                                             }
-                                                             $row;
-                                                           }
-                                                          );
-                                    }
-				    else {
-                                      undef;
-                                    }
-                                  }
-                                  . eval {
-                                    my $text;
-                                    foreach my $row (@$value) {
+      'table',
+      eval {
+        if (@column_headers) {
+          create_xhtml_element(
+            'tr',
+            eval {
+              my $row;
+              foreach (@column_headers) {
+                $row
+                  .= create_xhtml_element( 'th', $_, %{$header_attributes} );
+              }
+              $row;
+            }
+          );
+        }
+        else {
+          undef;
+        }
+      }
+        . eval {
+        my $text;
 
-                                      $text .= create_xhtml_element(
-                                                                    'tr',
-                                                                    eval {
-                                                                      my $text;
+        foreach my $row ( @{$value} ) {
 
-                                                                      # this obfuscation warrants an explanation... ;-)
-                                                                      # the object that contains the data for for the body of the table can be:
-                                                                      # ...an array ref or
-                                                                      # ...a hash ref
-                                                                      # if an array ref
-                                                                      # ...then the order is dictated by the array's natural order
-                                                                      # if the object is a hashref && it is an ordered hash, all's well (or not ymmv),
-                                                                      # ...but if not you may have specified a column order (--columns=)
-                                                                      # ...in which case we'll slice the hash that way to get the values for the columns.
-                                                                      my @cell_values =
-                                                                        ref($row) =~ /array/i ? @$row
-									: ( ( @column_headers > 0 ) ? @{$row}{@column_headers}
-									    : values %$row );
-                                                                      foreach (@cell_values) {
-                                                                        $text .=
-                                                                          create_xhtml_element( 'td', $_, %{$column_attributes} );
-                                                                      }
-                                                                      $text;
-                                                                    }
-                                                                   );
-                                    }
-                                    $text;
-                                  },
-                                  %{$table_attributes}
-                                 );
+          $text .= create_xhtml_element(
+            'tr',
+            eval {
+              my $text;
 
-    ERROR $EVAL_ERROR
-      if $EVAL_ERROR;
+              # this obfuscation warrants an explanation... ;-)
+              # the object that contains the data for for the body of the table can be:
+              # ...an array ref or
+              # ...a hash ref
+              # if an array ref
+              # ...then the order is dictated by the array's natural order
+              # if the object is a hashref && it is an ordered hash, all's well (or not ymmv),
+              # ...but if not you may have specified a column order (--columns=)
+              # ...in which case we'll slice the hash that way to get the values for the columns.
+              my @cell_values
+                = ref($row) =~ /array/xsmi ? @{$row}
+                : (
+                ( @column_headers > 0 ) ? @{$row}{@column_headers}
+                : values %{$row}
+                );
+              foreach (@cell_values) {
+                $text
+                  .= create_xhtml_element( 'td', $_, %{$column_attributes} );
+              }
+              $text;
+            }
+          );
+        }
+        $text;
+        },
+      %{$table_attributes}
+    );
+
+    if ($EVAL_ERROR) {
+      $logger->error($EVAL_ERROR);
+    }
+
   }
-  elsif ( ref($value) && reftype($value) eq 'ARRAY' ) {
-    $value = join( $delimiter, @$value );
+  elsif ( ref $value && reftype($value) eq 'ARRAY' ) {
+    $value = join $delimiter, @{$value};
   }
-  elsif ( ref($value) && reftype($value) eq 'HASH' ) {
-    $value = join( $delimiter, %$value );
+  elsif ( ref $value && reftype($value) eq 'HASH' ) {
+    $value = join $delimiter, %{$value};
   }
-  elsif ( ref($value) && $value->isa('Tie::Scalar') ) {
-    $value = $$value;
+  elsif ( ref $value && $value->isa('Tie::Scalar') ) {
+    $value = ${$value};
   }
 
   if ( $options{'htmlencode'} ) {
-    $value =~ s/\x26/&amp;/g;
-    $value =~ s/\x3c/&lt;/g;
-    $value =~ s/\x3e/&gt;/g;
-    $value =~ s/\x22/&quot;/g;
-    
-    DEBUG sub {
-      "HTMLEncoded to <$value>";
-    };
+    $value =~ s/\x26/&amp;/xsmg;
+    $value =~ s/\x3c/&lt;/xsmg;
+    $value =~ s/\x3e/&gt;/xsmg;
+    $value =~ s/\x22/&quot;/xsmg;
   }
   elsif ( exists $options{'urlencode'} and $options{'urlencode'} > 0 ) {
-    &Text::URLEncode::encode($value);
-    
-    DEBUG sub {
-      "URLEncoded to <$value>";
-    };
+    Text::URLEncode::encode($value);
   }
 
   if ( exists $options{handle} ) {
@@ -905,54 +989,66 @@ sub finalize {
   else {
     $tx->out_handle->print($value);
   }
+
+  return;
 }
 
+########################################################################
 sub get_json_attributes {
-  my $key     = shift;
-  my $options = shift;
+########################################################################
+  my ( $key, $options ) = @_;
 
   my $attributes = {};
-  
+
   return $attributes
-    if  !exists $options->{$key} || !defined $options->{$key};
+    if !exists $options->{$key} || !defined $options->{$key};
 
   my $options_val = $options->{$key};
 
-  if ( !ref($options_val) && ( $options_val =~ /^\s*[\{\[]/ ) ) {
-    eval {
-      $attributes = Bedrock::JSON::decode($options_val);
-    };
+  if ( !ref $options_val && $options_val =~ /^\s*[{\[]/xsm ) {
+    eval { $attributes = Bedrock::JSON::decode($options_val); };
 
-    die "possibly an invalid JSON string: "
-      . $options_val
-      . "\n$EVAL_ERROR\n"
+    die sprintf "possibly an invalid JSON string: %s\n%s", $options_val,
+      $EVAL_ERROR
       if $EVAL_ERROR;
   }
   elsif ( ref($options_val) && reftype($options_val) eq 'HASH' ) {
     $attributes = $options_val;
   }
 
-  $attributes;
+  return $attributes;
 }
 
+########################################################################
 sub is_simple_object {
-  my $obj = shift;
+########################################################################
+  my ($obj) = @_;
 
-  if ( ref($obj) && ref($obj) =~ /array/i ) {
-    foreach (@$obj) {
-      return 0 if ref($_);
+  if ( ref $obj && reftype($obj) =~ /array/ixsm ) {
+
+    foreach ( @{$obj} ) {
+      return 0
+        if ref $_;
     }
+
     return 1;
   }
-  elsif ( ref($obj) =~ /(object|hash)/i ) {
-    foreach ( keys %$obj ) {
-      return 0 if ref( $obj->{$_} );
+  elsif ( ref $obj =~ /object|hash/ixsm ) {
+    foreach ( keys %{$obj} ) {
+      return 0
+        if ref $obj->{$_};
     }
     return 1;
   }
 
   return 1;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -1984,5 +2080,3 @@ C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, C<E<lt>nullE<gt>>, C<E<lt>sinkE<gt>>,
 
 =cut
 
-
-1;

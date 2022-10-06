@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 5;
+use Test::More tests => 6;
 use Data::Dumper;
 use English qw{-no_match_vars};
 
@@ -87,6 +87,15 @@ subtest 'tr' => sub {
     or diag( Dumper( [ $str, ${$scalar} ] ) );
 };
 
+subtest 'sprintf' => sub {
+  ok(1);
+
+  my $str = $scalar->new("%s %s %s");
+  diag( Dumper( [ $str->sprintf( 1, 2, 3 ) ] ) );
+  diag( Dumper( [ $str->sprintf( [ 1, 2, 3 ] ) ] ) );
+
+};
+
 1;
 
 __END__
@@ -97,7 +106,7 @@ __DATA__
 [x] align_center
 [x] align_left
 [x] align_right
-[ ] base64
+[x] base64
 [ ] decode
 [ ] format_time
 [ ] hmac_sha1
@@ -114,6 +123,7 @@ __DATA__
 [ ] replace
 [ ] rtrim
 [ ] sign
+[ ] sprintf
 [ ] split
 [ ] toggle
 [ ] tr

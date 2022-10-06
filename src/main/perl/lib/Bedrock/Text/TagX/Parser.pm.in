@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -41,21 +39,22 @@ package TagX::Term::Anon;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
 use TagX::Term::String;
 use Data::Dumper;
+use English qw{-no_match_vars};
 
-@ISA = qw (TagX::Term::String);
+use parent qw (TagX::Term::String);
 
+########################################################################
+sub eval {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
 
-sub eval {
-  my $self = shift;
-  my $term = $$self;
+  my $logger = $self->get_logger( ref $self );
+
+  my $term = ${$self};
+
+  $logger->debug("evaluating $term");
 
   # see if we recognize the data structure as JSON or Perl...at this
   # point in the parsing we are being asked to evaluate the object so
@@ -63,32 +62,30 @@ sub eval {
   # something by virtue of its form -> {} or [].
 
   # JSON?
-  my $val = eval {
-    Bedrock::JSON::decode $$self;
-  };
+  my $val = eval { Bedrock::JSON::decode ${$self}; };
 
   # caveat emptor: as you can see if the JSON decode fails, we then
   # move on to try to evaluate the structure as Perl data structure,
   # but what if the string WAS in fact meant to be a JSON string and
   # the user just screwed up the JSON syntax????
-  return $val unless $@;
-  
-  my $err = $@;
+  return $val if !$EVAL_ERROR;
 
- # Perl data structure?
+  my $err = $EVAL_ERROR;
+
+  # Perl data structure?
   use Safe;
-  
-  my $s = new Safe 'bedrock';
-  
+
+  my $s = Safe->new('bedrock');
+
   # add Bedrock variables to namespace from context frames, converting
   # any Bedrock::Array or Bedrock::Hash objects into simple hash or
   # array references.  We do this because otherwise we would have to
   # allow method invocations in our evaluation namespace and we might
   # not want to do that.
-  foreach my $ctx (@_) {
-    map { ${$s->varglob($_)} = devolve( $ctx->{$_}); } keys %{$ctx};
+  foreach my $ctx (@args) {
+    map { ${ $s->varglob($_) } = devolve( $ctx->{$_} ); } keys %{$ctx};
   }
-  
+
   # limit what can be evaluated to bare minimum in order to compile
   # anonymous hash and array reference creation.
   #
@@ -102,38 +99,40 @@ sub eval {
   # objects comes to mind...the question has to be raised
   # though..."How much do we want a web developer to be able to
   # evaluate? Do we want to recreate PHP?"
- 
-  $s->permit_only(qw/aelem helem padany lineseq const rv2hv leaveloop rv2av rv2sv pushmark list anonlist anonhash leaveeval/);
 
-  $val = $s->reval( $term );
-  
+  $s->permit_only(
+    qw/aelem helem padany lineseq const rv2hv leaveloop rv2av rv2sv pushmark list anonlist anonhash leaveeval/
+  );
+
+  $val = $s->reval($term);
+
   # we have to decided whether to display the JSON error or the Perl eval error (log both)
-  warn "could not parse statement: $term\n$@\$err\n"
-    if $@;
+  warn "could not parse statement: $term\n$EVAL_ERROR\$err\n"
+    if $EVAL_ERROR;
 
   die "$err\n"
-    if $@;
+    if $EVAL_ERROR;
 
-  $val;
+  return $val;
 }
 
 # devolve object into hash or array references if strict (no method
 # invocations)
+########################################################################
 sub devolve {
-  my $obj = shift;
-  return ( ref($obj) =~/Bedrock::(Hash|Array)/ ) ? $obj->devolve : $obj;
+########################################################################
+  my ($obj) = @_;
+
+  return ( ref($obj) =~ /Bedrock::(Hash|Array)/ ) ? $obj->devolve : $obj;
 }
 
+########################################################################
 package TagX::Parser;
 
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
 use Carp;
 use TagX::Term::Var;
@@ -141,6 +140,10 @@ use TagX::Term::String;
 use TagX::Expr;
 use TagX::Func;
 use Data::Dumper;
+use Bedrock::Constants qw{:chars};
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 my $Verbose;
 
@@ -156,38 +159,41 @@ my $Verbose;
 # { (open-brace)	=> \x7b
 # } (close-brace)	=> \x7d
 # : (colon)		=> \x3a
-my $_delimiters = "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
-my %_delimiter_end = ( "\x22" => "\x22",
-                       "\x27" => "\x27",
-                       "q("   => ")",
-                       "q["   => "]",
-                       "q{"   => "}",
-                       "q:"   => ":",
-                       "qq("  => ")",
-                       "qq["  => "]",
-                       "qq{"  => "}",
-                       "qq:"  => ":"
-                     );
+my $_delimiters    = "([\x22\x27]|qq?[\x28\x5b\x7b\x3a])";
+my %_delimiter_end = (
+  "\x22" => "\x22",
+  "\x27" => "\x27",
+  "q("   => ")",
+  "q["   => "]",
+  "q{"   => "}",
+  "q:"   => ":",
+  "qq("  => ")",
+  "qq["  => "]",
+  "qq{"  => "}",
+  "qq:"  => ":"
+);
 
+########################################################################
 sub parse_stm {
+########################################################################
   s/^\s*//;
 
-  /^([\[\{](.*?)[\]\}])\s*$/ && do {
+  /^([\[{](.*?)[\]}])\s*$/ && do {
 
-    my $val = TagX::Term::Anon->new( $1 );
+    my $val = TagX::Term::Anon->new($1);
 
     $_ = undef;
     return $val;
   };
 
-  if (s/^\$//) {
+  if (s/^[\$]//xsm) {
 
     # Could be a var or a func
 
     # first component must be a valid name
     my $name;
-    if (s/^([a-z_]\w*|@)//i) {
-      $name = '$' . $1;
+    if (s/^([[:lower:]_]\w*|@)//i) {
+      $name = $DOLLAR_SIGN . $1;
     }
     else {
       die "Syntax error at `$_'\n";
@@ -196,10 +202,10 @@ sub parse_stm {
     while (length) {
 
       # end of name if not followed by a period
-      last unless s/^\.//;
+      last if !s/^[.]//;
 
       # check for valid name or array ref
-      if (s/^([a-z_]\w*|\x5b-?\d+\x5d|\x5b\$[^\x5d]+\x5d)//i) {
+      if (s/^([[:lower:]_]\w*|\x5b-?\d+\x5d|\x5b\$[^\x5d]+\x5d)//i) {
         $name .= ".$1";
         next;
       }
@@ -211,10 +217,10 @@ sub parse_stm {
     # if followed by "(", it is a func invocation
     if ( length && s/^\x28// ) {
       my @args;
-	    
+
       /^\s*([\[\{](.*?)[\]\}])\s*\)\s*$/ && do {
-	push @args, TagX::Term::Anon->new( $1 );
-	$_ = undef;
+        push @args, TagX::Term::Anon->new($1);
+        $_ = undef;
       };
 
       while (length) {
@@ -225,20 +231,25 @@ sub parse_stm {
         die "Syntax error following function argument at `$_'\n";
       }
 
-      die "Illegal method invocation\n" unless $name =~ s/\.([^.]+)$//;
-      my $func = $1;
-      return TagX::Func->new( TagX::Term::Var->new($name), $func, @args );
+      if ( $name =~ s/[.]([^.]+)$//xsm ) {
+        my $func = $1;
+        return TagX::Func->new( TagX::Term::Var->new($name), $func, @args );
+      }
+
+      die "Illegal method invocation\n";
     }
     else {
       return TagX::Term::Var->new( $name, $Verbose );
     }
   }
   # ref - .i.e. Given: <null:bar test> <null:foo bar> <var @foo> we get "test"
-  elsif ( s/^\*// ) {
+  elsif (s/^[*]//xsm) {
 
     my $name;
-    if (s/^([a-z_]\w*)$//i) {
-      $name = '*' . $1;
+
+    if (s/^([[:lower:]_]\w*)$//xsmi) {
+      $name = $ASTERISK . $1;
+
       return TagX::Term::Var->new( $name, $Verbose );
     }
     else {
@@ -246,68 +257,73 @@ sub parse_stm {
     }
   }
   # string?
-  elsif (s/^$_delimiters//oi) {
+  elsif (s/^$_delimiters//oixsm) {
 
     # is a string
-    die "Could not find string terminator: $_\n"
-      unless s/^([^\Q$_delimiter_end{$1}\E]*)\Q$_delimiter_end{$1}\E//;
-    return TagX::Term::String->new($1);
+    if (s/^([^\Q$_delimiter_end{$1}\E]*)\Q$_delimiter_end{$1}\E//xsm) {
+      return TagX::Term::String->new($1);
+    }
+
+    die "Could not find string terminator: $_\n";
   }
   # number ?
-  elsif (s/^(-?(\d+\.\d+|\d+\.|\.\d+|\d+))(?=\W)//) {
+  elsif (s/^(-?(\d+[.]\d+|\d+[.]|[.]\d+|\d+))(?=\W)//xsm) {
 
     # is a number
     return TagX::Term::String->new($1);
   }
   # (
-  elsif (s/^\x28//) {
+  elsif (s/^\x28//xsm) {
 
-    /^\s*([\[\{](.*?)[\]\}])\s*\)\s*$/ && do {
-      my $val = TagX::Term::Anon->new( $1 );
+    if (/^\s*([\[\{](.*?)[\]\}])\s*\)\s*$/xsm) {
+      my $val = TagX::Term::Anon->new($1);
       $_ = undef;
       return $val;
-    };
+    }
 
     # is an expr
     my @expr;
 
     while (length) {
-      s/^\s+// and next;
+      s/^\s+//xsm and next;
 
-      if (/^\x28/) {
-        push @expr, &parse_stm;
+      if (/^\x28/xsm) {
+        push @expr, parse_stm();
         next;
       }
 
-      if (/^\$/) {
-        push @expr, &parse_stm;
+      if (/^[\$]/xsm) {
+        push @expr, parse_stm();
         next;
       }
 
-      if ( /^(--(not|defined|exists|eq|file|ne|gt|ge|lt|le|re|ref|reftype|or|and|array|hash|scalar|object)|[\+\.\-\*\/])(?=\W)/i ) {
-	s///;
-	push @expr, lc($1);
-	next;
-      }
+      if (
+        /^(--(not|defined|exists|eq|file|ne|gt|ge|lt|le|re|ref|reftype|or|and|array|hash|scalar|object)|[\+.\-\*\/])(?=\W)/ixsm
+      ) {
+        push @expr, lc $1;
 
-      if (/^$_delimiters/oi) {
-        push @expr, &parse_stm;
+        s///xsm;
         next;
       }
 
-      if (/^-?[\d.]+/) {
-        push @expr, &parse_stm;
+      if (/^$_delimiters/oixsm) {
+        push @expr, parse_stm();
         next;
       }
 
-      if (/^\x29/) {
+      if (/^-?[\d.]+/xsm) {
+        push @expr, parse_stm();
+        next;
+      }
+
+      if (/^\x29/xsm) {
         s///;
         return TagX::Expr->new(@expr);
       }
 
       # could be a file test operator
-      if ( /^\-[rwxoRWXOezsfdlpSbctugkTBMAC]\s+/ ) {
-        push @expr, &parse_stm;
+      if (/^\-[rwxoRWXOezsfdlpSbctugkTBMAC]\s+/xsm) {
+        push @expr, parse_stm();
         next;
       }
 
@@ -317,7 +333,7 @@ sub parse_stm {
     die "Expression not properly terminated -- probably missing a `)'\n";
   }
   # bareword but not (),<>
-  elsif (s/^([^\s\x28\x29\x2c\x3c\x3e]+)//) {
+  elsif (s/^([^\s\x28\x29\x2c\x3c\x3e]+)//xsm) {
     return TagX::Term::String->new($1);
   }
   else {
@@ -326,3 +342,5 @@ sub parse_stm {
 }
 
 1;
+
+__END__

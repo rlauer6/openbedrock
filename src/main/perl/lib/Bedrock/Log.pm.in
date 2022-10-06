@@ -24,6 +24,9 @@ package Bedrock::Log;
 
 use Carp;
 
+use English qw{-no_match_vars};
+use Bedrock::Constants qw{:chars};
+
 use File::Basename;
 use IO::Handle;
 use IO::File;
@@ -37,9 +40,9 @@ BEGIN {
 }
 
 @EXPORT = qw (LOG_MESSAGE
-	      MSG_ABORT MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
-	      MSG_SYSERROR MSG_FATAL MSG_QUIT
-	    );
+  MSG_ABORT MSG_DEBUG MSG_INFO MSG_STATUS MSG_WARNING MSG_ERROR
+  MSG_SYSERROR MSG_FATAL MSG_QUIT
+);
 
 @EXPORT_OK = qw (StartLogger LogLevel);
 
@@ -111,37 +114,57 @@ sub GET_ABORT { $_[0] & MSG_ABORT }
 $CutoffLevel = MSG_DEBUG;
 
 my $MailLevels;
-my %LevelStrings = ( &MSG_DEBUG    => q(MSG_DEBUG),
-                     &MSG_INFO     => q(MSG_INFO),
-                     &MSG_STATUS   => q(MSG_STATUS),
-                     &MSG_WARNING  => q(MSG_WARNING),
-                     &MSG_ERROR    => q(MSG_ERROR),
-                     &MSG_SYSERROR => q(MSG_SYSERROR),
-                     &MSG_FATAL    => q(MSG_FATAL)
-                   );
+my %LevelStrings = (
+  &MSG_DEBUG    => q(MSG_DEBUG),
+  &MSG_INFO     => q(MSG_INFO),
+  &MSG_STATUS   => q(MSG_STATUS),
+  &MSG_WARNING  => q(MSG_WARNING),
+  &MSG_ERROR    => q(MSG_ERROR),
+  &MSG_SYSERROR => q(MSG_SYSERROR),
+  &MSG_FATAL    => q(MSG_FATAL)
+);
 
+########################################################################
 sub StartLogger {
-  my %args = @_;
+########################################################################
+  my (%args) = @_;
 
-  # Pick a directory to write the log file from, depending on where the file
-  # can be written: 1. User preference 2. Current dir 3. /tmp
+  my $logfile = $args{LOGFILE};
 
-  my $dir = undef;
-
-  for ( $args{'LOGDIR'}, getcwd(), '/tmp' ) {
-    next unless $_;
-
-    warn "Warning! [$_] is not a directory!" unless -d $_;
-    warn "Warning! [$_] is not writable!"    unless -w $_;
-
-    if ( -d $_ && -w $_ ) {
-      $dir = $_;
-      last;
-    }
+  if ( !$logfile ) {
+    $logfile = sprintf '%s.log', basename( $PROGRAM_NAME, '.pl', '.cgi' );
   }
 
-  # return undef if cannot open logfile
-  return undef unless $dir;
+  if ( $logfile ne 'STDERR' ) {
+    my ( $name, $path, $ext ) = fileparse( $logfile, qr/[.].+$/xsm );
+
+    $args{LOGFILE} = "$name$ext";
+
+    # Pick a directory to write the log file from, depending on where the file
+    # can be written: 1. User preference 2. Current dir 3. /tmp
+    if ( !$path ) {
+      for ( $args{LOGDIR}, getcwd(), '/tmp' ) {
+        next if !$_;
+
+        warn "Warning! [$_] is not a directory!"
+          if !-d $_;
+
+        warn "Warning! [$_] is not writable!"
+          if !-w $_;
+
+        if ( -d $_ && -w $_ ) {
+          $path = $_;
+          last;
+        }
+      }
+    }
+
+    # return undef if cannot open logfile
+    return
+      if !$path;
+
+    $args{LOGDIR} = $path;
+  }
 
   $CutoffLevel = do {
     if ( $args{'LOGLEVEL'} and $LevelStrings{ $args{'LOGLEVEL'} } ) {
@@ -150,84 +173,82 @@ sub StartLogger {
     elsif ( $args{'LOGLEVEL'} and defined &{ $args{'LOGLEVEL'} } ) {
       &{ $args{'LOGLEVEL'} };
     }
-    else { MSG_INFO }
+    else {MSG_INFO}
   };
 
   # Make the logfile name
-  if ( $args{'LOGFILE'} ne 'STDERR' ) {
-    if ( $args{'LOGFILE'} ) {
-      $Log_File = $dir . q(/) . $args{'LOGFILE'};
-    }
-    else {
-      $Log_File = $dir . q(/) . basename( $0, '.pl', '.cgi' ) . q(.log);
-    }
-  
+  if ( $args{LOGFILE} ne 'STDERR' ) {
+    $Log_File = sprintf '%s/%s', @{args}{qw{ LOGDIR LOGFILE}};
 
-    # Truncate logs if it has reached limit
-    if ( $Log_File ne 'STDERR' ) {
-      my $maxsize = defined( $args{'MAXSIZE'} ) ? $args{'MAXSIZE'} : MAX_LOGSIZE;
-  
-      if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($Log_File) )[7] > $maxsize ) ) {
-        open( FILE, ">$Log_File" );
-        close FILE;
-      }
+    my $maxsize = defined $args{'MAXSIZE'} ? $args{'MAXSIZE'} : MAX_LOGSIZE;
+    my $logsize = ( stat $Log_File )[7];
+
+    # truncate if too big
+    if ( $maxsize == 0 || ( $maxsize > 0 && $logsize > $maxsize ) ) {
+      open my $fh, '>', $Log_File
+        or warn 'could not open ' . $Log_File;
+
+      close $fh;
     }
   }
-  
-  if ( $Log_File && $Log_File ne 'STDERR' && ! $args{LOG_REDIRECT_STDERR_OFF} ) {
+
+  if ( $Log_File ne 'STDERR' && !$args{LOG_REDIRECT_STDERR_OFF} ) {
     # Redirect STDERR too to append to logfile
-    if (! open( STDERR, '>>', $Log_File ) ) {
-      warn "Unable to append to log file $Log_File: $!\n";
+    if ( !open STDERR, '>>', $Log_File ) {
+      warn "Unable to append to log file $Log_File: $OS_ERROR\n";
+
       return;
     }
   }
-      
-  $LOGFORMAT = $args{'LOGFORMAT'} // '';
 
-  # Log die and warn errors too if not redirected and not in an eval {} 
-  if  ( ! $SIG{__WARN__} ) {
+  $LOGFORMAT = $args{'LOGFORMAT'} // $EMPTY;
+
+  # Log die and warn errors too if not redirected and not in an eval {}
+  if ( !$SIG{__WARN__} ) {
     $SIG{__WARN__} = sub {
       return unless defined $^S and $^S == 0;
-      unshift @_, MSG_WARNING; goto &LOG_MESSAGE
-    };
-  }
-  
-  if ( ! $SIG{__DIE__} ) {
-    $SIG{__DIE__} = sub {
-      return unless defined $^S and $^S == 0;
-      unshift @_, MSG_FATAL; goto &LOG_MESSAGE
+      unshift @_, MSG_WARNING;
+      goto &LOG_MESSAGE;
     };
   }
 
-  1;
+  if ( !$SIG{__DIE__} ) {
+    $SIG{__DIE__} = sub {
+      return unless defined $^S and $^S == 0;
+      unshift @_, MSG_FATAL;
+      goto &LOG_MESSAGE;
+    };
+  }
+
+  return 1;
 }
 
 sub LogLevel {
-  return $LevelStrings{$_[0]};
+  return $LevelStrings{ $_[0] };
 }
 
 sub format_message {
   my $level = shift;
 
   my %vars = (
-	      '%a' => $ENV{REMOTE_ADDR},
-	      '%A' => $ENV{SERVER_ADDR},
-	      '%f' => $ENV{REQUEST_URI},
-	      '%h' => $ENV{REMOTE_HOST},
-	      '%H' => $ENV{SERVER_PROTOCOL},
-	      '%L' => $LevelStrings{$level},
-	      '%m' => $ENV{REQUEST_METHOD},
-	      '%p' => $ENV{SERVER_NAME},
-	      '%P' => $$,
-	      '%q' => $ENV{QUERY_STRING},
-	      '%t' => scalar(localtime),
-	      '%u' => $ENV{REMOTE_USER} || $ENV{REDIRECT_REMOTE_USER}
-	     );
+    '%a' => $ENV{REMOTE_ADDR},
+    '%A' => $ENV{SERVER_ADDR},
+    '%f' => $ENV{REQUEST_URI},
+    '%h' => $ENV{REMOTE_HOST},
+    '%H' => $ENV{SERVER_PROTOCOL},
+    '%L' => $LevelStrings{$level},
+    '%m' => $ENV{REQUEST_METHOD},
+    '%p' => $ENV{SERVER_NAME},
+    '%P' => $$,
+    '%q' => $ENV{QUERY_STRING},
+    '%t' => scalar(localtime),
+    '%u' => $ENV{REMOTE_USER} || $ENV{REDIRECT_REMOTE_USER}
+  );
 
   my $message = $LOGFORMAT;
 
   foreach my $v ( keys %vars ) {
-    $message =~s/$v/$vars{$v}/g;
+    $message =~ s/$v/$vars{$v}/g;
   }
 
   return $message . "@_\n";
@@ -235,9 +256,9 @@ sub format_message {
 
 sub LOG_MESSAGE {
   my $arg_level = shift;
-  
-  my $level     = &GET_LEVEL($arg_level);
-  my $abort     = &GET_ABORT($arg_level);
+
+  my $level = &GET_LEVEL($arg_level);
+  my $abort = &GET_ABORT($arg_level);
 
   # Check that level is valid and return if below cut off level
   $level = MSG_INFO unless defined($level) and $LevelStrings{$level};
@@ -263,11 +284,13 @@ sub LOG_MESSAGE {
     # old-school Bedrock log format
     unless ( defined $LOGFORMAT ) {
       # Make time
-      my @t = localtime;
+      my @t    = localtime;
       my $time = sprintf(
-			 "%02d/%02d/%4d %02d:%02d:%02d", 
-			 $t[4] + 1, $t[3], 1900 + $t[5], $t[2], $t[1], $t[0]
-			);
+        "%02d/%02d/%4d %02d:%02d:%02d",
+        $t[4] + 1,
+        $t[3], 1900 + $t[5],
+        $t[2], $t[1], $t[0]
+      );
 
       # Make caller
       my ( $pack, $filename, $line ) = caller;

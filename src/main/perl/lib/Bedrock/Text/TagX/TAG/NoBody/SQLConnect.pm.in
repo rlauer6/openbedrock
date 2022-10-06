@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,56 +23,68 @@ package TagX::TAG::NoBody::SQLConnect;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
 use TagX::TAG::NoBody;
 use TagX::TAG::SQLConnector;
 
-push @ISA, qw (TagX::TAG::NoBody TagX::TAG::SQLConnector);
+use parent qw (Exporter TagX::TAG::NoBody TagX::TAG::SQLConnector);
 
 use DBI;
 use Data::Dumper;
-use Log::Log4perl qw/:easy/;
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw{reftype};
+use List::Util qw{ pairs };
+use Bedrock::Constants qw{:chars :booleans};
+use Log::Log4perl::Level;
 
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+########################################################################
 sub check_options {
-  my ($self, $tx, $name, %options) = @_;
+########################################################################
+  my ( $self, $tx, $name, %options ) = @_;
 
   foreach (qw/db data-source username password/) {
-    die "sqlconnect: option --" . $_ . " requires a value.\n"
-      if exists $options{$_} && ! $options{$_};
+    die sprintf "sqlconnect: option --%s requires a value.\n", $_
+      if exists $options{$_} && !$options{$_};
   }
 
   if ( exists $tx->{'VARS'}->{$name} ) {
-    die "sqlconnect: cannot assign database connection to `$name': variable already exists.\n";
+    die sprintf
+      "cannot assign database connection to `%s': variable already exists.\n",
+      $name;
   }
 }
 
+########################################################################
 sub check_for_existing_connection {
-  my ($self, $tx, $name, %options) = @_;
-  
-  my $dbh = $tx->{'DB'}->{$name};
-  
-  if ( $dbh && ref($dbh) =~/DBI::db/ ) {
-    $tx->{'DB'}->{$name}->disconnect;
-    
-    delete $tx->{'DB'}->{$name};
-    delete $tx->{'VARS'}->{$name};
+########################################################################
+  my ( $self, $tx, $name, %options ) = @_;
+
+  my $dbh = $tx->{DB}->{$name};
+
+  return
+    if !$dbh;
+
+  if ( ref($dbh) =~ /DBI::db/xsm ) {
+    if ( $dbh->ping ) {
+      $dbh->disconnect;
+    }
+
+    delete $tx->{DB}->{$name};
+    delete $tx->{VARS}->{$name};
   }
 
-  return $dbh;
+  return $name;
 }
 
+########################################################################
 sub define_options {
+########################################################################
   return (
-    'AutoCommit=s'  => 1,
-    'PrintError=s'  => 1,
-    'RaiseError=s'  => 1,
-    'ChopBlanks=s'  => 1,
+    'AutoCommit=s'  => $TRUE,
+    'PrintError=s'  => $TRUE,
+    'RaiseError=s'  => $TRUE,
+    'ChopBlanks=s'  => $TRUE,
     'dbname=s'      => undef,
     'db=s'          => undef,
     'data-source=s' => undef,
@@ -83,12 +93,20 @@ sub define_options {
     'password=s'    => undef,
     'hostname=s'    => undef,
   );
-} ## end sub define_options
+}
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
+
+  my $logger = $self->get_logger( ref $self );
+
+  if ( $self->verbose ) {
+    $logger->level($DEBUG);
+  }
 
   # --- parse options
   my @argv = $self->parse_options( \%options, @context );
@@ -107,11 +125,10 @@ sub finalize {
   elsif ( $options{'dbname'} ) {
     $name = $options{'dbname'};
 
-    WARN "deprecated use of --dbname, use --define-var instead.";
+    $logger->warn('deprecated use of --dbname, use --define-var instead.');
   }
   elsif ( $options{'db'} ) {
     $name = $options{'db'};
-    WARN "deprecated use of --dbname, use --define-var instead.";
   }
   else {
     $name = $self->ANONYMOUS;
@@ -126,75 +143,124 @@ sub finalize {
       "Specify the DSN using the `--data-source' option or as argument, but not both.\n";
   }
   elsif (@argv) {
-    $options{'data-source'} = "@argv";   # all args must now come from options
+    $logger->debug( Dumper( [ 'argv:', \@argv ] ) );
+
+    if ( ref $argv[0] ) {
+      @argv = @{ $argv[0] };
+    }
+
+    $logger->debug( Dumper( [ 'argv:', \@argv ] ) );
+
+    # if we have a dsn, then the next arguments are just connect string options
+    if ( !$options{dsn} ) {
+      $options{'data-source'} = shift @argv;
+    }
+
+    if (@argv) {
+      die "additional options must be key/value pairs\n"
+        if @argv % 2;
+    }
   }
 
-  # --- check for existing connection
-  $tx->{'DB'} = $tx->{'DB'} || {};
+  $logger->debug( Dumper( [ 'options:', \%options ] ) );
 
-  DEBUG sub {
-    'sqlconnect: disconnecting previous connection'
-      if $self->check_for_existing_connection( $tx, $name, %options );
-  };
+  # --- check for existing connection
+  $tx->{DB} //= $tx->{DB};
+
+  if ( $self->check_for_existing_connection( $tx, $name, %options ) ) {
+    $logger->warn(
+      sub {
+        'disconnected previous connection';
+      }
+    );
+  }
 
   my ( $dsn, $user, $pass, $host ) = $self->get_dsn( $tx, %options );
+
+  $logger->debug( sprintf 'dsn:[%s] user:[%s], pass:[%s], host:[%s]',
+    $dsn, $user, ( $ASTERISK x length $pass ), $host );
 
   # --- connect to database
 
   # note: password can be optional...
-  if ( $dsn && $user ) {
+  die "no dsn found from any source\n"
+    if !$dsn;
 
-    if ( !$pass ) {
-      WARN 'sqlconnect: no password';
+  die "no user found from any source\n"
+    if !$user;
+
+  if ( !$pass ) {
+    $logger->warn('no password');
+  }
+
+  if ($host) {
+    $dsn = "$dsn:database=$host";
+  }
+
+  if (@argv) {
+
+    my @mysql_options;
+
+    foreach my $p ( pairs @argv ) {
+      my ( $key, $value ) = @{$p};
+
+      push @mysql_options, "$key=$value";
     }
 
-    $dsn = "$dsn:$host" if $host;
+    $dsn = join $SEMICOLON, $dsn, @mysql_options;
+  }
 
-    DEBUG sub {
-      'sqlconnect: attempting connection to '
-        . $dsn
-        . ' with for user '
-        . $user;
-    };
+  $logger->debug(
+    sub {
+      return
+        sprintf 'attempting to connect to: [%s] with user: [%s]',
+        $dsn,
+        $user;
+    }
+  );
 
-    my $dbh = DBI->connect(
-      $dsn, $user, $pass,
-      { 'AutoCommit' => $options{AutoCommit},
-        'PrintError' => $options{PrintError},
-        'RaiseError' => $options{RaiseError},
-        'ChopBlanks' => $options{ChopBlanks}
+  my $dbh = DBI->connect(
+    $dsn, $user, $pass,
+    { 'AutoCommit' => $options{AutoCommit},
+      'PrintError' => $options{PrintError},
+      'RaiseError' => $options{RaiseError},
+      'ChopBlanks' => $options{ChopBlanks}
+    }
+  );
+
+  if ($dbh) {
+
+    $logger->info(
+      sub {
+        return
+          sprintf
+          'successfully connected to database (%s) using connection parameters from %s',
+          $dsn,
+          $tx->{DB_DSN_SOURCE};
       }
     );
 
-    if ($dbh) {
+    # save for other <sql..> operations
+    $tx->{'DB'}->{$name} = $dbh;
 
-      DEBUG sub {
-        "sqlconnect: connected to database ($dsn) from "
-          . $tx->{DB_DSN_SOURCE} . "\n";
-      };
-
-      TRACE sub {
-        Dumper [ 'name', $name, 'dbh', $dbh, 'tx', $tx ];
-      };
-
-      # save for other <sql..> operations
-      $tx->{'DB'}->{$name} = $dbh;
-
-      # add $name to namespace
-      $tx->{'VARS'}->{$name} = $dbh
-        if $name ne $self->ANONYMOUS;
-    } ## end if ($dbh)
-    else {
-      die "sqlconnect: unable to connect to database: ", $DBI::errstr, "\n";
+    # add $name to namespace
+    if ( $name ne $self->ANONYMOUS ) {
+      $tx->{'VARS'}->{$name} = $dbh;
     }
-  } ## end if ( $dsn && $user )
+  }
   else {
-    my ($missing) = map { eval "\$$_" ? () : $_ } qw/dsn user/;
-    my $message = "sqlconnect: no $missing found from any source\n";
+    die sprintf "unable to connect to database: %s\n", $DBI::errstr;  ## no critic (ProhibitPackageVars)
+  }
 
-    die $message;
-  } ## end else [ if ( $dsn && $user ) ]
-} ## end sub finalize
+  return;
+}
+
+1;
+
+## no critic (RequirePodSections)
+__END__
+
+=pod
 
 =head1 TAG - C<E<lt>sqlconnectE<gt>>
 
@@ -402,5 +468,3 @@ F<tagx_apps.xml> file.
 C<E<lt>sqlE<gt>>, C<E<lt>sqlselectE<gt>>, C<BLM::Startup::Config>
 
 =cut
-
-1;

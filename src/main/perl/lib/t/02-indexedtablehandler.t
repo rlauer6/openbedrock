@@ -16,21 +16,21 @@ BEGIN {
   use_ok('BLM::IndexedTableHandler');
 }
 
-my $user = $ENV{DBI_USER} || 'root';
-my $pass = $ENV{DBI_PASS};
+########################################################################
+require 't/db-setup.pl';
 
-my $dbi = eval {
-  DBI->connect( 'dbi:mysql:', $user, $pass,
-    { PrintError => 0, RaiseError => 1 } );
-};
+my $dbi = eval { return connect_db(); };
 
 if ( !$dbi || $EVAL_ERROR ) {
-  BAIL_OUT("could not create database and table for test: $EVAL_ERROR");
+  diag($EVAL_ERROR);
+  BAIL_OUT("could not connect to database\n");
 }
 
-$dbi->do('create database foo');
+eval {
+  $dbi->do('create database foo');
+  $dbi->do('use foo');
 
-my $create_table = <<'SQL';
+  my $create_table = <<'SQL';
 create table foo (
   id  int          auto_increment primary key,
   biz varchar(10)  not null,
@@ -39,8 +39,13 @@ create table foo (
 )
 SQL
 
-$dbi->do('use foo');
-$dbi->do($create_table);
+  $dbi->do($create_table);
+};
+
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
+}
+########################################################################
 
 my $ith
   = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
@@ -87,13 +92,17 @@ $id = eval {
 
 ok( !$EVAL_ERROR && $id =~ /^\d+$/xsm, 'insert all columns' );
 
+########################################################################
 subtest 'select' => sub {
+########################################################################
   my $rows = $ith->select();
   isa_ok( $rows, 'BLM::IndexedTableHandler::RecordSet' );
   is( @{$rows}, 2, 'all rows read' );
 };
 
+########################################################################
 subtest 'search exact' => sub {
+########################################################################
   my $rows = $ith->search( { buz => 'buzzz' }, 1 );
 
   is( @{$rows}, 1, 'found a record' )
@@ -109,12 +118,16 @@ subtest 'search exact' => sub {
   }
 };
 
+########################################################################
 subtest 'search wilcard' => sub {
+########################################################################
   my $rows = $ith->search( { buz => 'buzz' } );
   is( @{$rows}, 2, 'found all records' );
 };
 
+########################################################################
 subtest 'find exact' => sub {
+########################################################################
   my $rows = $ith->find( 1, 'buz', 'buzzz' );
 
   is( @{$rows}, 1, 'found 1 record' );
@@ -129,7 +142,9 @@ subtest 'find exact' => sub {
   }
 };
 
+########################################################################
 subtest 'find wildcard' => sub {
+########################################################################
   my $rows = $ith->find( 0, 'buz', 'buzzz' );
   is( @{$rows}, 2, 'found 2 records' );
 };

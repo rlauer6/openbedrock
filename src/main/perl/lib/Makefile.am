@@ -63,6 +63,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
     Bedrock/Log.pm \
+    Bedrock/Logger.pm \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \

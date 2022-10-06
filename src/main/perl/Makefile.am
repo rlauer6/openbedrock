@@ -6,22 +6,22 @@ TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
               $(top_srcdir)/autotools/tap-driver.sh
 
 BEDROCK_TESTS = \
-    t/flush.yml \
-    t/foreach.yml \
-    t/if.yml \
-    t/iif.yml \
-    t/include.yml \
-    t/null.yml \
-    t/open.yml \
-    t/plugin.yml \
-    t/reftype.yml \
-    t/multi-line.yml \
-    t/sink.yml \
-    t/snippet.yml \
-    t/sqlconnect.yml \
-    t/sql.yml \
-    t/try.yml \
-    t/var.yml
+    t/00-var.yml \
+    t/01-multi-line.yml \
+    t/02-null.yml \
+    t/03-if.yml \
+    t/04-foreach.yml \
+    t/05-iif.yml \
+    t/06-open.yml \
+    t/07-plugin.yml \
+    t/08-reftype.yml \
+    t/09-sink.yml \
+    t/10-try.yml \
+    t/11-snippet.yml \
+    t/12-sqlconnect.yml \
+    t/13-sql.yml \
+    t/14-flush.yml \
+    t/15-include.yml
 
 BEDROCK_TEST_HARNESS = \
     lib/Test/Bedrock.pm.in
@@ -44,8 +44,12 @@ BEDROCK_TEST_HARNESS = \
 # See `perldoc lib/Test/Bedrock.pm` for more information about
 # creating Bedrock tests.
 
+GBEDROCK_TEST_HARNESS = $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
+
+harness: $(GBEDROCK_TEST_HARNESS)
+
 #.PHONY: test
-test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
+test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	cd lib;
 	$(MAKE)
 	TESTS=$$TESTS; \
@@ -60,7 +64,7 @@ test: $(BEDROCK_TESTS) $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
-	CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
+	CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config:. $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
 
 CLEANFILES = \

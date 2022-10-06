@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -30,16 +28,24 @@ use TagX::Parser;
 
 use Data::Dumper;
 use English qw/-no_match_vars/;
-use Log::Log4perl;
-use Scalar::Util qw/reftype/;
 
+use Log::Log4perl::Level;
+use Bedrock::Constants qw{:chars :booleans};
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use Scalar::Util qw{reftype};
+use List::Util qw{any none pairs};
+
+########################################################################
 sub decode_json_string {
-  shift if ref( $_[0] );
+########################################################################
+  my (@args) = @_;
 
-  my $json_string = shift;
-  my $obj;
+  my $json_string = ref $args[0] ? $args[1] : $args[0];
 
-  eval { $obj = Bedrock::JSON::decode($json_string); };
+  my $obj = eval { return Bedrock::JSON::decode($json_string); };
 
   die "possibly invalid JSON string: $EVAL_ERROR\n"
     if $EVAL_ERROR;
@@ -47,8 +53,10 @@ sub decode_json_string {
   return $obj;
 }
 
+########################################################################
 sub new {
-  my $class = shift;
+########################################################################
+  my ( $class, @args ) = @_;
 
   my $self = bless {}, $class;
 
@@ -56,75 +64,100 @@ sub new {
   $self->{'subobjs'} = [];
   $self->{'parent'}  = undef;
 
-  my $tx = shift
-    if @_ == 1;
+  my $tx;
+
+  if ( @args == 1 ) {
+    $tx = shift @args;
+  }
 
   $self->{'TagX'} = $tx;
 
-  $self;
+  return $self;
 }
 
 # Store the location where the tag definition started in the input
 # Invoked with: $file, $line
+########################################################################
 sub start_location {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  if ( @_ > 0 ) {
-    my ( $file, $line ) = @_;
+  if ( @args > 0 ) {
+    my ( $file, $line ) = @args;
 
     $self->{'file'}             = $file;
     $self->{'line'}             = $line;
     $self->{'__start_location'} = "$file($line)";
   }
 
-  wantarray ? ( @{$self}{qw(file line)} ) : $self->{'__start_location'};
+  return
+    wantarray ? ( @{$self}{qw(file line)} ) : $self->{'__start_location'};
 }
 
+########################################################################
 sub name {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  $self->{'name'} = shift if @_ == 1;
-  $self->{'name'};
+  if ( @args == 1 ) {
+    $self->{'name'} = shift @args;
+  }
+
+  return $self->{'name'};
 }
 
+########################################################################
 sub parent {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  $self->{'parent'} = shift if @_ == 1;
-  $self->{'parent'};
+  if ( @args == 1 ) {
+    $self->{'parent'} = shift @args;
+  }
+
+  return $self->{'parent'};
 }
 
+########################################################################
 sub __save_option {
+########################################################################
   my ( $argv, $optv, $generic, $key, $term ) = @_;
 
   if ( defined($key) && exists $generic->{$key} ) {
-    $generic->{$key}++ unless defined($term);
+    if ( !defined $term ) {
+      $generic->{$key}++;
+    }
+
     return;
   }
 
-  if ( defined($term) && defined($key) ) {
+  if ( defined($term) && defined $key ) {
     push @{$argv}, $key, $term;
+
     if ( exists( $optv->{$key} ) ) {
-      $optv->{$key} = [ $optv->{$key} ]
-        unless ref( $optv->{$key} ) eq 'ARRAY';
-      push @{ $optv->{$key} }, $term;
+      if ( ref $optv->{$key} ne 'ARRAY' ) {
+        $optv->{$key} = [ $optv->{$key} ];
+      }
+
+      return push @{ $optv->{$key} }, $term;
     }
     else {
-      $optv->{$key} = $term;
+      return $optv->{$key} = $term;
     }
   }
-  elsif ( defined($key) ) {
-    push @{$argv}, $key;
+  elsif ( defined $key ) {
     $optv->{$key}++;
+    return push @{$argv}, $key;
   }
   else {
-    push @{$argv}, $term;
+    return push @{$argv}, $term;
   }
 }
 
-sub tagOptions_as_array {
-  my $self = shift;
-  my $args = shift;
+########################################################################
+sub tagOptions_as_array {  ## no critic (Capitalization)
+########################################################################
+  my ( $self, $argref, $option_str, $generic ) = @_;
 
   my %options;
 
@@ -132,13 +165,11 @@ sub tagOptions_as_array {
     %options = $self->define_options;
 
     foreach my $k ( keys %options ) {
-      $options{$k} = $k =~ s/=s\s*$//;
+      $options{$k} = $k =~ s/=s\s*$//xsm;
     }
   }
 
-  local $_ = shift;
-
-  my $generic = shift;
+  local $_ = $option_str;
 
   my $optref = {};
 
@@ -147,20 +178,20 @@ sub tagOptions_as_array {
   my $term;
 
   while (length) {
-    s/^\s+// and next;
+    s/^\s+//xsm and next;
 
     # Check for option with value
-    if (s/^--([\w-]+)\s*=\s*//oi) {
+    if (s/^--([\w-]+)\s*=\s*//oixsm) {
       my $key = $1;
 
-      &__save_option( $args, $optref, $generic, $key,
-        &TagX::Parser::parse_stm );
+      __save_option( $argref, $optref, $generic, $key,
+        TagX::Parser::parse_stm );
 
       if ( defined $options{$key} && !$options{$key} ) {
         die "option --$key does not take an argument\n";
       }
 
-      unless ( defined($key) && exists $generic->{$key} ) {
+      if ( !defined($key) || !exists $generic->{$key} ) {
         push @{ $self->{'__term_type'} }, 'term';
         push @{ $self->{'__term_type'} }, 'term';
       }
@@ -169,30 +200,32 @@ sub tagOptions_as_array {
     }
 
     # Check for flag option -- option without '='
-    if (s/^--([\w-]+)//oi) {
-      &__save_option( $args, $optref, $generic, $1 );
-      unless ( defined($1) && exists $generic->{$1} ) {
+    if (s/^--([\w-]+)//oixsm) {
+      __save_option( $argref, $optref, $generic, $1 );
+
+      if ( !defined($1) || !exists $generic->{$1} ) {
         push @{ $self->{'__term_type'} }, 'optional';
       }
 
       next;
     }
 
-    &__save_option( $args, $optref, $generic, undef,
-      &TagX::Parser::parse_stm );
+    __save_option( $argref, $optref, $generic, undef,
+      TagX::Parser::parse_stm );
 
     push @{ $self->{'__term_type'} }, 'term';
   }
 
-  $optref;
+  return $optref;
 }
 
+########################################################################
 sub options {
+########################################################################
+  my ( $self, @args ) = @_;
 
-  my $self = shift;
-
-  if ( @_ == 1 ) {
-    my $optstring = shift;
+  if ( @args == 1 ) {
+    my $optstring = shift @args;
 
     $self->{'__optstring'} = $optstring;
     $self->{'__argv'}      = [];
@@ -201,62 +234,68 @@ sub options {
 
     # parse the options into an array
     $self->{'__options'}
-      = &tagOptions_as_array( $self, $self->{'__argv'}, $optstring,
+      = tagOptions_as_array( $self, $self->{'__argv'}, $optstring,
       \%generic );
 
-    map { $self->{ '__' . $_ } = $generic{$_} if defined $generic{$_} }
-      keys %generic;
-
-    my $verbose = defined( $self->{'__verbose'} ) ? $self->{'__verbose'} : 0;
-
-    if ($verbose) {
-      #      if ( $verbose == 1 ) {
-      #        get_logger->level($DEBUG);
-      #      }
-      #      else {
-      #        get_logger->level($TRACE);
-      #      }
+    foreach my $key ( grep { defined $generic{$_} } keys %generic ) {
+      $self->{"__$key"} = $generic{$key};
     }
 
-    #    TRACE sub {
-    #      my $str
-    #        = "Option string is\n"
-    #        . "\t$optstring\n"
-    #        . " Resolved to\n\t"
-    #        . @{ $self->{'__argv'} } . "\n";
-    #
-    #      $str .= " Option types:\n\t" . @{ $self->{'__term_type'} } . "\n";
-    #
-    #      $str .= " Options are\n";
-    #
-    #      for my $key ( sort keys %{ $self->{'__options'} } ) {
-    #        $str .= "\t$key => [" . $self->{'__options'}->{$key} . "]\n";
-    #      }
-    #
-    #      $str .= "  Generic options are\n";
-    #
-    #      for my $key ( sort keys %generic ) {
-    #        $str .= "\t$key => [" . $generic{$key} . "]";
-    #      }
-    #
-    #      $str;
-    #    };
+    my $verbose = defined $self->{'__verbose'} ? $self->{'__verbose'} : 0;
+
+    if ( $verbose == 1 ) {
+      $self->get_logger( ref $self )->level($DEBUG);
+    }
+    elsif ( $verbose == 2 ) {
+      $self->get_logger( ref $self )->level($TRACE);
+    }
+
+    $self->get_logger( ref $self )->trace(
+      sub {
+        my $str
+          = "Option string is\n"
+          . "\t$optstring\n"
+          . " Resolved to\n\t"
+          . @{ $self->{'__argv'} } . "\n";
+
+        $str .= sprintf " Option types:\n\t%s", @{ $self->{'__term_type'} };
+
+        $str .= " Options are\n";
+
+        for my $key ( sort keys %{ $self->{'__options'} } ) {
+          $str .= sprintf "\t%s => [%s]\n", $key,
+            $self->{'__options'}->{$key};
+        }
+
+        $str .= "  Generic options are\n";
+
+        for my $key ( sort keys %generic ) {
+          $str .= sprintf "\t%s => [%s]", $key, $generic{$key};
+        }
+
+        return $str;
+      }
+    );
 
   }
 
-  $self->{'__options'};
+  return $self->{'__options'};
 }
 
+########################################################################
 sub verbose {
+########################################################################
   my $self = shift;
-  $self->{'__verbose'};
+
+  return $self->{'__verbose'};
 }
 
+########################################################################
 sub eval_args {
-  my $self   = shift;
-  my $optref = shift;
+########################################################################
+  my ( $self, $optref, @eval_args ) = @_;
 
-  my $verbose = defined( $self->{'__verbose'} ) ? $self->{'__verbose'} : 0;
+  my $verbose = defined $self->{'__verbose'} ? $self->{'__verbose'} : 0;
 
   #  TRACE sub {
   #    "Context arguments are\n" . "\t(" . @_ . ")";
@@ -264,12 +303,13 @@ sub eval_args {
 
   # command line has been parsed. Just need to eval arguments and
   # options with appropriate context
-  my ( $key, $value );
 
   %{$optref} = ();
 
-  while ( ( $key, $value ) = each %{ $self->{'__options_to_eval'} } ) {
-    my $ref = ref($value);
+  foreach my $p ( pairs %{ $self->{'__options_to_eval'} } ) {
+    my ( $key, $value ) = @{$p};
+
+    my $ref = ref $value;
 
     if ( $ref eq 'ARRAY' ) {
       # more than one value for this option
@@ -277,11 +317,11 @@ sub eval_args {
       my @optvals;
 
       for my $arg ( @{$value} ) {
-        if ( ref($arg) ) {
-          $arg->verbose($verbose)
-            if $verbose;
+        if ( ref $arg ) {
+          $arg->verbose($verbose);
 
-          push @optvals, $arg->eval(@_);
+          push @optvals, $arg->eval(@eval_args);
+
           $arg->verbose(0);
         }
         else {
@@ -292,10 +332,9 @@ sub eval_args {
       $optref->{$key} = \@optvals;
     }
     elsif ($ref) {
-      $value->verbose($verbose)
-        if $verbose;
+      $value->verbose($verbose);
 
-      $optref->{$key} = $value->eval(@_);
+      $optref->{$key} = $value->eval(@eval_args);
 
       $value->verbose(0);
     }
@@ -317,11 +356,10 @@ sub eval_args {
   for my $arg ( @{ $self->{'__args_to_eval'} } ) {
 
     # arguments to the while loop should not be evaluated at this point
-    if ( ref($arg) && ref($self) !~ /while/i ) {
-      $arg->verbose($verbose)
-        if $verbose;
+    if ( ref $arg && ref($self) !~ /while/xsmi ) {
+      $arg->verbose($verbose);
 
-      push @args, $arg->eval(@_);
+      push @args, $arg->eval(@eval_args);
       $arg->verbose(0);
     }
     else {
@@ -329,19 +367,19 @@ sub eval_args {
     }
   }
 
-  @args;
+  return @args;
 }
 
 # getname(\%options, @argv)
-
+########################################################################
 sub get_name {
-  my $self    = shift;
-  my $options = shift;
+########################################################################
+  my ( $self, $options, @argv ) = @_;
 
-  $options->{'define-var'} = '_'
-    if !defined $options->{'define-var'};
+  if ( !defined $options->{'define-var'} ) {
+    $options->{'define-var'} = $UNDERSCORE;
+  }
 
-  my @argv     = @_;
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   if ( $tag_opts->{name} ) {
@@ -352,13 +390,13 @@ sub get_name {
   return (@argv);
 }
 
-sub parse_tag_name {
+sub xparse_tag_name {
   my ( $self, $tag ) = @_;
 
-  my $tagtype = { type => '', name => '' };
+  my $tagtype = { type => $EMPTY, name => $EMPTY };
 
-  if ( $tag && $tag =~ /^:/ ) {
-    if ( $tag =~ /^:\s+/ ) {
+  if ( $tag && $tag =~ /^:/xsm ) {
+    if ( $tag =~ /^:\s+/xsm ) {
       die "missing variable name of class after ':'\n";
     }
 
@@ -367,45 +405,46 @@ sub parse_tag_name {
     #   <plugin:class>
     # -----------------------
 
-    if ( ref($self) =~ /plugin$/i ) {
-      if ( $tag =~ /^:(.+[^:]):(\w+)/ ) {
+    if ( ref($self) =~ /plugin$/ixsm ) {
+
+      if ( $tag =~ /^:(.+[^:]):(\w+)/xsm ) {
         @{$tagtype}{qw/type name/} = ( $1, $2 );
       }
-      elsif ( $tag =~ /^:(.*)/ ) {
+      elsif ( $tag =~ /^:(.*)/xsm ) {
         $tagtype->{name} = $tagtype->{type} = $1;
       }
-    } ## end if ( ref($self) =~ /plugin$/i)
+    }
 
     # -----------------------
     #   <null:type:name>
     #   <null:name>
     # -----------------------
 
-    elsif ( ref($self) =~ /null$/i ) {
+    elsif ( ref($self) =~ /null$/ixsm ) {
 
-      if ( $tag =~ /^:([^:]+):([^:].+)$/ ) {
+      if ( $tag =~ /^:([^:]+):([^:].+)$/xsm ) {
         my ( $type, $name ) = ( $1, $2 );
 
-        if ( $type =~ /^(hash|var|object|array)$/ ) {
+        if ( any { $type eq $_ } qw{ hash var object array } ) {
           @{$tagtype}{qw/type name/} = ( $type, $name );
         }
         else {
           die "invalid type ($type)\n";
         }
-      } ## end if ( $tag =~ /^:([^:]+):([^:].+)$/)
-      else {
-        $tagtype->{name} = ( split /:/, $tag )[1];
       }
-    } ## end elsif ( ref($self) =~ /null$/i)
+      else {
+        $tagtype->{name} = ( split /:/xsm, $tag )[1];
+      }
+    }
 
     # -----------------------
     #   <tag:name>
     # -----------------------
 
     else {
-      $tagtype->{name} = ( split /:/, $tag )[1];
+      $tagtype->{name} = ( split /:/xsm, $tag )[1];
     }
-  } ## end if ( $tag && $tag =~ /^:/)
+  }
 
   #  TRACE sub {
   #    "tag => ["
@@ -417,187 +456,245 @@ sub parse_tag_name {
   #  };
 
   return $tagtype;
-} ## end sub parse_tag_name
-
-# dump_options(\%options)
-sub dump_options {
-  my $self    = shift;
-  my $options = shift;
-
-  #  DEBUG sub {
-  #    my ( $key, $value );
-  #
-  #    my $str = ref($self) . "\n" . " Options are\n";
-  #
-  #    while ( ( $key, $value ) = each %$options ) {
-  #      $str .= "\t$key .. (" . $value . ")\n";
-  #    }
-  #
-  #    $str .= "Arguments .. (" . @_ . ")";
-  #
-  #    $str;
-  #  };
 }
 
-sub parse_options {
-  my $self = shift;
+########################################################################
+sub parse_tag_name {
+########################################################################
+  my ( $self, $tag ) = @_;
 
-  return $self->eval_args(@_)
-    if exists $self->{'__args_to_eval'};
+  my $tagtype = { type => $EMPTY, name => $EMPTY };
 
-  my $optref = shift;
-
-  # The supported options list is contained in %keys_lc (key is the name
-  # of option (in lowercase) and value is the flag specified: `=s' if
-  # the option takes an argument) and the defaults specified therein are
-  # in %defaults %keys contains lower case options mapped to options
-  # with the right case
-
-  my ( %keys, %keys_lc, %defaults );
-
-  for my $option ( keys %$optref ) {
-    my $default = $optref->{$option};
-
-    next unless $option =~ /^([^=:]+)([:=].*)?$/;
-
-    my $lc = lc($1);
-
-    $keys_lc{$lc} = $2;
-    $keys{$lc}    = $1;
-
-    $defaults{$lc} = $default
-      if defined( $optref->{$option} );
-  }
-
-  #  DEBUG sub {
-  #    my ( $key, $value, $str );
-  #
-  #    $str = sprintf(
-  #      "Arguments %s are \n\t(%s)\n",
-  #      [ @{ [ scalar( @{ $self->{__argv} } ) ] } ],
-  #      @{ $self->{__argv} }
-  #    );
-  #
-  #    while ( ( $key, $value ) = each %keys_lc ) {
-  #      $str .= "  options{$key} => [";
-  #      $str .= $value // '';
-  #      $str .= "] (default: ";
-  #      $str .= $defaults{$key} // '';
-  #      $str .= ")\n";
-  #    } ## end while ( ( $key, $value ) ...)
-  #
-  #    $str;
-  #  };
-
-  # Step thru' the arguments list
-  my ( $arg, $arg_lc, @argv, $i, %options );
-  my @opt_type = @{ $self->{'__term_type'} };
-
-  for ( $i = 0; $i < @{ $self->{'__argv'} }; $i++ ) {
-
-    # Get the next argument
-    $arg = $self->{'__argv'}->[$i];
-
-    # Is the argument a `Term' or an `Expr'
-    if ( ref($arg) ) {
-      push @argv, $arg;
-      next;
+  if ( $tag && $tag =~ /^:/xsm ) {
+    if ( $tag =~ /^:\s+/xsm ) {
+      die "missing variable name of class after ':'\n";
     }
 
-    # Argument is not a `Term' or an `Expr'
-    # Is the argument an option which requires an argument?
-    $arg_lc = lc($arg);
+    # -----------------------
+    #   <plugin:class:name>
+    #   <plugin:class>
+    # -----------------------
 
-    # consider the case of 'optional' arguments...  when an option
-    # like --table is used without an argument but has been defined
-    # to accept one, we have a problem, so `tag_Options_as_array'
-    # was modifed to to identify each term of a Bedrock tag as
-    # 'optional' or 'term' - meaning it is an 'option' with no
-    # arguments. That way the code below can interpret the option
-    # meta-data and determine if it should grab the next term as an
-    # argument or let it be.
-    #
-    # A better approach is to have more a robust option handler that
-    # identifies such types of options ala GetOptions...I suspect
-    # Jay regrets that laziness but it worked for a long time.
+    if ( ref($self) =~ /plugin$/xsmi ) {
+      if ( $tag =~ /^:(.+[^:]):(\w+)/xsm ) {
+        @{$tagtype}{qw/type name/} = ( $1, $2 );
+      }
+      elsif ( $tag =~ /^:(.*)/xsm ) {
+        $tagtype->{name} = $tagtype->{type} = $1;
+      }
+    }
 
-    if ( defined( $keys_lc{$arg_lc} ) && $opt_type[$i] ne 'optional' ) {
+    # -----------------------
+    #   <null:type:name>
+    #   <null:name>
+    # -----------------------
 
-      # Yes, fetch the next argument
-      $i++;
-      my $optval = $self->{'__argv'}->[$i];
+    elsif ( ref($self) =~ /null$/ixsm ) {
 
-      # is this option repeated? if so, make an array ref and
-      # push the value into the array along with the earlier value
-      if ( exists( $options{$arg_lc} ) ) {
+      if ( $tag =~ /^:([^:]+):([^:].+)$/xsm ) {
+        my ( $type, $name ) = ( $1, $2 );
 
-        # make an array ref
-        $options{$arg_lc} = [ $options{$arg_lc} ]
-          if ref( $options{$arg_lc} ) ne 'ARRAY';
-
-        push @{ $options{$arg_lc} }, $optval;
+        if ( any { $type eq $_ } qw{ hash var object array } ) {
+          @{$tagtype}{qw/type name/} = ( $type, $name );
+        }
+        else {
+          die "invalid type ($type)\n";
+        }
       }
       else {
-        #        TRACE sub {
-        #          Dumper [ 'parse_options', $arg_lc, $optval ];
-        #        };
-
-        $options{$arg_lc} = $optval;
+        $tagtype->{name} = ( split /:/xsm, $tag )[1];
       }
-      next;
     }
 
-    # Check whether the argument is an option which does not require a
-    # value
-    if ( exists( $keys_lc{$arg_lc} ) ) {
+    # -----------------------
+    #   <tag:name>
+    # -----------------------
 
-      # if so, increment the option value.
-      # note that multiple occurences of such options results in
-      # the value being incremented.
-      $options{$arg_lc}++;
-      next;
+    else {
+      $tagtype->{name} = ( split /:/xsm, $tag )[1];
     }
-
-    die "unsupported option [--" . $arg . "]\n"
-      if ref($self) !~ /(if|unless|while)/i;
-
-    # Bedrock 1 behavior: if not an option, push into args array -- effectively just returns
-    # unsupported options to caller.
-    push @argv, '--' . $arg;
   }
 
-  # Remap the case of the options to the required case and save the parsed options
-  for my $key ( keys %options ) {
-    $self->{'__options_to_eval'}->{ $keys{$key} } = $options{$key};
-  }
-
-  # Save the defaults too
-  for my $key ( keys %defaults ) {
-    $self->{'__option_defaults'}->{ $keys{$key} } = $defaults{$key};
-  }
-
-  # and save the arguments too
-  $self->{'__args_to_eval'} = \@argv;
-
-  # Leave a trace before doing the eval
   #  TRACE sub {
-  #    my $str = "Specified options are\n";
-  #
-  #    for my $key ( sort keys %{ $self->{'__options_to_eval'} } ) {
-  #      $str .= "  $key => [" . $self->{'__options_to_eval'}->{$key} . "]\n";
-  #    }
-  #
-  #    $str .= "Defaults are\n";
-  #    for my $key ( sort keys %{ $self->{'__option_defaults'} } ) {
-  #      $str .= "  $key => [" . $self->{'__option_defaults'}->{$key} . "]\n";
-  #    }
-  #
-  #    $str .= "Arguments are\n  (" . @argv . ")";
-  #
-  #    $str;
+  #    "tag => ["
+  #      . $tag
+  #      . "], 1 =>  ["
+  #      . $tagtype->{type}
+  #      . "], 2 => ["
+  #      . $tagtype->{name} . "]";
   #  };
 
-  return $self->eval_args( $optref, @_ );
+  return $tagtype;
+}
+
+# dump_options(\%options)
+########################################################################
+sub dump_options {
+########################################################################
+  my ( $self, $options, @args ) = @_;
+
+  return $self->get_logger( ref $self )->debug(
+    sub {
+
+      my $str = ref($self) . "\n" . " Options are\n";
+
+      foreach my $p ( pairs %{$options} ) {
+        my ( $key, $value ) = @{$p};
+
+        $str .= sprintf "\t%s .. (%s)\n", $key, $value;
+      }
+
+      $str .= sprintf 'Arguments .. (%s)', join $COMMA, @args;
+
+      return $str;
+    }
+  );
+}
+
+{
+  ## no critic (RequireArgUnpacking);
+  ######################################################################
+  sub parse_options {
+    my $self = shift;
+
+    return $self->eval_args(@_)
+      if exists $self->{'__args_to_eval'};
+
+    my $optref = shift;
+
+    # The supported options list is contained in %keys_lc (key is the name
+    # of option (in lowercase) and value is the flag specified: `=s' if
+    # the option takes an argument) and the defaults specified therein are
+    # in %defaults %keys contains lower case options mapped to options
+    # with the right case
+
+    my ( %keys, %keys_lc, %defaults );
+
+    for my $option ( keys %{$optref} ) {
+      my $default = $optref->{$option};
+
+      if ( $option =~ /^([^=:]+)([:=].*)?$/xsm ) {
+
+        my $lc = lc $1;
+
+        $keys_lc{$lc} = $2;
+        $keys{$lc}    = $1;
+
+        if ( defined $optref->{$option} ) {
+          $defaults{$lc} = $default;
+        }
+      }
+    }
+
+    # Step thru' the arguments list
+    my ( $arg, $arg_lc, @argv, %options );
+
+    my @opt_type = @{ $self->{'__term_type'} };
+
+    for ( my $i = 0; $i < @{ $self->{'__argv'} }; $i++ ) {  ## no critic (ProhibitCStyleForLoops)
+
+      # Get the next argument
+      $arg = $self->{'__argv'}->[$i];
+
+      # Is the argument a `Term' or an `Expr'
+      if ( ref $arg ) {
+        push @argv, $arg;
+        next;
+      }
+
+      # Argument is not a `Term' or an `Expr'
+      # Is the argument an option which requires an argument?
+      $arg_lc = lc $arg;
+
+      # consider the case of 'optional' arguments...  when an option
+      # like --table is used without an argument but has been defined
+      # to accept one, we have a problem, so `tag_Options_as_array'
+      # was modifed to to identify each term of a Bedrock tag as
+      # 'optional' or 'term' - meaning it is an 'option' with no
+      # arguments. That way the code below can interpret the option
+      # meta-data and determine if it should grab the next term as an
+      # argument or let it be.
+      #
+      # A better approach is to have more a robust option handler that
+      # identifies such types of options ala GetOptions...I suspect
+      # Jay regrets that laziness but it worked for a long time.
+
+      if ( defined( $keys_lc{$arg_lc} ) && $opt_type[$i] ne 'optional' ) {
+
+        # Yes, fetch the next argument
+        $i++;
+        my $optval = $self->{'__argv'}->[$i];
+
+        # is this option repeated? if so, make an array ref and
+        # push the value into the array along with the earlier value
+        if ( exists $options{$arg_lc} ) {
+
+          # make an array ref
+
+          if ( ref( $options{$arg_lc} ) ne 'ARRAY' ) {
+            $options{$arg_lc} = [ $options{$arg_lc} ];
+          }
+
+          push @{ $options{$arg_lc} }, $optval;
+        }
+        else {
+          $options{$arg_lc} = $optval;
+        }
+
+        next;
+      }
+
+      # Check whether the argument is an option which does not require a
+      # value. I so, increment the option value.
+      # Note that multiple occurences of such options results in
+      # the value being incremented. (--verbose --verbose)
+
+      if ( exists $keys_lc{$arg_lc} ) {
+        $options{$arg_lc}++;
+        next;
+      }
+
+      die sprintf "unsupported option [--%s]\n", $arg
+        if ref($self) !~ /if|unless|while/ixsm;
+
+      # Bedrock 1 behavior: if not an option, push into args array -- effectively just returns
+      # unsupported options to caller.
+      push @argv, q{--} . $arg;
+    }
+
+    # Remap the case of the options to the required case and save the parsed options
+    for my $key ( keys %options ) {
+      $self->{'__options_to_eval'}->{ $keys{$key} } = $options{$key};
+    }
+
+    # Save the defaults too
+    for my $key ( keys %defaults ) {
+      $self->{'__option_defaults'}->{ $keys{$key} } = $defaults{$key};
+    }
+
+    # and save the arguments too
+    $self->{'__args_to_eval'} = \@argv;
+
+    # Leave a trace before doing the eval
+    #  TRACE sub {
+    #    my $str = "Specified options are\n";
+    #
+    #    for my $key ( sort keys %{ $self->{'__options_to_eval'} } ) {
+    #      $str .= "  $key => [" . $self->{'__options_to_eval'}->{$key} . "]\n";
+    #    }
+    #
+    #    $str .= "Defaults are\n";
+    #    for my $key ( sort keys %{ $self->{'__option_defaults'} } ) {
+    #      $str .= "  $key => [" . $self->{'__option_defaults'}->{$key} . "]\n";
+    #    }
+    #
+    #    $str .= "Arguments are\n  (" . @argv . ")";
+    #
+    #    $str;
+    #  };
+
+    return $self->eval_args( $optref, @_ );
+  }
 }
 
 # load an I/0 handler that supports <null>, <sink>, <var>, tags
@@ -605,27 +702,32 @@ sub parse_options {
 #
 # io_handler( $tx, 'XML', 'Bedrock::XML::Handler')
 #
+########################################################################
 sub io_handler {
-  my $self         = shift;
-  my $tx           = shift;
-  my $handler_name = shift;
-  my $options      = shift;
+########################################################################
+  my ( $self, $tx, $handler_name, $options ) = @_;
 
   my $default_handler = 'Bedrock::Serializer::' . $handler_name;
 
   my $config = $tx->out_handle->{Handle}->{'CONFIG'};
-  my $handler_config
-    = $config->{$handler_name} ? $config->{$handler_name} : {};
 
-  if ( ref($options) && reftype($options) eq 'HASH' ) {
+  my $handler_config = $config->{$handler_name};
+  $handler_config //= {};
+
+  if ( ref $options && reftype($options) eq 'HASH' ) {
 
     foreach my $c (qw/in out/) {
       my $in_or_out = $options->{$c};
+
       if ($in_or_out) {
-        $handler_config->{$c}
-          = exists $handler_config->{$c} ? $handler_config->{$c} : {};
+        $handler_config->{$c} //= {};
+
         my $config_in_or_out = $handler_config->{$c};
-        map { $config_in_or_out->{$_} = $in_or_out->{$_}; } keys %$in_or_out;
+
+        foreach ( keys %{$in_or_out} ) {
+          $config_in_or_out->{$_} = $in_or_out->{$_};
+        }
+
         $handler_config->{$c} = $config_in_or_out;
       }
     }
@@ -633,16 +735,17 @@ sub io_handler {
 
   my $handler = $config->{$handler_name}->{handler} || $default_handler;
 
-  eval "require $handler;";
+  eval "require $handler;";  ## no critic (ProhibitStringyEval)
 
-  die "could not load $handler_name: [$handler]\n$@\n"
-    if $@;
+  die "could not load $handler_name: [$handler]\n$EVAL_ERROR\n"
+    if $EVAL_ERROR;
 
   my $io_handler;
 
-  eval "\$io_handler = $handler->new(\$handler_config);";
+  eval "\$io_handler = $handler->new(\$handler_config);";  ## no critic (ProhibitStringyEval)
 
-  die "$@\n" if $@;
+  die "$EVAL_ERROR\n"
+    if $EVAL_ERROR;
 
   return $io_handler;
 }

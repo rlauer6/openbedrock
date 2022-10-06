@@ -28,7 +28,7 @@ use parent qw{ BLM::DBHandler };
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
 use Bedrock::Array;
-use Bedrock::Constants qw{ :chars :booleans :find_flags :log_levels };
+use Bedrock::Constants qw{ :chars :booleans :find_flags };
 
 use Bedrock::HTML::Helper qw(
   create_html_element
@@ -43,22 +43,20 @@ use Data::Dumper;
 use English qw{-no_match_vars};
 use List::Util qw{ pairs any none};
 use Scalar::Util qw{ reftype };
+use Role::Tiny::With;
 
-use Log::Log4perl;
-use Log::Log4perl::Level;
+with 'Bedrock::Logger';
 
 ## no critic (ErrorHandling::RequireCarping, ProhibitManyArgs)
 
 __PACKAGE__->create_accessors(
   qw{
-    _log_level
     _search_fields
     attributes labels
     config
     field_list
     list
     lock
-    logger
     table_dir
     table_name
     upsert_mode
@@ -163,28 +161,6 @@ SQL
   $self->set_upsert_mode($FALSE);  # default legacy behavior
   $self->set_return_bedrock_refs($TRUE);
 
-  if ( !Log::Log4perl->initialized() ) {
-
-    my $conf = <<'CONF';
-log4perl.appender.Screen = Log::Log4perl::Appender::Screen
-log4perl.appender.Screen.stderr = 1
-log4perl.appender.Screen.layout = Log::Log4perl::Layout::PatternLayout
-log4perl.appender.Screen.layout.ConversionPattern">%%H %%d [%%P] - %%F %%M %%L %%c - %%m%%n
-log4perl.category.%s = DEBUG, Screen
-log4perl.additivity.%s = 0
-CONF
-    $conf = sprintf $conf, __PACKAGE__, __PACKAGE__;
-
-    Log::Log4perl->init( \$conf );
-    $self->set__log_level( $self->get__log_level // 'info' );
-
-    $self->set_logger( Log::Log4perl::get_logger(__PACKAGE__) );
-    $self->set_log_level( $self->get__log_level );
-  }
-  else {
-    $self->set_logger( Log::Log4perl::get_logger(__PACKAGE__) );
-  }
-
   return $self;
 }
 
@@ -229,36 +205,21 @@ sub create_accessors {
 }
 
 ########################################################################
-sub set_log_level {
-########################################################################
-  my ( $self, @args ) = @_;
-
-  my $level = $self->_set_get( '_log_level', @args );
-
-  # Log::Log4perl levels
-  my $log4perl_level = $LOG4PERL_LOG_LEVELS{ lc $level } || $INFO;
-
-  return $self->get_logger->level($log4perl_level);
-}
-
-########################################################################
-sub get_log_level {
-########################################################################
-  my ($self) = @_;
-
-  my $level = $self->_set_get('_log_level');
-
-  # Log::Log4perl levels
-  return $LOG4PERL_LOG_LEVELS{ lc $level } || $INFO;
-}
-
+# Log::Log4perl logging!
 ########################################################################
 {
-  ## no critic (RequireArgUnpacking)
-  sub debug { return shift->get_logger->debug(@_); }
-  sub warn  { return shift->get_logger->warn(@_); }  ## no critic (ProhibitBuiltinHomonyms)
-  sub info  { return shift->get_logger->info(@_); }
-  sub error { return shift->get_logger->error(@_); }
+  ## no critic (ProhibitBuiltInHomonyms, RequireArgUnpacking)
+
+  sub _log {
+    my ( $level, $self, @args ) = @_;
+
+    return $self->get_logger( ref $self )->$level(@args);
+  }
+
+  sub debug { unshift @_, 'debug'; goto &_log; }
+  sub warn  { unshift @_, 'warn';  goto &_log; }
+  sub info  { unshift @_, 'info';  goto &_log; }
+  sub error { unshift @_, 'error'; goto &_log; }
 }
 ########################################################################
 
@@ -943,8 +904,6 @@ sub find_unique {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  $self->{_logger}->debug( Dumper [@args] );
-
   my @find_args;
 
   foreach my $p ( pairs @args ) {
@@ -1501,7 +1460,7 @@ sub html_form_body_with_class {
 
   my $class;
 
-  if ( ref $self =~ /::(.*)$/xsm ) {
+  if ( ref($self) =~ /::(.*)$/xsm ) {
     $class = lc $1;
     $class =~ s/_/-/xsm;
   }
@@ -2684,10 +2643,10 @@ C<BLM::IndexedTableHandler> -- Base class for a MySQL table handler
 
 =head1 SYNOPSIS
 
-  my $foo_ith = new BLM::IndexedTableHandler( $dbi, $id, undef, 'foo' );
+  my $foo_ith = BLM::IndexedTableHandler->new( $dbi, $id, undef, 'foo' );
 
   # foo handler with locking
-  my $foo_ith = new BLM::IndexedTableHandler( $dbi, { id => $id, 
+  my $foo_ith = BLM::IndexedTableHandler->new( $dbi, { id => $id, 
                                                       table_name => 'foo',
                                                       lock => 1
                                                      }
@@ -2701,21 +2660,18 @@ Using C<BLM::IndexedTableHandler> as a base class:
 
   1;
 
- my $foo_ith = new BLM::Foo( $dbi );
+ my $foo_ith = BLM::Foo->new( $dbi );
 
 
 =head1 DESCRIPTION
 
-C<BLM::IndexedTableHandler> is a base class used to construct a
-package for updating, deleting, and searching a MySQL table.  The
-class handles the relatively mundane tasks associated with managing
-the rows of a table.  These include for example, inserts, deletes, and
-updates.
+C<BLM::IndexedTableHandler> is a base class used to construct a class
+for performing basic CRUD operations on MySQL tables. The class
+provides methods for selecting and finding data as well handling the
+mundane tasks associated with managing the table's data.
 
-It is also a class designed to aid in the contruction of a web
-application by providing a host of methods that help construct HTML
-forms typically used in support of table maintenance and other aspects
-of web application development.
+It can also be used to construct web applications that that manage the
+data in a single table.
 
 Essentially, C<BLM::IndexedTableHandler> through itE<039>s super-class
 represents a MySQL table and thus is named according to the tableE<039>s
