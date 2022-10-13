@@ -1,5 +1,3 @@
-#!@PERL@
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -23,140 +21,391 @@
 package Apache::Request_shell;
 
 use strict;
+use warnings;
 
+use AppConfig qw{ARGCOUNT_NONE ARGCOUNT_ONE};
+use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::VERSION qw{ $ID $BUILD_DATE $RELEASE};
+use Cwd qw{ getcwd realpath };
+use English qw{-no_match_vars};
 use File::Basename;
 use File::Temp;
-use Cwd qw/getcwd realpath/;
+use Getopt::Long qw{:config permute no_ignore_case};
+use Log::Log4perl::Level;
 
-use Bedrock::VERSION;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
-use Getopt::Long qw/:config permute no_ignore_case/;
-use AppConfig qw/ARGCOUNT_NONE ARGCOUNT_ONE/;
+use Readonly;
 
-use constant MSG_ABORT    => 1 << 0;
-use constant MSG_DEBUG    => 1 << 1;
-use constant MSG_INFO     => 1 << 2;
-use constant MSG_STATUS   => 1 << 3;
-use constant MSG_WARNING  => 1 << 4;
-use constant MSG_ERROR    => 1 << 5;
-use constant MSG_SYSERROR => 1 << 6;
-use constant MSG_FATAL    => 1 << 7;
+Readonly::Hash our %LEVELS => (
+  debug => $DEBUG,
+  info  => $INFO,
+  warn  => $WARN,
+  error => $ERROR,
+  fatal => $FATAL,
+);
 
-sub log {
-  return $_[0];
+Readonly our $BEDROCK_CONFIG_PATH => '@libdir@/bedrock/config';  ## no critic (RequireInterpolationOfMetachars)
+
+########################################################################
+sub new {
+########################################################################
+  my ($class) = @_;
+
+  my $self = bless {}, $class;
+
+  my $HOME = $ENV{HOME} || $DOT;
+
+  my $default_rc_file;
+
+  if ( -s $HOME . '/.bedrock_rc' ) {
+    $default_rc_file = $HOME . '/.bedrock_rc';
+  }
+
+  $self->{'argv'} = [];
+
+  my $result;
+
+  $self->{'options'} = {};
+
+  eval {
+    $result = GetOptions(
+      $self->{'options'},
+      'config=s',
+      'db=s', 'help|?',
+      'infile=s',
+      'logfile|l=s',
+      'loglevel|L=s',
+      'mime-type=s',
+      'outfile=s',
+      'rc=s',
+      'version|V',
+      '<>' => sub {
+        my $arg = shift;
+
+        if ( $arg =~ /^(\w[^=]*=.*?)/xsm ) {
+          push @{ $self->{'argv'} }, "$arg";
+        }
+        else {
+          $self->{'input'} = "$arg";  # usually filename.roc
+        }
+      },
+    );
+  };
+
+  if ( $self->{'options'}->{'help'} || !$result ) {
+    $self->usage;
+  }
+
+  if ( defined $self->{options}->{version} ) {
+    version( $ID, $RELEASE, $BUILD_DATE );
+    exit 0;
+  }
+
+  # read config from resource file if specified
+
+  if ( $self->{options}->{rc} ) {
+
+    if ( !-s $self->{options}->{rc} ) {
+      die sprintf "unable to read resource file: %s\n",
+        $self->{options}->{rc};
+
+      exit -1;
+    }
+
+    $self->{config} = AppConfig->new(
+      { CASE   => $TRUE,
+        CREATE => $TRUE,
+        ERROR  => sub { },
+        GLOBAL => { ARGCOUNT => ARGCOUNT_ONE },
+      },
+    );
+
+    $self->{config}->define( 'cleanup' => { ARGCOUNT => ARGCOUNT_NONE } );
+
+    $self->{config}->file( $self->{options}->{rc} );
+
+    my %varlist = $self->{config}->varlist($DOT);
+
+    # command line overrides the value in resource file for these options
+    if ( exists $varlist{config} && !$self->{options}->{config} ) {
+      ## no critic (RequireLocalizedPunctuationVars)
+      $ENV{CONFIG_PATH} = realpath( $self->{config}->config() );
+    }
+
+    if ( exists $varlist{logfile} && !$self->{options}->{logfile} ) {
+      $self->{'options'}->{'logfile'} = $self->{config}->logfile();
+    }
+
+    if ( exists $varlist{loglevel} && !$self->{options}->{loglevel} ) {
+      $self->{'options'}->{'loglevel'} = $self->{config}->loglevel();
+    }
+
+    if ( exists $varlist{tempdir} && !$self->{options}->{tempdir} ) {
+      $self->{'options'}->{'tempdir'} = $self->{config}->tempdir();
+    }
+
+    if ( exists $varlist{cleanup} && !$self->{options}->{cleanup} ) {
+      $self->{'options'}->{'cleanup'} = $self->{config}->cleanup();
+    }
+
+    if ( exists $varlist{db} && !$self->{options}->{db} ) {
+      $self->{'options'}->{'db'} = $self->{config}->db();
+    }
+  }
+
+  my %defaults = (
+    rc       => $default_rc_file,
+    tempdir  => $DOT,
+    db       => 'database',
+    loglevel => 'warn',
+    logfile  => '/tmp/bedrock.log',
+    cleanup  => $FALSE,
+    tempdir  => $DOT,
+    rc       => $HOME . '/.bedrock_rc',
+    db       => 'database',
+    config   => realpath( $ENV{CONFIG_PATH} // $EMPTY ),
+  );
+
+  # set default values
+  foreach ( keys %defaults ) {
+    next if exists $self->{options}->{$_};
+    $self->{options}->{$_} = $defaults{$_};
+  }
+
+  # directly specify input file
+  if ( defined $self->{options}->{infile} ) {
+    $self->{input} = $self->{options}->{infile};
+  }
+
+  # redirect STDOUT
+  if ( defined $self->{options}->{outfile} ) {
+    my $file = $self->{options}->{outfile};
+
+    open STDOUT, '>', $file
+      or die "could not open [$file] for output";
+
+    STDOUT->autoflush(1);
+  }
+
+  # error parsing input arguments
+  if ($EVAL_ERROR) {
+    my ($emsg) = split /\r/xsm, $EVAL_ERROR;
+
+    die $emsg;
+  }
+
+  # set loglevel
+  my $level = $self->{options}->{loglevel} // 'error';
+
+  my $logfile = $self->{options}->{logfile};
+
+  my $log4perl_conf .= <<"END_OF_CONFIG";
+log4perl.appender.Bedrock=Log::Log4perl::Appender::File
+log4perl.appender.Bedrock.filename = $logfile
+log4perl.appender.Bedrock.mode=append
+log4perl.appender.Bedrock.layout=PatternLayout
+log4perl.appender.Bedrock.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
+log4perl.category.Bedrock=ERROR, Bedrock
+log4perl.additivity.Bedrock.additivity=0
+log4perl.category.TagX=ERROR, Bedrock
+log4perl.additivity.TagX=0
+END_OF_CONFIG
+
+  Log::Log4perl->init( \$log4perl_conf );
+
+  $self->get_logger('Bedrock')->level( $LEVELS{ lc $level } );
+
+  # Export config path into environment...the line below is generated by automake
+  {
+    ## no critic (RequireLocalizedPunctuationVars)
+    $ENV{BEDROCK_CONFIG_PATH} = $BEDROCK_CONFIG_PATH;
+    $ENV{CONFIG_PATH}         = $self->{'options'}->{'config'}
+      // $BEDROCK_CONFIG_PATH;
+  }
+
+  my $db = $self->{'options'}->{'db'};
+
+  if ( defined $db && exists $self->{'config'} ) {
+    if ( $self->{'config'}->get( $db . '_db' ) ) {
+      ## no critic (RequireLocalizedPunctuationVars)
+      $ENV{DBI_DSN}
+        = $ENV{DBI_DSN} || $self->{'config'}->get( $db . '_db' );
+
+      $ENV{DBI_USER} = $ENV{DBI_USER}
+        || $self->{'config'}->get( $db . '_username' );
+
+      $ENV{DBI_PASS} = $ENV{DBI_PASS}
+        || $self->{'config'}->get( $db . '_password' );
+    }
+  }
+
+  if ( $self->{'input'} ) {
+    if ( $self->{'input'} !~ /^\//xsm ) {
+      $self->{'input'} = sprintf '%s/%s', getcwd, $self->{'input'};
+    }
+
+    # collect STDIN as POSTDATA
+    if ( !-t *STDOUT ) {  ## no critic (ProhibitInteractiveTest)
+      local $RS = undef;
+
+      push @{ $self->{argv} }, 'POSTDATA=' . <>;
+    }
+  }
+  else {
+
+    # Handling input
+    my $fh = File::Temp->new(
+      TEMPLATE => 'bedrock-shell-XXXXX',
+      SUFFIX   => '.roc',
+      DIR      => $self->{'options'}->{'tempdir'},
+      UNLINK   => $self->{'options'}->{'cleanup'}
+    );
+
+    $self->{'options'}->{'fh'} = $fh;
+
+    my $script;
+
+    {
+      local $RS = undef;
+
+      $script = <>;
+    }
+
+    $fh->print($script);
+
+    $fh->close();
+
+    $self->{'_tempfile'} = $fh->filename;
+    $self->{'input'}     = $fh->filename;
+
+    # note that for STDIN the DOCUMENT_ROOT is the cwd
+    $ENV{DOCUMENT_ROOT} = getcwd;  ## no critic (RequireLocalizedPunctuationVars)
+  }
+
+  die "Input file not specified.\n"
+    if !$self->{'input'};
+
+  die "Unable to open input file `$self->{'input'}'\n"
+    if !-f $self->{'input'};
+
+  local @ARGV = @{ $self->{'argv'} };
+
+  $ENV{DOCUMENT_ROOT} //= dirname( $self->{'input'} );
+
+  # someone may be redirecting STDERR
+  open my $stderr_old, '>&', STDERR  ## no critic (RequireBriefOpen)
+    or die 'Failed to save STDERR';
+
+  # but we're going to send all messages to our log file
+  open STDERR, '>>', $self->{'options'}->{'logfile'}
+    or die 'Unable to open log file ' . $self->{'options'}->{'logfile'};
+
+  # make it hot
+  STDERR->autoflush($TRUE);
+
+  $self->debug( sprintf 'using resource file: %s', $self->{options}->{rc} );
+
+  return $self;
 }
 
+########################################################################
+sub version {
+########################################################################
+  my (@version_parts) = @_;
+
+  printf "Bedrock Version %s-%s (%s)\n", @version_parts;
+
+  print <<'END_OF_COPYRIGHT';
+Copyright (C) 2001, Charles Jones, LLC
+License GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl-2.0.html>
+
+Additional documentation can be found at <http://www.openbedrock.net>
+
+Written by Jay Sridhar, Rob Lauer <rclauer@gmail.com>
+END_OF_COPYRIGHT
+
+  return;
+}
+
+########################################################################
 sub get_loglevel_str {
-  my $self = shift;
-  
+########################################################################
+  my ($self) = @_;
+
   return $self->{options}->{loglevel};
 }
 
-sub debug {
-  my $self = shift;
+########################################################################
+sub _log {
+########################################################################
+  my ( $level, $self, @args ) = @_;
 
-  print STDERR _fmt_log_message(@_) if $self->{_loglevel} <= MSG_DEBUG;
+  return $self->get_logger->$level(@args);
 }
 
-sub info {
-  my $self = shift;
+{
+  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 
-  print STDERR _fmt_log_message(@_) if $self->{_loglevel} <= MSG_INFO;
+########################################################################
+  sub trace { my (@args) = @_; return _log( 'trace', @args ) }
+  sub debug { my (@args) = @_; return _log( 'debug', @args ) }
+  sub info  { my (@args) = @_; return _log( 'info',  @args ) }
+  sub warn  { my (@args) = @_; return _log( 'warn',  @args ) }
+  sub error { my (@args) = @_; return _log( 'error', @args ) }
+  sub fatal { my (@args) = @_; return _log( 'fatal', @args ) }
+  sub close { return; }
+  sub print { my ( $self, @args ) = @_; return print @args; }
+  sub log   { my ($self) = @_; return $self; }
+
+########################################################################
 }
 
-sub error {
-  my $self = shift;
-
-  print STDERR _fmt_log_message(@_) if $self->{_loglevel} <= MSG_ERROR;
-}
-
-sub warn {
-  my $self = shift;
-
-  print STDERR _fmt_log_message(@_) if $self->{_loglevel} <= MSG_WARNING;
-}
-
-# we want to output all messages to original STDERR now...
+########################################################################
 sub log_error {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  # we're logging all errors to our log file
-  close STDERR;
-
-  open STDERR, ">&OLD_STDERR";
-  print STDERR @_;
+  return $self->error(@args);
 }
 
-sub _fmt_log_message {
-  my $mesg = join('', @_);
-
-  $mesg .= "\n" unless $mesg =~/\n$/;
-  return scalar(localtime) . ' - ' . $$ . ' - ' . $mesg;
-
-}
-
+########################################################################
 sub content_type {
-  my $self = shift;
+########################################################################
+  my ( $self, $type ) = @_;
 
-  $self->{content_type} = shift
-    if $@;
+  if ($EVAL_ERROR) {
+    $self->{content_type} = $type;
+  }
 
   return $self->{'content_type'} || 'text/plain';
 }
 
-sub filename {
-  my $self = shift;
-  $self->{'input'};
-}
+########################################################################
+sub filename { my ($self) = @_; return $self->{'input'}; }
+sub finfo    { my ($self) = @_; return $self->{'input'}; }
+sub uri      { my ($self) = @_; return $self->{'input'}; }
 
-sub finfo {
-  my $self = shift;
-  $self->{'input'};
-}
+########################################################################
+sub args { my ($self) = @_; return @{ $self->{'argv'} }; }
 
-sub uri {
-  my $self = shift;
-  $self->{'input'};
-}
+########################################################################
+sub content          { return (); }
+sub headers_in       { return (); }
+sub cgi_header_out   { return; }
+sub err_headers_out  { return; }
+sub header_out       { return; }
+sub send_http_header { return; }
 
-sub args {
-  my $self = shift;
-  @{ $self->{'argv'} };
-}
-
-sub content {
-  ();
-}
-
-sub headers_in {
-  ();
-}
-
-sub cgi_header_out {
-}
-
-sub err_headers_out {
-}
-
-sub header_out {
-}
-
-sub send_http_header {
-}
-
-sub close {
-}
-
-sub print {
-  my $self = shift;
-  print @_;
-}
-
+########################################################################
 sub usage {
-  my $self = shift;
-  my $prog = basename($0);
+  my ($self) = @_;
 
-  die "Usage: $prog [OPTION...] [FILE] [KEY=VALUE]...
+  my $prog = basename($PROGRAM_NAME);
+
+  my $usage = <<"END_OF_USAGE";
+Usage: $prog [OPTION...] [FILE] [KEY=VALUE]...
 OPTIONS
 
   -c, --config=DIR          - configuration directory (default: /usr/lib/bedrock/config)
@@ -171,251 +420,11 @@ OPTIONS
   -V, --version             - report Bedrock version
 
 Report bugs to <bugs\@openbedrock.net>
-";
-}
+END_OF_USAGE
 
-sub new {
-  my $class = shift;
-  my $self = bless {}, $class;
-
-  my $HOME = $ENV{HOME} || '.';
-
-  my $default_rc_file = $HOME . '/.bedrock_rc'
-    if -s $HOME . '/.bedrock_rc';
-
-  $self->{'argv'} = [];
-
-  my $result;
-
-  $self->{'options'} = {};
-
-  eval {
-    $result = GetOptions(
-			 $self->{'options'},
-			 'config=s',
-			 'db=s',
-			 'help|?',
-			 'infile=s',
-			 'logfile|l=s',
-			 'loglevel|L=s',
-			 'mime-type=s',
-			 'outfile=s',
-			 'rc=s',
-			 'version|V',
-			 '<>' => sub {
-			   my $arg = shift;
-			   
-			   if ( $arg =~ /^(\w[^=]*=.*?)/ ) {
-			     push @{ $self->{'argv'} }, "$arg";
-			   }
-			   else {
-			     $self->{'input'} = "$arg"; # usually filename.roc
-			   }
-			 }
-			);
-  };
-
-  # read config from resource file if specified
-
-  if ( $self->{options}->{rc} ) {
-
-    unless ( -s $self->{options}->{rc} ) {
-      die "unable to read resource file: " . $self->{options}->{rc} . "\n";
-      exit -1;
-    }
-
-    $self->{config} = AppConfig->new( { 
-				       CASE   => 1,
-				       CREATE => 1,
-				       ERROR  => sub { },
-				       GLOBAL => { ARGCOUNT => ARGCOUNT_ONE }
-                                      },
-                                    );
-
-    $self->{config}->define( 'cleanup' => { ARGCOUNT => ARGCOUNT_NONE } );
-
-    $self->{config}->file( $self->{options}->{rc} );
-
-    my %varlist = $self->{config}->varlist('.');
-
-    # command line overrides the value in resource file for these options
-    $ENV{CONFIG_PATH} = realpath($self->{config}->config())
-      if exists $varlist{config} && ! $self->{options}->{config};
-
-    $self->{'options'}->{'logfile'} = $self->{config}->logfile()
-      if exists $varlist{logfile} && ! $self->{options}->{logfile};
-    
-    $self->{'options'}->{'loglevel'} = $self->{config}->loglevel()
-      if exists $varlist{loglevel} && ! $self->{options}->{loglevel};
-
-    $self->{'options'}->{'tempdir'} = $self->{config}->tempdir()
-      if exists $varlist{tempdir} && ! $self->{options}->{tempdir};
-
-    $self->{'options'}->{'cleanup'} = $self->{config}->cleanup()
-      if exists $varlist{cleanup} && ! $self->{options}->{cleanup};
-
-    $self->{'options'}->{'db'} = $self->{config}->db()
-      if exists $varlist{db} && ! $self->{options}->{db};
-  }
-
-  my %defaults = (
-		  rc       => $default_rc_file,
-		  tempdir  => '.',
-		  db       => 'database',
-		  loglevel => 'warn',
-		  logfile  => 'bedrock.log',
-		  cleanup  => 0,
-		  tempdir  => '.',
-		  rc       => $HOME . '/.bedrock_rc',
-		  db       => 'database',
-		  config   => realpath($ENV{CONFIG_PATH})
-		 );
-
-  # set default values
-  foreach ( keys %defaults ) {
-    next if exists $self->{options}->{$_};
-    $self->{options}->{$_} = $defaults{$_};
-  }
-
-  # directly specify input file
-  $self->{input} = $self->{options}->{infile}
-    if defined $self->{options}->{infile};
-
-  # redirect STDOUT
-  if ( defined $self->{options}->{outfile} ) {
-    my $file = $self->{options}->{outfile};
-
-    open STDOUT, '>', $file or die "could not open [$file] for output";
-
-    # make it hot
-    select((select(STDOUT), $|=1)[0]);
-  }
-
-  # error parsing input arguments
-  if ( $@ ) {
-    my ($emsg) = split /\r/, $@;
-
-    die $emsg;
-  }
-
-  # set loglevel
-  for ( $self->{options}->{loglevel} ) {
-    /debug/i && do {
-      $self->{_loglevel} = MSG_DEBUG;
-      last;
-    };
-
-    /info/i && do {
-      $self->{_loglevel} = MSG_INFO;
-      last;
-    };
-    /warn/i && do {
-      $self->{_loglevel} = MSG_WARNING;
-      last;
-    };
-
-    /error/i && do {
-      $self->{_loglevel} = MSG_ERROR;
-      last;
-    };
-  }
-
-  if ( defined $self->{options}->{version} ) {
-    printf( "Bedrock Version %s-%s (%s)\n",
-	    $Bedrock::VERSION::ID, $Bedrock::VERSION::RELEASE, $Bedrock::VERSION::BUILD_DATE );
-    print <<eot;
-Copyright (C) 2001, Charles Jones, LLC
-License GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl-2.0.html>
-
-Additional documentation can be found at <http://www.openbedrock.net>
-
-Written by Jay Sridhar, Rob Lauer <rclauer\@gmail.com>
-eot
-
-    exit;
-  }
-
-  $self->usage if $self->{'options'}->{'help'} or not $result;
-
-  # Export config path into environment...the line below is generated by automake
-  $ENV{BEDROCK_CONFIG_PATH} = '@libdir@/bedrock/config'; # <--- DO NOT EDIT
-
-  $ENV{CONFIG_PATH} = $self->{'options'}->{'config'};
-
-  my $db = $self->{'options'}->{'db'};
-
-  if ( defined $db && exists $self->{'config'} ) {
-    if ( $self->{'config'}->get( $db . '_db' ) ) {
-      $ENV{DBI_DSN} = $ENV{DBI_DSN} || $self->{'config'}->get( $db . '_db' );
-      $ENV{DBI_USER} = $ENV{DBI_USER}
-      || $self->{'config'}->get( $db . '_username' );
-      $ENV{DBI_PASS} = $ENV{DBI_PASS}
-      || $self->{'config'}->get( $db . '_password' );
-    }
-  }
-
-  if ( $self->{'input'} ) {
-    $self->{'input'} = getcwd . '/' . $self->{'input'}
-      unless $self->{'input'} =~ /^\//;
-
-    # collect STDIN as POSTDATA
-    unless ( -t STDIN ) {
-      local $/ = undef;
-      push @{$self->{argv}}, 'POSTDATA=' . <>;
-    }
-  }
-  else {
-
-    # Handling input
-    my $fh = File::Temp->new( 
-			     TEMPLATE => 'bedrock-shell-XXXXX',
-			     SUFFIX   => '.roc',
-			     DIR      => $self->{'options'}->{'tempdir'},
-			     UNLINK   => $self->{'options'}->{'cleanup'}
-                            );
-
-    $self->{'options'}->{'fh'} = $fh;
-
-    my $script;
-    {
-      local $/;
-      $script = <>;
-    }
-
-    $fh->print("$script");
-    $fh->close();
-
-    $self->{'_tempfile'} = $fh->filename;
-    $self->{'input'} = $fh->filename;
-
-    # note that for STDIN the DOCUMENT_ROOT is the cwd
-    $ENV{DOCUMENT_ROOT} = getcwd;
-  }
-
-  die "Input file not specified.\n" 
-    unless $self->{'input'};
-
-  die "Unable to open input file `$self->{'input'}'\n"
-    unless -f $self->{'input'};
-
-  @ARGV = @{ $self->{'argv'} };
-
-  $ENV{DOCUMENT_ROOT} = dirname( $self->{'input'} )
-    unless $ENV{DOCUMENT_ROOT};
-
-  # someone may be redirecting STDERR
-  open( OLD_STDERR, ">&STDERR" ) or die "Failed to save STDERR";
-
-  # but we're going to send all messages to our log file
-  open STDERR, ">>" . $self->{'options'}->{'logfile'}
-    or die "Unable to open log file " . $self->{'options'}->{'logfile'};
-
-  # make it hot
-  select((select(STDERR), $|=1)[0]);
-
-  $self->debug( "using resource file: " . $self->{options}->{rc} );
-
-  $self;
+  die $usage;
 }
 
 1;
+
+__END__

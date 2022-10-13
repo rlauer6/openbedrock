@@ -30,6 +30,7 @@ use Data::Dumper;
 use English qw/-no_match_vars/;
 
 use Log::Log4perl::Level;
+
 use Bedrock::Constants qw{:chars :booleans};
 
 use Role::Tiny::With;
@@ -224,6 +225,8 @@ sub options {
 ########################################################################
   my ( $self, @args ) = @_;
 
+  my $logger = $self->get_logger( ref $self );
+
   if ( @args == 1 ) {
     my $optstring = shift @args;
 
@@ -243,35 +246,65 @@ sub options {
 
     my $verbose = defined $self->{'__verbose'} ? $self->{'__verbose'} : 0;
 
+    my $log_level = $logger->level();
+    $self->{__log_level} = $log_level;
+
     if ( $verbose == 1 ) {
-      $self->get_logger( ref $self )->level($DEBUG);
+      $logger->level($DEBUG);
+      $logger->additivity($FALSE);
     }
-    elsif ( $verbose == 2 ) {
-      $self->get_logger( ref $self )->level($TRACE);
+    elsif ( $verbose > 1 ) {
+      $logger->level($TRACE);
+      $logger->additivity($FALSE);
     }
 
-    $self->get_logger( ref $self )->trace(
+    $logger->trace(
       sub {
-        my $str
-          = "Option string is\n"
-          . "\t$optstring\n"
-          . " Resolved to\n\t"
-          . @{ $self->{'__argv'} } . "\n";
+        my $message = <<'END_OF_MESSAGE';
+--------------
+Option string:
+--------------
+%s
+------------
+Resolved to:
+------------
+%s
+-------------
+Option types:
+-------------
+%s
+------------
+Options are:
+------------
+%s
+--------------------
+Generic options are:
+--------------------
+%s
+END_OF_MESSAGE
+        my @options;
+        my @generic_options;
 
-        $str .= sprintf " Option types:\n\t%s", @{ $self->{'__term_type'} };
-
-        $str .= " Options are\n";
+        for my $key ( sort keys %generic ) {
+          push @generic_options, sprintf '%s => [%s]', $key, $generic{$key};
+        }
 
         for my $key ( sort keys %{ $self->{'__options'} } ) {
-          $str .= sprintf "\t%s => [%s]\n", $key,
+          push @options, sprintf '%s => [%s]', $key,
             $self->{'__options'}->{$key};
         }
 
-        $str .= "  Generic options are\n";
+        my @var_list = map { "$_ => " . _resolve($_) } @{ $self->{'__argv'} };
 
-        for my $key ( sort keys %generic ) {
-          $str .= sprintf "\t%s => [%s]", $key, $generic{$key};
-        }
+        my $var_list_str  = join "\n", @var_list, $EMPTY;
+        my $term_list_str = join "\n", @{ $self->{'__term_type'} }, $EMPTY;
+
+        my $options_list_str         = join "\n", @options,         $EMPTY;
+        my $generic_options_list_str = join "\n", @generic_options, $EMPTY;
+
+        my $str = sprintf $message, $optstring,
+          $var_list_str,             $term_list_str,
+          $generic_options_list_str, $options_list_str;
 
         return $str;
       }
@@ -280,6 +313,22 @@ sub options {
   }
 
   return $self->{'__options'};
+}
+
+########################################################################
+sub _resolve {
+########################################################################
+  my ($var) = @_;
+
+  if ( ref($var) =~ /::Term/xsm ) {
+    return ${$var};
+  }
+  elsif ( ref($var) =~ /::Expr/xsm ) {
+    return join $COMMA, map { _resolve($_) } @{$var};
+  }
+  else {
+    return $var;
+  }
 }
 
 ########################################################################
@@ -297,9 +346,13 @@ sub eval_args {
 
   my $verbose = defined $self->{'__verbose'} ? $self->{'__verbose'} : 0;
 
-  #  TRACE sub {
-  #    "Context arguments are\n" . "\t(" . @_ . ")";
-  #  };
+  my $logger = $self->get_logger( ref $self );
+
+  $logger->trace(
+    sub {
+      sprintf 'Context arguments are: (%s)', join $COMMA, @eval_args;
+    }
+  );
 
   # command line has been parsed. Just need to eval arguments and
   # options with appropriate context
@@ -318,11 +371,7 @@ sub eval_args {
 
       for my $arg ( @{$value} ) {
         if ( ref $arg ) {
-          $arg->verbose($verbose);
-
           push @optvals, $arg->eval(@eval_args);
-
-          $arg->verbose(0);
         }
         else {
           push @optvals, $arg;
@@ -332,11 +381,7 @@ sub eval_args {
       $optref->{$key} = \@optvals;
     }
     elsif ($ref) {
-      $value->verbose($verbose);
-
       $optref->{$key} = $value->eval(@eval_args);
-
-      $value->verbose(0);
     }
     else {
       $optref->{$key} = $value;
@@ -357,10 +402,7 @@ sub eval_args {
 
     # arguments to the while loop should not be evaluated at this point
     if ( ref $arg && ref($self) !~ /while/xsmi ) {
-      $arg->verbose($verbose);
-
       push @args, $arg->eval(@eval_args);
-      $arg->verbose(0);
     }
     else {
       push @args, $arg;
@@ -390,78 +432,12 @@ sub get_name {
   return (@argv);
 }
 
-sub xparse_tag_name {
-  my ( $self, $tag ) = @_;
-
-  my $tagtype = { type => $EMPTY, name => $EMPTY };
-
-  if ( $tag && $tag =~ /^:/xsm ) {
-    if ( $tag =~ /^:\s+/xsm ) {
-      die "missing variable name of class after ':'\n";
-    }
-
-    # -----------------------
-    #   <plugin:class:name>
-    #   <plugin:class>
-    # -----------------------
-
-    if ( ref($self) =~ /plugin$/ixsm ) {
-
-      if ( $tag =~ /^:(.+[^:]):(\w+)/xsm ) {
-        @{$tagtype}{qw/type name/} = ( $1, $2 );
-      }
-      elsif ( $tag =~ /^:(.*)/xsm ) {
-        $tagtype->{name} = $tagtype->{type} = $1;
-      }
-    }
-
-    # -----------------------
-    #   <null:type:name>
-    #   <null:name>
-    # -----------------------
-
-    elsif ( ref($self) =~ /null$/ixsm ) {
-
-      if ( $tag =~ /^:([^:]+):([^:].+)$/xsm ) {
-        my ( $type, $name ) = ( $1, $2 );
-
-        if ( any { $type eq $_ } qw{ hash var object array } ) {
-          @{$tagtype}{qw/type name/} = ( $type, $name );
-        }
-        else {
-          die "invalid type ($type)\n";
-        }
-      }
-      else {
-        $tagtype->{name} = ( split /:/xsm, $tag )[1];
-      }
-    }
-
-    # -----------------------
-    #   <tag:name>
-    # -----------------------
-
-    else {
-      $tagtype->{name} = ( split /:/xsm, $tag )[1];
-    }
-  }
-
-  #  TRACE sub {
-  #    "tag => ["
-  #      . $tag
-  #      . "], 1 =>  ["
-  #      . $tagtype->{type}
-  #      . "], 2 => ["
-  #      . $tagtype->{name} . "]";
-  #  };
-
-  return $tagtype;
-}
-
 ########################################################################
 sub parse_tag_name {
 ########################################################################
   my ( $self, $tag ) = @_;
+
+  my $logger = $self->get_logger( ref $self );
 
   my $tagtype = { type => $EMPTY, name => $EMPTY };
 
@@ -515,14 +491,12 @@ sub parse_tag_name {
     }
   }
 
-  #  TRACE sub {
-  #    "tag => ["
-  #      . $tag
-  #      . "], 1 =>  ["
-  #      . $tagtype->{type}
-  #      . "], 2 => ["
-  #      . $tagtype->{name} . "]";
-  #  };
+  $logger->trace(
+    sub {
+      return sprintf 'tag => [%s], 1 => [%s], 2=> [%s]', $tag,
+        @{$tagtype}{qw{type name}};
+    }
+  );
 
   return $tagtype;
 }
@@ -544,7 +518,8 @@ sub dump_options {
         $str .= sprintf "\t%s .. (%s)\n", $key, $value;
       }
 
-      $str .= sprintf 'Arguments .. (%s)', join $COMMA, @args;
+      $str .= sprintf 'Arguments .. (%s)', join $COMMA, grep {defined} @args,
+        $EMPTY;
 
       return $str;
     }

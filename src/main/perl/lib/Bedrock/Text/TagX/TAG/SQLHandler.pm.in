@@ -21,25 +21,23 @@ package TagX::TAG::SQLHandler;
 #
 
 use strict;
+use warnings;
 
-BEGIN {
-  use Exporter ();
-  use Bedrock;
+use parent qw{Exporter TagX::TAG::SQLConnector};
 
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter TagX::TAG::SQLConnector);
-}
-
+use Bedrock::Constants qw{:chars :booleans};
 use DBI;
-
 use Data::Dumper;
 use English qw( -no_match_vars );
-
 use Scalar::Util qw/reftype/;
-use Log::Log4perl qw/:easy/;
 
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+########################################################################
 sub get_list_options {
-  my ($self, $option) = @_;
+########################################################################
+  my ( $self, $option ) = @_;
 
   my @list;
 
@@ -51,24 +49,28 @@ sub get_list_options {
       push @list, $option;
     }
   }
-  
+
   return @list;
 }
 
+########################################################################
 sub get_db_handle {
-  my ($self, $tx, %options) = @_;
+########################################################################
+  my ( $self, $tx, %options ) = @_;
 
   my $name = $options{'dbname'};
 
-  WARN 'Use of deprecated option --dbname. Use --db instead.'
-    if $name;
+  if ($name) {
+    $self->get_logger->warn(
+      'Use of deprecated option --dbname. Use --db instead.');
+  }
 
   my $dbh;
 
   if ( $options{'db'} ) {
-    $dbh = $tx->{DB}->{$options{'db'}};
-    
-    if ( !ref($dbh) || ref($dbh) !~/DBI::db/ ) {
+    $dbh = $tx->{DB}->{ $options{'db'} };
+
+    if ( !ref($dbh) || ref($dbh) !~ /DBI::db/xsm ) {
       die $options{'db'} . " is not a DBI handle\n";
     }
   }
@@ -78,40 +80,45 @@ sub get_db_handle {
       if !$dbh;
   }
   else {
-    $dbh = $tx->{'DB'}->{$self->ANONYMOUS};
+    $dbh = $tx->{'DB'}->{ $self->ANONYMOUS };
   }
 
-  if ( !$dbh || !ref($dbh) ) {
-    my ($dsn, $user, $pass, $host) = $self->get_dsn($tx, %options);
-    
+  if ( !$dbh || !ref $dbh ) {
+    my ( $dsn, $user, $pass, $host ) = $self->get_dsn( $tx, %options );
+
     if ( !$dsn || !$user ) {
       die "No database connection available.\n";
     }
-    
-    DEBUG sub {
-      "attempting to connect to [$dsn] as [$user]";
-    };
-        
-    my $name = &ANONYMOUS;
+
+    $self->get_logger->debug(
+      sub {
+        "attempting to connect to [$dsn] as [$user]";
+      }
+    );
+
+    my $name = ANONYMOUS();
 
     $dbh = eval {
       DBI->connect(
         $dsn,
         @options{qw(username password)},
-        { 'AutoCommit' => 1,
-          'PrintError' => 1,
-          'RaiseError' => 1,
-          'ChopBlanks' => 1
+        { AutoCommit => $TRUE,
+          PrintError => $TRUE,
+          RaiseError => $TRUE,
+          ChopBlanks => $TRUE,
         }
       );
     };
-    
-    die "Unable to connect to database: ", $DBI::errstr, $EVAL_ERROR, "\n"
-      if ! $dbh;
 
-    DEBUG sub {
-      "Autoconnected to database [$dsn] as [$user]\n";
-    };
+    die sprintf 'Unable to connect to database: %s %s', $DBI::errstr,
+      $EVAL_ERROR
+      if !$dbh;
+
+    $self->get_logger->debug(
+      sub {
+        return sprintf 'Autoconnected to database [%s] as [%s]', $dsn, $user;
+      }
+    );
 
     $tx->{'DB'}->{$name} = $dbh;
   }
@@ -124,3 +131,5 @@ sub get_db_handle {
 }
 
 1;
+
+__END__

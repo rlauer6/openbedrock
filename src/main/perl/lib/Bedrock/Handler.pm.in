@@ -76,7 +76,7 @@ sub cache_enabled {
   return $cache_config && $cache_config =~ /^yes|y|on$/ixsm;
 }
 
-if (cache_enabled) {
+if ( cache_enabled() ) {
   eval {
 
     require IPC::Shareable;
@@ -93,12 +93,12 @@ if (cache_enabled) {
         size   => CACHE_BLOCK_SIZE * $cache_blocks,
       };
 
-      tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;  ## no critic (Miscellanea::ProhibitTies)
+      return tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;  ## no critic (Miscellanea::ProhibitTies)
     }
   };
 
   if ($EVAL_ERROR) {
-    carp "caching not successful: $EVAL_ERROR\n";
+    carp "cacheing not successful: $EVAL_ERROR\n";
   }
 }
 
@@ -286,6 +286,7 @@ sub load_config_from_cache {
   my $config = $BEDROCK_CONFIG_CACHE{$key};
 
   if ($config) {
+    $self->log_info('loading configuration from cache');
     $config = Bedrock::Config->newFromString($config);
   }
   else {
@@ -461,10 +462,16 @@ sub get_bedrock_config {
     @config_paths = map { realpath($_) } @config_paths;
   }
   else {
-    $self->log_warn(
-          'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:['
-        . $bedrock_config_path
-        . ']' );
+    if ($bedrock_config_path) {
+      $self->log_warn(
+        sprintf
+          'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
+        $bedrock_config_path
+      );
+    }
+    else {
+      $self->log_warn('No CONFIG_PATH or BEDROCK_CONFIG_PATH');
+    }
   }
 
   my @paths = grep {defined} ( $bedrock_config_path, @config_paths );
@@ -507,10 +514,14 @@ sub get_bedrock_config {
   }
 
   if ( !$config || !keys %{$config} ) {
-    croak sprintf "No or empty 'tagx.xml' \n"
-      . "BEDROCK_CONFIG_PATH: [%s]\n"
-      . "CONFIG_PATH: [%s]\n", $bedrock_config_path, join $SEMICOLON,
-      @config_paths;
+    my $error = <<'END_OF_MESSAGE';
+ERROR: No or empty 'tagx.xml'
+  BEDROCK_CONFIG_PATH => [%s]
+  CONFIG_PATH         => [%s]
+END_OF_MESSAGE
+
+    croak sprintf $error, ( $bedrock_config_path // $EMPTY ),
+      ( join $SEMICOLON, @config_paths ) // $EMPTY;
   }
 
   my $dbnames = $self->read_data_sources(@paths);
@@ -607,7 +618,7 @@ sub get_bedrock_config {
   }
 
   # -- not sure why we ever needed this line
-  $config->{CONFIG_PATH} = join $SEMICOLON, @config_paths;
+  $config->{CONFIG_PATH} = join $SEMICOLON, grep {defined} @config_paths;
 
   # override use of BEDROCK_IMAGE_URL if app defines own
   if ( $config->{IMAGE_URL} ) {

@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,12 +23,6 @@ package TagX::TAG::NoBody::Pebble;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
 use vars qw($PWD);
 
 use Bedrock::Array;
@@ -38,62 +30,66 @@ use Bedrock::BufferStream;
 use Bedrock::Dump;
 use TagX::TAG::NoBody;
 
-use Log::Log4perl qw/:easy/;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 use Cwd;
 use Scalar::Util qw/reftype/;
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw{ Exporter TagX::TAG::NoBody };
 
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
-  my %options = ( 'file=s'      => undef,
-                  'object=s'    => undef,
-                  'pebble=s'    => undef,
-                  'expand-args' => undef,
-                  'json'        => undef
-                );
+  my %options = (
+    'file=s'      => undef,
+    'object=s'    => undef,
+    'pebble=s'    => undef,
+    'expand-args' => undef,
+    'json'        => undef,
+  );
 
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
   my $pwd = fastcwd;
+
   my $input;
   my $pebble_text;
   my $pebble_name = 'anonymous';
 
   if ( exists $options{'file'} ) {
     $pebble_name = $options{'file'};
-    $pebble_text =
-    $tx->pebble( $pebble_name, '.peb', $pwd,
-                 @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+
+    $pebble_text = $tx->pebble( $pebble_name, '.peb', $pwd,
+      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
   }
   elsif ( exists $options{'pebble'} ) {
     $pebble_name = $options{'pebble'};
-    $pebble_text =
-    $tx->pebble( $pebble_name, '.peb',
-                 @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+
+    $pebble_text = $tx->pebble( $pebble_name, '.peb',
+      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
   }
-  elsif ( $argv[0] =~ /^:/ ) {
+  elsif ( $argv[0] =~ /^:/xsm ) {
     my $tag_opts = $self->parse_tag_name( shift @argv );
 
-    $tag_opts->{name} =~ s/^(.*?)(\.peb)?$/$1/;
-    $pebble_name = $1;
-    $pebble_text =
-    $tx->pebble( $pebble_name, '.peb',
-                 @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+    if ( $tag_opts->{name} =~ s/^(.*?)([.]peb)?$/$1/xsm ) {
+      $pebble_name = $1;
+    }
+
+    $pebble_text = $tx->pebble( $pebble_name, '.peb',
+      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
   }
   elsif ( exists $options{'object'} ) {
     $pebble_text = $options{'object'};
-    
-    DEBUG sub {
-      "Preparing to exec object ["
-        . $input
-        . "]";
-    };
-    
+
+    $self->get_logger->debug(
+      sub {
+        return sprintf 'Preparing to exec object [%s]', $input;
+      }
+    );
+
   }
   elsif (@argv) {
     $pebble_text = shift @argv;
@@ -102,23 +98,21 @@ sub finalize {
     die "Must specify file or buffer as argument to <pebble>.\n";
   }
 
-  TRACE sub {
-    "Preparing to exec the following buffer ("
-      . length($pebble_text)
-      . " bytes)\n"
-      . substr( $pebble_text, 0, 200 )
-      . "....";
-    };
-  
+  $self->get_logger->trace(
+    sub {
+      return sprintf 'Preparing to exec the following buffer (%d bytes)',
+        length($pebble_text), substr( $pebble_text, 0, 200 ) . '...';
+    }
+  );
+
   $input = Bedrock::BufferStream->new($pebble_text);
   $tx->store_pebble( $pebble_name, $input );
 
-  DEBUG sub {
-    "Created a buffer stream object ["
-      . $input
-      . "]";
-  };
-  
+  $self->get_logger->debug(
+    sub {
+      "Created a buffer stream object [" . $input . "]";
+    }
+  );
 
   die "Unable to find specified pebble ([$pebble_name].\n"
     if !$input;
@@ -127,20 +121,18 @@ sub finalize {
   $tx->{'VARS'}->new_frame;
 
   if ( exists $options{'json'} ) {
-    eval {
-      @argv = ( $self->decode_json_string( join( '', @argv ) ) );
-    };
+    eval { @argv = ( $self->decode_json_string( join( '', @argv ) ) ); };
 
-    die "invalid json string: " . join('', @argv) . "\n"
+    die "invalid json string: " . join( '', @argv ) . "\n"
       if $@;
   }
 
   my @expanded;
-  
+
   if ( $options{'expand-args'} ) {
-    
+
     my $i = 0;
-    
+
     for my $item (@argv) {
       if ( ref($item) && reftype($item) eq 'ARRAY' ) {
         push @expanded, @{$item};
@@ -150,34 +142,44 @@ sub finalize {
       }
       $i++;
     }
-    
-    DEBUG sub {
-      Bedrock::Dump::compact ['expand-args', \@expanded];
-    };
+
+    $self->get_logger->debug(
+      sub {
+        Bedrock::Dump::compact [ 'expand-args', \@expanded ];
+      }
+    );
 
   }
   else {
     @expanded = @argv;
   }
 
-  $tx->param( 'ARGV' => Bedrock::Array->new( @expanded ) );
+  $tx->param( 'ARGV' => Bedrock::Array->new(@expanded) );
 
-  DEBUG sub {
-    "Starting the exec with ["
-      . $subform
-      . "] ..";
-  };
- 
+  $self->get_logger->debug(
+    sub {
+      "Starting the exec with [" . $subform . "] ..";
+    }
+  );
+
   $subform->output;
-  
-  DEBUG sub {
-    "Completed exec with ["
-      . $subform
-      . "] ..";
-  };
-  
+
+  $self->get_logger->debug(
+    sub {
+      "Completed exec with [" . $subform . "] ..";
+    }
+  );
+
   $tx->{'VARS'}->end_frame;
+
+  return;
 }
+
+1;
+
+__END__
+
+=pod
 
 =head1 TAG - C<E<lt>pebbleE<gt>>
 
@@ -332,66 +334,3 @@ passing the C<$args> as a singleton whose value is an array reference.
 C<E<lt>includeE<gt>>
 
 =cut
-
-#
-# Revision 1.16  2013/01/03 01:25:29  rlauer
-# - add --json support for sending a json object as an argument
-#
-# Revision 1.15  2011/09/21 20:36:12  eutl420
-# -pod fixes
-#
-# Revision 1.14  2011/09/15 16:05:33  eutl420
-# - perl tidy
-#
-# Revision 1.13  2011/09/14 19:13:03  eutl420
-# - pebbles are now stored in a cache, we look for the cached pebble first
-#
-# Revision 1.12  2011/07/17 16:56:09  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.11  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.10  2011/07/06 15:54:25  eutl420
-# - pod tweak (new line)
-#
-# Revision 1.9  2010/12/12 17:06:37  eutl420
-# - use dump_options
-# - use parse_tag_name
-#
-# Revision 1.8  2010/11/29 15:57:54  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.7  2010/11/17 02:27:32  rlauer
-# - pod cleanup
-#
-# Revision 1.6  2010/11/14 21:04:27  rlauer
-# - remove commented out debug statement, make it a log_message
-# - minor documentation change
-#
-# Revision 1.5  2009/12/31 18:38:35  rlauer
-# updated docs
-#
-# Revision 1.4  2009/12/31 12:43:31  rlauer
-# much more robust documentation that explains pebble usage
-#
-# Revision 1.3  2009/12/28 20:31:34  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.2  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.1  2008/11/25 14:32:36  rlauer
-# added as part of Bedrock 2.0.0 reorg
-#
-#
-
-1;

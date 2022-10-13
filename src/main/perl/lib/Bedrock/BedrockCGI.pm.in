@@ -1,6 +1,3 @@
-#!@PERL@
-
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -23,33 +20,397 @@
 
 package Bedrock::BedrockCGI;
 
-1;
+use strict;
+use warnings;
 
 package Bedrock::CGI;
 
 use strict;
 use warnings;
 
-use File::Basename;
-
 use Bedrock;
-use Bedrock::Context;
-use Bedrock::Handler;
-
 use Apache::Bedrock;
 use Apache::Request_cgi;
-
-use Text::URLEncode qw/Htmlencode/;
-use Text::TagX;
-
+use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::Context;
+use Bedrock::Handler;
+use English qw{-no_match_vars};
+use File::Basename;
+use File::Temp qw{tempdir};
 use IO::Scalar;
 use Scalar::Util qw/reftype/;
+use Text::TagX;
+use Text::URLEncode qw/Htmlencode/;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use Readonly;
+
+Readonly our $BOLD      => 'font-weight:800';
+Readonly our $RED       => 'color:red';
+Readonly our $FONT_SIZE => 'font-size:125%';
+Readonly our $MARGIN    => 'margin:10px';
+Readonly our $PURPLE    => 'color:purple';
+
+use parent qw{Exporter};
+
+our @EXPORT_OK = qw{element element_start element_end attribute style
+  $FONT_SIZE $RED $PURPLE $MARGIN $BOLD};
+
+our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %options ) = @_;
+
+  my $self = bless {}, $class;
+
+  $self->handler->header_out( 'Content-type',
+    $options{CONTENT_TYPE} || 'text/html' );
+
+  # retrieve the configuration object
+  $self->config;
+
+  # Bedrock logging
+  $options{LOGDIR} //= $self->config->{LOGDIR};
+
+  if ( !-d $options{LOGDIR} || !-w $options{LOGDIR} ) {
+    print {*STDERR} sprintf "WARNING: unable to create log files in:%s\n",
+      $options{LOGDIR};
+
+    $options{LOGDIR} = tempdir();
+    print {*STDERR} sprintf "WARNING: using %s\n", $options{LOGDIR};
+  }
+
+  if ( !$options{LOG_FILE} ) {
+    my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.]cgi|pl$/xsm );
+
+    $options{LOG_FILE} = sprintf '%s/%s%s.log', $options{LOGDIR}, $name, $ext;
+  }
+
+  TagX::Log::start_logger( LOG_FILE => $options{LOG_FILE} );
+
+  $self->context;
+
+  $self->init_session( $options{COOKIELESS} );
+
+  return $self;
+}
+
+########################################################################
+sub config {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $handler = Bedrock::Handler->new( $self->handler );
+
+  if ( !exists $self->{CONFIG} ) {
+    $self->{CONFIG} = $handler->get_config;
+  }
+
+  return @args ? $self->{CONFIG}->{ $args[0] } : $self->{CONFIG};
+}
+
+########################################################################
+sub clear {
+########################################################################
+  my ($self) = @_;
+
+  return delete $self->{DATA};
+}
+
+########################################################################
+sub cgi {
+########################################################################
+  my ($self) = @_;
+
+  return $self->context->cgi;
+}
+
+########################################################################
+sub context {
+########################################################################
+  my ($self) = @_;
+
+  if ( !exists $self->{_ctx} ) {
+    $self->{_ctx} = Bedrock::Context->new(
+      APACHE_HANDLER => $self->handler,
+      CONFIG         => $self->config,
+    );
+  }
+
+  return $self->{_ctx};
+}
+
+########################################################################
+sub exec {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $snippet, %args ) = @_;
+
+  my $snippet_fd = IO::Scalar->new( \$snippet );
+
+  my $output = $EMPTY;
+
+  my $output_fd = IO::Scalar->new( \$output );
+
+  my $tx = Text::TagX->new( $snippet_fd, $output_fd );
+
+  map { $tx->param( $_ => $args{$_} ) } keys %args;
+
+  eval { $tx->output; };
+
+  my $err;
+
+  if ($EVAL_ERROR) {
+    $self->clear;
+
+    $err = Htmlencode($EVAL_ERROR);
+
+    my $err_fd = IO::Scalar->new( \$err );
+
+    # offending snippet line
+    my $line_no;
+
+    if ( $err =~ /line\s*(\d+)/xsm ) {
+      $line_no = $1;
+    }
+
+    my @lines = <$err_fd>;
+    $err_fd->close;
+    my $line = 1;
+    my $fline;
+
+    for ( 1 .. $#lines - 1 ) {
+      $fline = sprintf '%-3d', $line;
+
+      $lines[$line] =~ s/^/\[$fline\] /xsm;
+
+      if ( $line_no == $line ) {
+        $lines[$line]
+          = element( element_start( 'span', style($BOLD) ), $lines[$line] );
+      }
+
+      $line++;
+    }
+
+    for ( 0, $#lines ) {
+      $lines[$_] = element(
+        element_start( 'div', style( $FONT_SIZE, $PURPLE, $BOLD, $MARGIN ) ),
+        $lines[$_]
+      );
+    }
+
+    $err = join $EMPTY, @lines;
+  }
+
+  $tx->close;
+  $output_fd->close;
+
+  die element( 'pre', $err )
+    if $err;
+
+  return $output;
+}
+
+########################################################################
+sub handler {
+########################################################################
+  my ($self) = @_;
+
+  if ( !exists $self->{APACHE_HANDLER} ) {
+    $self->{APACHE_HANDLER} = Apache::Request_cgi->new;
+  }
+
+  return $self->{APACHE_HANDLER};
+}
+
+# initialize the session
+########################################################################
+sub init_session {
+########################################################################
+  my ( $self, $cookieless ) = @_;
+
+  my $session;
+
+  my $config = $self->config->get_module_config('UserSession');
+
+  if ($config) {
+    $config->{cookieless_session} = $cookieless;
+
+    require BLM::Startup::UserSession;
+
+    $session = BLM::Startup::UserSession->new( $self->context, $config );
+    $self->{SESSION} = $session;
+    $self->context->session($session);
+  }
+
+  return $session;
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->{DATA} . join $EMPTY, @args;
+}
+
+########################################################################
+sub log {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $message ) = @_;
+
+  return TagX::Log::log_message( undef, $message );
+}
+
+########################################################################
+sub redirect {
+########################################################################
+  my ( $self, @headers ) = @_;
+
+  $self->clear;
+
+  return $self->cgi->redirect(@headers);
+}
+
+########################################################################
+sub session {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  die 'No SESSION object available.'
+    if !exists $self->{SESSION};
+
+  if ( @args > 1 ) {
+    return $self->{SESSION}->{ $args[0] } = $args[1];
+  }
+  elsif ( @args == 1 ) {
+    if ( ref $args[0] && reftype( $args[0] ) eq 'ARRAY' ) {
+      return @{ $self->{SESSION} }{ @{ $args[0] } };
+    }
+    else {
+      return $self->{SESSION}->{ $args[0] };
+    }
+  }
+
+  return $self->{SESSION};
+}
+
+########################################################################
+sub attribute {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my $attribute = shift @args;
+
+  return sprintf '%s="%s"', $attribute, join $SEMICOLON, @args;
+}
+
+########################################################################
+sub style {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  return attribute( 'style', @args );
+}
+
+########################################################################
+sub element_start {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my $element = shift @args;
+  my $attributes;
+
+  if (@args) {
+    $attributes = $SPACE . join $SPACE, @args;
+  }
+
+  return sprintf '<%s%s>', $element, $attributes // $EMPTY;
+}
+
+########################################################################
+sub element_end {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  return sprintf '</%s>', $args[0];
+}
+
+########################################################################
+sub element {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my ( $element_start, $content ) = @args;
+
+  $content //= $EMPTY;
+
+  my $element;
+
+  if ( $element_start !~ /\A</xsm ) {
+    $element       = $element_start;
+    $element_start = element_start($element_start);
+  }
+  else {
+    $element = $element_start;
+    $element =~ s/\A<([[:lower:][:upper:]]+)\s+.*\z/$1/xsm;
+  }
+
+  return sprintf '%s%s%s', $element_start, $content, element_end($element);
+}
+
+# flush output, close session
+########################################################################
+sub DESTROY {
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->session ) {
+    $self->session->closeBLM;
+  }
+
+  return
+    if !exists $self->{DATA};
+
+  $self->handler->send_http_header;
+
+  print "\n", $self->{DATA};
+
+  return;
+}
+
+1;
+
+__END__
 
 =pod
 
 =head1 NAME
 
- Bedrock::CGI
+Bedrock::CGI - subroutines to help create CGIs
 
 =head1 SYNOPSIS
 
@@ -76,7 +437,7 @@ use Scalar::Util qw/reftype/;
     </body>
   </html> 
   });
-  
+
 =head1 DESCRIPTION
 
 C<Bedrock::CGI> facilitates the writing of perl CGI programs that
@@ -92,29 +453,70 @@ On exit, the class will flush the buffer and CGI headers to STDOUT.
 
 =head1 NOTES
 
-C<Bedrock::CGI> is does not behave identically to Bedrock (run as a)
+L<Bedrock::CGI> does not behave identically to Bedrock (run as a)
 CGI or Bedrock under mod_perl.  Since your request has not gone
 through the C<Bedrock::Apache::Bedrock::handler>, you're not getting
 the full benefits of the Bedrock environment upon instantiation of the
 C<Bedrock::CGI> object.  That is by design.
 
 You probably donE<039>t want your CGI to be as heavy weight as the
-full Bedrock environment, otherwise you might as well use Bedrock!  At
-some point we probably do want to create create a heavier weight
+full Bedrock environment, otherwise you might as well use Bedrock!
+
+I<TODO: Create create a heavier weight
 framework for writing CGI programs that better emulates the Bedrock
-envirorment.
+environment.>
 
 Typical use cases for using C<Bedrock::CGI> include applications where
 you may want to do something fairly trivial, but want access to
 BedrockE<039>s persitent session or you want to do some back end
-processing and might like to fork and return to the front end UI
-quickly.
+processing by doing a fork and return to the front end UI.
 
-=head1 METHODS
+=head1 IMPORTING VARIABLES AND METHODS
 
-=cut
+Bedrock does some nasty @INC path manipulation when initialing,
+ostensibly (I believe) so that the original author did not have to use
+fully qualified module names when 'use'ing deeply nested modules in
+Bedrock's object hierarchy.
 
-=pod
+For example, who wants to type:
+
+ use Bedrock::Text::TagX::TAG::WithBody::If;
+
+Instead of:
+
+ use TagX::TAG::WithBody::If;
+
+So
+
+ use CGI;
+
+or
+
+ use Config;
+
+...actually becomes
+
+ use Bedrock::CGI;
+ use Bedrock::Config;
+
+which may not be what you want. Hence we see C<Bedrock::BedrockConfig>
+and C<Bedrock::BedrockCGI> which contain the modules
+C<Bedrock::Config> and C<Bedrock::CGI>.
+
+This is a long way of saying you can't do this:
+
+ use Bedrock::CGI qw{:all};
+
+but you can do:
+
+ use Bedrock::BedrockCGI;
+ Bedrock::CGI->import(qw{:all});
+
+...but variables imported must be explicitly defined...
+
+ use vars qw{$BOLD $FONT_SIZE};
+
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
@@ -144,42 +546,6 @@ default: 0
 
 =back
 
-=cut
-
-sub new {
-  my $class   = shift;
-  my %options = @_;
-
-  my $self = bless {}, $class;
-
-  $self->handler->header_out( 
-			     'Content-type',
-			     $options{CONTENT_TYPE} || 'text/html'
-			    );
-
-  # retrieve the configuration object
-  $self->config;
-
-  # Bedrock logging
-  $options{LOGDIR} = $self->config->{LOGDIR}
-  unless $options{LOGDIR};
-
-  unless ( $options{LOG_FILE} ) {
-    my ( $name, $path, $ext ) = fileparse( $0, qr/\.(cgi|pl)/ );
-    $options{LOG_FILE} =
-    sprintf( "%s/%s%s.log", $options{LOGDIR}, $name, $ext );
-  }
-
-  TagX::Log::start_logger( LOG_FILE => $options{LOG_FILE} );
-
-  $self->context;
-
-  $self->init_session( $options{COOKIELESS} );
-
-  return $self;
-}
-
-=pod
 
 =head2 config
 
@@ -197,31 +563,12 @@ C<Bedrock::Config> object.
 
  $bedrock->config->get_module_config( 'UserSession' );
 
-=cut
-
-sub config {
-  my ( $self, $key ) = @_;
-
-  my $bh = new Bedrock::Handler( $self->handler );
-  my $config =  ( exists $self->{CONFIG} )  ? $self->{CONFIG}  : ( $self->{CONFIG} = $bh->get_config);
-
-  return ( $key ? $config->{$key} : $config );
-}
-
-=pod
 
 =head2 clear
 
 Remove all data from the output buffer.  If the output buffer is
 empty, no headers will be printed on exit.  
 
-=cut
-
-sub clear {
-  delete $_[0]->{DATA};
-}
-
-=pod
 
 =head2 cgi
 
@@ -229,13 +576,6 @@ sub clear {
 
 Returns a CGI object.  See C<perldoc CGI>.
 
-=cut
-
-sub cgi {
-  return $_[0]->context->cgi;
-}
-
-=pod
 
 =head2 context
 
@@ -243,22 +583,6 @@ sub cgi {
 
 Returns the Bedrock C<Bedrock::Context> object.
 
-=cut
-
-sub context {
-  my $self = shift;
-
-  unless (exists $self->{_ctx} ) {
-    $self->{_ctx} = Bedrock::Context->new( 
-					 APACHE_HANDLER => $self->handler,
-					 CONFIG         => $self->config
-					)
-  }
-
-  return $self->{_ctx};
-}
-
-=pod
 
 =head2 exec
 
@@ -285,102 +609,11 @@ with it.  Anything in the print buffer prior to the error is removed.
     $bedrock->print( $@ );
   }
 
-=cut
-
-sub exec {
-  my $self = shift;
-  my $snippet = shift;
-  my %args = @_;
-
-  my $snippet_fd = IO::Scalar->new( \$snippet );
-  my $output = "";
-
-  my $output_fd = IO::Scalar->new( \$output );
-
-  my $tx = Text::TagX->new( $snippet_fd, $output_fd );
-
-  map { $tx->param( $_ => $args{$_} ) } keys %args;
-
-  eval { $tx->output; };
-
-  if ($@) {
-    $self->clear;
-
-    my $err    = Htmlencode($@);
-    my $err_fd = IO::Scalar->new( \$err );
-
-    # offending snippet line
-    my $line_no = $1 if $err =~ /line\s*(\d+)/;
-
-    my @lines = <$err_fd>;
-    $err_fd->close;
-    my $line = 1;
-    my $fline;
-
-    for ( 1 .. $#lines - 1 ) {
-      $fline = sprintf( "%-3d", $line );
-      $lines[$line] =~ s/^/\[$fline\] /;
-      $lines[$line] =
-      '<span style="color:red;font-weight:800;">' . $lines[$line] . '</span>'
-      if $line_no == $line;
-      $line++;
-    }
-
-    for ( 0, $#lines ) {
-      $lines[$_] =
-        '<div style="font-size:125%;margin:10px;color:purple;font-weight:800;">'
-      . $lines[$_]
-      . '</div>';
-    }
-
-    $err = join( '', @lines );
-    $@ = "<pre>$err</pre>";
-  }
-
-  $tx->close;
-  $output_fd->close;
-
-  die $@ if $@;
-
-  return $output;
-}
-
-=pod
-
 =head2 handler
 
  handler()
 
 Returns an Apache request handler
-
-=cut
-
-sub handler {
-  return ( exists $_[0]->{APACHE_HANDLER} )  ? $_[0]->{APACHE_HANDLER}  : ( $_[0]->{APACHE_HANDLER} = new Apache::Request_cgi );
-}
-
-# initialize the session
-sub init_session {
-  my ($self, $cookieless) = @_;
-
-  my $session;
-
-  my $config = $self->config->get_module_config('UserSession');
-
-  if ( $config ) {
-    $config->{cookieless_session} = $cookieless;
-    
-    require BLM::Startup::UserSession;
-
-    $session = BLM::Startup::UserSession->new( $self->context, $config );
-    $self->{SESSION} = $session;
-    $self->context->session($session)
-  }
-
-  return $session;
-}
-
-=pod
 
 =head2 print
 
@@ -390,16 +623,6 @@ Add data to the output buffer.  The buffer will be flushed to STDOUT
 when the program exits unless the buffer is cleared using the
 C<clear()> method.
 
-=cut
-
-sub print {
-  my $self = shift;
-
-  $self->{DATA} .= shift;
-}
-
-=pod
-
 =head2 log
 
  log( message )
@@ -408,35 +631,14 @@ Write a message to the script's log file.  See the C<new()> method.
 Typically the log file should be located in the virtual hosts log
 directory alongside other Bedrock and site logs.
 
-=cut
-
-sub log {
-  my $self = shift;
-
-  TagX::Log::log_message( undef, $_[0] );
-}
-
-=pod
-
 =head2 redirect
 
- redirct(url);
+ redirect(url);
 
 Redirect browser.  Clears the buffer and then redirects. See C<perldoc
 CGI>
 
  $bedrock->redirect("http://www.google.com");
-
-=cut
-
-sub redirect {
-  my $self = shift;
-
-  $self->clear;
-  $self->cgi->redirect(@_);
-}
-
-=pod
 
 =head2 session
 
@@ -459,48 +661,6 @@ subsequent Bedrock pages using the C<$session> object.
  # set a session value
  $bedrock->session('site_prefs', $prefs);
 
-=cut
-
-sub session {
-  my $self = shift;
-
-  die "No SESSION object available."
-    unless exists $self->{SESSION};
-
-  if ( @_ > 1 ) {
-    return $self->{SESSION}->{ $_[0] } = $_[1];
-  }
-  elsif ( @_ == 1 ) {
-    if ( ref($_[0]) && reftype($_[0]) eq 'ARRAY' ) {
-      return @{ $self->{SESSION} }{ @{ $_[0] } };
-    }
-    else {
-      return $self->{SESSION}->{ $_[0] };
-    }
-  }
-  else {
-    return $self->{SESSION};
-  }
-}
-
-
-# flush output, close session
-sub DESTROY {
-  my $self = shift;
-
-  $self->session->closeBLM if $self->session;
-
-  return unless exists $self->{DATA};
-
-  $self->handler->send_http_header;
-
-  print "\n", $self->{DATA};
-}
-
-1;
-
-=pod
-
 =head1 AUTHOR
 
 Rob Lauer - <rlauer6@comcast.net>
@@ -510,54 +670,3 @@ Rob Lauer - <rlauer6@comcast.net>
 C<CGI.pm>
 
 =cut
-
-# Revision 1.14  2013/11/05 15:47:30  rlauer
-# - added more pod
-# - use getters/setters instead of reaching into Bedrock::Context object if possible
-# - in init_session() we now save the session object so CGIs can use the session() method
-#
-# Revision 1.13  2013/10/29 13:57:03  rlauer
-# - init_session() method now stores session object directly to SESSION hash key
-# - as per above new() does not need to store session object to hash
-#
-# Revision 1.12  2013/07/16 07:01:39  rlauer
-# - pod tweaks
-#
-# Revision 1.11  2013/05/14 18:58:28  rlauer
-# - in config() method we now use Bedrock::Handler object to retrieve a Bedrock::Config object
-# - moved the pod in-line, some tweaks
-#
-# Revision 1.10  2013/05/10 15:53:27  rlauer
-# - use Bedrock, use Text::URLEncode in order to avoid duplicate symbol warnings (encode, etc)
-#
-# Revision 1.9  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.8  2011/09/09 21:12:05  eutl420
-# - define dummy package
-#
-# Revision 1.7  2011/08/13 16:07:31  eutl420
-# - create some pod for exec() method
-# - trap errors from Text::TagX and create a nice formatted snippet listing
-#
-# Revision 1.6  2011/08/13 14:53:21  eutl420
-# - new exec() method that implements Bedrock templating so you can pass a Bedrock snippet and
-#   a hash of objects
-#
-# Revision 1.5  2011/08/10 21:43:47  eutl420
-# - allow the constructor to accept a new optional argument COOKIELESS that will indicate that sessions are cookieless
-#
-# Revision 1.4  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.3  2011/07/12 18:24:25  eutl420
-# - renamed the file from CGI.pm to BedrockCGI.pm to avoid name space collisions
-# - added pod, documented methods
-# - set the content-type from the options passed or to 'text/html' as default
-# - new methods clear(), cgi(), redirect()
-# - session() now accepts array ref to return multiple values
-# - in the destroy method, don't output anything if no data in buffer
-#
-# Revision 1.2  2011/07/11 22:04:37  eutl420
-# added log keyword
-#

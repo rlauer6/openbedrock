@@ -1,4 +1,3 @@
-#!@PERL@
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -28,6 +27,8 @@ BEGIN {
   Bedrock::Config->import(qw{is_hash is_array});
 }
 
+my $FILENAME;
+
 use parent qw{Exporter};
 
 use Bedrock::Array;
@@ -39,12 +40,18 @@ use CGI;
 use Carp;
 use Crypt::CBC;
 use Crypt::DES;
+use Cwd;
 use Data::Dumper;
 use File::Basename;
 use IO::File;
 use List::Util qw{ none pairs };
 use Scalar::Util qw{ reftype };
 use Text::URLEncode;
+
+our @EXPORT_OK = qw{ find_log4perl_conf };
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 use Readonly;
 
@@ -91,36 +98,7 @@ sub new {
     $self->response( $self->request );
   }
 
-  # At some point it was decided not to use the Apache error_log to
-  # log message, so where should Bedrock startup messages being going?
-  #
-  # This logger records all non-page events...primarily used for
-  # starting up Bedrock. Once a page is being processed, Bedrock uses
-  # the TagX::Log module.
-
-  #  eval {
-  #    Bedrock::Log::StartLogger(
-  #      LOGDIR    => $config->{'LOGDIR'},
-  #      LOGLEVEL  => $config->{'LOGLEVEL'},
-  #      LOGFORMAT => $config->{'LOGFORMAT'} || '%t [%p] [%a]: %L ',
-  #      LOGFILE   => $config->{'LOGFILE'}   || 'bedrock.log'
-  #    );
-  #  };
-
-  if ( !$self->logger ) {
-    require Log::Log4perl;
-
-    if ( !Log::Log4perl->initialized() ) {
-      use vars qw{$INFO};
-
-      eval {
-        Log::Log4perl->import(qw{:easy});
-        Log::Log4perl->easy_init( $self->{log_level} || $INFO );
-      };
-    }
-
-    $self->logger( Log::Log4perl->get_logger( ref $self ) );
-  }
+  $self->init_log4perl_logger();
 
   return $self;
 }
@@ -131,6 +109,57 @@ sub new {
   sub info  { return shift->logger->info(@_); }
   sub warn  { return shift->logger->warn(@_); }  ## no critic (ProhibitBuiltinHomonyms)
   sub error { return shift->logger->error(@_); }
+}
+
+########################################################################
+sub find_log4perl_conf {
+########################################################################
+
+  ## no critic (RequireInterpolationOfMetachars)
+  my @config_paths = (
+    getcwd(), $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
+    '@libdir@/bedrock/config',
+  );
+
+  foreach my $path ( grep { defined && -d $_ } @config_paths ) {
+    return "$path/log4perl.conf"
+      if -e "$path/log4perl.conf";
+  }
+
+  return $EMPTY;
+}
+
+########################################################################
+# smoke 'em if ya gottem?, otherwise all Bedrock messages will end up
+# in STDERR...ala Bedrock::Logger (check it out)
+########################################################################
+sub init_log4perl_logger {
+########################################################################
+  my ($self) = @_;
+
+  my $initialized = Log::Log4perl->initialized;
+
+  return $initialized
+    if $initialized;
+
+  my $log4perl_conf = find_log4perl_conf();
+
+  return $initialized
+    if !$log4perl_conf;
+
+  $initialized = Log::Log4perl->init($log4perl_conf);
+
+  if ($initialized) {
+    Log::Log4perl->get_logger->info(
+      sprintf 'Initialized Log::Log4perl from %s',
+      $log4perl_conf );
+  }
+  else {
+    print {*STDERR} sprintf 'Could not initialize Log::Log4perl from %s',
+      $log4perl_conf;
+  }
+
+  return $initialized;
 }
 
 ########################################################################
@@ -377,7 +406,7 @@ sub cgi_header_in {
 
   my $r = $self->apache_handler;
 
-  return ref $r =~ /Apache2/xsm ? %{ $r->headers_in } : $r->headers_in;
+  return ref($r) =~ /Apache2/xsm ? %{ $r->headers_in } : $r->headers_in;
 }
 
 ########################################################################
@@ -388,7 +417,7 @@ sub cgi_header_out {
   my $r = $self->apache_handler;
 
   # mod_perl 1/2
-  return ref $r =~ /Apache2/xsm
+  return ref($r) =~ /Apache2/xsm
     ? $r->err_headers_out->add(@headers)
     : $r->header_out(@headers);
 }
@@ -533,9 +562,9 @@ sub session {
 ########################################################################
 sub logger {
 ########################################################################
-  my (@args) = @_;
+  my ($self) = @_;
 
-  return _set( @args, 'logger' );
+  return $self->get_logger;
 }
 
 ########################################################################

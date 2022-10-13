@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -27,48 +25,53 @@ use strict;
 use warnings;
 
 use Carp;
-use Scalar::Util qw/reftype blessed/;
+use Scalar::Util qw{reftype blessed};
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use Bedrock::Constants qw{:chars :booleans};
 
-use TagX::Log;
+use English qw{-no_match_vars};
+use Log::Log4perl::Level;
 
-my $Verbose = 0;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
+use parent qw{Exporter};
+
+########################################################################
 sub new {
-  my $class   = shift;
-  my $term    = shift;
-  my $verbose = shift;
+########################################################################
+  my ( $class, $term, $verbose ) = @_;
 
-  bless \$term, $class;
-}
+  my $self = bless \$term, $class;
 
-sub verbose {
-  my $self = shift;
-
-  if (@_) {
-    $Verbose = shift;
+  if ($verbose) {
+    $self->get_logger->level($DEBUG);
   }
 
-  $Verbose;
+  return $self;
 }
 
+########################################################################
+sub verbose {
+########################################################################
+  my ($self) = @_;
+
+  return $self->get_logger->level eq $DEBUG;
+}
+
+########################################################################
 sub _find_in_context {
-  my $self = shift;
-  my $name = shift;
+########################################################################
+  my ( $self, $name, @context ) = @_;
 
   my $found;
 
-  for my $context (@_) {
+  for my $context (@context) {
     if ( exists $context->{$name} ) {
       $found = $context->{$name};
 
-      &log_message( undef, "$self: [$name] found as [$found] in [$context]" )
-	if $Verbose > 1;
+      $self->get_logger->debug(
+        "$self: [$name] found as [$found] in [$context]");
       last;
     }
   }
@@ -76,76 +79,72 @@ sub _find_in_context {
   return $found;
 }
 
+########################################################################
 sub resolve_var {
-  my $self = shift;
-  my $name = shift;
+########################################################################
+  my ( $self, $name, @args ) = @_;
 
-  &Carp::cluck("$self->resolve_var(@_) invoked") if $Verbose > 2;
-
-  &log_message( undef, "$self: begin eval with ($name, @_)" ) if $Verbose > 1;
+  $self->get_logger->debug("begin eval with ($name, @args)");
 
   if ( $name =~ s/^\*// ) {
-    $name = $self->resolve_var('$' . $name, @_); 
+    $name = $self->resolve_var( $DOLLAR_SIGN . $name, @args );
   }
   else {
     $name =~ s/^\$//;
   }
 
-  my @components = split /\./oi, $name;
+  my @components = split /[.]/oi, $name;
 
-  &log_message( undef, "$self: components of name are (@components)" )
-    if $Verbose > 1;
+  $self->get_logger->debug("components of name are (@components)");
 
   my $first = shift @components;
 
-  unless ($first) {
-    &log_message( undef,
-               "$self: First component [$first] of name [$name] is undefined." )
-      if $Verbose;
+  if ( !$first ) {
+    $self->get_logger->debug(
+      "$self: First component [$first] of name [$name] is undefined.");
 
     return undef;
   }
 
   if (@components) {
-    unless ( $first =~ /^\w+$/o ) {
-      &log_message( undef,
-              "$self: First component [$first] of name [$name] is not a word." )
-	if $Verbose;
+    if ( $first !~ /^\w+$/o ) {
+      $self->get_logger->debug(
+        "$self: First component [$first] of name [$name] is not a word.");
 
       return undef;
     }
   }
   else {
-    unless ( $first =~ /^(\w+|\@)$/o ) {
-      &log_message(
-        undef,
+    if ( $first !~ /^(\w+|\@)$/o ) {
+      $self->get_logger->debug(
         "$self: First component [$first] of name [$name] is not a word or `\@'."
-      ) if $Verbose;
+      );
 
       return undef;
     }
   }
 
-  my $found = $self->_find_in_context( $first, @_ );
+  my $found = $self->_find_in_context( $first, @args );
 
-  &log_message( undef, "$self: Value of [$first] is [$found]" ) if $Verbose;
-  return undef unless defined($found);
+  $self->get_logger->debug("$self: Value of [$first] is [$found]");
+  return undef
+    if !defined $found;
 
   for (@components) {
     if (/^\Q[\E(-?\d+)\Q]\E/oi) {
 
       # array element
       my $i = $1;
-      &log_message( undef, "$self: looking for array item with index [$i]" )
-	if $Verbose > 1;
+      $self->get_logger->debug(
+        "$self: looking for array item with index [$i]");
 
-      unless ( ref($found) && reftype($found) eq 'ARRAY' ) {
-        &log_message( undef, "$self: [$found] is not an array." ) if $Verbose;
+      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
+        $self->get_logger->debug("$self: [$found] is not an array.");
 
         return undef;
       }
 
-      &log_message( undef, "$self: [$found] is an array" ) if $Verbose > 1;
+      $self->get_logger->debug("$self: [$found] is an array");
       $found = $found->[$i];
       next;
     }
@@ -153,24 +152,24 @@ sub resolve_var {
     # simple scalar variable indexing supported $foo.[$i]
     elsif (/^\Q[\E\$([a-z_]\w*)\Q]\E/oi) {
 
-      my $i = $self->_find_in_context( $1, @_ );
+      my $i = $self->_find_in_context( $1, @args );
 
-      die "undefined index [\$" . "]\n"
-	unless defined $i;
+      die "undefined index\n"
+        if !defined $i;
 
-      die "invalid index value [", $i, "]\n"
-	unless $i =~ /^-?[\d]+$/;
-      
-      &log_message( undef, "$self: looking for array item with index [$i]" )
-	if $Verbose > 1;
+      die sprintf "invalid index value [%s]\n", $i
+        if $i !~ /^-?[\d]+$/xsm;
 
-      unless ( ref($found) && reftype($found) eq 'ARRAY' ) {
-        &log_message( undef, "$self: [$found] is not an array." ) if $Verbose;
+      $self->get_logger->debug(
+        "$self: looking for array item with index [$i]");
+
+      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
+        $self->get_logger->debug("$self: [$found] is not an array.");
 
         return undef;
       }
 
-      &log_message( undef, "$self: [$found] is an array" ) if $Verbose > 1;
+      $self->get_logger->debug("$self: [$found] is an array");
       $found = $found->[$i];
       next;
     }
@@ -179,12 +178,11 @@ sub resolve_var {
 
       # hash element
       my $key = $1;
-      &log_message( undef,
-                    "$self: looking for a hash component [$key] in [$found]" )
-	if $Verbose > 1;
+      $self->get_logger->debug(
+        "$self: looking for a hash component [$key] in [$found]");
 
       if ( ref($found) && reftype($found) eq 'HASH' ) {
-        &log_message( undef, "$self: [$found] is a hash" ) if $Verbose > 1;
+        $self->get_logger->debug("$self: [$found] is a hash");
         $found = $found->{$key};
       }
       else {
@@ -192,34 +190,43 @@ sub resolve_var {
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
         # Other cases are failures
-        unless ( ref($found) && reftype($found) eq 'ARRAY' && @{$found} == 1 ) {
+        if ( !ref($found) || reftype($found) ne 'ARRAY' || @{$found} != 1 ) {
 
           # perhaps one other case?  TIE'd SCALAR?
           if ( blessed($found) && $found->can('get') ) {
             $found = $found->get($key);
 
-            &log_message( undef, "$self: found component [$found]" )
-	      if $Verbose > 1;
+            $self->get_logger->debug("$self: found component [$found]");
 
             next;
           }
           else {
-            &log_message( undef, "$self: [$found] is an array containing more than one element\n" . ".. cannot access it as a hash" )
-	      if $Verbose;
+            $self->get_logger->debug(
+              sub {
+                sprintf
+                  '[%s] is an array containing more than one element...cannot access it as a hash',
+                  $found;
+              }
+            );
 
             return undef;
           }
         }
 
-        &log_message( undef,
-                      "$self: [$found] is an array with a single element\n"
-                      . ".. can access it as a hash"
-                    ) if $Verbose > 1;
+        $self->get_logger->debug(
+          sub {
+            sprintf
+              '[%s] is an array with a single element...can access it as a hash',
+              $found;
+          }
+        );
 
         $found = $found->[0]->{$key};
       }
 
-      &log_message( undef, "$self: found component [$found]" ) if $Verbose > 1;
+      $self->get_logger->debug( sub { sprintf 'found component [%s]', $found }
+      );
+
       next;
     }
 
@@ -230,45 +237,42 @@ sub resolve_var {
   return $found;
 }
 
+########################################################################
 sub var_exists {
-  my $self = shift;
-  my $name = shift;
+########################################################################
+  my ( $self, $name, @context_vars ) = @_;
 
   # Remove leading `$'
-  $name =~ s/^\$//;
+  $name =~ s/^\$//xsm;
 
   # Split name into components
-  my @components = split /\./oi, $name;
+  my @components = split /[.]/oixsm, $name;
 
-  &log_message( undef, "$self: components of name are (@components)" )
-    if $Verbose > 1;
+  $self->get_logger->debug("$self: components of name are (@components)");
 
   my $first = shift @components;
 
-  unless ($first) {
-    &log_message( undef,
-               "$self: First component [$first] of name [$name] is undefined." )
-      if $Verbose;
+  if ( !$first ) {
+    $self->get_logger->debug(
+      "$self: First component [$first] of name [$name] is undefined.");
 
     return undef;
   }
 
   if (@components) {
-    unless ( $first =~ /^\w+$/o ) {
-      &log_message( undef,
-              "$self: First component [$first] of name [$name] is not a word." )
-	if $Verbose;
+    if ( $first !~ /^\w+$/o ) {
+      $self->get_logger->debug(
+        "$self: First component [$first] of name [$name] is not a word.");
 
       return undef;
     }
   }
   else {
-    unless ( $first =~ /^(\w+|\@)$/o ) {
-      &log_message(
-		   undef,
-		   "$self: First component [$first] of name [$name] is not a word or `\@'."
-		  ) if $Verbose;
-      
+    if ( $first !~ /^(\w+|[\@])$/oxsm ) {
+      $self->get_logger->debug(
+        "$self: First component [$first] of name [$name] is not a word or `\@'."
+      );
+
       return undef;
     }
   }
@@ -276,68 +280,73 @@ sub var_exists {
   my $found;
   my $exists;
 
-  for my $context (@_) {
+  for my $context (@context_vars) {
     if ( exists $context->{$first} ) {
-      $found  = $context->{$first};
-      $exists = 1;
 
-      &log_message( undef, "$self: [$first] found as [$found] in [$context]" )
-	if $Verbose > 1;
+      $found  = $context->{$first};
+      $exists = $TRUE;
+
+      $self->get_logger->debug(
+        "$self: [$first] found as [$found] in [$context]");
 
       last;
     }
   }
 
-  &log_message( undef, "$self: Value of [$first] is [$found]" ) if $Verbose;
+  $self->get_logger->debug("$self: Value of [$first] is [$found]");
 
   # return 0 if found but undefined, undef if does not exist
   if ( $exists && !@components ) {
-    return defined $found ? 1 : 0;
+    return defined $found ? $TRUE : $FALSE;
   }
   elsif ( !@components ) {
     return undef;
   }
 
-  for (@components) {
+  for my $component (@components) {
 
     # return 0 unless defined( $found );
 
-    if (/^\Q[\E(\d+)\Q]\E/oi) {
+    if ( $component =~ /^\Q[\E(\d+)\Q]\E/oi ) {
 
       # array element
       my $i = $1;
-      &log_message( undef, "$self: looking for array item with index [$i]" )
-	if $Verbose > 1;
+      $self->get_logger->debug(
+        "$self: looking for array item with index [$i]");
 
-      unless ( ref($found) && reftype($found) eq 'ARRAY' ) {
-        &log_message( undef, "$self: [$found] is not an array." ) if $Verbose;
+      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
+        $self->get_logger->debug("$self: [$found] is not an array.");
 
         return undef;
       }
 
-      &log_message( undef, "$self: [$found] is an array" ) if $Verbose > 1;
+      $self->get_logger->debug("$self: [$found] is an array");
 
       $found = $found->[$i];
-      return 0 unless defined($found);
+
+      return $FALSE
+        if !defined $found;
 
       next;
     }
 
-    if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
+    if ( $component =~ /^{(.*?)}/oi or /^([^.]+)/oi ) {
 
       # hash element
       my $key = $1;
-      &log_message( undef,
-                    "$self: looking for a hash component [$key] in [$found]" )
-	if $Verbose > 1;
+      $self->get_logger->debug(
+        "$self: looking for a hash component [$key] in [$found]");
 
       if ( ref($found) && reftype($found) eq 'HASH' ) {
-        &log_message( undef, "$self: [$found] is a hash" ) if $Verbose > 1;
+        $self->get_logger->debug("$self: [$found] is a hash");
 
-        &log_message( undef, "$self: found [$key] in [$found]" )
-	  if exists $found->{$key} and $Verbose > 1;
+        if ( exists $found->{$key} ) {
+          $self->get_logger->debug("$self: found [$key] in [$found]");
+        }
 
-        return 0 unless exists $found->{$key};
+        return $FALSE
+          if !exists $found->{$key};
+
         $found = $found->{$key};
       }
       else {
@@ -345,23 +354,35 @@ sub var_exists {
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
         # Other cases are failures
-        unless ( ref($found) && reftype($found) eq 'ARRAY' && @{$found} == 1 ) {
-          &log_message(undef,  "$self: [$found] is an array containing more than one element\n" . ".. cannot access it as a hash")
-	    if $Verbose;
-	  
+        if ( !ref($found) || reftype($found) ne 'ARRAY' || @{$found} > 1 ) {
+          $self->get_logger->debug(
+            sub {
+              sprintf
+                '[%s] is an array containing more than one element...cannot access it as a hash',
+                $found;
+            }
+          );
+
           return undef;
         }
 
-        &log_message( undef,
-                      "$self: [$found] is an array with a single element\n"
-                      . ".. can access it as a hash"
-                    ) if $Verbose > 1;
+        $self->get_logger->debug(
+          sub {
+            sprintf
+              '[%s] is an array with a single element...can access it as a hash',
+              $found;
+          }
+        );
 
-        return 0 unless exists $found->[0]->{$key};
+        return $FALSE
+          if !exists $found->[0]->{$key};
+
         $found = $found->[0]->{$key};
       }
 
-      &log_message( undef, "$self: found component [$found]" ) if $Verbose > 1;
+      $self->get_logger->debug( sub { sprintf 'found component [%s]', $found }
+      );
+
       next;
     }
 
@@ -369,93 +390,7 @@ sub var_exists {
     return undef;
   }
 
-  1;
+  return $TRUE;
 }
 
 1;
-
-#
-# Revision 1.23  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.22  2011/09/05 16:51:34  eutl420
-# - support for indexing arrays using simple scalar variables added ($foo.[$i])
-#
-# Revision 1.21  2011/08/31 02:52:12  eutl420
-# - fixed --exists, and added support for --defined
-#
-# Revision 1.20  2011/08/22 23:31:26  eutl420
-# - allow negative indexing
-#
-# Revision 1.19  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.18  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.17  2010/11/29 15:57:53  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.16  2009/12/30 00:16:10  rlauer
-# support for accessing properties of tied scalars
-#
-# Revision 1.15  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.14  2001/02/14 15:35:49  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.13  2000/11/16 19:23:56  sridhar
-# Added method `var_exists'.
-#
-# Revision 1.12  2000/09/15 18:57:01  sridhar
-# When verbose level is >= 2, calling stack is printed using
-# Carp::cluck().
-#
-# Revision 1.11  2000/09/08 14:05:02  sridhar
-# 1. Using `isa()' and UNIVERSAL::isa() as recommended
-# 2. Logging messages for scripter at verbose level 1, and for bedrock
-# maintainer at levels greater that 1
-#
-# Revision 1.10  2000/06/07 18:00:21  sridhar
-# Removed support for $joe.[$i] due to problems
-#
-# Revision 1.9  2000/06/07 15:38:55  sridhar
-# *** empty log message ***
-#
-# Revision 1.8  2000/06/06 20:03:53  sridhar
-# 1. Replaced object checking using ref() with isa()
-# 2. Supports variable as an array index
-#
-# Revision 1.7  2000/05/31 15:36:42  sridhar
-# Yuck! Compilation error (using `+' to add strings instead of `.')
-#
-# Revision 1.6  2000/05/31 14:21:12  sridhar
-# Rigorous version numbering and usage
-#
-# Revision 1.5  2000/05/31 14:13:40  sridhar
-# Rigorous version numbering and usage
-#
-# Revision 1.4  2000/05/31 14:06:21  sridhar
-# Oops that contained some syntax errors
-#
-# Revision 1.3  2000/05/31 13:30:00  sridhar
-# 1. Added a method `verbose' for turning on message logging
-# 2. More verbose messages
-#
-# Revision 1.2  2000/04/19 20:05:31  sridhar
-# BUG fix for resolving $@
-#
-# Revision 1.1  2000/04/13 15:13:00  sridhar
-# Added TagX::Term -- class for handling terms -- component parts of an
-# expression.
-#
-#

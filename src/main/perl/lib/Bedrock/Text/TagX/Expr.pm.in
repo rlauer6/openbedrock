@@ -1,6 +1,4 @@
-#!@PERL@ -w
 
-#
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -25,143 +23,206 @@ package TagX::Expr;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
-use TagX::Log;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
 use Scalar::Util qw(looks_like_number reftype);
+use List::Util qw{ none any };
 use Data::Dumper;
-use Cwd;
+use English qw{-no_match_vars};
 
+use Cwd;
+use Bedrock::Constants qw{:chars :booleans};
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+
+########################################################################
 my $Verbose;
 
-my %STRING_CMP = ( '--gt'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a gt $b; },
-                   '--ge'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a ge $b; },
-                   '--lt'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a lt $b; },
-                   '--le'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a le $b; },
-                   '--eq'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a eq $b; },
-                   '--ne'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a ne $b; },
-                   '--and'  => sub { my ($a, $b) = map { $_ // "" } @_; return $a && $b; },
-                   '--or'   => sub { my ($a, $b) = map { $_ // "" } @_; return $a || $b; },
-                   '--file' => sub {
-		     my $file;
+our %STRING_CMP = (
+  '--gt' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a gt $b;
+  },
+  '--ge' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a ge $b;
+  },
+  '--lt' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a lt $b;
+  },
+  '--le' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a le $b;
+  },
+  '--eq' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a eq $b;
+  },
+  '--ne' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a ne $b;
+  },
+  '--and' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a && $b;
+  },
+  '--or' => sub {
+    my ( $a, $b ) = map { $_ // $EMPTY } @_;
+    return $a || $b;
+  },
+  '--file' => sub {
+    my $file;
 
-		     if ( $_[1] =~/^(\S*)/ ) {
-		       $file = $1;
-		     }
-		     else {
-		       die "no filename specified: usage: filename --file file-test-op\n";
-		     }
+    if ( $_[1] =~ /^(\S*)/ ) {
+      $file = $1;
+    }
+    else {
+      die "no filename specified: usage: filename --file file-test-op\n";
+    }
 
-		     for ( $file )  {
-		       /^\~([^~]*)$/  && do {
-			 $file = getcwd() . '/' . $1;
-			 last;
-		       };
-		       
-		       /^[^\/~]/ && do {
-			 $file = $ENV{DOCUMENT_ROOT} . '/' . $file;
-			 last;
-		       }; 
-		     }
-		     
-		     $_[0] =~/^-?([rwxoRWXOezsfdlpSbctugkTBMAC])/ && do {
-		       return eval "-$1 \"". $file ."\" ? 1 : 0"; 
-		     };
+    for ($file) {
+      /^\~([^~]*)$/ && do {
+        $file = getcwd() . '/' . $1;
+        last;
+      };
 
-		     die "invalid file test operation: '$_[0] $_[1]'";
-		   },
+      /^[^\/~]/ && do {
+        $file = $ENV{DOCUMENT_ROOT} . '/' . $file;
+        last;
+      };
+    }
 
-                   '--ref' => sub { return (ref($_[0]) =~ /$_[1]/) ? 1 : 0; },
+    $_[0] =~ /^-?([rwxoRWXOezsfdlpSbctugkTBMAC])/ && do {
+      return eval "-$1 \"" . $file . "\" ? 1 : 0";
+    };
 
-                   '--reftype' => sub { return (ref($_[0]) && reftype($_[0]) eq $_[1]) ? 1 : 0; },
+    die "invalid file test operation: '$_[0] $_[1]'";
+  },
 
-                   '--re' => sub {
-		     # $lhs may be undef
-		     my ($lhs, $rhs) = @_;
-                     $lhs = $lhs // "";
-                     
-		     my $re = ($rhs =~ /^qr/) ? eval $rhs : eval "qr/\$rhs/";
-		     
-		     # capture groups supported for perl >= 5.10
-		     if ( $^V ge 'v5.10') {
-		       return $lhs =~ /$re/ ? (1, eval { my %cg = %+; \%cg; }) : undef;
-		     }
-		     else {
-		       return $lhs =~ /$re/;
-		     }
-		   },
+  '--ref' => sub { return ( ref( $_[0] ) =~ /$_[1]/ ) ? 1 : 0; },
 
-		   '--exists' => sub {
-		     my ($lhs, $rhs) = @_;
-		     die "invalid argument for '--exists': HASH --exists KEY\n"
-		       unless ref($lhs) && reftype($lhs) eq 'HASH';
-		     
-		     return ( exists $lhs->{$rhs} ) ? 1 : 0;
-		   }
+  '--reftype' =>
+    sub { return ( ref( $_[0] ) && reftype( $_[0] ) eq $_[1] ) ? 1 : 0; },
 
-                 );
+  '--re' => sub {
+    # $lhs may be undef
+    my ( $lhs, $rhs ) = @_;
+    $lhs = $lhs // $EMPTY;
 
-my %NUMBER_CMP = (
-		  '--gt'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a >  $b; },
-		  '--ge'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a >= $b; },
-		  '--lt'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a <  $b; },
-		  '--le'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a <= $b; },
-		  '--eq'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a == $b; },
-		  '--ne'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a != $b; },
-		  '--and' => sub { my ($a, $b) = map { $_ || 0 } @_; return $a && $b; },
-		  '--or'  => sub { my ($a, $b) = map { $_ || 0 } @_; return $a || $b; },
-                 );
+    my $re = ( $rhs =~ /^qr/ ) ? eval $rhs : eval "qr/\$rhs/";
 
+    # capture groups supported for perl >= 5.10
+    if ( $^V ge 'v5.10' ) {
+      return $lhs =~ /$re/ ? ( 1, eval { my %cg = %+; \%cg; } ) : undef;
+    }
+    else {
+      return $lhs =~ /$re/;
+    }
+  },
+
+  '--exists' => sub {
+    my ( $lhs, $rhs ) = @_;
+
+    die "invalid argument for '--exists': HASH --exists KEY\n"
+      if !ref($lhs) || reftype($lhs) ne 'HASH';
+
+    return exists $lhs->{$rhs} ? $TRUE : $FALSE;
+  },
+
+);
+
+our %NUMBER_CMP = (
+  '--gt' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a > $b;
+  },
+  '--ge' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a >= $b;
+  },
+  '--lt' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a < $b;
+  },
+  '--le' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a <= $b;
+  },
+  '--eq' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a == $b;
+  },
+  '--ne' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a != $b;
+  },
+  '--and' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a && $b;
+  },
+  '--or' => sub {
+    my ( $a, $b ) = map { $_ || 0 } @_;
+    return $a || $b;
+  },
+);
+
+########################################################################
 sub new {
-  my $class = shift;
+########################################################################
+  my ( $class, @args ) = @_;
+
   my $self  = bless [], $class;
-  my $nargs = @_;
+  my $nargs = scalar @args;
 
   # Check whether unary or binary operator
-  my $op_or_lhs = shift @_;
+  my $op_or_lhs = shift @args;
 
-  if ( ref($op_or_lhs) ) {
-    my $op = shift @_;
+  if ( ref $op_or_lhs ) {
+    my $op = shift @args;
 
-    die "Invalid operator in expression\n" 
-      if ref($op);
+    die "Invalid operator in expression\n"
+      if ref $op;
 
-    if ( $op =~ /^[\+\-\.\*\/]$/ ) {
-      die "Insufficient number of arguments(",  $nargs - 1, ") to operator `$op'\n"
-	unless $nargs > 2;
+    if ( $op =~ /^[+\-.*\/]$/xsm ) {
+      die sprintf "Insufficient number of arguments(%s) to operator (%s)\n",
+        $nargs - 1, $op
+        if $nargs <= 2;
 
       @{$self} = ( $op_or_lhs, $op );
 
-      while ( @_ > 0 ) {
-        $op_or_lhs = shift @_;
+      while ( @args > 0 ) {
+        $op_or_lhs = shift @args;
 
         die "Operator `$op_or_lhs' is illegal here.\n"
-	  unless ref($op_or_lhs);
-	
+          if !ref $op_or_lhs;
+
         push @{$self}, $op_or_lhs;
 
-        if ( @_ > 1 ) {
-          $op_or_lhs = shift @_;
+        if ( @args > 1 ) {
+          $op_or_lhs = shift @args;
 
           die "Operator `$op_or_lhs' is illegal here: must be `+' only.\n"
-	    if ref($op_or_lhs)
-	      or ( $op_or_lhs ne '+' && $op_or_lhs ne '.' );
+            if ref $op_or_lhs
+            or ( $op_or_lhs ne $PLUS_SIGN && $op_or_lhs ne $DOT );
 
           push @{$self}, $op_or_lhs;
         }
       }
     }
-    elsif ( $op =~ /^--(eq|ne|gt|ge|lt|le|re|or|and|ref|file|exists)$/i ) {
-      die "Invalid number of arguments(", $nargs - 1, ") for operator `$op'.\n"
-	if $nargs != 3;
+    elsif ( any { $op eq $_ }
+      map {"--$_"} qw{eq ne gt ge lt le re or and ref file exists } ) {
+      die sprintf "Invalid number of arguments(%s) for operator (%s)\n",
+        $nargs - 1, $op
+        if $nargs != 3;
 
-      my $rhs = shift @_;
+      my $rhs = shift @args;
+
       die "Token `$rhs' is illegal here.\n"
-	unless ref($rhs);
+        if !ref $rhs;
 
       @{$self} = ( $op_or_lhs, $op, $rhs );
     }
@@ -172,14 +233,21 @@ sub new {
       die "Token `$op' is illegal here.\n";
     }
   }
-  elsif ( $op_or_lhs =~ /^--(not|defined|exists|array|scalar|hash|object)$/i ) {
-    die "Unary operator `$op_or_lhs' requires a single argument: found ", $nargs - 1, " instead.\n"
-      unless $nargs == 2;
+  elsif (
+    any { lc $op_or_lhs eq $_ }
+    map {"--$_"} qw{ not defined exists array scalar hash object}
+  ) {
 
-    my $rhs = shift @_;
+    die sprintf
+      "Unary operator %s requires a single argument: found %d instead\n",
+      $op_or_lhs, $nargs - 1
+      if $nargs != 2;
 
-    die "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n"
-      unless ref($rhs);
+    my $rhs = shift @args;
+
+    die
+      "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n"
+      if !ref $rhs;
 
     @{$self} = ( $op_or_lhs, $rhs );
   }
@@ -187,61 +255,63 @@ sub new {
     die "Token `$op_or_lhs' is not a valid unary operator.\n";
   }
 
-  $self;
+  return $self;
 }
 
+########################################################################
 sub verbose {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  if (@_) {
-    $Verbose = shift;
+  if (@args) {
+    $Verbose = $args[0];
   }
-  
-  $Verbose;
+
+  return $Verbose;
 }
 
-sub eval {
+########################################################################
+sub eval {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my $self = shift;
+
+  my $logger = $self->get_logger( ref $self );
+
   my ( $l, $op, $r );
 
   my @args = @{$self};
-  &log_message( undef, "$self: begin eval with @{[scalar(@args)]} items: (@args)" )
-    if $Verbose;
+
+  $logger->debug(" begin eval with @{[scalar(@args)]} items: (@args)");
 
   $l = shift @args;
 
-  if ( defined($l) && ref($l) ) {
-    &log_message( undef, "LHS [$l] is an object" ) 
-      if $Verbose;
+  if ( defined $l && ref $l ) {
+    $logger->debug("LHS [$l] is an object");
 
     if ( @args > 0 ) {
 
       # binary operators
       $op = shift @args;
-      die "Invalid operator `$op'.\n"
-	unless $op =~ /^(--(eq|ne|gt|ge|lt|le|or|and|reftype|ref|re|file|exists)|[\+\.\-\*\/])$/i;
 
-      $op = lc($1);
+      if ( $op
+        =~ /^(--(eq|ne|gt|ge|lt|le|or|and|reftype|ref|re|file|exists)|[\+\.\-\*\/])$/i
+      ) {
+        $op = lc $1;
+      }
+      else {
+        die "Invalid operator `$op'.\n";
+      }
 
-      &log_message( undef, "op is [$op]" ) 
-	if $Verbose;
+      $logger->debug("op is [$op]");
 
       if ( $op =~ /^[\+\-\.\*\/]$/ ) {
-        $l->verbose(1) 
-	  if $Verbose;
 
         my $str = $l->eval(@_);
-        $l->verbose(0) 
-	  if $Verbose;
 
-        &log_message( undef, "$l eval'ed to [$str]" ) 
-	  if $Verbose;
+        $logger->debug("$l eval'ed to [$str]");
 
         do {
           $l = shift @args;
-        
-	  $l->verbose(1) 
-	    if $Verbose;
 
           my $str2 = $l->eval(@_);
 
@@ -286,7 +356,7 @@ sub eval {
                 $str = $str - $str2;
               }
               else {
-                $str =~ s/${str2}$//g;    # "barfoobar" - "bar" = "barfoo" ?
+                $str =~ s/${str2}$//g;  # "barfoobar" - "bar" = "barfoo" ?
               }
               last;
             };
@@ -298,11 +368,9 @@ sub eval {
             };
           }
 
-          $l->verbose(0) 
-	    if $Verbose;
- 
-         $op = shift @args 
-	   if @args > 1;
+          if ( @args > 1 ) {
+            $op = shift @args;
+          }
 
         } while ( @args > 0 );
 
@@ -311,187 +379,126 @@ sub eval {
       else {
         $r = shift @args;
 
-        $l->verbose(1) 
-	  if $Verbose;
-
         my $lval = $l->eval(@_);
-
-        $l->verbose(0) 
-	  if $Verbose;
-
-        $r->verbose(1) 
-	  if $Verbose;
 
         my $rval = $r->eval(@_);
 
-        $r->verbose(0)
-	  if $Verbose;
-
-        &log_message( undef, "RHS: [$rval]" )
-	  if $Verbose;
+        $logger->debug("RHS: [$rval]");
 
         my $result;
 
         eval {
           if ( looks_like_number($lval) && looks_like_number($rval) ) {
-            &log_message( undef, "result: " . $NUMBER_CMP{$op}( $lval, $rval ) )
-	      if $Verbose;
-	    
+
+            $logger->debug( 'result: ' . $NUMBER_CMP{$op}( $lval, $rval ) );
+
             $result = $NUMBER_CMP{$op}( $lval, $rval );
           }
           else {
-            &log_message( undef, "result: " . $STRING_CMP{$op}( $lval, $rval ) )
-	      if $Verbose;
-	    
-	    my $cg;
-            ($result, $cg) = $STRING_CMP{$op}( $lval, $rval );
+            $logger->debug( 'result: ' . $STRING_CMP{$op}( $lval, $rval ) );
 
-	    # grab capture group from regular expression if op is --re
- 	    if ( $result && $op --eq '--re' ) {
-	      map { $_[0]->{$_} = $cg->{$_};} keys %{$cg};
-	    }
+            my $cg;
+            ( $result, $cg ) = $STRING_CMP{$op}( $lval, $rval );
+
+            # grab capture group from regular expression if op is --re
+            if ( $result && $op-- eq '--re' ) {
+              map { $_[0]->{$_} = $cg->{$_}; } keys %{$cg};
+            }
           }
         };
 
-        die "internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$@\n"
-	  if $@;
+        die
+          "internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$EVAL_ERROR\n"
+          if $EVAL_ERROR;
 
         return $result;
       }
     }
     else {
-      $l->verbose(1) 
-	if $Verbose;
 
       my $v = $l->eval(@_);
-
-      $l->verbose(0) 
-	if $Verbose;
 
       return $v;
     }
   }
-  elsif ( $l && $l =~ /^--(not|defined|array|scalar|object|hash|exists)$/oi ) {
-    &log_message( undef, "LHS [$l] is an operator" ) 
-      if $Verbose;
+  elsif ( $l && $l =~ /^--(not|defined|array|scalar|object|hash|exists)$/oi )
+  {
+    $logger->debug("LHS [$l] is an operator");
 
     # unary operators
-    $op = lc($l);
+    $op = lc $l;
     $l  = shift @args;
 
-    &log_message( undef, "Argument to unary(`op') operator is [$l]" )
-      if $Verbose;
+    $logger->debug("Argument to unary(`op') operator is [$l]");
 
     if ( $op eq '--exists' ) {
       die "Invalid argument for `--exists' operator.\n"
-	unless ref($l) eq 'TagX::Term::Var';
-
-      $l->verbose(1) 
-	if $Verbose;
+        if ref($l) ne 'TagX::Term::Var';
 
       my $exists = $l->exists(@_);
-
-      $l->verbose(0) 
-	if $Verbose;
 
       return $exists;
     }
     elsif ( $op eq '--defined' ) {
       die "Invalid argument for `--defined' operator.\n"
-	unless ref($l) eq 'TagX::Term::Var';
-
-      $l->verbose(1) 
-	if $Verbose;
+        if ref($l) ne 'TagX::Term::Var';
 
       my $defined = $l->defined(@_);
-
-      $l->verbose(0) 
-	if $Verbose;
 
       return $defined;
     }
     elsif ( $op eq '--scalar' ) {
       die "invalid argument for unary(`$op') operator.\n"
-	unless $l->can('eval');
-
-      $l->verbose(1) 
-	if $Verbose;
+        if !$l->can('eval');
 
       my $value = $l->eval(@_);
 
-      $l->verbose(0) 
-	if $Verbose;
+      $logger->debug(
+        "Argument to unary(`op') operator evaluated to [$value]");
 
-      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
-	if $Verbose;
-
-      return (ref($value) && reftype($value) eq 'SCALAR') ? 1 : 0;
+      return ( ref($value) && reftype($value) eq 'SCALAR' ) ? 1 : 0;
     }
     elsif ( $op eq '--array' ) {
       die "invalid argument for unary(`$op') operator.\n"
-	unless $l->can('eval');
-
-      $l->verbose(1) 
-	if $Verbose;
+        if !$l->can('eval');
 
       my $value = $l->eval(@_);
- 
-     $l->verbose(0) 
-       if $Verbose;
 
-      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
-	if $Verbose;
+      $logger->debug(
+        "Argument to unary(`op') operator evaluated to [$value]");
 
-      return (ref($value) && reftype($value) eq 'ARRAY') ? 1 : 0;
+      return ( ref($value) && reftype($value) eq 'ARRAY' ) ? 1 : 0;
     }
     elsif ( $op eq '--hash' ) {
       die "invalid argument for unary(`$op') operator.\n"
-	unless $l->can('eval');
-
-      $l->verbose(1) 
-	if $Verbose;
+        if !$l->can('eval');
 
       my $value = $l->eval(@_);
 
-      $l->verbose(0) 
-	if $Verbose;
+      $logger->debug(
+        "Argument to unary(`op') operator evaluated to [$value]");
 
-      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
-	if $Verbose;
-
-      return (ref($value) && reftype($value) eq 'HASH') ? 1 : 0;
+      return ( ref($value) && reftype($value) eq 'HASH' ) ? 1 : 0;
     }
     elsif ( $op eq '--object' ) {
       die "invalid argument for unary(`$op') operator.\n"
-	unless $l->can('eval');
-
-      $l->verbose(1) 
-	if $Verbose;
+        if !$l->can('eval');
 
       my $value = $l->eval(@_);
 
-      $l->verbose(0) 
-	if $Verbose;
+      $logger->debug(
+        "Argument to unary(`op') operator evaluated to [$value]");
 
-      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
-	if $Verbose;
-
-      return (ref($value)  && reftype($value) eq 'HASH') ? 1 : 0;
+      return ( ref($value) && reftype($value) eq 'HASH' ) ? 1 : 0;
     }
     else {
       die "invalid argument for unary(`$op') operator.\n"
-	unless $l->can('eval');
-
-      $l->verbose(1) 
-	if $Verbose;
+        if !$l->can('eval');
 
       my $value = $l->eval(@_);
 
-      $l->verbose(0)
-	if $Verbose;
-
-      &log_message( undef, "Argument to unary(`op') operator evaluated to [$value]" )
-	if $Verbose;
+      $logger->debug(
+        "Argument to unary(`op') operator evaluated to [$value]");
 
       return defined($value) && $value ? 0 : 1;
     }

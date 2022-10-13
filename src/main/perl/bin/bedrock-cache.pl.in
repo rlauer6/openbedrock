@@ -20,6 +20,134 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+use strict;
+use warnings;
+
+use vars
+  qw/$LIST $CREATE $DELETE $HELP $SIZE %BEDROCK_CONFIG_CACHE $RESET $FILE/;
+
+require IPC::Shareable;
+
+use Getopt::Long;
+use Carp;
+use Data::Dumper;
+use English qw{-no_match_vars};
+
+sub usage {
+  print <<'EOT';
+usage: bedrock-cache.pl options
+
+ Options:
+
+   --create = create the cache
+   --delete = delete the cache
+   --file   = filename of a file to cache (experimental)
+   --list   = list the contents of the cache
+   --help   = this
+   --reset  = clear the cache
+   --size   = size of the cache in MB (default: 256)
+ 
+EOT
+
+  return;
+}
+
+# +--------------------------+
+# | MAIN PROGRAM STARTS HERE |
+# +--------------------------+
+
+GetOptions(
+  'list',   \$LIST, 'create', \$CREATE, 'delete', \$DELETE,
+  'size',   \$SIZE, 'help|?', \$HELP,   'reset',  \$RESET,
+  'file=s', \$FILE,
+);
+
+if ($HELP) {
+  usage();
+
+  exit 0;
+}
+
+if ( !$SIZE ) {
+  $SIZE = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256;
+}
+
+if ($CREATE) {
+  $CREATE = 1;
+}
+
+# see if we have a cache defined
+eval {
+  {
+    local $SIG{__WARN__} = sub { };
+
+    ## no critic (ProhibitTies)
+    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
+      {
+      key     => 'BCFG',
+      create  => $CREATE,
+      destroy => 0,
+      size    => 1024 * ($SIZE)
+      };
+  }
+};
+
+if ( !$EVAL_ERROR ) {
+
+  $LIST && do {
+    print Dumper( \%BEDROCK_CONFIG_CACHE );
+    exit 0;
+  };
+
+  $DELETE && do {
+    ( tied %BEDROCK_CONFIG_CACHE )->remove;
+    exit 0;
+  };
+
+  $RESET && do {
+    %BEDROCK_CONFIG_CACHE = ();
+    exit 0;
+  };
+
+  $FILE && do {
+    croak "file ($FILE) not found or empty\n"
+      if !-e $FILE || !-s $FILE;
+    {
+      local $RS = undef;
+
+      open my $fh, '<', $FILE
+        or die "could not open $FILE";
+
+      my $file = <$fh>;
+      close $fh;
+
+      $BEDROCK_CONFIG_CACHE{$FILE} = $file;
+    }
+
+    exit 0;
+  };
+
+  $CREATE && do {
+    exit 0;
+  };
+
+  $SIZE && do {
+    print {*STDERR} "error: size only matters with --create\n";
+    exit 0;
+  };
+
+  usage();
+
+  exit 0;
+}
+else {
+  croak $EVAL_ERROR;
+}
+
+exit 0;
+
+__END__
+
 =pod
 
 =head1 NAME
@@ -103,116 +231,6 @@ Clears the cache, but does not delete it.
 Sets the size of the cache.  Only valid when used with the C<--create> option.
 
 =back
-
-=cut
-
-use strict;
-use vars qw/$LIST $CREATE $DELETE $HELP $SIZE %BEDROCK_CONFIG_CACHE $RESET $FILE/;
-
-require IPC::Shareable;
-
-use Getopt::Long;
-use Data::Dumper;
-
-sub usage {
-  print <<eom;
-usage: bedrock-cache.pl options
-
- Options:
-
-   --create = create the cache
-   --delete = delete the cache
-   --file   = filename of a file to cache (experimental)
-   --list   = list the contents of the cache
-   --help   = this
-   --reset  = clear the cache
-   --size   = size of the cache in MB (default: 256)
- 
-eom
-
-  return;
-}
-
-# +--------------------------+
-# | MAIN PROGRAM STARTS HERE |
-# +--------------------------+
-
-GetOptions(
-	   "list",   \$LIST,
-	   "create", \$CREATE,
-	   "delete", \$DELETE,
-	   "size",   \$SIZE,
-	   "help|?", \$HELP,
-	   "reset",  \$RESET,
-	   "file=s", \$FILE
-	  );
-
-if ( $HELP ) {
-  usage();
-  
-  exit -1;
-}
-
-$SIZE = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256 unless $SIZE;
-$CREATE = 1 if $CREATE;
-
-# see if we have a cache defined 
-eval {
-  { 
-    local $SIG{__WARN__} = sub {};
-    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', {
-						  key     => 'BCFG',
-						  create  => $CREATE,
-						  destroy => 0,
-						  size    => 1024 * ( $SIZE  )       
-						 };                                                                
-  }
-};
-
-unless ( $@ ) {
-  if ( $LIST ) {
-    print Dumper(\%BEDROCK_CONFIG_CACHE);
-  }
-  elsif ( $DELETE ) {
-    (tied %BEDROCK_CONFIG_CACHE)->remove;
-  }
-  elsif ( $RESET ) {
-    %BEDROCK_CONFIG_CACHE = ();
-  }
-  elsif ( $FILE ) {
-    die "file ($FILE) not found\n" unless -s $FILE;
-    {
-      local $/;
-      open FILE, "<$FILE";
-
-      my $file = <FILE>;
-      close FILE;
-      $BEDROCK_CONFIG_CACHE{$FILE} = $file;
-    }
-  }
-  elsif ( $CREATE ) {
-    # created
-  }
-  elsif ( $SIZE ) {
-    print STDERR "error: size only matters with --create\n";
-  }
-  else {
-    usage();
-  }
-}
-else {
-  print STDERR $@;
-
-  exit -1;
-}
-
-exit 0;
-
-# Revision 1.1  2013/05/09 21:18:00  rlauer
-# - added new utility to manage configuration cache
-#
-
-=pod
 
 =head1 AUTHOR
 

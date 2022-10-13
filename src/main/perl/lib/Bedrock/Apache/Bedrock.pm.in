@@ -46,8 +46,10 @@ use APR::Const -compile => qw(:error SUCCESS);
 # Define the following mod_perl constants since we could be using
 # this module both as a mod_perl module and in a CGI
 #
+
 use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
-  NOT_FOUND    => Apache2::Const::NOT_FOUND,
+  NOT_FOUND => Apache2::Const::NOT_FOUND,
+
   SERVER_ERROR => Apache2::Const::SERVER_ERROR,
   FORBIDDEN    => Apache2::Const::FORBIDDEN,
   OK           => Apache2::Const::OK,
@@ -60,6 +62,7 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
 
 use Bedrock;
 use Bedrock::BedrockConfig;
+use Bedrock::Constants qw{:chars};
 use Bedrock::Context;
 use Bedrock::Dump;
 use Bedrock::Handler;
@@ -80,117 +83,13 @@ use File::Temp;
 use IO::File;
 use IO::Scalar;
 use List::Util qw{ any };
-use Log::Log4perl;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
 use Symbol;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
-
-{
-  my $logger;
-
-  if ( !Log::Log4perl->initialized ) {
-
-    my @config_paths = (  ## no critic (RequireInterpolationOfMetachars)
-      $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
-      '@libdir@/bedrock/config',
-    );
-
-    # try to initialize Log::Log4perl
-    foreach my $path ( grep { defined && -d $_ } @config_paths ) {
-      my $conf = "$path/log4perl.conf";
-
-      if ( -e $conf ) {
-
-        $logger = eval {
-          Log::Log4perl->init($conf);
-          return Log::Log4perl->get_logger(__PACKAGE__);
-        };
-
-      }
-
-      last if $EVAL_ERROR || $logger;
-    } ## end foreach my $path ( $ENV{CONFIG_PATH...})
-
-    # if we tried to create a logger but failed, or no logger defined,
-    # then create a default logger.
-    if ( !$logger && $EVAL_ERROR ) {
-      print {*STDERR} "ERROR: [$EVAL_ERROR]\n";
-      print {*STDERR} "WARNING: creating a default logger\n";
-
-      my $log4perl_conf = <<'EOT';
-log4perl.rootLogger=INFO, Bedrock
-log4perl.appender.Bedrock=Log::Log4perl::Appender::Screen
-log4perl.appender.Bedrock.layout=PatternLayout
-log4perl.appender.Bedrock.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
-EOT
-      Log::Log4perl->init( \$log4perl_conf );
-    }
-  }
-  else {
-    # someone may have logging enabled?
-    $logger = Log::Log4perl->get_logger(__PACKAGE__);
-  }
-
-}
-
-########################################################################
-sub require_module {
-########################################################################
-  my ($modfile) = @_;
-
-  $modfile =~ s/::/\//xsmg;
-
-  if ( $modfile !~ /[.]pm\z/xsm ) {
-    $modfile =~ s/\z/\.pm/xsm;
-  }
-
-  return require $modfile;
-}
-
-########################################################################
-sub bind_module {
-########################################################################
-  my (%args) = @_;
-
-  require_module $args{module};
-
-  my $obj;
-
-  ## no critic (Miscellanea::ProhibitTies)
-  if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
-    $obj = bless {}, $args{module};
-    tie %{$obj}, $args{module}, $args{context}, $args{config};
-  }
-  elsif ( $args{type} eq 'array' ) {
-    $obj = bless [], $args{module};
-    tie @{$obj}, $args{module}, $args{context}, $args{config};
-  }
-  elsif ( $args{type} eq 'handle' ) {
-    $obj = bless gensym, $args{module};
-    tie *{$obj}, $args{module}, $args{context}, $args{config};
-  }
-
-  my $func = tied %{$obj};
-
-  $func->can('init_plugin')
-    && $func->init_plugin( $args{context}, $args{config} );
-
-  return $obj;
-}
-
-########################################################################
-sub is_bedrock_shell {
-########################################################################
-  my ($ref) = @_;
-
-  return Scalar::Util::blessed($ref) eq 'Apache::Request_shell';
-}
-
-########################################################################
-sub is_mod_perl {
-########################################################################
-  return defined $ENV{MOD_PERL};
-}
 
 # +---------------------+
 # | HANDLER STARTS HERE |
@@ -204,6 +103,7 @@ sub handler {
   # start HiRes timer
   my $t0;
 
+  # Apache's LogLevel, not Bedrock's
   if ( get_loglevel($r) eq 'debug' ) {
     $t0 = Benchmark->new;
   }
@@ -322,8 +222,10 @@ sub handler {
       $app_dir, $OS_ERROR );
   }
 
-  my $ctx
-    = Bedrock::Context->new( 'APACHE_HANDLER' => $r, 'CONFIG' => $conf );
+  my $ctx = Bedrock::Context->new(
+    'APACHE_HANDLER' => $r,
+    'CONFIG'         => $conf
+  );
 
   my $tx = Text::TagX->new( $file, $ctx );
 
@@ -335,7 +237,7 @@ sub handler {
   my $page_log;
   my $html_logdir = $conf->{HTML_LOGDIR} || '/tmp';
 
-  # if we have HTML_LOGFILE, then we log each page separately
+  # if we do not have HTML_LOGFILE, then we log each page separately
   if ( $conf->{HTML_LOGFILE} ) {
     $page_log = $conf->{HTML_LOGFILE};
   }
@@ -702,6 +604,65 @@ EOM
   }
 
   return OK;
+}
+
+########################################################################
+sub require_module {
+########################################################################
+  my ($modfile) = @_;
+
+  $modfile =~ s/::/\//xsmg;
+
+  if ( $modfile !~ /[.]pm\z/xsm ) {
+    $modfile =~ s/\z/\.pm/xsm;
+  }
+
+  return require $modfile;
+}
+
+########################################################################
+sub bind_module {
+########################################################################
+  my (%args) = @_;
+
+  require_module $args{module};
+
+  my $obj;
+
+  ## no critic (Miscellanea::ProhibitTies)
+  if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
+    $obj = bless {}, $args{module};
+    tie %{$obj}, $args{module}, $args{context}, $args{config};
+  }
+  elsif ( $args{type} eq 'array' ) {
+    $obj = bless [], $args{module};
+    tie @{$obj}, $args{module}, $args{context}, $args{config};
+  }
+  elsif ( $args{type} eq 'handle' ) {
+    $obj = bless gensym, $args{module};
+    tie *{$obj}, $args{module}, $args{context}, $args{config};
+  }
+
+  my $func = tied %{$obj};
+
+  $func->can('init_plugin')
+    && $func->init_plugin( $args{context}, $args{config} );
+
+  return $obj;
+}
+
+########################################################################
+sub is_bedrock_shell {
+########################################################################
+  my ($ref) = @_;
+
+  return Scalar::Util::blessed($ref) eq 'Apache::Request_shell';
+}
+
+########################################################################
+sub is_mod_perl {
+########################################################################
+  return defined $ENV{MOD_PERL};
 }
 
 1;
