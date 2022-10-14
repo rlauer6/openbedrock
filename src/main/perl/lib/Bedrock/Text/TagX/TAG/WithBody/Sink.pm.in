@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -20,7 +18,6 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-
 package TagX::TAG::WithBody::Sink;
 
 use strict;
@@ -30,35 +27,33 @@ use Bedrock::Hash;
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
 
-use Log::Log4perl qw/:easy/;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
+use parent qw (TagX::TAG::WithBody);
 
-use TagX::TAG::WithBody;
-
-@ISA = qw (TagX::TAG::WithBody);
-
+########################################################################
 sub closure {
-  '/sink';
+########################################################################
+  return '/sink';
 }
 
+########################################################################
 sub evolve {
+########################################################################
   my $this = shift;
 
   if ( ref($this) eq 'HASH' ) {
-    foreach ( keys %$this ) {
+    foreach ( keys %{$this} ) {
       $this->{$_} = evolve( $this->{$_} );
     }
-    return Bedrock::Hash->new(%$this);
+    return Bedrock::Hash->new( %{$this} );
   }
   elsif ( ref($this) eq 'ARRAY' ) {
-    for ( my $idx = 0 ; $idx < @$this ; $idx++ ) {
+    for my $idx ( 0 .. $#{$this} ) {
       $this->[$idx] = evolve( $this->[$idx] );
     }
-    return Bedrock::Array->new(@$this);
+    return Bedrock::Array->new( @{$this} );
   }
   else {
     return $this;
@@ -74,15 +69,15 @@ sub define_options {
     'json'         => undef,
     'serializer=s' => undef,
     'xml'          => undef,
-    'yaml'         => undef
+    'yaml'         => undef,
   );
-} ## end sub define_options
+}
 
 sub finalize {
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-  
+
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
@@ -102,7 +97,7 @@ sub finalize {
   # When the lexical variable goes out of scope, the frame is destructed,
   # and since we didn't invoke $frame->end_frame, the contents of the frame
   # are discarded.
-  # 
+  #
   # Output is sent to the current frame, so that creating a new frame here
   # and then 'finalizing' below, has the effect of writing the contents of the <sink>
   # tag to a frame we are going to throw away (because of above).  Before leaving the scope
@@ -110,90 +105,98 @@ sub finalize {
   #
   my $frame = $tx->out_handle->create_frame;
 
-  DEBUG 'Entering <SINK> block ..';
-  
+  $self->get_logger->debug('Entering <SINK> block ..');
+
   $self->SUPER::finalize( $tx, @context );
-  
-  DEBUG 'Exited <SINK> block';
+
+  $self->get_logger->debug('Exited <SINK> block');
 
   my $data = $tx->out_handle->frame_data;
 
-  if ( $options{'htmlencode'} ) {
-    $data =~ s/\x26/\&amp;/g;
-    $data =~ s/\x3c/\&lt;/g;
-    $data =~ s/\x3e/\&gt;/g;
-    
-    TRACE sub {
-      "HTMLEncoded to <"
-        . $data
-        . ">";
-    };
+  if ( $options{'htmlencode'} ) {  ## no critic (ProhibitCascadingIfElse)
+    $data =~ s/\x26/\&amp;/xsmg;
+    $data =~ s/\x3c/\&lt;/xsmg;
+    $data =~ s/\x3e/\&gt;/xsmg;
+
+    $self->get_logger->trace(
+      sub { return sprintf 'HTMLEncoded to <%s>', $data } );
   }
   elsif ( $options{'htmldecode'} ) {
-    $data =~ s/\x26amp;/\x26/g;
-    $data =~ s/\x26lt;/\x3c/g;
-    $data =~ s/\x26gt;/\x3e/g;
-    
-    TRACE sub {
-      "HTMLDecoded to <"
-        . $data
-        . ">";
-    };
+    $data =~ s/\x26amp;/\x26/xsmg;
+    $data =~ s/\x26lt;/\x3c/xsmg;
+    $data =~ s/\x26gt;/\x3e/xsmg;
+
+    $self->get_logger->trace(
+      sub { return sprintf 'HTMLDecoded to <%s>', $data } );
 
   }
   elsif ( $options{'json'} ) {
-    my $handler = $self->io_handler( $tx, 'JSON');
-    
-    $data = $handler->deserialize($data, { @argv });
+    my $handler = $self->io_handler( $tx, 'JSON' );
+
+    $data = $handler->deserialize( $data, {@argv} );
   }
   elsif ( $options{'xml'} ) {
     # see if --xml in context of a file handle output
-    die "Use the --xml option of <sink> to deserialize XML to a Bedrock object.  If you wanted to write XML use <var --xml>."
+    die
+      "Use the --xml option of <sink> to deserialize XML to a Bedrock object.  If you wanted to write XML use <var --xml>.\n"
       if @argv == 1;
 
-    my $handler = $self->io_handler( $tx, 'XML');
-    $data = $handler->deserialize($data, { @argv });
+    my $handler = $self->io_handler( $tx, 'XML' );
+    $data = $handler->deserialize( $data, {@argv} );
   }
   elsif ( $options{'bedrock-xml'} ) {
     # see if --bedrock-xml in context of a file handle output
-    die "Use the --xml option of <sink> to deserialize Bedrock XML to a Bedrock object.  If you wanted to write XML use <var --xml>."
+    die
+      "Use the --xml option of <sink> to deserialize Bedrock XML to a Bedrock object.  If you wanted to write XML use <var --xml>.\n"
       if @argv == 1;
 
-    my $handler = $self->io_handler( $tx, 'BedrockXML');
-    $data = $handler->deserialize($data, { @argv });
+    my $handler = $self->io_handler( $tx, 'BedrockXML' );
+    $data = $handler->deserialize( $data, {@argv} );
   }
   elsif ( $options{'yaml'} ) {
     # see if --yaml in context of a file handle output
-    die "Use the --yaml option of <sink> to deserialize YAML to a Bedrock object.  If you wanted to write YAML use <var --yaml>."
+    die
+      "Use the --yaml option of <sink> to deserialize YAML to a Bedrock object.  If you wanted to write YAML use <var --yaml>.\n"
       if @argv == 1;
 
-    my $handler = $self->io_handler( $tx, 'YAML');
-    $data = $handler->deserialize($data, { @argv });
+    my $handler = $self->io_handler( $tx, 'YAML' );
+    $data = $handler->deserialize( $data, {@argv} );
   }
   elsif ( $options{'serializer'} ) {
-    my $handler = $self->io_handler( $tx, $options{serializer});
-    $data = $handler->deserialize($data, { @argv });
+    my $handler = $self->io_handler( $tx, $options{serializer} );
+    $data = $handler->deserialize( $data, {@argv} );
   }
 
   # <sink:foo $fd> probably does not make any sense, so we EITHER
   # store the data to a variable or write the data to a handle
   if ( exists $options{'define-var'} ) {
-    DEBUG sub {
-      "Assigning contents of <SINK> to "
-        . $options{'define-var'};
-    };
+    $self->get_logger->debug(
+      sub {
+        sprintf "Assigning contents of <SINK> to %s\n",
+          $options{'define-var'};
+      }
+    );
 
     $tx->param( $options{'define-var'} => $data );
   }
-  elsif ( @argv == 1) {
+  elsif ( @argv == 1 ) {
     my $fd = shift @argv;
-    select((select($fd), $|=1)[0]); # make handle unbuffered
-    print $fd $data;
+
+    $fd->autoflush;
+
+    print {$fd} $data;
   }
 
   # at this point, since we didn't end the frame, the contents should be
   # discarded as soon as we leave here.
+  return;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -202,7 +205,7 @@ sub finalize {
 =head1 PURPOSE
 
 Capture the block of text encapsulate by the C<E<lt>sinkE<gt>/E<lt>/sinkE<gt>>
-construction.
+construction, possibly passing to handle.
 
 =head1 SYNTAX
 
@@ -214,7 +217,6 @@ construction.
 The C<E<lt>sinkE<gt>> tag is used to capture the result of the Bedrock page
 parser and redirect it to either a Bedrock object or a handle that has
 been previously opened.
-
 
 =head1 OPTIONS
 
@@ -318,5 +320,3 @@ Create a Bedrock object usin XML notation:
 C<E<lt>nullE<gt>>
 
 =cut
-
-1;

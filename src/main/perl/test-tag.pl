@@ -140,6 +140,32 @@ Of course, feel free to flex your regexp prowess!!
     result: /^\s*1\s*$/s
     op: like
 
+=head3 Regular Expressions
+
+Remember that Bedrock is a templating tool and preserves all of your
+whitespace including newlines. Remember to include the new line
+character in your regular expresssions if you have new lines in your
+tests.
+
+Note in the test below that we have multiple tests of the output, each
+on a new line.
+
+  name: open w/csv filter
+  comment: create a file, write contents, close file, read contents
+  test: |-
+    <sink><array:foo a b c >
+    <open:fd --filter=csv --mode="w" "foo.csv">
+    <null $fd.print($foo)>
+    <null $fd.close()>
+    <open:fd --filter=csv --mode="r" "foo.csv">
+    <null:boo  $fd.getline()></sink>
+    <if --array $boo>ok</if>
+    <if $boo.[0] --eq 'a'>ok<else>not an "a"</if>
+    <if $boo.[1] --eq 'b'>ok<else>not a "b"</if>
+    <if $boo.[2] --eq 'c'>ok<else>not a "c"</if>
+  result: /ok\nok\nok\nok/
+  op: like
+
 =head1 AUTHOR
 
 Rob Lauer - rclauer@gmail.com

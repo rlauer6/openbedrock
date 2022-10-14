@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,43 +23,42 @@ package TagX::TAG::NoBody::Open;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
 use TagX::TAG::NoBody;
 
-use English qw/-no_match_vars/;
+use Bedrock::Constants qw{:chars};
+use English qw{-no_match_vars};
 use IO::File;
-use Log::Log4perl qw/:easy/;
 use Symbol;
 use Text::CSV_XS;
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw(Exporter TagX::TAG::NoBody);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 sub define_options {
   return (
-    'define-var=s' => "_",
+    'define-var=s' => $UNDERSCORE,
     'mode=s'       => undef,
     'file=s'       => undef,
     'filter=s'     => undef,
-    'slurp'        => undef
+    'slurp'        => undef,
   );
 
 } ## end sub define_options
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-  
+
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
-  my $name = $options{'define-var'} || '_';
+  my $name     = $options{'define-var'} || $UNDERSCORE;
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   if ( $tag_opts->{name} ) {
@@ -69,8 +66,9 @@ sub finalize {
     $name = $tag_opts->{name};
   }
 
-  die "Specify the file to open using `--file' option or as argument, not both.\n"
-    if exists $options{'file'} and @argv;
+  die
+    "Specify the file to open using `--file' option or as argument, not both.\n"
+    if exists $options{'file'} && @argv;
 
   my $file;
 
@@ -81,13 +79,14 @@ sub finalize {
     $file = shift @argv;
   }
 
-  die "File not specified.\n" unless length($file);
+  die "File not specified.\n"
+    if !length $file;
 
-  if  ( ! length $name ) {
-    die "No file handle specified. Use --define-var to assign a file handle name.";
-  }
+  die
+    "No file handle specified. Use --define-var to assign a file handle name.\n"
+    if !length $name;
 
-  my $mode = $options{'mode'} || "r";
+  my $mode = $options{'mode'} || 'r';
 
   my $fh;
 
@@ -95,40 +94,48 @@ sub finalize {
     die "--filter requires a filter name\n"
       if !$options{filter};
 
-    my $filter = "BLM/Filter/" . $options{filter} . '.pm';
+    my $filter = sprintf 'BLM/Filter/%s.pm', $options{filter};
 
-    eval {
-      require $filter;
-    };
-    
-    die "unknown or malformed filter: ". $options{filter} . "\n"
+    my $class = sprintf 'BLM::Filter::%s', $options{filter};
+
+    eval { require $filter; };
+
+    die sprintf "unknown or malformed filter: %s\n", $options{filter}
       if $EVAL_ERROR;
 
     $fh = gensym;
-    tie *{$fh},$filter,  $file, $mode, @argv;
-    bless $fh, $filter;
+
+    tie *{$fh}, $class, $file, $mode, @argv;  ## no critic (ProhibitTies)
+
+    bless $fh, $class;
   }
   else {
     $fh = IO::File->new( $file, $mode );
   }
 
-  die "Could not open file $file with mode = $mode" 
+  die sprintf "Could not open file %s with mode = %s\n", $file, $mode
     if !$fh;
 
   # slurp file?
   if ( $options{slurp} ) {
     {
-      local $/;
-      
+      local $RS = undef;
+
       $tx->{'VARS'}->{$name} = <$fh>;
     }
-    
+
     $fh->close;
   }
   else {
     $tx->{'VARS'}->{$name} = $fh;
   }
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -156,7 +163,7 @@ typically done when reading a file as shown in the example.>
 
 I<The C<E<lt>whileE<gt>> tag will reset C<$_> to the value of the term
 in quotes when it is evaluated each time through the loop. Caveat
-Emptor>.
+ Emptor>.
 
 =head1 OPTIONS
 
@@ -171,14 +178,22 @@ Emptor>.
 
 Name of the object created.
 
+=item --filter
+
+Experimental: Name of a filter that can read files. Filters available are:
+
+ cvs   => read/write a .csv file
+ xls   => read each row of a spreadsheet
+ crypt => read/write an encrypted file
+
 =item --mode
 
 The open mode of the file.  Can be one of:
 
-     "r" -> read
-     "w" -> write/clobber
-     "a" -> append
-     "r+" -> reading/writing
+ "r"  -> read
+ "w"  -> write/clobber
+ "a"  -> append
+ "r+" -> reading/writing
 
 =item --file
 
@@ -224,5 +239,3 @@ that you can invoke on an open file handle.
 C<IO::Handle>
 
 =cut
-
-1;

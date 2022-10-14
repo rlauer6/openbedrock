@@ -265,6 +265,7 @@ perl5blmlib_DATA = \
     BLM/Date.pm \
     BLM/DBHandler.pm \
     BLM/FileIO.pm \
+    BLM/Filter.pm \
     BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
     BLM/Recycle.pm \
