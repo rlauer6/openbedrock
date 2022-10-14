@@ -17,10 +17,10 @@ Readonly my $FALSE => 0;
 # Purpose    : connect to MySQL server
 # Parameters : options : hash or hashref, defaults using DBI_
 #                        parameters in environment
-#                      : user     => default: root
-#                      : password =>
-#                      : host     => default: locahost
-#                      : database =>
+#                      : user
+#                      : password
+#                      : host
+#                      : database
 #                      : mysql_*  => additonal connect options
 #                      : ...      => additonal options to DBI->connect
 # Returns    : open database handle
@@ -34,8 +34,8 @@ sub connect_db {
 
   if ( !@argv ) {
     %connect_options = (
-      host         => $ENV{DBI_HOST} || 'localhost',
-      database     => $ENV{DBI_DB}   || q{},
+      host         => $ENV{DBI_HOST},
+      database     => $ENV{DBI_DB} || q{},
       user         => $ENV{DBI_USER},
       password     => $ENV{DBI_PASS},
       mysql_socket => $ENV{DBI_SOCKET} || q{},

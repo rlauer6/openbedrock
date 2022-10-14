@@ -358,7 +358,18 @@ clean-local:
 	rm -rf *.tdy
 
 test: Test/Bedrock.pm
-	$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t
+	echo "$$TEST"; \
+	if test -z "$$TEST"; then \
+	  TEST="t"; \
+	else \
+	  TEST="t/*-$$TEST.t"; \
+	fi; \
+	if test -e /tmp/mysqld/mysqld.sock; then \
+	  DBI_SOCKET=/tmp/mysqld/mysqld.sock; \
+	  DBI_PASS=bedrock; \
+	fi; \
+	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" \
+	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $$TEST
 
 prove.sh: Test/Bedrock.pm
 	echo "$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh

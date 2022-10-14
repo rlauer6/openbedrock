@@ -18,10 +18,12 @@ BEDROCK_TESTS = \
     t/09-sink.yml \
     t/10-try.yml \
     t/11-snippet.yml \
-    t/12-sqlconnect.yml \
-    t/13-sql.yml \
     t/14-flush.yml \
     t/15-include.yml
+
+BEDROCK_SQL_TESTS = \
+    t/12-sqlconnect.yml \
+    t/13-sql.yml
 
 BEDROCK_TEST_HARNESS = \
     lib/Test/Bedrock.pm.in
@@ -52,9 +54,18 @@ harness: $(GBEDROCK_TEST_HARNESS)
 test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	cd lib;
 	$(MAKE)
+	if test -z "$$DBI_SOCKET"; then \
+	  if test -e '/tmp/mysqld/mysqld.sock'; then \
+	     DBI_SOCKET=/tmp/mysqld/mysqld.sock; \
+	  fi; \
+	fi; \
 	TESTS=$$TESTS; \
 	if test -z "$$TESTS"; then \
 	  TESTS="$(BEDROCK_TESTS)"; \
+	elif [ "$$TESTS" = "all" ]; then \
+	  TESTS="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS)"; \
+	elif [ "$$TESTS" = "sql" ]; then \
+	  TESTS="$(BEDROCK_SQL_TESTS)"; \
 	else \
 	  echo "TESTS: $$TESTS"; \
 	fi; \
@@ -64,7 +75,7 @@ test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
-	CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config:. $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
+	DBI_SOCKET="$$DBI_SOCKET" CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config:. $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
 
 CLEANFILES = \
