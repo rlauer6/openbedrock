@@ -1,7 +1,3 @@
-#!@PERL@ -w
-
-
-#
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -26,28 +22,27 @@ package TagX::TAG::NoBody::Array;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA @INC);
-  @ISA = qw (Exporter);
-}
-
-use TagX::Log;
 use TagX::TAG::NoBody;
 use Symbol;
 
 use Bedrock::Array;
+use Bedrock::Constants qw{:chars};
+
 use Bedrock::XML;
 use Bedrock::BedrockJSON;
 
 use Data::Dumper;
-use Log::Log4perl qw/:easy/;
 
 use Scalar::Util qw/reftype/;
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw (Exporter TagX::TAG::NoBody);
 
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+########################################################################
 sub define_options {
+########################################################################
   return (
     'json'        => undef,
     'bedrock-xml' => undef,
@@ -62,16 +57,18 @@ sub define_options {
   );
 }
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-  
+
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
-  my $name = $options{'define-var'} || '_';
+  my $name     = $options{'define-var'} || '_';
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   if ( $tag_opts->{name} ) {
@@ -82,27 +79,29 @@ sub finalize {
   my $obj;
 
   if ( exists $options{'handle'} || exists $options{file} ) {
+
     if ( exists $options{'handle'} ) {
-      if ( @argv != 1 || !( -r $argv[0] || $argv[0]->can('getline') ) )   {
-	die "Use only 1 argument with --handle option and must be a handle.\n";
+      if ( @argv != 1 || !( -r $argv[0] || $argv[0]->can('getline') ) ) {
+        die
+          "Use only 1 argument with --handle option and must be a handle.\n";
       }
     }
 
     my $fh = $argv[0];
-    
-    unless ( ref( $fh ) ) {
-      my $file = $tx->find_file( $fh, undef, "." );
-      
-      if  ( !$file || ! -s $file ) {
-	die "error: can't read [$fh]. Either it does not exist or is empty\n";
+
+    if ( !ref $fh ) {
+      my $file = $tx->find_file( $fh, undef, $DOT );
+
+      if ( !$file || !-s $file ) {
+        die "error: can't read [$fh]. Either it does not exist or is empty\n";
       }
-      
-      $fh = new IO::File;
+
+      $fh = IO::File->new;
       $fh->open("<$file");
     }
-    
+
     die "Could not open file ( $argv[0] ) for reading."
-      unless $fh && ( (-r $fh ) || $fh->can('getline'));
+      if !$fh || !-r $fh || !$fh->can('getline');
 
     $obj = Bedrock::Array->new;
 
@@ -112,46 +111,52 @@ sub finalize {
     }
   }
   elsif ( $options{'bedrock-xml'} ) {
-    $obj = Bedrock::XML->newFromString( join( '', @argv ) );
+    $obj = Bedrock::XML->newFromString( join $EMPTY, @argv );
   }
   elsif ( $options{'json'} ) {
-    my $json_string = join( '', @argv );
-    
+    my $json_string = join $EMPTY, @argv;
+
     $obj = Bedrock::JSON::decode($json_string);
   }
-  elsif (    exists $options{'expand-args'}
-          || exists $options{'expand-all'}
-          || exists $options{'expand'} )
-    {
-      my @list;
-      foreach (@argv) {
-	if ( ref($_) && reftype($_) eq 'ARRAY') {
-	  push @list, @$_;
-	}
-	else {
-	  push @list, $_;
-	}
+  elsif ( exists $options{'expand-args'}
+    || exists $options{'expand-all'}
+    || exists $options{'expand'} ) {
+    my @list;
+
+    foreach (@argv) {
+      if ( ref($_) && reftype($_) eq 'ARRAY' ) {
+        push @list, @{$_};
+      }
+      else {
+        push @list, $_;
+      }
     }
-      $obj = Bedrock::Array->new(@list);
-    }
+    $obj = Bedrock::Array->new(@list);
+  }
   else {
     $obj = Bedrock::Array->new(@argv);
   }
 
   die "Not an array definition ([@argv]).\n"
-    if  !ref($obj) || reftype($obj) ne 'ARRAY';
+    if !ref($obj) || reftype($obj) ne 'ARRAY';
 
   if ( $options{recordset} ) {
-    $obj = Bedrock::RecordSet->new( $obj ) 
+    $obj = Bedrock::RecordSet->new($obj);
   }
   elsif ( $options{list} ) {
-    bless $obj, 'Bedrock::List'
+    bless $obj, 'Bedrock::List';
   }
 
   $tx->{'VARS'}->{$name} = $obj;
 
   return $obj;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =head1 TAG - C<E<lt>arrayE<gt>>
 
@@ -539,84 +544,3 @@ C<E<lt>nullE<gt>>, C<E<lt>foreachE<gt>>, C<E<lt>hashE<gt>>, C<E<lt>recordsetE<gt
 
 =cut
 
-#
-# Revision 1.25  2012/07/30 13:31:34  lauerrc
-# - pod tweaks
-#
-# Revision 1.24  2012/07/29 18:42:06  lauerrc
-# - support for --recordset option
-#
-# Revision 1.23  2012/07/18 13:40:19  lauerrc
-# - added pod for new hash_sort() method
-#
-# Revision 1.22  2012/04/13 15:16:34  eutl420
-# - added --handle, --file options similar to <null> tag
-#
-# Revision 1.21  2012/02/08 19:50:03  eutl420
-# - pod edits
-#
-# Revision 1.20  2011/09/21 20:28:36  eutl420
-# - pod for matches(), tweaks
-#
-# Revision 1.19  2011/09/15 16:05:33  eutl420
-# - perl tidy
-#
-# Revision 1.18  2011/09/09 21:11:47  eutl420
-# typo
-#
-# Revision 1.17  2011/09/09 19:25:54  eutl420
-# - support the --bedrock-xml option which considers argument to be a Bedrock XML string
-# - expand all elements that are array refs if --expand-args, --expand or --expand-all
-#
-# Revision 1.16  2011/09/04 21:56:10  eutl420
-# - removed hyphenation in pod to prevent goofy texi2pdf issue
-#
-# Revision 1.15  2011/08/07 16:12:19  eutl420
-# use Bedrock::BedrockJSON instead of Bedrock::JSON to avoid namespace collisions with JSON when use Bedrock; is employed
-#
-# Revision 1.14  2011/07/17 16:56:09  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.13  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.12  2010/12/12 17:10:35  eutl420
-# - use parse_tag_name
-# - use dump_options
-#
-# Revision 1.11  2010/11/29 15:57:53  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.10  2010/11/19 15:12:26  rlauer
-# - add --expand-args option
-# - document --expand-args option, tweaks
-#
-# Revision 1.9  2010/11/17 02:27:26  rlauer
-# - pod cleanup
-#
-# Revision 1.8  2010/11/16 13:07:01  rlauer
-# - documentation tweaks
-#
-# Revision 1.7  2010/11/08 03:14:26  rlauer
-# - documentation changes only
-#
-# Revision 1.6  2010/01/04 02:47:46  rlauer
-# add --xml to options section of docs
-#
-# Revision 1.5  2010/01/04 02:25:49  rlauer
-# docs
-#
-# Revision 1.4  2009/12/31 18:30:41  rlauer
-# sort with direction and type, methods documented
-#
-# Revision 1.3  2009/12/31 12:43:24  rlauer
-# add --json and --define-var options
-#
-# Revision 1.2  2009/12/28 20:31:34  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.1  2009/12/15 13:10:21  rlauer
-# first check-in
-#
-
-1;

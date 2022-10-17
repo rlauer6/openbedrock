@@ -1,6 +1,3 @@
-#!@PERL@ -w
-
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -24,25 +21,23 @@
 package TagX::TAG::NoBody::Plugin;
 
 use strict;
+use warnings;
 
-BEGIN {
-
-  use Exporter ();
-  use vars qw ($VERSION @ISA @INC);
-  @ISA = qw (Exporter);
-}
-
-use TagX::TAG::NoBody;
+use Bedrock::Constants qw{:chars :booleans};
 use Bedrock::Dump;
-use English;
-use Log::Log4perl qw/:easy/;
-
-use Symbol;
 use Bedrock::Plugin;
+use English qw{-no_match_vars};
+use List::Util qw{any none};
+use Symbol;
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw (Exporter TagX::TAG::NoBody);
 
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+########################################################################
 sub define_options {
+########################################################################
   return (
     'define-var=s'    => undef,
     'dir-prefix=s'    => undef,
@@ -52,16 +47,18 @@ sub define_options {
 
 } ## end sub define_options
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-  my @argv = $self->parse_options( \%options, @context );
-  
+  my @argv    = $self->parse_options( \%options, @context );
+
   $self->dump_options( \%options, @argv );
 
-  $options{'define-var'} = '_' unless defined $options{'define-var'};
-  
+  $options{'define-var'} //= $UNDERSCORE;
+
   my $config = $tx->out_handle->{Handle}->{'CONFIG'};
 
   my $tag_name = shift @argv;
@@ -70,158 +67,188 @@ sub finalize {
   my $class;
 
   if ( exists $options{'define-plugin'} ) {
-    $name = $options{'define-plugin'};
+    $name  = $options{'define-plugin'};
     $class = $tag_opts->{name} || $tag_opts->{type};
   }
   else {
-    $name = $tag_opts->{name};
+    $name  = $tag_opts->{name};
     $class = $tag_opts->{type};
-    $name =~ s/:://g;
+    $name =~ s/:://gxsm;
   }
 
   if ( exists $tx->{'VARS'}->{$name} ) {
-    WARN sub {
-      "plugin name: [$name] conflicts with existing variable.\n";
-    };
+    $self->get_logger->warn(
+      sub {
+        sprintf 'plugin name: [%s] conflicts with existing variable.', $name;
+      }
+    );
   }
-  
-  if ( exists $tx->{'VARS'}->{$options{'define-var'}} ) {
-    WARN sub {
-      "return variable name: ["
-        . $options{'define-var'}
-        . "] conflicts with existing variable.\n"
-      };
+
+  if ( exists $tx->{'VARS'}->{ $options{'define-var'} } ) {
+    $self->get_logger->warn(
+      sub {
+        sprintf
+          'return variable name: [%s] conflicts with existing variable.',
+          $options{'define-var'};
+      }
+    );
   }
 
   # still undecided about this
   if ( exists $options{'dir-prefix'} ) {
-    push @INC, $options{'dir-prefix'}
-      if ! grep { $options{'dir-prefix'} } @INC;
+    if ( none { $options{'dir-prefix'} eq $_ } @INC ) {
+      push @INC, $options{'dir-prefix'};
+    }
   }
 
   # adhoc addition of a PLUGIN path
   if ( $config->{PLUGIN_PATH} ) {
-    my @plugin_inc = split /:/, $config->{PLUGIN_PATH};
+    my @plugin_inc = split /:/xsm, $config->{PLUGIN_PATH};
 
     foreach my $path (@plugin_inc) {
-      push @INC, $path
-      unless grep { /$path/ } @INC;
+      next if any { $path eq $_ } @INC;
+      push @INC, $path;
     }
   }
 
-  my $plugin = ( $class =~/^BLM/ ) ? $class : 'BLM::' . $class;
-  
-  if ( $self->loadModule( $plugin ) ) {
+  my $plugin = $class =~ /^BLM/xsm ? $class : 'BLM::' . $class;
+
+  if ( $self->loadModule($plugin) ) {
     $class = $plugin;
   }
-  elsif ( $self->loadModule( $class ) ) {
-    DEBUG sub {
-      "Successfully loaded perl class ($class)\n";
-    };
+  elsif ( $self->loadModule($class) ) {
+    $self->get_logger->debug(
+      sub {
+        sprintf 'Successfully loaded perl class (%s)', $class;
+      }
+    );
   }
   else {
-    die "Could not load module: [$class]. Check your syntax [<plugin$tag_name>] or your plugin path.\n";
+    die sprintf
+      "Could not load module: [%s]. Check your syntax [<plugin:%s>] or your plugin path.\n",
+      $class, $tag_name;
   }
 
   my $obj;
 
-  if ( $class->can('new')  && ! exists $options{tie} ) {
-    TRACE sub {
-      Bedrock::Dump::compact ['args', \@argv];
-    };
-    
-    $obj = $class->new( @argv );
+  if ( $class->can('new') && !exists $options{tie} ) {  ## no critic (ProhibitCascadingIfElse)
+    $self->get_logger->trace(
+      sub {
+        Bedrock::Dump::compact [ 'args', \@argv ];
+      }
+    );
+
+    $obj = $class->new(@argv);
   }
-  elsif ( $class->can( 'TIEHASH' ) ) {
-    DEBUG sub {
-      ref($self)
-        . " creating an object of class $class"
-    };
+  elsif ( $class->can('TIEHASH') ) {
+    $self->get_logger->debug(
+      sub {
+        ref($self) . " creating an object of class $class";
+      }
+    );
 
     $obj = {};
-    tie %{$obj}, $class, @argv;
+    tie %{$obj}, $class, @argv;  ## no critic (ProhibitTies)
   }
-  elsif ( $class->can( 'TIEARRAY' ) ) {
-    DEBUG sub {
-      ref($self)
-        . "creating an array of class $class";
-    };
+  elsif ( $class->can('TIEARRAY') ) {
+    $self->get_logger->debug(
+      sub {
+        ref($self) . "creating an array of class $class";
+      }
+    );
 
     $obj = [];
-    tie @{$obj}, $class, @argv;
+    tie @{$obj}, $class, @argv;  ## no critic (ProhibitTies)
   }
-  elsif ( $class->can( 'TIEHANDLE' ) ) {
-    DEBUG sub {
-      ref($self)
-        . " creating a handle of class $class";
-    };
-    
+  elsif ( $class->can('TIEHANDLE') ) {
+    $self->get_logger->debug(
+      sub {
+        ref($self) . " creating a handle of class $class";
+      }
+    );
+
     $obj = gensym;
-    tie *{$obj}, $class, @argv;
+    tie *{$obj}, $class, @argv;  ## no critic (ProhibitTies)
   }
-  elsif ( $class->can( 'TIESCALAR' ) ) {
-    DEBUG sub {
-      ref($self)
-        . " creating a scalar of class $class";
-    };
+  elsif ( $class->can('TIESCALAR') ) {
+    $self->get_logger->debug(
+      sub {
+        ref($self) . " creating a scalar of class $class";
+      }
+    );
 
     $obj = $argv[0];
-    tie $obj, $class;
+    tie $obj, $class;            ## no critic (ProhibitTies)
   }
   else {
     die "Attempt to load invalid module: $class.\n";
   }
 
-  bless $obj, $class
-    if ref($obj) ne $class;
-  
+  if ( ref $obj ne $class ) {
+    bless $obj, $class;
+  }
+
   # call the plugin's init_plugin() if it exists...note that <plugin>
   # can be used to access "some" Perl modules that are not derived
   # from Bedrock::Plugin
-  
+
   if ( ref($obj) && $obj->can('init_plugin') ) {
     if ( $obj->can('verbose') ) {
       $obj->verbose( $self->verbose );
     }
-    
-    $obj->options( Bedrock::Hash( %options)->new )
-      if $obj->can('options');
-    
+
+    if ( $obj->can('options') ) {
+      $obj->options( Bedrock::Hash(%options)->new );
+    }
+
     $tx->{'VARS'}->{ $options{'define-var'} } = $obj->init_plugin(@argv);
   }
-  
+
   $tx->{'VARS'}->{$name} = $obj;
 
   return $tx->{'VARS'}->{$name};
 }
 
+########################################################################
 sub loadModule {
-  my $self = shift;
-  my $module = shift;
+########################################################################
+  my ( $self, $module ) = @_;
 
-  $module =~ s!::!/!g;
-  $module =~ s!$!.pm! unless $module =~ /\.pm$/;
+  $module =~ s/::/\//gxsm;
 
-  return $module 
+  if ( $module !~ /[.]pm$/xsm ) {
+    $module = $module . '.pm';
+  }
+
+  return $module
     if $INC{$module};
 
-  eval {
-    require $module;
-  };
+  eval { require $module; };
 
   if ($EVAL_ERROR) {
-    ERROR sub {
-      "module: [$module] not loaded!\n"
-        . $EVAL_ERROR
-      };
+    $self->get_logger->error(
+      sub {
+        "module: [$module] not loaded!\n" . $EVAL_ERROR;
+      }
+    );
   }
-  
-  DEBUG sub {
-    "module: [$module] loaded successfully";
-  };
-  
+
+  $self->get_logger->debug(
+    sub {
+      "module: [$module] loaded successfully";
+    }
+  );
+
   return $EVAL_ERROR ? undef : $module;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
 
 =head1 TAG - C<E<lt>pluginE<gt>>
 
@@ -409,115 +436,3 @@ C<Bedrock::Plugin>, C<Bedrock::Application::Plugin>, C<E<lt>pebbleE<gt>>,
 C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, 
 
 =cut
-
-#
-# Revision 1.22  2013/01/21 00:06:39  rlauer
-# - call plugin object's options() method, not set_options()
-#
-# Revision 1.21  2013/01/02 23:11:54  rlauer
-# - use $class->can instead of UNIVERSAL::can to allow plugins to override
-#
-# Revision 1.20  2013/01/02 19:18:09  rlauer
-# - added a --tie option that allows you to force Bedrock to tie an object as a plugin
-#   rather than invoking the new() method.
-#
-# Revision 1.19  2012/07/31 20:20:41  lauerrc
-# - still unresolved how to handle modules that both TIE objects and provide a new() method
-#
-# Revision 1.18  2012/07/18 13:41:23  lauerrc
-# - we now call the new() method of plugins if they have one rather than TIE'ing the object first
-#
-# Revision 1.17  2012/03/19 13:58:44  eutl420
-# - in order to support generic plugins (perl modules) we were calling the object's new constructor if we could not tie the
-#   object directly. We were not sending the arguments however so it appears that bug was masked by some bogus code that
-#   invoked the new() constructor under all circumstances.  This is probably not what we wanted, so that practice has been
-#   stopped. Only if we cannot tie the object do we check for a new() constructor.  There may be some funky modules with both
-#   a new() and TIEx mechanism that break <plugin>...we'll see.
-#
-# Revision 1.16  2012/03/05 16:12:29  eutl420
-# - pod tweaks
-#
-# Revision 1.15  2012/02/24 19:39:59  eutl420
-# - cleaned up loadModule() method which seemed to have some dead code
-# - in finalize() we now load non-BLM perl classes
-#
-# Revision 1.14  2011/09/15 16:05:33  eutl420
-# - perl tidy
-#
-# Revision 1.13  2011/09/10 15:51:36  eutl420
-# - use PLUGIN_PATH to find Plugins
-#
-# Revision 1.12  2011/07/17 16:56:09  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.11  2011/07/13 18:10:23  eutl420
-# - renamed BLM/PLUGIN to Bedrock/Plugin so we updated the documentation
-#
-# Revision 1.10  2011/07/12 19:10:36  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.9  2011/04/04 13:42:54  eutl420
-# - take the :: out of plugin names in case we get something like <plugin:MIME::Lite>
-# - sub loadModule() now returns a 0/1 on success so error can be propagated from caller
-#
-# Revision 1.8  2011/03/15 13:31:53  eutl420
-# - set the value of a tied scalar after the tie because
-#   of what seems to be bug in Tie::StdArray
-#
-# Revision 1.7  2010/12/20 20:18:01  eutl420
-# - invoke verbose method of PLUGINs
-# - define-plugin=s (was missing =s)
-# - 1 too many invocations of new
-#
-# Revision 1.6  2010/12/12 17:05:48  eutl420
-# - use dump_options
-# - use parse_tag_name
-#
-# Revision 1.5  2010/11/29 15:57:54  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.4  2010/11/17 02:32:15  rlauer
-# - switched --define-var meaning with --define-plugin
-# - pod cleanup
-#
-# Revision 1.3  2010/11/08 03:11:36  rlauer
-# - documentation changes only
-#
-# Revision 1.2  2009/12/31 18:38:36  rlauer
-# updated docs
-#
-# Revision 1.1  2009/12/31 13:01:11  rlauer
-# rename Blm.pm -> Plugin.pm
-#
-# Revision 1.7  2009/12/31 12:43:25  rlauer
-# fixed documentation to indicate usage of plugin, etc.
-#
-# Revision 1.6  2009/12/29 12:21:50  rlauer
-# add tied scalars to the list of things that can be loaded as a plugin
-#
-# Revision 1.5  2009/12/28 23:27:23  rlauer
-# allow overwrite of plugin names, but warn to file
-#
-# Revision 1.4  2009/12/28 12:50:50  rlauer
-# invoke method new() for PLUGINs if the class can new()
-#
-# Revision 1.3  2009/12/15 12:33:49  rlauer
-# only warn if reusing $_
-#
-# Revision 1.2  2008/12/03 14:01:20  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.1  2008/11/25 14:32:34  rlauer
-# added as part of Bedrock 2.0.0 reorg
-#
-#
-
-1;

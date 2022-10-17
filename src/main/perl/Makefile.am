@@ -19,7 +19,8 @@ BEDROCK_TESTS = \
     t/10-try.yml \
     t/11-snippet.yml \
     t/14-flush.yml \
-    t/15-include.yml
+    t/15-include.yml \
+    t/16-case.yml
 
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \

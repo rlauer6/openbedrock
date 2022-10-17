@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -20,24 +18,37 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+use strict;
+use warnings;
+
+########################################################################
 package Bedrock::Iterator;
+########################################################################
 
 use strict;
 use warnings;
 
 use Bedrock::Constants qw{:booleans};
+use Data::Dumper;
 
+########################################################################
 sub new {
-  my ( $class, $array ) = shift;
+########################################################################
+  my ( $class, $array ) = @_;
 
   $class = ref $class || $class;
 
-  my $self = bless { 'array' => $array, 'cur' => 0 }, $class;
+  my $self = {
+    'array' => $array,
+    'cur'   => 0,
+  };
 
-  return $self;
+  return bless $self, $class;
 }
 
+########################################################################
 sub pos {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my ($self) = @_;
 
   if ( $self->{'cur'} > @{ $self->{'array'} } ) {
@@ -47,37 +58,49 @@ sub pos {  ## no critic (ProhibitBuiltinHomonyms)
   return $self->{'cur'};
 }
 
+########################################################################
 sub begin {
+########################################################################
   my ($self) = @_;
 
   return $self->{'cur'} = 0;
 }
 
+########################################################################
 sub end {
+########################################################################
   my ($self) = @_;
 
   return $self->{'cur'} = @{ $self->{'array'} };
 }
 
+########################################################################
 sub curr {
+########################################################################
   my ($self) = @_;
 
   return $self->{'array'}->[ $self->{'cur'} ];
 }
 
+########################################################################
 sub next {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my ($self) = @_;
 
   return $self->{'array'}->[ $self->{'cur'}++ ];
 }
 
+########################################################################
 sub prev {
+########################################################################
   my ($self) = @_;
 
   return $self->{'array'}->[ --$self->{'cur'} ];
 }
 
+########################################################################
 sub valid {
+########################################################################
   my ($self) = @_;
 
   my $cur = $self->{'cur'};
@@ -95,18 +118,23 @@ use warnings;
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw{ :chars :booleans};
 
+use Data::Dumper;
+
 use English qw{-no_match_vars};
 
 use Scalar::Util qw/reftype/;
 use Tie::Array;
 use XML::Simple;
+use List::Util qw/any none/;
+
+use Bedrock qw{:utils};
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
 BEGIN {
   use Exporter ();
   use vars qw (@ISA);
-  @ISA = qw (Tie::StdArray);
+  @ISA = qw (Tie::StdArray);        ## no critic (ProhibitExplicitISA)
 }
 
 ########################################################################
@@ -114,11 +142,7 @@ sub TIEARRAY {
 ########################################################################
   my ( $class, @args ) = @_;
 
-  my $self = bless [], $class;
-
-  if (@args) {
-    push @{$self}, @args;
-  }
+  my $self = bless [@args], $class;
 
   return $self;
 }
@@ -126,11 +150,15 @@ sub TIEARRAY {
 ########################################################################
 sub bedrock_xml {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $name ) = @_;
 
   require Bedrock::XML;
-
-  return Bedrock::XML::writeXML($self);
+  if ($name) {
+    return Bedrock::XML::writeXML( { $name => $self } );
+  }
+  else {
+    return Bedrock::XML::writeXML($self);
+  }
 }
 
 ########################################################################
@@ -158,6 +186,9 @@ sub get {
 ########################################################################
   my ( $self, $index ) = @_;
 
+  die "index must be integer\n"
+    if $index =~ /\D/xsm;
+
   return $self->[ $index + 0 ];
 }
 
@@ -166,6 +197,7 @@ sub grep {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, $pattern ) = @_;
 
+  ## no critic (ProhibitStringyEval, ProhibitInterpolationOfLiterals)
   my $re = $pattern =~ /^qr/xsm ? eval $pattern : eval "qr/\$pattern/";
 
   die "Invalid pattern - $EVAL_ERROR "
@@ -181,10 +213,12 @@ sub isEmpty {  ## no critic (Capitalization)
 ########################################################################
   my ($self) = @_;
 
-  return @{$self};
+  return !@{$self};
 }
 
+########################################################################
 sub iterator {
+########################################################################
   my ($self) = @_;
 
   return Bedrock::Iterator->new($self);
@@ -224,7 +258,7 @@ sub list {
   $array //= $self;
 
   die "not an an array ref\n"
-    if !ref $array || reftype($array) ne 'ARRAY';
+    if !is_array($array);
 
   return @{$array};
 }
@@ -233,9 +267,11 @@ sub list {
 sub new {
 ########################################################################
   my ( $class, @args ) = @_;
+
   $class = ref $class || $class;
 
   my $self = bless [], $class;
+
   tie @{$self}, $class, @args;  ## no critic (ProhibitTies)
 
   return $self;
@@ -267,22 +303,25 @@ sub matches {
 ########################################################################
   my ( $self, $str, $flags ) = @_;
 
-  die "invalid flags: only i,m,g or s"
-    if $flags && $flags !~ /^[imgs]+$/;
+  die "invalid flags: only i,m,g or s\n"
+    if $flags && $flags !~ /^[imgs]+$/xsm;
+
+  my $g = $flags && $flags =~ s/g//xsm;
 
   my $re;
-  my $g = $flags =~ s/g//;
 
-  eval "\$re = qr/\$str/" . $flags;
+  my $regexp = sprintf '%s = qr/%s/%s', q{$} . 're', $str, $flags // $EMPTY;
 
-  die "invalid regexp: $str\n$@\n"
-    unless $re;
+  eval $regexp;  ## no critic (ProhibitStringyEval);
+
+  die "invalid regexp: $str\n$EVAL_ERROR\n"
+    if $EVAL_ERROR || !$re;
 
   my @result;
 
   if ($g) {
     foreach my $str ( @{$self} ) {
-      push @result, $str =~ /$re/g;
+      push @result, $str =~ /$re/g;  ## no critic
     }
   }
   else {
@@ -295,41 +334,36 @@ sub matches {
 ########################################################################
 sub pop {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
-  my (@args) = @_;
-
-  my $a = CORE::shift @args;
+  my ( $self, @args ) = @_;
 
   if ( @args > 0 ) {
-    my $count = CORE::shift @args;
-    $count--;
-    my @a;
+    my $offset = @{$self};
+    $offset -= $args[0];
 
-    for ( 0 .. $count ) {
-      CORE::unshift @a, CORE::pop @{$a};
-    }
-    return Bedrock::Array->new(@a);
+    my @new_array = splice @{$self}, $offset, $args[0];
+
+    return Bedrock::Array->new(@new_array);
   }
   else {
-    return CORE::pop @{$a};
+    return CORE::pop @{$self};
   }
 }
 
 ########################################################################
 sub push {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
-  my (@args) = @_;
+  my ( $self, @args ) = @_;
 
-  my $a = CORE::shift @args;
-
-  return CORE::push @{$a}, @args;
+  return CORE::push @{$self}, @args;
 }
 
 ########################################################################
 sub set {  ## no critic (ProhibitAmbiguousNames)
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $index, $value ) = @_;
 
-  my ( $index, $value ) = @args;
+  die "index must be integer\n"
+    if $index =~ /\D/xsm;
 
   my $old = $self->[$index];
   $self->[$index] = $value;
@@ -375,7 +409,9 @@ sub shift {  ## no critic  (ProhibitBuiltinHomonyms)
   }
 }
 
+########################################################################
 sub sort {  ## no critic  (ProhibitBuiltinHomonyms)
+########################################################################
   my ( $self, @args ) = @_;
 
   my ( $sort_dir, $sort_type ) = @args;
@@ -383,6 +419,8 @@ sub sort {  ## no critic  (ProhibitBuiltinHomonyms)
   $sort_dir = {
     $PLUS_SIGN  => 'asc',
     $MINUS_SIGN => 'desc',
+    'asc'       => 'asc',
+    'desc'      => 'desc',
   }->{$sort_dir};
 
   $sort_dir  //= 'asc';
@@ -390,64 +428,79 @@ sub sort {  ## no critic  (ProhibitBuiltinHomonyms)
 
   my @sorted_list;
 
+  ## no critic (ProhibitCascadingIfElse)
   if ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^alpha/xsm ) ) {
     @sorted_list = sort { $a cmp $b } @{$self};
   }
   elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^alpha/xsm ) ) {
-    @sorted_list = sort { $a cmp $b } CORE::reverse @{$self};
+    @sorted_list = CORE::reverse sort { $a cmp $b } @{$self};
   }
   elsif ( ( $sort_dir eq 'asc' ) && ( $sort_type =~ /^num/xsm ) ) {
     @sorted_list = sort { $a <=> $b } @{$self};
   }
   elsif ( ( $sort_dir eq 'desc' ) && ( $sort_type =~ /^num/xsm ) ) {
-    @sorted_list = sort { $a <=> $b } CORE::reverse @{$self};
+    @sorted_list = CORE::reverse sort { $a <=> $b } @{$self};
   }
 
   return Bedrock::Array->new(@sorted_list);
 }
 
-sub splice {
-  my $self   = CORE::shift;
-  my $offset = CORE::shift || 0;
+########################################################################
+sub splice {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $offset, @args ) = @_;
 
-  # Passing args to splice as splice @{$self}, @_ wouldn't work
-  # Need to shift the offset and length out of the args and then invoke
-  # splice() with explicit args as show below
+  $offset //= 0;
 
-  if ( @_ == 0 ) {
-    return Bedrock::Array->new( splice @{$self}, $offset );
+  my @new_array = @{$self};
+
+  if ( @args == 0 ) {
+    CORE::splice @new_array, $offset;
   }
-  elsif ( @_ == 1 ) {
-    my $length = CORE::shift;
-    return Bedrock::Array->new( splice @{$self}, $offset, $length );
+  elsif ( @args == 1 ) {
+    my $length = CORE::shift @args;
+
+    CORE::splice @new_array, $offset, $length;
+
   }
   else {
-    my $length = CORE::shift;
-    return Bedrock::Array->new( splice @{$self}, $offset, $length, @_ );
+    my $length = CORE::shift @args;
+    CORE::splice @new_array, $offset, $length, @args;
   }
+
+  return $self->new(@new_array);
 }
 
-sub unshift {
-  my $self = CORE::shift;
+########################################################################
+sub unshift {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
 
-  CORE::unshift @{$self}, @_;
+  return CORE::unshift @{$self}, is_array( $args[0] ) ? @{ $args[0] } : @args;
 }
 
+########################################################################
 sub xml {
-  my $self    = CORE::shift;
-  my %options = @_;
+########################################################################
+  my ( $self, %options ) = @_;
 
   return XMLout( $self, %options );
 }
 
+########################################################################
 package Bedrock::Array::Reference;
+########################################################################
 
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw{reftype};
+use Bedrock qw{:utils};
+
 use vars qw{@ISA};
 
-@ISA = qw(Bedrock::Array);
+@ISA = qw(Bedrock::Array);  ## no critic (ProhibitExplicitISA)
 
+########################################################################
 sub TIEARRAY {
+########################################################################
   my ( $class, $array ) = @_;
 
   $array //= [];
@@ -455,48 +508,86 @@ sub TIEARRAY {
   return bless $array, $class;
 }
 
+########################################################################
 sub new {
+########################################################################
   my ( $proto, $ref ) = @_;
 
   my $class = ref $proto || $proto;
 
   die 'Not an ARRAY reference - ' . ref $ref
-    if !ref $ref || reftype($ref) ne 'ARRAY';
+    if !is_array($ref);
 
   my $self = [];
 
-  return tie @{$self}, $class, $ref;
+  return tie @{$self}, $class, $ref;  ## no critic (ProhibitTies)
 }
 
+########################################################################
 package Bedrock::RecordSet;
-
-use Scalar::Util qw/reftype/;
-use English qw{-no_match_vars};
+########################################################################
 
 use vars qw{@ISA};
 
-@ISA = qw(Bedrock::Array::Reference);
+@ISA = qw(Bedrock::Array::Reference);  ## no critic (ProhibitExplicitISA)
 
+use Bedrock qw{:utils};
+use Bedrock::Constants qw{:chars};
+
+use Scalar::Util qw/reftype/;
+use Data::Dumper;
+
+use English qw{-no_match_vars};
+
+########################################################################
 sub new {
+########################################################################
   my ( $class, @args ) = @_;
 
   $class = ref $class || $class;
 
-  my $ref
-    = ref $args[0] && reftype( $args[0] ) eq 'ARRAY' ? shift @args : [@args];
+  my $ref = force_array(@args);
+
+  my $members;
+
+  my $record_idx = 0;
 
   foreach ( @{$ref} ) {
     die "invalid element type: must be hash reference - not [$_]\n"
-      if !ref $_ || reftype($_) ne 'HASH';
+      if !is_hash($_);
+
+    if ( defined $members ) {
+      die sprintf "record %d is not a valid record of this set\n", $record_idx
+        if !keys %{$_} || $members ne join $COMMA, sort keys %{$_};
+    }
+    else {
+      die "elements of recordsets should have keys\n"
+        if !keys %{$_};
+
+      $members = join $COMMA, sort keys %{$_};
+    }
+
+    $record_idx++;
   }
 
   my $self = [];
 
-  return tie @{$self}, $class, $ref;
+  return tie @{$self}, $class, $ref;  ## no critic (ProhibitTies)
 }
 
-sub sort {
+########################################################################
+# sort(array, field, order, type)
+########################################################################
+sub sort {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my ( $array, @args ) = @_;
+
+  if ( @args == 1 ) {  # default
+    push @args, 'asc', 'alpha';
+  }
+
+  die "invalid number of arguments\n"
+    if @args % 3;
 
   ## no critic (RequireInterpolatinOfMetachars)
   my @sort_string;
@@ -507,21 +598,26 @@ sub sort {
     my $order = shift @args;
     my $type  = shift @args;
 
-    $order = $order || 'asc';
-    $type  = $type  || 'alpha';
+    die "invalid order\n"
+      if $order !~ /^asc|desc$/xsm;
 
-    push @sort_string, sprintf q($%s->{%s} %s $%s->{%s}),
-      ( $order =~ /^a/i ) ? 'a' : 'b',
+    die "invalid type\n"
+      if $type !~ /^num|alpha$/xsm;
+
+    push @sort_string, sprintf q($%s->{%s} %s $%s->{%s}),  ## no critic (RequireInterpolationOfMetachars)
+      ( $order =~ /^asc/ixsm ) ? 'a' : 'b',
       $field,
-      ( $type  =~ /^n/i ) ? '<=>' : 'cmp',
-      ( $order =~ /^a/i ) ? 'b'   : 'a',
+      ( $type  =~ /^num/ixsm ) ? '<=>' : 'cmp',
+      ( $order =~ /^asc/ixsm ) ? 'b'   : 'a',
       $field;
   }
 
   my @sorted_array;
 
-  my $sort_cmd = '@sorted_array = sort { ' . CORE::join q{||},
-    @sort_string . ' } @{$array};';
+  my $sort_cmd
+    = '@sorted_array = sort { '
+    . ( CORE::join q{||}, @sort_string )
+    . ' } @{$array};';
 
   eval "$sort_cmd";  ## no critic (ProhibitStringyEval)
 
@@ -531,23 +627,27 @@ sub sort {
   return Bedrock::RecordSet->new( \@sorted_array );
 }
 
+########################################################################
 sub STORE {
+########################################################################
   my ( $obj, $key, $value ) = @_;
 
   die "invalid element type: must be hash reference\n"
-    if !ref $value || reftype($value) ne 'HASH';
+    if !is_hash($value);
 
   my $self = tied @{$obj};
 
   return $self->SUPER::STORE( $key, $value );
 }
 
+########################################################################
 sub PUSH {
+########################################################################
   my ( $obj, @args ) = @_;
 
   foreach (@args) {
     die "invalid element type: must be hash reference"
-      if !ref($_) || reftype($_) ne 'HASH';
+      if !is_hash($_);
   }
 
   my $self = tied @{$obj};
@@ -555,15 +655,17 @@ sub PUSH {
   return $self->SUPER::PUSH(@args);
 }
 
+########################################################################
 sub push {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my ( $self, @args ) = @_;
 
-  if ( ref $args[0] && reftype( $args[0] ) eq 'ARRAY' ) {
+  if ( is_array( $args[0] ) ) {
     foreach ( @{ $args[0] } ) {
       $self->SUPER::push($_);
     }
   }
-  elsif ( ref $args[0] && reftype( $args[0] ) eq 'HASH' ) {
+  elsif ( is_hash( $args[0] ) ) {
     $self->SUPER::push( Bedrock::Hash->new( %{ $args[0] } ) );
   }
   else {
@@ -573,7 +675,9 @@ sub push {  ## no critic (ProhibitBuiltinHomonyms)
   return $self;
 }
 
+########################################################################
 sub grep {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
   my ( $self, $key, $pattern ) = @_;
 
   my $re = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/";
@@ -585,13 +689,19 @@ sub grep {  ## no critic (ProhibitBuiltinHomonyms)
       @{$self} );
 }
 
+########################################################################
 package Bedrock::List;
+########################################################################
 
 use vars qw{@ISA};
 
-@ISA = qw(Bedrock::Array);
+@ISA = qw(Bedrock::Array);  ## no critic (ProhibitExplicitISA)
 
 1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 

@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -22,164 +20,185 @@
 package TagX::TAG::NoBody::Include;
 
 use strict;
+use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
+use Bedrock::Constants qw{:chars :booleans};
+use Cwd;
+use English qw{-no_match-vars};
 use POSIX qw (strftime);
-
-use Log::Log4perl qw/:easy/;
-
-use TagX::TAG::NoBody;
 use TagX::Error;
 
-use Cwd;
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
-@ISA = qw (TagX::TAG::NoBody);
+use parent qw{ Exporter TagX::TAG::NoBody};
 
+########################################################################
 sub define_options {
+########################################################################
   return (
     'file=s'       => undef,
     'dir-prefix=s' => undef,
     'source'       => undef,
-    'optional'     => undef
+    'optional'     => undef,
   );
-} ## end sub define_options
+}
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-    
+
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
   my $dir_prefix = delete $options{'dir-prefix'};
-  
+
   my $file = delete $options{'file'};
 
-  if ( ! $file && @argv ) { 
+  if ( !$file && @argv ) {
     my $tag_opts = $self->parse_tag_name( $argv[0] );
     $file = $tag_opts->{name} || "@argv";
   }
 
-  if ( ! $file ) {
+  if ( !$file ) {
     die "Must specify file as argument to <include>.\n";
   }
 
-  # TBD: add test for ..
   die "invalid filename\n"
-    if $file =~/\.\./;
+    if $file =~ /[.][.]/xsm;
 
   my @file_paths;
-  
+
   # -- if a prefix exists, we assume an absolute path (might want to
   # reconsider this 'feature')
   if ($dir_prefix) {
-    WARN 'POSSIBLE SECURITY ISSUE USING ABSOLUTE PATHS!';
-    
-    push @file_paths, $dir_prefix . '/' . $file;
-    
-    push @file_paths, $dir_prefix . '/' . $file . '.inc'
-      if $file !~/\.(.+)$/;
+    $self->get_logger->warn('POSSIBLE SECURITY ISSUE USING ABSOLUTE PATHS!');
+
+    push @file_paths, sprintf '%s/%s', $dir_prefix, $file;
+
+    if ( $file !~ /[.].+$/xsm ) {
+      push @file_paths, sprintf '%s/%s.inc', $dir_prefix, $file;
+    }
   }
   else {
-    
+
     # what they asked for
     push @file_paths, $file;
 
     # in case they forgot the inc
-    push @file_paths, $file . '.inc'
-      if $file !~/\.(.+)$/;
-    
+    if ( $file !~ /[.].+$/xsm ) {
+      push @file_paths, $file . '.inc';
+    }
+
     # relative to DOCUMENT_ROOT
-    if ( $file =~/^\~/ ) {
-      $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/;
+    if ( $file =~ /^\~/xsm ) {
+      $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}/xsm;
       push @file_paths, $file;
     }
 
     if ( $tx->getoption('INCLUDE_DIR') ) {
-      push @file_paths, $tx->getoption('INCLUDE_DIR') . '/' . $file;
+      push @file_paths, sprintf '%s/%s', $tx->getoption('INCLUDE_DIR'), $file;
     }
-    elsif ( $file =~/^\// ) {
-      WARN 'ATTEMPT TO INCLUDE A FILE USING AN ABSOLUTE PATH!';
+    elsif ( $file =~ /^\//xsm ) {
+      $self->get_logger->warn(
+        'ATTEMPT TO INCLUDE A FILE USING AN ABSOLUTE PATH!');
     }
   }
 
   my $include_file;
   my @status_info;
 
-  DEBUG sub {
-    "search list: ", join("\n", @file_paths);
-   };
-  
+  $self->get_logger->debug(
+    sub {
+      sprintf 'search list: %s', join "\n", @file_paths;
+    }
+  );
+
   foreach my $f (@file_paths) {
     die "Cannot include `$f': is a directory.\n"
       if -d $f;
-    
-    @status_info = stat($f);
+
+    @status_info = stat $f;
 
     # try again w/.inc if they forgot .inc?
-    if ( ! @status_info and $f !~/\.(.+)$/ ) {
-      DEBUG sub {
-        "looking for $f.inc file";
-      };
-      
+    if ( !@status_info && $f !~ /[.].+$/xsm ) {
+      $self->get_logger->debug(
+        sub {
+          sprintf 'looking for %s.inc file', $f;
+        }
+      );
+
       $f = $f . '.inc';
-      
-      @status_info = stat($f);
+
+      @status_info = stat $f;
     }
-    
-    if ( @status_info ) {
+
+    if (@status_info) {
       push @status_info, $f;
       last;
     }
-    
-    DEBUG sub {
-      "include: $f not found on search path";
-    };
+
+    $self->get_logger->debug(
+      sub {
+        "include: $f not found on search path";
+      }
+    );
   }
-  
-  if ( @status_info ) {
+
+  if (@status_info) {
     $file = pop @status_info;
-               
-    DEBUG sub {
-      "include: found file [$file]";
-    };
 
-    if ( ! $options{'source'} ) {
+    $self->get_logger->debug(
+      sub {
+        "include: found file [$file]";
+      }
+    );
 
-      my $subform = $tx->new($file);
-      my @file_times = @status_info[(8, 9, 10)];
-      
+    if ( !$options{'source'} ) {
+
+      my $subform    = $tx->new($file);
+      my @file_times = @status_info[ ( 8, 9, 10 ) ];
+
       foreach my $v (qw/access modify change/) {
-        if ( $options{$v . '-time'} ) {
+        if ( $options{ $v . '-time' } ) {
           my $value = shift @file_times;
 
-          if ( $options{$v . '-time-format'} ) {
-            $value = &strftime( $options{$v . '-time-format'}, localtime($value) );
+          if ( $options{ $v . '-time-format' } ) {
+            $value
+              = strftime( $options{ $v . '-time-format' }, localtime $value );
           }
 
-          $subform->param( $options{$v . '-time'}, $value );
+          $subform->param( $options{ $v . '-time' }, $value );
         }
       }
-      
+
       $subform->output;
-    }  
+    }
     else {
       my $obj = TagX::Error->new($file);
-      
+
       $tx->out_handle->print( $obj->view_source );
     }
   }
-  elsif ( ! $options{'optional'} ) {
-    die "Unable to open [$file] for input: No such file or directory\n";
+  elsif ( !$options{'optional'} ) {
+    die sprintf "Unable to open [%s] for input: No such file or directory\n",
+      $file;
   }
+
+  return;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
 
 =head1 TAG - C<E<lt>includeE<gt>>
 
@@ -300,5 +319,3 @@ a fully qualifed path. B<(highty discouraged!)>.
 C<E<lt>pebbleE<gt>>
 
 =cut
-
-1;

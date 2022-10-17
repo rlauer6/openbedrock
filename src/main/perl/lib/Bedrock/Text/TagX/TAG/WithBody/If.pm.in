@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,25 +23,24 @@ package TagX::TAG::WithBody::If;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
-
-use TagX::TAG::WithBody;
-
-use Scalar::Util qw/reftype looks_like_number/;
+use Bedrock qw{:utils};
+use Bedrock::Constants qw{:chars :booleans};
 use Cwd;
 use Data::Dumper;
-use Log::Log4perl qw/:easy/;
+use English qw{-no_match_vars};
+use Scalar::Util qw/reftype looks_like_number/;
 
-@ISA = qw (TagX::TAG::WithBody);
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
+use parent qw (Exporter TagX::TAG::WithBody);
+
+########################################################################
 sub file_test {
-  my $file;
+########################################################################
+  my ( $test, $file ) = @_;
 
-  if ( $_[1] =~ /^(\S*)/ ) {
+  if ( $file =~ /^(\S*)/xsm ) {
     $file = $1;
   }
   else {
@@ -51,53 +48,70 @@ sub file_test {
   }
 
   for ($file) {
-    /^\~([^~]*)$/ && do {
-      $file = getcwd() . '/' . $1;
+    /^\~([^~]*)$/xsm && do {
+      $file = sprintf '%s/%s', getcwd(), $1;
       last;
     };
 
-    /^[^\/~]/ && do {
-      $file = $ENV{DOCUMENT_ROOT} . '/' . $file;
+    /^[^\/~]/xsm && do {
+      $file = sprintf '%s/%s', ( $ENV{DOCUMENT_ROOT} // $DOT ), $file;
       last;
     };
   }
 
-  $_[0] =~ /^-?([rwxoRWXOezsfdlpSbctugkTBMAC])/ && do {
-    return eval "-$1 \"" . $file . "\" ? 1 : 0";
-  };
+  if ( $test =~ /^-?([rwxoRWXOezsfdlpSbctugkTBMAC])/xsm ) {
+    my $test_str = sprintf '%s "%s"', $test, $file;
 
-  die "invalid file test operation: '$_[0] $_[1]'";
-
+    return eval $test_str;  ## no critic (ProhibitStringyEval)
+  }
+  else {
+    die "invalid file test operation\n";
+  }
 }
 
+########################################################################
 sub end_if {
-  my $self = shift;
-  $self->parent;
+########################################################################
+  my ($self) = @_;
+
+  return $self->parent;
 }
 
+########################################################################
 sub else_obj {
-  my $self = shift;
-  if ( @_ == 1 ) {
-    $self->{'else'} = shift;
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args == 1 ) {
+    $self->{'else'} = $args[0];
+
     $self->{'else'}->parent_if(
       exists $self->{'parent_if'} ? $self->{'parent_if'} : $self );
+
     $self->{'else'}->parent( $self->parent );
   }
-  $self->{'else'};
+
+  return $self->{'else'};
 }
 
+########################################################################
 sub end_child {
-  my $self = shift;
-  $self->end_if;
+########################################################################
+  my ($self) = @_;
+
+  return $self->end_if;
 }
 
+########################################################################
 sub closure {
-  '/if';
+########################################################################
+  return '/if';
 }
 
+########################################################################
 sub evaluate {
-  my $self = shift;
-  my ( $args, $context ) = @_;
+########################################################################
+  my ( $self, $args, $context ) = @_;
 
   if ( @{$args} == 1 ) {
     return $args->[0];
@@ -110,39 +124,41 @@ sub evaluate {
     for ($op) {
 
       $_ eq '--not' and return not $v;
+
       if ( $_ eq '--exists' ) {
         my $what = $self->{'__argv'}->[1];
 
         if ( ref($what) eq 'TagX::Term::Var' ) {
 
-          return ( defined $what->exists( @{$context} ) ? 1 : 0 );
+          return defined $what->exists( @{$context} ) ? $TRUE : $FALSE;
         }
-        elsif ( ref($what) ) {
-          return 1;
+        elsif ( ref $what ) {
+          return $TRUE;
         }
         else {
           return defined $v;
         }
       }
 
-      $_ eq '--object'  and return ref($v) && reftype($v) eq 'HASH';
-      $_ eq '--hash'    and return ref($v) && reftype($v) eq 'HASH';
-      $_ eq '--blm'     and return ref($v) =~ /blm/i;
-      $_ eq '--plugin'  and return ref($v) =~ /blm/i;
-      $_ eq '--array'   and return ref($v) && reftype($v) eq 'ARRAY';
-      $_ eq '--scalar'  and return !ref($v);
-      $_ eq '--defined' and return defined $v;
+      $_ eq '--object'  && return ref($v) && reftype($v) eq 'HASH';
+      $_ eq '--hash'    && return ref($v) && reftype($v) eq 'HASH';
+      $_ eq '--blm'     && return ref($v) =~ /blm/xsmi;
+      $_ eq '--plugin'  && return ref($v) =~ /blm/xsmi;
+      $_ eq '--array'   && return ref($v) && reftype($v) eq 'ARRAY';
+      $_ eq '--scalar'  && return !ref $v;
+      $_ eq '--defined' && return defined $v;
 
       die "invalid unary operator in `if/else' statement: $_\n";
     }
   }
   elsif ( @{$args} == 3 ) {
     my ( $lhs, $cond, $rhs ) = @{$args};
-    my $ref = ref($lhs);
+
+    my $ref = ref $lhs;
     {
       no warnings qw/uninitialized/;
 
-      for ( lc($cond) ) {
+      for ( lc $cond ) {
         if ( looks_like_number($lhs) && looks_like_number($rhs) ) {
           $_ eq '--gt' and return $lhs > $rhs;
           $_ eq '--ge' and return $lhs >= $rhs;
@@ -166,12 +182,15 @@ sub evaluate {
         $_ eq '--ref' and return ref($lhs) =~ /$rhs/;
 
         if ( $_ eq '--reftype' ) {
-          return !ref($lhs) if $rhs eq 'SCALAR';
+          return !ref $lhs
+            if $rhs eq 'SCALAR';
+
           return ref($lhs) && reftype($lhs) eq $rhs;
         }
 
         if ( $_ eq '--re' ) {
-          my $re = ( $rhs =~ /^qr/ ) ? eval $rhs : eval "qr/\$rhs/";
+          my $re = ( $rhs =~ /^qr/xsm ) ? eval $rhs : eval "qr/\$rhs/";
+
           if ( $^V ge 'v5.10' ) {
             $lhs =~ /$re/;
 
@@ -187,7 +206,7 @@ sub evaluate {
           die "invalid argument for '--exists': HASH --exists KEY\n"
             unless ref($lhs) && reftype($lhs) eq 'HASH';
 
-          return ( exists $lhs->{$rhs} ) ? 1 : 0;
+          return ( exists $lhs->{$rhs} ) ? $TRUE : $FALSE;
 
         }
       }
@@ -196,14 +215,16 @@ sub evaluate {
     }
   }
   else {
-    die 'invalid number of args('
-      . scalar( @{$args} )
-      . " to 'if/else' statement.\n"
-      . join( ",", @{$args} );
+    die sprintf "invalid number of args(%d) to 'if/else' statement.\n",
+      scalar @{$args};
   }
+
+  return $FALSE;
 }
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options;
@@ -220,29 +241,40 @@ sub finalize {
 
   my ( $v, $cg ) = $self->evaluate( \@argv, \@context );
 
-  map { $context[0]->{$_} = $cg->{$_}; } keys %{$cg}
-    if $v;
+  if ($v) {
+    map { $context[0]->{$_} = $cg->{$_}; } keys %{$cg};
+  }
 
-  $v = !$v
-    if ref($self) =~ /unless/i;
+  if ( ref($self) =~ /unless/xsmi ) {
+    $v = !$v;
+  }
 
-  DEBUG sub {
-    "Statement (" . @argv . ") evaluated to (" . $v . "): " . $v
-      ? "(true)"
-      : "(false)";
-  };
+  $self->get_logger->debug(
+    sub {
+      return sprintf 'Statement (%s) evaluated to (%s)',
+        ( join $SPACE, @argv ), $v ? 'true' : 'false';
+    }
+  );
 
   if ($v) {
-    DEBUG 'Condition succeeded ..';
+    $self->get_logger->debug('Condition succeeded ..');
 
     $self->SUPER::finalize( $tx, @context );
   }
   elsif ( $self->else_obj ) {
-    DEBUG 'Condition failed .. trying <else[if]> branch';
+    $self->get_logger->debug('Condition failed .. trying <else[if]> branch');
 
     $self->else_obj->finalize( $tx, @context );
   }
+
+  return;
 }
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -466,5 +498,3 @@ parse your statement. Alternately, avoid using the E<lt>, E<gt> symbols as delim
 C<E<lt>caseE<gt>>, C<E<lt>unlessE<gt>>, C<E<lt>iifE<gt>>, C<E<lt>whileE<gt>>
 
 =cut
-
-1;
