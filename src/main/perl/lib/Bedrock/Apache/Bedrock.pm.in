@@ -116,33 +116,6 @@ sub handler {
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
 
-  # make sure that the LOG directories are present and writable, otherwise try /tmp
-  foreach my $k (qw{LOGDIR HTML_LOGDIR}) {
-    my $dir = $conf->{$k};
-
-    if ( -d $dir && !-w $dir ) {
-      $bedrock_handler->log_error("$dir is not writeable, using /tmp");
-      $conf->{$k} = '/tmp';
-    }
-    elsif ( !-d $dir ) {
-      eval { return mkdir $dir };
-
-      if ($EVAL_ERROR) {
-        $bedrock_handler->log_error(
-          "could not create $dir:[$OS_ERROR] - using [/tmp]");
-        $conf->{$k} = '/tmp';
-      }
-    }
-  }
-
-  $bedrock_handler->log_info(
-    sprintf 'Bedrock log directory is ..........[%s]',
-    $conf->{LOGDIR} );
-
-  $bedrock_handler->log_info(
-    sprintf q{Bedrock's HTML log directory is ...[%s]},
-    $conf->{HTML_LOGDIR} );
-
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;  # typically /bedrock
 
   my $file = $bedrock_handler->{file};
@@ -190,28 +163,26 @@ sub handler {
   local $ENV{'BEDROCK_FILEDIR'}  = $bedrock_handler->{path};
   local $ENV{'BEDROCK_FILENAME'} = $bedrock_handler->{filename};
 
-  # TODO: cleanup this mess...scour code and use consistent
-  # environment variables and configuration values with BEDROCK prefix
   local ( $ENV{'BEDROCK_INCLUDE_DIR'} )
     = $ENV{BEDROCK_INCLUDE_DIR} || $conf->{INCLUDE_DIR};
+
   local ( $ENV{'BEDROCK_PEBBLE_DIR'} )
     = $ENV{BEDROCK_PEBBLE_DIR} || $conf->{BEDROCK_PEBBLE_DIR};
+
   local ( $ENV{'PEBBLE_DIR'} ) = $ENV{PEBBLE_DIR} || $conf->{PEBBLE_DIR};
+
   local ( $ENV{'BEDROCK_SESSION_DIR'} )
     = $ENV{BEDROCK_SESSION_DIR} || $conf->{SESSION_DIR};
+
   local ( $ENV{'BEDROCK_CONFIG_PATH'} )
     = $ENV{BEDROCK_CONFIG_PATH}
     || $conf->{BEDROCK_CONFIG_PATH}
     || $conf->{CONFIG_PATH}
     || $ENV{CONFIG_PATH};
-  local ( $ENV{'BEDROCK_LOG_DIR'} )
-    = $ENV{BEDROCK_LOG_DIR} || $conf->{LOGDIR};
-  local ( $ENV{'BEDROCK_HTML_LOG_DIR'} )
-    = $ENV{BEDROCK_HTML_LOG_DIR} || $conf->{HTML_LOGDIR};
-  local ( $ENV{'BEDROCK_LOG_FILE'} )
-    = $ENV{BEDROCK_LOG_FILE} || $conf->{LOGFILE};
+
   local ( $ENV{'BEDROCK_IMAGE_DIR'} )
     = $ENV{BEDROCK_IMAGE_DIR} || $conf->{BEDROCK_IMAGE_DIR};
+
   local ( $ENV{'BEDROCK_IMAGE_URL'} )
     = $ENV{BEDROCK_IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
 
@@ -229,71 +200,19 @@ sub handler {
 
   my $tx = Text::TagX->new( $file, $ctx );
 
-  # -- setup logging
-
-  # TODO: this is an example of TODO above...
-  # use BEDROCK_HTML_LOGFILE...BEDROCK_HTML_LOG_DIR from %ENV now or we
-  # always take values from the configuration object
-  my $page_log;
-  my $html_logdir = $conf->{HTML_LOGDIR} || '/tmp';
-
-  # if we do not have HTML_LOGFILE, then we log each page separately
-  if ( $conf->{HTML_LOGFILE} ) {
-    $page_log = $conf->{HTML_LOGFILE};
-  }
-  else {
-    $page_log = $bedrock_handler->{filename};
-    $page_log =~ s/[.](.*)\z//xsm;
-  }
-
-  # not sure this should ever happen, however if we've parsed the
-  # URI incorrectly (Bedrock CGI mainly) then let's do some belt &
-  # suspenders mitigation...
-  if ( !$page_log ) {
-    $page_log = 'bedrock-page-' . time;
-  }
-
-  if ( $page_log ne 'STDERR' ) {
-    $page_log = $html_logdir . q{/} . $page_log;
-  }
-
-  # the TagX::Log start_logger() method redirects STDERR to the page
-  # log after this call has been executed
   $tx->options(
     BEDROCK_PEBBLE_DIR => $ENV{BEDROCK_PEBBLE_DIR},
     INCLUDE_DIR        => $ENV{BEDROCK_INCLUDE_DIR},
     PEBBLE_DIR         => $ENV{BEDROCK_PEBBLE_DIR},
     ALLOW_SNIPPET_TAG  => $conf->{ALLOW_SNIPPET_TAG},
-    LOGFORMAT          => $conf->{LOGFORMAT}       || '%t [%p] [%a]: %L ',
-    LOG_MAXSIZE        => $conf->{HTML_LOGMAXSIZE} || $conf->{'LOG_MAXSIZE'},
-    LOG_SPOOLER        => $conf->{HTML_LOGSPOOLER},
-    LOG_PREFIX         => $page_log,
   );
 
-  if ( get_loglevel($r) eq 'debug' ) {
-    {
-      $bedrock_handler->log_debug( sprintf 'HTML_LOGDIR.......[%s]',
-        $conf->{HTML_LOGDIR} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'HTML_LOGFILE......[%s]',
-        $conf->{HTML_LOGFILE} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'INCLUDE_DIR.......[%s]',
-        $conf->{INCLUDE_DIR} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'PEBBLE_DIR........[%s]',
-        $conf->{PEBBLE_DIR} // EMPTY );
-      $bedrock_handler->log_debug(
-        sprintf 'ALLOW_SNIPPET_TAG.[%s]',
-        $conf->{ALLOW_SNIPPET_TAG} // EMPTY
-      );
-      $bedrock_handler->log_debug( sprintf 'LOGFORMAT.........[%s]',
-        $conf->{LOGFORMAT} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'LOG_MAXSIZE.......[%s]',
-        $conf->{LOG_MAXSIZE} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'LOG_SPOOLER.......[%s]',
-        $conf->{LOG_SPOOLER} // EMPTY );
-      $bedrock_handler->log_debug( sprintf 'LOG_PREFIX........[%s]',
-        $conf->{LOG_PREFIX} // EMPTY );
-    }
-  }
+  $bedrock_handler->debug( sprintf 'INCLUDE_DIR.......[%s]',
+    $conf->{INCLUDE_DIR} // EMPTY );
+  $bedrock_handler->debug( sprintf 'PEBBLE_DIR........[%s]',
+    $conf->{PEBBLE_DIR} // EMPTY );
+  $bedrock_handler->debug( sprintf 'ALLOW_SNIPPET_TAG.[%s]',
+    $conf->{ALLOW_SNIPPET_TAG} // EMPTY );
 
   # load generic startup BLMs
   my $modules = $conf->get_module_config();
@@ -502,23 +421,26 @@ EOM
       }
 
       if ( $err !~ /\Asnippet/xsm ) {
-        $r->log_error( sprintf 'Error on line [%d] (%s) - %s',
+
+        $bedrock_handler->log_error( sprintf 'Error on line [%d] (%s) - %s',
           $line, $file, $err );
 
         # print the lines surrounding error
         if ( $line > 1 ) {
-          $r->log_error( sprintf "  [%3d] %s\n",
+          $bedrock_handler->log_error( sprintf "  [%3d] %s\n",
             $line - 1, $lines[ $line - 2 ] );
         }
 
-        $r->log_error( sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ] );
+        $bedrock_handler->log_error( sprintf ">>[%3d] %s\n",
+          $line, $lines[ $line - 1 ] );
 
         if ( $line != @lines ) {
-          $r->log_error( sprintf "  [%3d] %s\n", $line + 1, $lines[$line] );
+          $bedrock_handler->log_error( sprintf "  [%3d] %s\n",
+            $line + 1, $lines[$line] );
         }
       }
       else {
-        $r->log_error("$err");
+        $bedrock_handler->log_error("$err");
       }
     }
     else {

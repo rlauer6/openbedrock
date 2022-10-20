@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 24;
+use Test::More tests => 25;
 
 use Data::Dumper;
 use English qw{-no_match_vars};
@@ -455,6 +455,17 @@ subtest 'xml' => sub {
   my $xml = $array->xml( RootName => 'range', XMLDecl => 1 );
 
   like( $xml, qr/\A<[?]xml.*>\n\z/xsm, 'looks like xml' );
+};
+
+########################################################################
+subtest 'dumper' => sub {
+########################################################################
+  my $array = Bedrock::Array->new( 0 .. 9 );
+
+  ok(1);
+
+  diag( $array->regular() );
+  diag( $array->compact() );
 };
 
 1;

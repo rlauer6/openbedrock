@@ -4,13 +4,14 @@ use strict;
 use warnings;
 
 use BLM::Startup::SessionManager;
-use Bedrock::Constants qw{:magic_numbers :booleans};
+use Bedrock::Constants qw{:magic_numbers :booleans :chars};
 use Bedrock::Dump;
 use DBI;
 use English qw{-no_match_vars};
 use File::Path;
-use Log::Log4perl;
-use TagX::Log;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 use parent qw( BLM::Startup::SessionManager );
 
@@ -66,7 +67,8 @@ sub do_sql {
 
   my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
 
-  #DEBUG sub { "do_sql: $sql bindvars: " . join( ",", @args ) };
+  $self->get_logger->debug(
+    sub { "do_sql: $sql bindvars: " . join( ",", @args ) } );
 
   return $self->_do_sql( $sql, @args );
 }
@@ -169,7 +171,7 @@ sub _do_select_set {
   die $BAD_QUERY, $stm, $dbh->errstr
     if !$sth;
 
-  Log::Log4perl->get_logger( ref $self )->debug("statement: $stm\n");
+  $self->get_logger->debug("statement: $stm\n");
 
   _bind_args( $sth, @args );
 
@@ -215,7 +217,9 @@ sub CONNECT {
     return DBI->connect(
       $dsn,
       @config{qw(username password)},
-      { RaiseError => 1, AutoCommit => 1 }
+      { RaiseError => $TRUE,
+        AutoCommit => $TRUE
+      }
     );
   };
 
@@ -366,7 +370,7 @@ sub UPDATE_LOGIN_SESSION {
 sub FETCH_SESSION {
   my ( $self, %options ) = @_;
 
-  Log::Log4perl->get_logger( ref $self )->debug("fetching session\n");
+  $self->get_logger->debug("fetching session\n");
 
   return $self->do_select( 'FETCH_SESSION', %options );
 }
@@ -384,14 +388,8 @@ sub FETCH_SESSION {
 sub SESSION_CLEANUP {
   my ( $self, %options ) = @_;
 
-  #DEBUG sub {
-  #  Bedrock::Dump::compact( $options{config} );
-  #};
-
   if ( $self->cleanup_session_dir ) {
     my $session_dir = $self->{'ctx'}->{'CONFIG'}->{'SESSION_DIR'};
-
-    # DEBUG "Session dir: $session_dir";
 
     if ( -d "$session_dir" ) {
       my $session_ids = $self->FETCH_EXPIRED_SESSIONS(%options);
@@ -399,8 +397,6 @@ sub SESSION_CLEANUP {
       foreach my $session ( @{$session_ids} ) {
         my $id = $session->[0];
         next if !$id;
-
-        #DEBUG "Removing $session_dir/$id";
 
         if ( -d "$session_dir/$id" ) {
           rmtree("$session_dir/$id");
@@ -467,30 +463,33 @@ sub STORE_SESSION {
   if ( $options{new} ) {
     my $rows = $self->do_sql( 'STORE_SESSION_INSERT', %options );
 
-    #DEBUG
-    #  sub { "Inserting session [" . $options{session} . "]: rows = [$rows]" };
+    $self->get_logger->debug(
+      sub { "Inserting session [" . $options{session} . "]: rows = [$rows]" }
+    );
 
     if ( $options{'expires'} ) {
       my $rows = $self->do_sql( 'UPDATE_SESSION', %options );
-      # DEBUG sub {
-      #   "Updated expiry date for session ["
-      #     . $options{session}
-      #     . "]: rows = [$rows]";
-      # };
+
+      $self->get_logger->debug(
+        sub {
+          sprintf 'Updated expiry date for session [%s]: rows = [%d]',
+            $options{session}, $rows;
+        }
+      );
 
     }
   }
   else {
     my $rows = $self->do_sql( 'STORE_SESSION_UPDATE', %options );
 
-    #DEBUG sub {
-    #  'Updated session ['
-    #    . $options{session}
-    #    . "] with\n"
-    #    . $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}
-    #    . "\nBind values are ("
-    #    . @options{qw{expires prefs firstname lastname email session}} . "]";
-    #};
+    $self->get_logger->debug(
+      sub {
+        sprintf "Updated session [%s] with\n%s\nBind values are [%s]",
+          $options{session},
+          $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}, join $COMMA,
+          @options{qw{expires prefs firstname lastname email session}};
+      }
+    );
 
   }
 
@@ -622,6 +621,4 @@ sub LOGIN {
 
 1;
 
-__DATA__
-
-
+__END__

@@ -1,5 +1,3 @@
-use strict;
-use warnings;
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -24,51 +22,187 @@ use warnings;
 # provides a mimimal context object for Bedrock
 package Faux::Context;
 
-sub new {
-  my $class = shift;
-  my $outhandle = shift;
+use strict;
+use warnings;
 
-  my $self = { @_ };
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $outhandle, @args ) = @_;
+
+  my $self = {@args};
 
   bless $self, ref($class) || $class;
 
   $self->{outhandle} = $outhandle;
 
-  $self;
+  return $self;
 }
 
-sub print {
-  my $self = shift;
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
 
-  if ( ref($self->{outhandle}) && $self->{outhandle}->can('print') ) {
-    $self->{outhandle}->print(@_);
+  if ( ref( $self->{outhandle} ) && $self->{outhandle}->can('print') ) {
+    $self->{outhandle}->print(@args);
   }
+
+  return;
 }
 
-sub close {
-  my $self = shift;
+########################################################################
+sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+########################################################################
+  my ( $self, $handle ) = @_;
 
-  if ( ref($self->{outhandle}) && $self->{outhandle}->can('close') ) {
-    $self->{outhandle}->close(@_);
+  if ( ref( $self->{outhandle} ) && $self->{outhandle}->can('close') ) {
+    $self->{outhandle}->close($handle);
   }
+
+  return;
 }
 
+########################################################################
 package Bedrock::Template;
+########################################################################
+
+use strict;
+use warnings;
 
 use parent qw/Class::Accessor/;
 
 __PACKAGE__->follow_best_practice();
 __PACKAGE__->mk_accessors(qw/text param config/);
 
-use Bedrock;
+use Bedrock qw{:utils};
 use Bedrock::Array;
+use Bedrock::Hash;
 use Bedrock::BedrockConfig;
+use Bedrock::Constants qw{:chars :booleans};
 
 use Text::TagX;
 
 use IO::Scalar;
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw/reftype blessed/;
 use Data::Dumper;
+use English qw{-no_match_vars};
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $self = eval {
+    if ( is_hash( $args[0] ) ) {
+      $class->SUPER::new( $args[0] );
+    }
+    else {
+      my $text = shift @args;
+
+      $class->SUPER::new(
+        { text  => \$text,
+          param => {@args}
+        }
+      );
+    }
+  };
+
+  if ( !$self->config ) {
+    $self->config( Bedrock::Config->new('tagx.xml') );
+  }
+
+  return $self;
+}
+
+########################################################################
+sub config {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    return $self->set_config(@args);
+  }
+  else {
+    return $self->get_config();
+  }
+}
+
+########################################################################
+sub param {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    my $param = is_hash( $args[0] ) ? $args[0] : {@args};
+
+    return $self->set_param(@args);
+  }
+  else {
+    return $self->get_param();
+  }
+}
+
+########################################################################
+sub text {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    my $text = shift @args;
+    $self->set_text( ref $text ? $text : \$text );
+  }
+
+  return $self->get_text();
+}
+
+########################################################################
+sub parse {
+########################################################################
+  my ( $self, $text, %args ) = @_;
+
+  if ($text) {
+    $self->text($text);
+  }
+
+  # merge parameters with those passed
+  my $param = $self->param();
+  $param //= {};
+
+  map { $param->{$_} = $args{$_} } keys %args;
+
+  my $output = $EMPTY;
+
+  my $ctx = Faux::Context->new( IO::Scalar->new( \$output ),
+    CONFIG => $self->config );
+
+  my $fh = IO::Scalar->new( $self->text() );
+
+  my $tx = Text::TagX->new( $fh, $ctx );
+
+  # give hash, array super powers...
+  foreach ( values %{$param} ) {
+    next if !ref $_ || blessed $_;
+
+    my $class = is_hash($_) ? 'Bedrock::Hash' : 'Bedrock::Array';
+    bless $_, $class;
+  }
+
+  $tx->param( %{$param} );
+
+  my $error = eval { $tx->output; };
+
+  die Dumper [ $tx->error ]
+    if $EVAL_ERROR;
+
+  return $output;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -92,14 +226,14 @@ WeE<039>ve all wanted to be able to do this...
 
  my $message;
 
- open MESSAGE, "<email_template.roc";
+ open my $fh, '<', 'email_template.roc";
    or die "could not open email template";
  {
-  local $/;
-  $message = <MESSAGE>;
+  local $/ = undef;
+  $message = <$fh>;
  }
 
- close MESSAGE;
+ close $message;
 
  my $customer = $sth->fetchrow_hashref;
 
@@ -115,13 +249,13 @@ WeE<039>ve all wanted to be able to do this...
 			   Data     => $message
 			  );
 
-   $msg->send('smtp', 'localhost');
- }
+ $msg->send('smtp', 'localhost');
+ 
 
 =head1 DETAILS
 
 The C<Bedrock::Template> class gives you access to Bedrock templating.
-You can do most everything using this class that the using Bedrock on
+You can do ammost everything using this class that the using Bedrock on
 the web or the Bedrock shell environments can do, including using
 plugins.  To configure the Bedrock templating environment you can use
 the default F<tagx.xml> file or provide a C<Bedrock::Config> object
@@ -141,11 +275,11 @@ determine the error.
     printf("error: %s at line: %d\n", $@->mesg, $@->line);
   }
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
- new( text, param => value, ...) 
+ new( text, key => value, ...) 
 
 Instantiates a Bedrock templating object.
 
@@ -157,11 +291,11 @@ The Bedrock text to parse.
 
 =item key => value
 
-A list of parameters to use for templating.  The can be scalars, object, or arrays.
+A list of parameters to use for templating.  They can be scalars, object, or arrays.
 
 =back
 
- new( options )
+ new( { text => text, param => parameters, CONFIG => config } )
 
 Pass a hash reference with the keys listed below.
 
@@ -182,31 +316,6 @@ configuration object is provided by default (F<tagx.xml>).
 
 =back
 
-=cut
-
-sub new {
-  my $class = shift;
-
-  my $self = eval {
-    if ( ref($_[0]) && reftype($_[0]) eq 'HASH') {
-      $class->SUPER::new(shift);
-    }
-    else {
-      my $text = shift;
-      $class->SUPER::new({ text => \$text, param => {@_} });
-    }
-  };
-  
-  if ( !$self->config) {
-    $self->config(Bedrock::Config->new('tagx.xml'));
-  }
-
-  return $self;
-}
-
-
-=pod
-
 =head2 config
 
 Sets or returns the configuration object used by the Bedrock parser.
@@ -214,19 +323,6 @@ Typically this is the deserialized version of Bedrock's configuration
 file - F<tagx.xml>.  This is passed to Bedrock when your template is
 parsed.  If no configuration object is found, the C<parse> method will
 use Bedrock's default F<tagx.xml>.
-
-=cut
-
-sub config {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->set_config(@_);
-  }
-  else {
-    $self->get_config();
-  }
-}
 
 =head2 param
 
@@ -237,21 +333,6 @@ represent data or objects that will be used by the template.
 
  $self->param({foo => $bar, baz => [1..10], $session});
 
-=cut
-
-sub param {
-  my $self = shift;
-  
-  if (@_) {
-    $self->set_param(@_);
-  }
-  else {
-    $self->get_param();
-  }
-}
-
-=pod
-
 =head2 text
 
  text( text )
@@ -260,22 +341,6 @@ sub param {
 Sets or returns the Bedrock template string to parse.  C<text> can be
 either a scalar or a reference to a scalar.  Returns a reference to
 the string or undef if no string is currently set.
-
-=cut
-
-
-sub text {
-  my $self = shift;
-
-  if (@_) {
-    my $text = shift;
-    $self->set_text(ref($text) ? $text : \$text );
-  }
-
-  return $self->get_text();
-}
-
-=pod
 
 =head2 parse
 
@@ -309,44 +374,6 @@ Optional text to parse.  Use C<text()> to set text to parse, or you
 can pass the text to parse.
 
 =back
-
-=cut
-
-sub parse {
-  my $self = shift;
-  my $text = shift;
-  
-  my %args = @_;
-  
-  $self->text($text) if $text;
-
-  # merge parameters with those passed
-  my $param = $self->param() || {};
-  map { $param->{$_} = $args{$_} } keys %args;
-
-  my $output = "";
-  
-  my $ctx = Faux::Context->new(IO::Scalar->new(\$output), CONFIG => $self->config);
-
-  my $fh = IO::Scalar->new($self->text());
-  
-  my $tx = Text::TagX->new($fh, $ctx);
-
-  $tx->param(%$param);
- 
-  my $error = eval {
-    $tx->output;
-  };
-
-  die Dumper [ $tx->error ] 
-    if ( $@ );
-
-  return $output;
-}
-
-1;
-
-=pod
 
 =head1 AUTHOR
 

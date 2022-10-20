@@ -28,7 +28,7 @@ package Bedrock::CGI;
 use strict;
 use warnings;
 
-use Bedrock;
+use Bedrock qw{:utils};
 use Apache::Bedrock;
 use Apache::Request_cgi;
 use Bedrock::Constants qw{:chars :booleans};
@@ -67,36 +67,72 @@ sub new {
 
   my $self = bless {}, $class;
 
-  $self->handler->header_out( 'Content-type',
-    $options{CONTENT_TYPE} || 'text/html' );
+  foreach ( keys %options ) {
+    $options{ lc $_ } = $options{$_};
+  }
 
-  # retrieve the configuration object
   $self->config;
-
-  # Bedrock logging
-  $options{LOGDIR} //= $self->config->{LOGDIR};
-
-  if ( !-d $options{LOGDIR} || !-w $options{LOGDIR} ) {
-    print {*STDERR} sprintf "WARNING: unable to create log files in:%s\n",
-      $options{LOGDIR};
-
-    $options{LOGDIR} = tempdir();
-    print {*STDERR} sprintf "WARNING: using %s\n", $options{LOGDIR};
-  }
-
-  if ( !$options{LOG_FILE} ) {
-    my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.]cgi|pl$/xsm );
-
-    $options{LOG_FILE} = sprintf '%s/%s%s.log', $options{LOGDIR}, $name, $ext;
-  }
-
-  TagX::Log::start_logger( LOG_FILE => $options{LOG_FILE} );
 
   $self->context;
 
-  $self->init_session( $options{COOKIELESS} );
+  if ( $options{headers} && ref $options{headers} ) {
+    my @headers
+      = is_hash( $options{headers} )
+      ? %{ $options{headers} }
+      : @{ $options{headers} };
+    $self->handler->headers_out(@headers);
+  }
+  else {
+    $self->set_content_type(%options);
+  }
+
+  $self->init_session( $options{cookieless} );
+
+  $self->{DATA} //= $EMPTY;
+
+  $self->autoflush( $options{autoflush} // $FALSE );
+
+  if ( $self->autoflush ) {
+    $self->flush_output;  # send header
+  }
 
   return $self;
+}
+
+########################################################################
+sub autoflush {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->{autoflush} = shift @args;
+  }
+
+  return $self->{autoflush};
+
+}
+
+########################################################################
+sub set_content_type {
+########################################################################
+  my ( $self, %options ) = @_;
+
+  my $content_type;
+
+  if ( exists $options{content_type} && $options{content_type} ) {
+    $content_type = $options{content_type};
+  }
+  elsif ( !exists $options{content_type} ) {
+    $content_type = 'text/html';
+  }
+
+  if ( defined $content_type ) {
+    $self->handler->header_out( 'Content-type', $content_type );
+  }
+
+  $self->{'content_type'} = $content_type;
+
+  return $content_type;
 }
 
 ########################################################################
@@ -237,7 +273,7 @@ sub init_session {
   my $config = $self->config->get_module_config('UserSession');
 
   if ($config) {
-    $config->{cookieless_session} = $cookieless;
+    $config->{cookieless_sessions} = $cookieless;
 
     require BLM::Startup::UserSession;
 
@@ -254,15 +290,24 @@ sub print {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{DATA} . join $EMPTY, @args;
+  if ( $self->autoflush ) {
+    $self->flush_output( join $EMPTY, @args );
+  }
+  else {
+    $self->{DATA} .= join $EMPTY, @args;
+  }
+
+  return;
 }
 
 ########################################################################
 sub log {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
-  my ( $self, $message ) = @_;
+  my ( $self, $message, $level ) = @_;
 
-  return TagX::Log::log_message( undef, $message );
+  $level //= 'debug';
+
+  return $self->get_logger->$level($message);
 }
 
 ########################################################################
@@ -382,22 +427,36 @@ sub element {
   return sprintf '%s%s%s', $element_start, $content, element_end($element);
 }
 
+########################################################################
+sub flush_output {
+########################################################################
+  my ( $self, $buffer ) = @_;
+
+  if ( $self->handler->headers_out ) {
+    $self->handler->send_http_header;
+  }
+
+  if ( exists $self->{DATA} && length $self->{DATA} ) {
+    print $self->{DATA};
+  }
+  elsif ($buffer) {
+    print $buffer;
+  }
+
+  return;
+}
+
 # flush output, close session
 ########################################################################
 sub DESTROY {
 ########################################################################
   my ($self) = @_;
 
+  $self->flush_output;
+
   if ( $self->session ) {
     $self->session->closeBLM;
   }
-
-  return
-    if !exists $self->{DATA};
-
-  $self->handler->send_http_header;
-
-  print "\n", $self->{DATA};
 
   return;
 }
@@ -414,15 +473,21 @@ Bedrock::CGI - subroutines to help create CGIs
 
 =head1 SYNOPSIS
 
-#!/usr/bin/perl
+  #!/usr/bin/perl
+
+  use strict;
+  use warnings;
 
   BEGIN {
-    push @INC, '/usr/lib/bedrock/perl5';
+    use lib '/usr/lib/bedrock/perl5';
   }
-  
+
+  use Bedrock;
   use Bedrock::BedrockCGI;
   use Data::Dumper;
-  
+
+  $ENV{CONFIG_PATH} = '/var/www/config';
+
   my $bedrock = Bedrock::CGI->new;
   
   # set session information (persistent)
@@ -440,8 +505,8 @@ Bedrock::CGI - subroutines to help create CGIs
 
 =head1 DESCRIPTION
 
-C<Bedrock::CGI> facilitates the writing of perl CGI programs that
-interact with the Bedrock environment.  Using C<Bedrock::CGI> the perl
+C<Bedrock::CGI> facilitates the writing of Perl CGI programs that
+interact with the Bedrock environment.  Using C<Bedrock::CGI> the Perl
 developer has access to Bedrock global and site level configuration
 data as well as the ability to access and persist data to a Bedrock
 session.
@@ -457,7 +522,7 @@ L<Bedrock::CGI> does not behave identically to Bedrock (run as a)
 CGI or Bedrock under mod_perl.  Since your request has not gone
 through the C<Bedrock::Apache::Bedrock::handler>, you're not getting
 the full benefits of the Bedrock environment upon instantiation of the
-C<Bedrock::CGI> object.  That is by design.
+C<Bedrock::CGI> object. That is by design.
 
 You probably donE<039>t want your CGI to be as heavy weight as the
 full Bedrock environment, otherwise you might as well use Bedrock!
@@ -522,30 +587,33 @@ but you can do:
 
  new(options)
 
-C<options> is a hash of options:
+C<options> is a hash (not a reference) of options:
 
 =over 5
 
-=item CONTENT_TYPE
+=item content_type
 
 default: 'text/html'
 
-=item LOGDIR
+=item headers
 
-default: C<$bedrock->config( 'LOGDIR' )>
+Array or hash of key value pairs.
 
-=item LOGFILE
+ my $bedrock_cgi = Bedrock::CGI->new( headers => { 'Content-type' => 'text/html' });
 
-default: C<sprintf("%s/%s.log", $bedrock->config( 'LOGDIR' ), $0);>
-
-=item COOKIELESS
+=item cookieless
 
 If set to 1, then sessions are assumed to be cookieless.
 
 default: 0
 
-=back
+=item autoflush
 
+Cause the C<print()> method to immediately flush the buffer
+contents. Headers are sent once, so you should set the headers or
+accept the default (text/html) prior to printing content.
+
+=back
 
 =head2 config
 
@@ -619,7 +687,7 @@ Returns an Apache request handler
 
  print( data );
 
-Add data to the output buffer.  The buffer will be flushed to STDOUT
+Add data to the output buffer. The buffer will be flushed to STDOUT
 when the program exits unless the buffer is cleared using the
 C<clear()> method.
 

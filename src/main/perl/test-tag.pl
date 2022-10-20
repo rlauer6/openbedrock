@@ -11,13 +11,8 @@ use Test::Bedrock qw{run};
 my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
 
 my $test_file = sprintf 't/%s.yml', $name;
-my $log_file  = $ENV{LOGFILE} || 'bedrock-test.log';
 
-run(
-  $test_file,
-  yaml    => 1,
-  logfile => $log_file,
-);
+run( $test_file, yaml => 1, );
 
 1;
 

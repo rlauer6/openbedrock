@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,18 +23,21 @@ package BLM::Startup::Config;
 use strict;
 use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
+use Bedrock qw{:utils};
 use Bedrock::BedrockConfig;
+use Bedrock::Constants qw{:chars :booleans};
+use English qw{-no_match_vars};
+
 use Scalar::Util qw/reftype/;
 
-@ISA = qw/Bedrock::Config/;
+use vars qw{ @ISA };
 
+@ISA = qw/Bedrock::Config/;  ## no critic (ProhibitExplicitISA)
+
+########################################################################
 sub TIEHASH {
-  my ($class, $ctx, $config) = @_;
+########################################################################
+  my ( $class, $ctx, $config ) = @_;
 
   my $self = bless {}, $class;
 
@@ -44,23 +45,103 @@ sub TIEHASH {
     $self->{$name} = $ctx->getConfigValue($name);
   }
 
-  $self;
+  return $self;
 }
 
-sub require {
-  my $self = shift;
-  my $mesg = '';
+########################################################################
+sub require {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @var_list ) = @_;
 
-  for my $name (@_) {
-    $mesg .= "    $name,\n" 
-      unless defined( $self->{$name} );
+  my @missing_vars;
+
+  for my $var_name (@var_list) {
+    next if defined $self->{$var_name};
+
+    push @missing_vars, $var_name;
   }
 
-  die "Sorry! The following variables MUST be defined in config: (\n"  . $mesg . ")\n"
-    if length($mesg) > 0;
+  die sprintf "ERROR: The following variables MUST be defined in config:\n%s",
+    join "\n", @missing_vars
+    if @missing_vars;
+
+  return scalar @missing_vars;
 }
 
+########################################################################
+sub plugin_config {
+########################################################################
+  my ( $self, $name, $plugin_config ) = @_;
+
+  my $config_path;
+
+  if ( is_hash($plugin_config) ) {
+    die "no binding\n"
+      if !exists $plugin_config->{binding};
+
+    die "no config\n"
+      if !exists $plugin_config->{config};
+
+    die "no module\n"
+      if !exists $plugin_config->{module};
+  }
+
+  foreach (qw/startup plugin/) {
+    $config_path = sprintf '%s.d/startup/%s.xml',
+      $self->{BEDROCK_CONFIG_PATH}, $name;
+
+    last if -e $config_path;
+  }
+
+  die "could not find $config_path\n"
+    if !-e $config_path;
+
+  if ($plugin_config) {
+    return Bedrock::XML::writeXML( $plugin_config, $config_path );
+  }
+  else {
+    return Bedrock::XML->new($config_path);
+  }
+}
+
+########################################################################
+sub tagx_config {
+########################################################################
+  my ( $self, $tagx ) = @_;
+
+  my $config_path = sprintf '%s/tagx.xml', $self->{BEDROCK_CONFIG_PATH};
+
+  if ( is_hash($tagx) ) {
+    rename $config_path, sprintf '%s/tagx.xml~', $self->{BEDROCK_CONFIG_PATH};
+
+    return Bedrock::XML::writeXML( $tagx, $config_path );
+  }
+  else {
+    return Bedrock::XML->new($config_path);
+  }
+}
+
+1;
+
+__END__
+
 =pod
+
+=head1 PUBLIC
+
+C<BLM::Startup::Config> - object access to the Bedrock configuration
+
+=head1 SYNOPSIS
+
+ <null $config.merge("my-custom-config.xml")>
+
+ <null $config.require("data-source")>
+
+=head1 DESCRIPTION
+
+Exposes Bedrock's F<tagx.xml> via the C<$config> object.
+
+=head1 METHODS AND SUBROUTINES
 
 =head2 plugin_config
 
@@ -94,88 +175,9 @@ form of plugin config is not present.
 
 =back
 
-=cut
+=head2 merge
 
-sub plugin_config {
-  my $self = shift;
-  my $name = shift;
-  my $plugin_config = shift;
-
-  my $config_path;
-
-  if ( ref($plugin_config) && reftype($plugin_config) eq 'HASH' ) {
-    die "no binding\n"
-      unless exists $plugin_config->{binding};
-    die "no config\n"
-      unless exists $plugin_config->{config};
-    die "no module\n"
-      unless exists $plugin_config->{module};
-  }
-
-  foreach ( qw/startup plugin/ ) {
-    $config_path = sprintf("%s.d/startup/%s.xml", $self->{BEDROCK_CONFIG_PATH}, $name);
-    last if -e $config_path;
-  }
-
-  if ( -e $config_path ) {
-    if ( $plugin_config ) {
-      Bedrock::XML::writeXML($plugin_config, $config_path);
-    }
-    else {
-      return Bedrock::XML->new($config_path);
-    }
-  }
-  else {
-    die "could not find $config_path\n";
-  }
-}
-
-=pod
-
-=head2 tagx_config
-
- tagx_config( [tagx-config] ) 
-
-Reads or writes the F<tagx.xml> file.  Be careful, no checking is done!
-
-=cut
-
-sub tagx_config {
-  my $self = shift;
-  my $tagx = shift;
-
-  my $config_path = sprintf("%s/tagx.xml", $self->{BEDROCK_CONFIG_PATH});
-
-  if ( ref($tagx) && reftype($tagx) eq 'HASH') {
-    rename $config_path, sprintf("%s/tagx.xml~", $self->{BEDROCK_CONFIG_PATH});
-    Bedrock::XML::writeXML($tagx, $config_path); 
-  }
-  else {
-    return Bedrock::XML->new($config_path);
-  }
-}
-
-1;
-
-=pod
-
-=head1 PUBLIC
-
-C<BLM::Startup::Config> - object access to the Bedrock configuration
-
-=head1 SYNOPSIS
-
- <null $config.merge("my-custom-config.xml")>
-
- <null $config.require("data-source")>
-
-=head1 DESCRIPTION
-
-Exposes Bedrock's F<tagx.xml> via the C<$config> object.
-
-=head1 METHODS
-
-=head2 merge( file )
+ merge(file)
 
 Merges the given file which is assumed to be a Bedrock XML file, into
 the C<$config> object possibly overwriting some values.
@@ -194,10 +196,18 @@ file specified:
 
 =back
 
-=head2 require( name )
+=head2 require
 
-Throws an exception if the given property is not found in the
-configuration file or is null.
+ require(var-list)
+
+Throws an exception if the given configuation variables are not defined in the
+configuration file.
+
+=head2 tagx_config
+
+ tagx_config( [tagx-config] ) 
+
+Reads or writes the F<tagx.xml> file.  Be careful, no checking is done!
 
 =head1 PROPERTIES
 
@@ -207,51 +217,11 @@ path where the F<tagx.xml> file will be found by setting the
 C<CONFIG_PATH> or C<BEDROCK_CONFIG_PATH> environment in your Apache
 configuration file.
 
- SetEnv CONFIG_PATH /var/www/vhosts/sis-devl/config
- SetEnv BEDROCK_CONFIG_PATH /var/www/vhosts/sis-devl/config
+ SetEnv CONFIG_PATH /var/www/config
+ SetEnv BEDROCK_CONFIG_PATH /var/www/config
 
 Some of the properties that Bedrock uses include the configuration
 variables found below.
-
-=over 5
-
-=item * HTML_LOGMAXSIZE
-
-Maximum size of the Bedrock page logs.  They will be truncated once
-this size is reached.
-
-=item * LOGFILE
-
-The name of the Bedrock log file.  This files is used to log messages
-before Bedrock begins logging to the page log.
-
-=item * LOGLEVEL
-
-Logging level.
-
-=over 4
-
-=item * MSG_DEBUG
-
-Lot's of info.
-
-=item * MSG_WARN
-
-Only warnings.
-
-=item * MSG_INFO
-
-Bare minimum.
-
-=back
-
-=item * HTML_LOGDIR
-
-The directory where Bedrock will write page logs.
-
-=item * LOGDIR
-
-The directory where Bedrock will create its log.
 
 =item * PEBBLE_DIR
 
@@ -351,5 +321,9 @@ the system startup Plugins.  You are encouraged to leave this alone
 for the most part.
 
 =back
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
 
 =cut

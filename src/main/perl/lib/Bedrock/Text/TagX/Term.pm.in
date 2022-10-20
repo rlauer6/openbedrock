@@ -27,6 +27,7 @@ use warnings;
 use Carp;
 use Scalar::Util qw{reftype blessed};
 
+use Bedrock qw{:utils};
 use Bedrock::Constants qw{:chars :booleans};
 
 use English qw{-no_match_vars};
@@ -71,7 +72,12 @@ sub _find_in_context {
       $found = $context->{$name};
 
       $self->get_logger->debug(
-        "$self: [$name] found as [$found] in [$context]");
+        sub {
+          sprintf '[%s] found as [%s] in [%s]', $name,
+            ( defined $found ? $found : 'undef' ),
+            $context;
+        }
+      );
       last;
     }
   }
@@ -126,9 +132,11 @@ sub resolve_var {
 
   my $found = $self->_find_in_context( $first, @args );
 
-  $self->get_logger->debug("$self: Value of [$first] is [$found]");
   return undef
     if !defined $found;
+
+  $self->get_logger->debug( sprintf 'Value of [%s] is [%s]',
+    $first, $found // $EMPTY );
 
   for (@components) {
     if (/^\Q[\E(-?\d+)\Q]\E/oi) {
@@ -136,15 +144,16 @@ sub resolve_var {
       # array element
       my $i = $1;
       $self->get_logger->debug(
-        "$self: looking for array item with index [$i]");
+        sprintf 'looking for array item with index [%s]', $i );
 
-      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
-        $self->get_logger->debug("$self: [$found] is not an array.");
+      if ( !is_array($found) ) {
+        $self->get_logger->debug( sprintf '[%s] is not an array.', $found );
 
-        return undef;
+        return;
       }
 
-      $self->get_logger->debug("$self: [$found] is an array");
+      $self->get_logger->debug( sprintf '[%s] is an array', $found );
+
       $found = $found->[$i];
       next;
     }
@@ -161,15 +170,16 @@ sub resolve_var {
         if $i !~ /^-?[\d]+$/xsm;
 
       $self->get_logger->debug(
-        "$self: looking for array item with index [$i]");
+        sprintf 'looking for array item with index [%s]', $i );
 
-      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
-        $self->get_logger->debug("$self: [$found] is not an array.");
+      if ( !is_array($found) ) {
+        $self->get_logger->debug( sprintf '[%s] is not an array.', $found );
 
-        return undef;
+        return;
       }
 
-      $self->get_logger->debug("$self: [$found] is an array");
+      $self->get_logger->debug( sprintf '[%s] is an array', $found );
+
       $found = $found->[$i];
       next;
     }
@@ -179,10 +189,11 @@ sub resolve_var {
       # hash element
       my $key = $1;
       $self->get_logger->debug(
-        "$self: looking for a hash component [$key] in [$found]");
+        sprintf 'looking for a hash component [%s] in [%s]',
+        $key, $found );
 
-      if ( ref($found) && reftype($found) eq 'HASH' ) {
-        $self->get_logger->debug("$self: [$found] is a hash");
+      if ( is_hash($found) ) {
+        $self->get_logger->debug( sprintf '[%s] is a hash', $found );
         $found = $found->{$key};
       }
       else {
@@ -190,13 +201,14 @@ sub resolve_var {
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
         # Other cases are failures
-        if ( !ref($found) || reftype($found) ne 'ARRAY' || @{$found} != 1 ) {
+        if ( !is_array($found) || @{$found} != 1 ) {
 
           # perhaps one other case?  TIE'd SCALAR?
           if ( blessed($found) && $found->can('get') ) {
             $found = $found->get($key);
 
-            $self->get_logger->debug("$self: found component [$found]");
+            $self->get_logger->debug( sprintf 'found component [%s]',
+              $found );
 
             next;
           }
@@ -209,7 +221,7 @@ sub resolve_var {
               }
             );
 
-            return undef;
+            return;
           }
         }
 
@@ -231,7 +243,7 @@ sub resolve_var {
     }
 
     # illegal
-    return undef;
+    return;
   }
 
   return $found;
@@ -248,32 +260,44 @@ sub var_exists {
   # Split name into components
   my @components = split /[.]/oixsm, $name;
 
-  $self->get_logger->debug("$self: components of name are (@components)");
+  $self->get_logger->debug(
+    sub { sprintf 'components of name are (%s)', join $SPACE, @components } );
 
   my $first = shift @components;
 
   if ( !$first ) {
     $self->get_logger->debug(
-      "$self: First component [$first] of name [$name] is undefined.");
+      sub {
+        sprintf 'First component [%s] of name [%s] is undefined.', $first,
+          $name;
+      }
+    );
 
-    return undef;
+    return;
   }
 
   if (@components) {
     if ( $first !~ /^\w+$/o ) {
       $self->get_logger->debug(
-        "$self: First component [$first] of name [$name] is not a word.");
+        sub {
+          sprintf 'First component [%s] of name [%s] is not a word.', $first,
+            $name;
+        }
+      );
 
-      return undef;
+      return;
     }
   }
   else {
     if ( $first !~ /^(\w+|[\@])$/oxsm ) {
       $self->get_logger->debug(
-        "$self: First component [$first] of name [$name] is not a word or `\@'."
+        sub {
+          sprintf 'First component [%s] of name [%s] is not a word or @.',
+            $first, $name;
+        }
       );
 
-      return undef;
+      return;
     }
   }
 
@@ -287,20 +311,22 @@ sub var_exists {
       $exists = $TRUE;
 
       $self->get_logger->debug(
-        "$self: [$first] found as [$found] in [$context]");
+        sub { sprintf '[%s] found as [%s] in [%s]', $first, $found, $context }
+      );
 
       last;
     }
   }
 
-  $self->get_logger->debug("$self: Value of [$first] is [$found]");
+  $self->get_logger->debug(
+    sub { sprintf 'Value of [%s] is [%s]', $first, $found // 'undef' } );
 
   # return 0 if found but undefined, undef if does not exist
   if ( $exists && !@components ) {
     return defined $found ? $TRUE : $FALSE;
   }
   elsif ( !@components ) {
-    return undef;
+    return;
   }
 
   for my $component (@components) {
@@ -312,15 +338,16 @@ sub var_exists {
       # array element
       my $i = $1;
       $self->get_logger->debug(
-        "$self: looking for array item with index [$i]");
+        sub { sprintf 'looking for array item with index [%s]', $i } );
 
-      if ( !ref($found) || reftype($found) ne 'ARRAY' ) {
-        $self->get_logger->debug("$self: [$found] is not an array.");
+      if ( !is_array($found) ) {
+        $self->get_logger->debug(
+          sub { sprintf '[%s] is not an array.', $found } );
 
-        return undef;
+        return;
       }
 
-      $self->get_logger->debug("$self: [$found] is an array");
+      $self->get_logger->debug( sub { sprintf '[%s] is an array.', $found } );
 
       $found = $found->[$i];
 
@@ -335,13 +362,15 @@ sub var_exists {
       # hash element
       my $key = $1;
       $self->get_logger->debug(
-        "$self: looking for a hash component [$key] in [$found]");
+        sprintf 'looking for a hash component [%s] in [%s]',
+        $key, $found );
 
-      if ( ref($found) && reftype($found) eq 'HASH' ) {
-        $self->get_logger->debug("$self: [$found] is a hash");
+      if ( is_hash($found) ) {
+        $self->get_logger->debug( sprintf '[%s] is a hash', $found );
 
         if ( exists $found->{$key} ) {
-          $self->get_logger->debug("$self: found [$key] in [$found]");
+          $self->get_logger->debug(
+            sub { sprintf 'found [%s] in [%s]', $key, $found } );
         }
 
         return $FALSE
@@ -354,7 +383,7 @@ sub var_exists {
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
         # Other cases are failures
-        if ( !ref($found) || reftype($found) ne 'ARRAY' || @{$found} > 1 ) {
+        if ( !is_array($found) || @{$found} > 1 ) {
           $self->get_logger->debug(
             sub {
               sprintf
@@ -363,7 +392,7 @@ sub var_exists {
             }
           );
 
-          return undef;
+          return;
         }
 
         $self->get_logger->debug(
@@ -387,7 +416,7 @@ sub var_exists {
     }
 
     # illegal
-    return undef;
+    return;
   }
 
   return $TRUE;

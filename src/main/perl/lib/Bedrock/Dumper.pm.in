@@ -1,0 +1,244 @@
+package Bedrock::Dumper;
+
+use strict;
+use warnings;
+
+use Role::Tiny;
+
+use Bedrock qw{:utils};
+use Bedrock::Log;
+use Bedrock::Constants qw{:chars :booleans};
+
+use English qw{-no_match_vars};
+use Scalar::Util qw/reftype/;
+
+########################################################################
+sub compact {
+########################################################################
+  my ( $ref, $prefix, $string, $encode ) = @_;
+
+  # prefix -- what prints on a line before the current item's key and value
+  $prefix //= $EMPTY;
+
+  # What has been printed so far
+  $string //= $EMPTY;
+
+  if ( is_hash($ref) ) {
+
+    # need to keep track of empty hashes
+    my $i = 0;
+
+    for my $key ( keys %{$ref} ) {
+      my $value = $ref->{$key};
+
+      if ( ref $value ) {
+
+        # recursive invocation if value is a reference
+
+        # $p is the prefix for the recursive call to compact()
+        # Need to have this since we want $prefix unchanged after the
+        # recursive call
+        my $p = $i ? $SPACE x length $prefix : $prefix;
+
+        # Append the key to the current item
+        if ( length $p ) {
+          $p .= ".$key";
+        }
+        else {
+          $p = $key;
+        }
+
+        # And invoke compact()
+        $string = compact( $value, $p, $string, $encode );
+      }
+      else {
+        $string .= $i ? $SPACE x length $prefix : $prefix;
+
+        if ( length $prefix ) {
+          $string .= $DOT;
+        }
+
+        if ($encode) {
+          $value = _Htmlencode($value);
+        }
+
+        $string .= "$key = ($value)\n";
+      }
+
+      $i++;
+    }
+
+    # Need this to mark empty hashes
+    if ( !$i ) {
+      $string .= "$prefix = (*** Empty Hash ***)\n";
+    }
+  }
+  elsif ( is_array($ref) ) {
+
+    # To keep track of empty arrays
+    my $i = 0;
+
+    for ( ; $i < @{$ref}; $i++ ) {
+      my $value = $ref->[$i];
+
+      if ( ref $value ) {
+
+        # $p is the prefix for the recursive call to compact()
+        # Need to have this since we want $prefix unchanged after the
+        # recursive call
+        my $p = $i ? $SPACE x length $prefix : $prefix;
+
+        # Append current item index
+        $p .= ".[$i]";
+
+        $string = compact( $value, $p, $string, $encode );
+      }
+      else {
+        $string .= $i ? $SPACE x length $prefix : $prefix;
+
+        if ($encode) {
+          $value = _Htmlencode($value);
+        }
+
+        $string .= ".[$i] = ($value)\n";
+      }
+    }
+
+    # To mark empty arrays
+    if ( !$i ) {
+      $string .= "$prefix = (*** Empty Array ***)\n";
+    }
+  }
+  else {
+    if ($encode) {
+      $ref = _Htmlencode($ref);
+    }
+
+    $string .= "$prefix = ($ref)\n";
+  }
+
+  return $string;
+}
+
+########################################################################
+sub regular {
+########################################################################
+  my ( $ref, $nspaces, $string, $encode ) = @_;
+
+  $nspaces //= 2;
+  $string  //= $EMPTY;
+
+  if ( is_hash($ref) ) {
+    $string .= "{\n";
+
+    for my $key ( keys %{$ref} ) {
+      my $value = $ref->{$key};
+
+      $string .= $SPACE x $nspaces . "$key => ";
+
+      if ( ref $value ) {
+        $string = regular( $value, $nspaces + 2, $string, $encode );
+      }
+      else {
+        if ( $encode && defined $value ) {
+          $value = _Htmlencode($value);
+        }
+
+        $string .= defined $value ? "($value)\n" : "*** Undefined ***\n";
+      }
+    }
+
+    $string .= $SPACE x $nspaces . "}\n";
+  }
+  elsif ( is_array($ref) ) {
+    $string .= "[\n";
+
+    my ( $i, $value );
+
+    for ( $i = 0; $i < @{$ref}; $i++ ) {
+      $value = $ref->[$i];
+
+      $string .= $SPACE x $nspaces . "[$i] .. ";
+
+      if ( ref $value ) {
+        $string = &regular( $value, $nspaces + 2, $string, $encode );
+      }
+      else {
+        if ($encode) {
+          $value = _Htmlencode($value);
+        }
+
+        $string .= "($value)\n";
+      }
+    }
+    $string .= $SPACE x $nspaces . "]\n";
+  }
+  else {
+    if ($encode) {
+      $ref = _Htmlencode($ref);
+    }
+
+    $string .= "($ref)\n";
+  }
+
+  return $string;
+}
+
+########################################################################
+sub _Htmlencode {
+########################################################################
+  return Bedrock::Text::URLEncode::Htmlencode(shift);
+}
+
+########################################################################
+sub _regular_dump {
+########################################################################
+  goto &Bedrock::Dump::regular;
+}
+
+########################################################################
+sub _compact_dump {
+########################################################################
+  goto &Bedrock::Dump::compact;
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $file ) = @_;
+
+  my $str = _regular_dump($self);
+
+  return $str if !$file;
+
+  open my $fh, '>', $file
+    or die "Could not create $file: $OS_ERROR";
+
+  print {$fh} $str;
+
+  return close $fh;
+}
+
+########################################################################
+sub print_compact {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $str = _compact_dump($self);
+
+  return $str
+    if !@args > 0;
+
+  open my $fh, '>', $args[0]
+    or die "$self->print_compact: Could not create $args[0]: $OS_ERROR";
+
+  print {$fh} $str;
+
+  return close $fh;
+}
+
+1;
+
+__END__
+
+## no critic (RequirePodSections)

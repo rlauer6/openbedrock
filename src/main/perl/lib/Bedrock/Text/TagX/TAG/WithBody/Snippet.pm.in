@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -25,39 +23,41 @@ package TagX::TAG::WithBody::Snippet;
 use strict;
 use warnings;
 
+use Bedrock qw{:utils};
+use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Snippet;
-use Bedrock::Dump;
-
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
-use TagX::TAG::WithBody;
-
-@ISA = qw (TagX::TAG::WithBody);
-
-use Log::Log4perl qw/:easy/;
 use English qw/-no_match_vars/;
 
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use parent qw{ Exporter TagX::TAG::WithBody};
+
+########################################################################
 sub error_listing {
-  my ($source, $error, $type) = @_;
+########################################################################
+  my ( $source, $error, $type ) = @_;
 
   require IO::Scalar;
 
   my $fd = IO::Scalar->new( \$source );
 
-  my $err_line = $1
-    if $error =~/line (\d+),/m;
-  
-  my $listing = sprintf( "snippet - %s\n\n%s\n", $type, $@ );
-  
+  my $err_line;
+
+  if ( $error =~ /line\s(\d+),/xsm ) {
+    $err_line = $1;
+  }
+
+  my $listing = sprintf "snippet - %s\n\n%s\n", $type, $EVAL_ERROR;
+
   my $line_no = 0;
-  
-  while (defined ($_ = $fd->getline)) {
+
+  while ( defined( $_ = $fd->getline ) ) {
     chomp;
-    $listing .= sprintf("[%4d] %s %s\n", ++$line_no, ($line_no eq $err_line) ? '>>' : '  ', $_);
+    $listing .= sprintf "[%4d] %s %s\n", ++$line_no,
+      $line_no eq $err_line ? '>>' : q{  }, $_;
   }
 
   $fd->close;
@@ -65,19 +65,25 @@ sub error_listing {
   return $listing;
 }
 
+########################################################################
 sub closure {
-  '/snippet';
+########################################################################
+  return '/snippet';
 }
 
+########################################################################
 sub define_options {
+########################################################################
   return (
-    'define-var=s'     => '_',
-    'define-snippet=s' => 'snippet'
+    'define-var=s'     => $UNDERSCORE,
+    'define-snippet=s' => 'snippet',
   );
 
 } ## end sub define_options
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
@@ -89,73 +95,82 @@ sub finalize {
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   if ( $tag_opts->{type} ) {
-    $options{'define-var'}     = $tag_opts->{name};
+    $options{'define-var'} = $tag_opts->{name};
+
     $options{'define-snippet'} = $tag_opts->{type};
+
     shift @argv;
   }
   elsif ( $tag_opts->{name} ) {
     $options{'define-var'} = $tag_opts->{name};
+
     shift @argv;
   }
 
   my $snippet = $self->{subobjs}->[0];
 
-  DEBUG sub {
-    "Compiling snippet:\n"
-      . $snippet;
-  };
-  
-  # compile snippet
-  my $obj =  eval { 
-    $self->create_snippet_class( $snippet );
-  };
+  $self->get_logger->debug(
+    sub {
+      sprintf "Compiling snippet: \n%s", $snippet;
+    }
+  );
 
-  die error_listing( $snippet, $EVAL_ERROR, 'complilation error')
+  # compile snippet
+  my $obj = eval { $self->create_snippet_class($snippet); };
+
+  die error_listing( $snippet, $EVAL_ERROR, 'complilation error' )
     if $EVAL_ERROR;
 
-  DEBUG sub {
-    "Assigning result of <snippet> to ["
-      . $options{'define-var'}
-      . "]";
-  };
-  
+  $self->get_logger->debug(
+    sub {
+      sprintf 'Assigning result of <snippet> to [%s]', $options{'define-var'};
+    }
+  );
+
   # initiaize snippet, create methods
-  my $rv = eval { 
-    $obj->init_snippet( \@context, $tx->config, @argv );
-  };
+  my $rv = eval { $obj->init_snippet( \@context, $tx->config, @argv ); };
 
   die error_listing( $snippet, $EVAL_ERROR, 'error initializing snippet' )
     if $EVAL_ERROR;
-    
-  $tx->param( $options{'define-var'} => $rv );
+
+  $tx->param( $options{'define-var'}     => $rv );
   $tx->param( $options{'define-snippet'} => $obj );
+
+  return;
 }
 
 # create_snippet_class( name, code );
+########################################################################
 sub create_snippet_class {
-  my ($self, $code) = @_;
-  
-  my $prefix =<<eoc;
-  my \$context = shift;
-  my \$config = shift;
+########################################################################
+  my ( $self, $code ) = @_;
 
-  \$self->config(\$config);
-  \$self->context(\$context);
+  my $prefix = <<'END_OF_CODE';
+  my $context = shift;
+  my $config = shift;
+
+  $self->config(\$config);
+  $self->context(\$context);
 
 # 8<------- YOUR CODE START HERE -------
-eoc
+END_OF_CODE
 
   $code = $prefix . $code;
   $code .= "# 8<------- YOUR CODE STOPS HERE -------\n";
 
   my $snip = Bedrock::Snippet->new( name => 'init_snippet', code => $code );
 
-  die $@
-    if $@;
+  die $EVAL_ERROR
+    if $EVAL_ERROR;
 
   return $snip;
 }
 
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -246,8 +261,8 @@ Then to use the snippet...
 
  <var $snippet.my_join("a", "b", "c")>
 
-I<Note that the C<my_join> is a method of a class that whose parent is
-C<BLM::Hash>.  Hence you can provide persistenc e to your snippet
+I<Note that the C<my_join> is a method of a class whose parent is
+C<BLM::Hash>.  Hence you can provide persistence to your snippet
 object<039>s hash members.>
 
 =back
@@ -257,13 +272,13 @@ object<039>s hash members.>
 As noted above, Bedrock B<discourages> the use of programming
 constructs within your Bedrock page.  Bedrock should be used to
 assemble a page, not to create a program that outputs an HTML page.
-If you really want to write program that creates an HTMP page, you
-probably use PHP or Perl directly.  Having said that, this tag can be
+If you really want to write program that creates an HTML page, you
+probably use PHP or Perl directly. Having said that, this tag can be
 useful for prototyping.
 
-It may useful for a web application development tool like Bedrock to
+It may be useful for a web application development tool like Bedrock to
 include an environment whereby a protoype of a Plugin can be
-developed.  Hence the C<snippet> concept.  I<Proceed with caution.>
+developed. Hence the C<snippet> concept.  I<Proceed with caution.>
 
 I<The return value of a C<snippet> is stored in a variable specified by
 the C<--define-var> option or in C<$_> if no variable name is
@@ -283,17 +298,18 @@ See the examples below.
 When you're happy with your little C<snippet> and want to make it a
 Plugin, you can simply collect all your methods and take the
 statements from the top of your C<snippet> and add them to the Plugin
-template below.  Put the perl module (in the example below
-C<BLM/Foo.pm>) I<somewhere where perl will find it>.
+template below.  Then, deploy the Perl module (in the example below
+C<BLM/Foo.pm>) I<somewhere where Perl will find it>.
 
  package BLM::Foo;
+
+ use strict;
+ use warnings;
 
  use Bedrock::Plugin;
  use Bedrock::Hash;
 
- use vars qw( @ISA ); 
- 
- @ISA = qw( Bedrock::Hash Bedrock::Plugin );
+ use parent qw{ Bedrock::Hash Bedrock::Plugin };
  
  sub init_plugin {
    my $self = shift;
