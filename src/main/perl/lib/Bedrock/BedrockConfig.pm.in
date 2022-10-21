@@ -23,10 +23,12 @@ package Bedrock::Config;
 use strict;
 use warnings;
 
+use Bedrock qw{:utils};
+
 use Bedrock::Dump;
 use Bedrock::Serializer qw{ evolve devolve};
 use Bedrock::XML;
-
+use Bedrock::Constants qw{:defaults};
 use Carp;
 use English qw{ -no_match_vars };
 use File::Basename;
@@ -36,8 +38,6 @@ use Scalar::Util qw{ reftype };
 use YAML qw{ LoadFile Dump };
 
 use parent qw{ Exporter Bedrock::Hash };
-
-our @EXPORT_OK = qw{is_array is_hash is_scalar};
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
@@ -90,29 +90,30 @@ sub dbnames {
 }
 
 ########################################################################
+# Usage      : get_module_config(name)
+#            : get_module_config()
+# Purpose    : Returns the array of modules or the configuration object
+#            : a specific module.
+# Parameters : name => name of a module (or fragment of the name)
+# Returns    : array of modules or hash representing a configuration
+#            : for the module
+# Errors     : throws exception if there is no MODULES object
+########################################################################
 sub get_module_config {
 ########################################################################
   my ( $self, $module_name ) = @_;
 
   my $modules = $self->{MODULES};
 
-  my $config;
+  carp "no MODULES or MODULES is not an arra\n"
+    if !is_array($modules);
 
-  if ( !$module_name ) {
-    $config = $modules;
-  }
-  elsif ( $modules && reftype($modules) eq 'ARRAY' ) {
-    foreach my $m ( @{$modules} ) {
-      next if !$m || reftype($m) ne 'HASH';
+  return $modules
+    if !$module_name;
 
-      if ( $m->{module} =~ /$module_name$/smi ) {  ## no critic (RequireExtendedFormatting)
-        $config = $m->{config};
-        last;
-      }
-    }
-  }
+  my $module = $self->get_module($module_name);
 
-  return $config;
+  return $module ? $module->{config} : $module;
 }
 
 ########################################################################
@@ -148,33 +149,16 @@ sub merge_config {
 ########################################################################
 sub get_module {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $name ) = @_;
 
-  return $self->{MODULES};
-}
+  my $modules = $self->{MODULES};
 
-########################################################################
-sub is_array {
-########################################################################
-  my ($thing) = @_;
+  return $modules
+    if !$name;
 
-  return _is( $thing, 'ARRAY' );
-}
+  my ($module) = grep { $_->{module} =~ /$name$/xsmi } @{$modules};
 
-########################################################################
-sub is_hash {
-########################################################################
-  my ($thing) = @_;
-
-  return _is( $thing, 'HASH' );
-}
-
-########################################################################
-sub is_scalar {
-########################################################################
-  my ($thing) = @_;
-
-  return !ref $thing;
+  return $module;
 }
 
 ########################################################################
@@ -302,6 +286,7 @@ sub _set_get {
   my %config_readers = (
     xml => sub {
       my ($file) = @_;
+
       return Bedrock::XML->new($file);
     },
     json => sub {
@@ -322,6 +307,13 @@ sub _set_get {
 
     yaml => sub {
       my ($file) = @_;
+
+      return LoadFile($file);
+    },
+
+    yml => sub {
+      my ($file) = @_;
+
       return LoadFile($file);
     },
 
@@ -336,7 +328,7 @@ sub _set_get {
 
     my $ext;
 
-    if ( $file =~ /[.](xml|json|yaml)$/xsm ) {
+    if ( $file =~ /[.](xml|json|ya?ml)$/xsm ) {
       $ext = $1;
     }
 
@@ -375,7 +367,7 @@ sub _locate_file {
     # search for config file in path
     my @search_paths = (
       $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
-      '@libdir@/bedrock/config',  ## no critic  ValuesAndExpressions::RequireInterpolationOfMetachars
+      $DEFAULT_BEDROCK_CONFIG_PATH,
     );
 
     # remove undefined and ''
@@ -401,14 +393,6 @@ sub _locate_file {
   return $path;
 }
 
-########################################################################
-sub _is {
-########################################################################
-  my ( $thing, $type ) = @_;
-
-  return ref $thing && reftype($thing) eq $type;
-}
-
 1;
 
 __END__
@@ -417,20 +401,28 @@ __END__
 
 =head1 NAME
 
-Bedrock::Config
+Bedrock::Config - methods for interacting with a serialized configuration file.
 
 =head1 SYNOPSIS
 
  use Bedrock::BedrockConfig;
- Bedrock::Config->import(qw{is_array is_hash});
 
  my $config = Bedrock::Config->new($config_file);
 
 =head1 DESCRIPTION
 
+The L<Bedrock::Config> object provides methods for interacting with
+serialized configuration files used by Bedrock. Configuration files
+can be serialized as Bedrock XML, JSON or YAML.
+
 =head1 METHODS AND SUBROUTINES
 
 =head2 new
+
+ new( filename )
+
+Reads and deserializes a serialized configuration file specified and
+returns a L<Bedrock::Config> object. 
 
 =head2 dbnames
 
@@ -464,6 +456,8 @@ Bedrock::Config
 
 Returns a startup module's configuration object or the entire array of
 module configurations.
+
+ my $session_config = $config->get_module_config
 
 =cut
 
@@ -519,5 +513,7 @@ C<config.d> sub-directory.
 Rob Lauer - <rlauer6@comcast.net>
 
 =head1 SEE ALSO
+
+L<Bedrock::XML>
 
 =cut

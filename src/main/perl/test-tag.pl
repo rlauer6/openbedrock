@@ -6,13 +6,15 @@ use warnings;
 use File::Basename;
 use English qw{-no_match_vars};
 
-use Test::Bedrock qw{run};
+use Test::Bedrock qw{run config};
 
 my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
 
 my $test_file = sprintf 't/%s.yml', $name;
+my $config    = config();
+$config->{LOG4PERL} = 't/log4perl.conf';
 
-run( $test_file, yaml => 1, );
+run( $test_file, yaml => 1, config => $config );
 
 1;
 

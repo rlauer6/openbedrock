@@ -78,6 +78,7 @@ test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	done; \
 	DBI_SOCKET="$$DBI_SOCKET" CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config:. $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
+	rm -f foo.roc foo.inc foo.csv
 
 CLEANFILES = \
     foo.inc \

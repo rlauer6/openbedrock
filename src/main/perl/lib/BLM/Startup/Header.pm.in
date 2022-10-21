@@ -1,6 +1,3 @@
-#!@PERL@ -w
-
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -24,163 +21,247 @@
 package BLM::Startup::Header;
 
 use strict;
-use MIME::Base64;
+use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
+use Bedrock qw{:utils};
+use Bedrock::Constants qw{:chars};
 use Bedrock::Dump;
-
-use Text::URLEncode qw/Encode/;
+use Data::Dumper;
+use List::Util qw/pairs/;
+use MIME::Base64;
 use Scalar::Util qw/reftype/;
+use Text::URLEncode qw/Encode/;
+use parent qw(Bedrock::Hash);
 
-@ISA = qw(Bedrock::Hash);
-
+########################################################################
 sub TIEHASH {
-  my $class  = shift;
-  my $ctx    = shift;
-  my $config = shift;
+########################################################################
+  my ( $class, $ctx, $config ) = @_;
 
   my $self = bless Bedrock::Hash->new, $class;
 
   # Get the headers and store them
   my %headers = $ctx->cgi_header_in;
-  $self->{'input'}        = \%headers;
-  $self->{'config'}       = $config;
-  $self->{'verbose'}      = $config->{'verbose'};
-  $self->{APACHE_HANDLER} = $ctx->{APACHE_HANDLER};
+
+  $self->{input} = \%headers;
+
+  $self->{config} = $config;
+
+  $self->{verbose} = $config->{'verbose'};
+
+  $self->request( $ctx->request );
 
   # Special processing of some headers
   if ( exists $headers{'Authorization'} ) {
-    my ( $realm, $ident ) = split( ' ', $headers{'Authorization'} );
+    my ( $realm, $ident ) = split /\s+/xsm, $headers{'Authorization'};
+
     $self->{'realm'} = $realm;
-    @{$self}{qw(auth_user auth_passwd)} = split( ':', decode_base64($ident) );
+
+    @{$self}{qw(auth_user auth_passwd)} = split /:/xsm, decode_base64($ident);
   }
 
-  $self;
+  return $self;
 }
 
+########################################################################
 sub FETCH {
+########################################################################
   my ( $self, $key ) = @_;
-  return $self->{'input'}->{$key} if exists $self->{'input'}->{$key};
-  my $lckey = lc($key);
-  return $self->{'input'}->{$lckey} if exists $self->{'input'}->{$lckey};
-  undef;
+
+  return $self->{'input'}->{$key}
+    if exists $self->{'input'}->{$key};
+
+  my $lckey = lc $key;
+
+  return $self->{'input'}->{$lckey}
+    if exists $self->{'input'}->{$lckey};
+
+  return;
 }
 
+########################################################################
 sub FIRSTKEY {
-  my $self = shift;
-  my $a    = scalar keys %{ $self->{'input'} };
-  each %{ $self->{'input'} };
+########################################################################
+  my ($self) = @_;
+
+  my $a = scalar keys %{ $self->{'input'} };
+
+  return each %{ $self->{'input'} };
 }
 
+########################################################################
 sub NEXTKEY {
-  each %{ $_[0]->{'input'} };
+########################################################################
+  return each %{ shift->{'input'} };
 }
 
+########################################################################
 sub STORE {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = shift;
 
-  $self->{'output'} = {} unless exists $self->{'output'};
+  if ( !exists $self->{'output'} ) {
+    $self->{'output'} = {};
+  }
+
   my $output = $self->{'output'};
 
-  while (@_) {
-    my $header = ucfirst(shift);
-    my $value  = shift;
-    if ( exists $output->{$header} && $header !~ m/location/i ) {
-      $output->{$header} = [ $output->{$header} ]
-      unless ref( $output->{$header} );
+  foreach my $p ( pairs @args ) {
+
+    my ( $header, $value ) = @{$p};
+    $header = ucfirst $header;
+
+    if ( exists $output->{$header} && $header !~ m/location/ixsm ) {
+      if ( !ref $output->{$header} ) {
+        $output->{$header} = [ $output->{$header} ];
+      }
+
       push @{ $output->{$header} }, $value;
     }
     else {
       $output->{$header} = $value;
     }
   }
+
+  return;
 }
 
-
-sub set {
-  my $self = shift;
-  my %args = @_;
+########################################################################
+sub set {  ## no critic (ProhibitAmbiguousNames)
+########################################################################
+  my ( $self, @args ) = @_;
 
   my $key;
   my $val;
 
-  # unfortunately, this can cause issues with Apache 2 if someone inadvertantly 
+  # unfortunately, this can cause issues with Apache 2 if someone inadvertantly
   # set Content-Type instead of Content-type.  Using content_type() method is better.
+  foreach my $p ( pairs @args ) {
+    my ( $key, $val ) = @{$p};
 
-  while (($key, $val) = each(%args))  {
-    $key = 'Content-type' if $key eq 'Content-Type';
+    if ( $key eq 'Content-Type' ) {
+      $key = 'Content-type';
+    }
+
     $self->SUPER::set( $key, $val );
   }
 
+  return;
 }
 
+########################################################################
 sub DELETE {
-  my $self = shift;
-  return undef unless exists $self->{'output'};
-  delete $self->{'output'}->{ ucfirst(shift) };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return
+    if !exists $self->{'output'};
+
+  return delete $self->{'output'}->{ ucfirst $key };
 }
 
+########################################################################
 sub EXISTS {
-  exists $_[0]->{'input'}->{ $_[1] };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return exists $self->{'input'}->{$key};
 }
 
+########################################################################
 sub CLEAR {
-  my $self = shift;
-  return unless exists $self->{'output'};
-  %{ $self->{'output'} } = ();
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !exists $self->{output};
+
+  return %{ $self->{output} } = ();
 }
 
+########################################################################
 sub no_cache {
-  my $obj = shift;
+########################################################################
+  my ($obj) = @_;
 
   # Set in two separate calls since args are assigned to a hash thus
   # clobbering one of the cache-control directives.
-  $obj->set( "Pragma", "no-cache", "Cache-control", "no-cache" );
-  $obj->set( "Cache-control", "no-store" );
+  $obj->set( 'Pragma', 'no-cache', 'Cache-control', 'no-cache' );
+  $obj->set( 'Cache-control', 'no-store' );
+
+  return;
 }
 
+########################################################################
 sub content_type {
-  my $self = shift;
+########################################################################
+  my ( $self, $mime_type ) = @_;
 
-  $self->set( "Content-type", $_[0] );
+  return $self->set( 'Content-type', $mime_type );
 }
 
+########################################################################
 sub see_other {
-  my $obj = shift;
-  my $url = shift;
-  $obj->set( "Status", "303 See Other", "Location", $url );
+########################################################################
+  my ( $obj, $url ) = @_;
+
+  return $obj->set( 'Status', '303 See Other', 'Location', $url );
 }
 
+########################################################################
 sub location {
-  my $obj = shift;
-  my $url = shift;
-  $obj->set( "Status", "302 Found", "Location", $url );
+########################################################################
+  my ( $obj, $url ) = @_;
+
+  return $obj->set( 'Status', '302 Found', 'Location', $url );
 }
 
+########################################################################
 sub build_get_url {
-  my $self  = shift;
-  my $file  = shift;
-  my $parms = shift;
+########################################################################
+  my ( $self, $pathname, @params ) = @_;
 
-  die "usage: build_get_url(file, hash)\n"
-  unless $file && ref($parms) && reftype($parms) eq 'HASH';
+  if ( @params == 1 ) {
+    @params = is_hash( $params[0] ) ? %{ $params[0] } : @{ $params[0] };
+  }
 
-  return $file . '?'
-  . join( "&", map { $_ . '=' . Encode( $parms->{$_} ) } keys %$parms );
+  die "Odd number of elements in parameter list\n"
+    if @params % 2;
+
+  my @query_string;
+  foreach my $p ( pairs @params ) {
+    my ( $key, $val ) = @{$p};
+
+    $val = Encode($val);
+
+    push @query_string, "$key=$val";
+  }
+
+  return sprintf '%s?%s', $pathname, join $AMPERSAND, @query_string;
 }
 
+########################################################################
+sub request {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->{_request} = $args[0];
+  }
+
+  return $self->{_request};
+}
+
+########################################################################
 sub print_header {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
-  my $fd   = shift;
+########################################################################
+  my ( $obj, $fd ) = @_;
+
+  my $self = tied %{$obj};
 
   my $output = delete $self->{'output'} || {};
 
-  # The mime-type should really be taken from the APACHE_HANDLER since
+  # The mime-type should really be taken from the request handler since
   # the Apache configuration uses the AddType directive to tell Apache
   # the mime/type for given files with certain extensions. If the
   # content-type has been set by the user then
@@ -190,21 +271,26 @@ sub print_header {
   # If we are running under mod_perl and the mime-type has been
   # overridden we need to inform the request object...
   #
-  unless ( $output->{'Content-type'} ) {
-    my $mime_type = $self->{APACHE_HANDLER}->content_type;
-    
-    $mime_type = $self->{'config'}->{'default_mime_type'} || 'text/html'
-      unless $mime_type;
+  if ( !$output->{'Content-type'} ) {
+    my $mime_type = $self->request->content_type;
+
+    if ( !$mime_type ) {
+      $mime_type = $self->{'config'}->{'default_mime_type'} || 'text/html';
+    }
+
     $output->{'Content-type'} = $mime_type;
   }
   elsif ( $ENV{MOD_PERL} ) {
-    $self->{APACHE_HANDLER}->content_type( $output->{'Content-type'} );
-  } 
-  
+    $self->request->content_type( $output->{'Content-type'} );
+  }
+
   my ( $key, $value, $str );
-  while ( ( $key, $value ) = each %{$output} ) {
-    if ( ref($value) && reftype($value) eq 'ARRAY' ) {
-      for my $item ( @{$value} ) {
+
+  foreach my $p ( pairs %{$output} ) {
+    ( $key, $value ) = @{$p};
+
+    if ( is_array($value) ) {
+      foreach my $item ( @{$value} ) {
         $str .= "$key: $item\r\n";
         $fd->cgi_header_out( $key => $item );
       }
@@ -214,11 +300,17 @@ sub print_header {
       $fd->cgi_header_out( $key => $value );
     }
   }
+
   $str .= "\r\n";
-  $fd->send_http_header;
+
+  return $fd->send_http_header;
 }
 
 1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -236,7 +328,8 @@ C<BLM::Startup::Header> - HTTP header support.
 
 =head1 DESCRIPTION
 
-This module provide HTTP header support for core Bedrock.  It also contains some methods that can be used by the Bedrock developer.
+This module provides HTTP header support for Bedrock.  It also
+contains some methods that can be used by the Bedrock developer.
 
 =head1 METHODS
 
@@ -246,22 +339,21 @@ Sets the 'Content-type' header to the mime-type given.  Typically you
 shouldn't muck with this, but you can serve up XML documents or even
 PDFs using Bedrock.
 
-=head2 build_get_url(file, parms)
+=head2 build_get_url(pathname, parameters ) 
 
 Builds a URL of the form:
 
-  filename?parm=val&..
+  pathname?key=value&..
 
 =over 5
 
-=item file 
+=item pathname
 
-Name of the GET target
+Pathname 
 
-=item parms
+=item parameters
 
-Hash that contains name value pairs that represent the CGI variables
-to pass in the URL
+hash, list or array of key value pairs that represent the query string parameters
 
 =back
 
@@ -274,7 +366,7 @@ This would produce:
 
   /index.rock?foo=bar&baz=buz
 
-Note that the values are URL encoded for you as well.
+Note that the values are URL encoded.
 
 =head2 location(url)
 
@@ -297,113 +389,3 @@ J. Sridhar
 Rob Lauer - rlauer@signatureinfo.com
 
 =cut
-
-#
-# Revision 1.26  2012/08/06 15:39:07  lauerrc
-# - cleanup logic in print_header around setting content-type, make clearer and add comments
-#
-# Revision 1.25  2012/08/06 15:28:13  lauerrc
-# - get mime-type from request object
-#
-# Revision 1.24  2011/12/01 15:29:52  eutl420
-# - location() method now sets status explicitly to 302 Found - this was done to mitigate what looks like browsers
-#   being more strict about how they interpret headers and status codes
-# - see_other() changed to 303 See Other
-#
-# Revision 1.23  2011/11/30 18:46:48  eutl420
-# - prevent location from being added to headers twice, apparently the regexp
-#   was not correct and included a ':'
-#
-# Revision 1.22  2011/11/21 14:09:28  eutl420
-# - in the set() method an over zealous commit was done without actually testing the function
-#   each(%args) not each(@_)
-#
-# Revision 1.21  2011/11/18 00:22:06  eutl420
-# - override set() method to trap calls that set Content-Type instead of Content-type
-#
-# Revision 1.20  2011/09/15 16:05:31  eutl420
-# - perl tidy
-#
-# Revision 1.19  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.18  2011/07/15 15:30:25  laytonax
-# Minor changes to Startup/Header.pm and Bedrock/Context.pm, both of which were exposed when the application stack has multiple Cookie: headers (as is the case when sitting behind an application pool such as an F5 or Varnish).
-#
-# Revision 1.17  2011/07/12 19:10:35  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.16  2011/03/15 13:35:39  eutl420
-# - added a method for building a url encoded GET string 'build_get_url()'
-#
-# Revision 1.15  2010/12/12 21:43:33  eutl420
-# - save APACHE_HANDLER from context object
-# - use APAACHE_HANDLER (request object) to set content type if running under mod_perl
-#
-# Revision 1.14  2010/11/29 15:57:51  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.13  2010/11/15 02:23:24  rlauer
-# - make PUBLIC
-# - document methods
-#
-# Revision 1.12  2010/01/03 19:11:33  rlauer
-# added content_type method
-#
-# Revision 1.11  2009/12/28 20:32:33  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.10  2008/12/03 14:01:19  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.9  2001/02/14 15:35:46  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.8  2000/12/19 13:54:25  sridhar
-# Error in FETCH(); reading from wrong place
-#
-# Revision 1.7  2000/12/15 15:47:28  sridhar
-# 1. Overrides FIRSTKEY() and NEXTKEY() so that we don't see no junk
-# when doing a trace
-# 2. Property `input' stores input header, `config' stores module
-# configuration, and `output' stores output headers
-# 3. Default mime can come from config file
-# 4. Methods for common header operations: `no_cache()', `see_other()',
-# and `location()'
-# 5. Removed `set()': moved the stuff to `STORE()'
-#
-# Revision 1.6  2000/09/18 14:43:38  sridhar
-# Fix needed to successfully compile under Perl/ after moving Perl/Text to
-# Perl/Bedrock/Text and some modules from Perl/SIS to Perl/Bedrock/SIS
-#
-# Revision 1.5  2000/08/23 17:28:27  sridhar
-# Can access HTTP headers now (only in the mod_perl version,
-# though). The header fields are properties of the object.
-# Special treatment to Authorization header. This header in unpacked
-# into 'realm', 'auth_user' and 'auth_passwd'.
-#
-# Revision 1.4  2000/07/06 18:34:06  sridhar
-# More uniformity: no need to handle separately for CGI and mod_perl
-# since the output handle has methods for sending headers for both
-# environments.
-#
-# Revision 1.3  2000/07/06 17:59:36  sridhar
-# Using cgi_header_out() instead of header_out() with mod_perl.
-#
-# Revision 1.2  2000/07/06 17:25:56  sridhar
-# Verifying whether argument to print_header supports a `header_out'
-# method which is used for setting headers. Used for supporting mod_perl
-# version.
-#
-# Revision 1.1  2000/07/05 17:55:31  sridhar
-# HTTP Header management is now a BLM.
-#
-#

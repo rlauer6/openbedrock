@@ -22,26 +22,21 @@ package Bedrock::Context;
 use strict;
 use warnings;
 
-BEGIN {
-  use Bedrock::BedrockConfig;
-  Bedrock::Config->import(qw{is_hash is_array});
-}
-
-my $FILENAME;
-
 use parent qw{Exporter};
 
 use Bedrock::Array;
-use Bedrock::Constants qw{:chars};
+use Bedrock::Hash;
+use Bedrock::Constants qw{:chars :log_levels :defaults};
 use Bedrock::Dump;
 use Bedrock::Log;
-use Bedrock;
+use Bedrock qw{:utils};
 use CGI;
 use Carp;
 use Crypt::CBC;
 use Crypt::DES;
 use Cwd;
 use Data::Dumper;
+use English qw{-no_match_vars};
 use File::Basename;
 use IO::File;
 use List::Util qw{ none pairs };
@@ -65,36 +60,41 @@ sub new {
 ########################################################################
   my ( $class, %args ) = @_;
 
-  die "$class->new(): CONFIG or CONFIG_FILE parameter must be specified."
-    if !$args{'CONFIG'} && !$args{'CONFIG_FILE'};
+  if ( $args{APACHE_HANDLER} ) {
+    carp "$class: deprecated use of APACHE_HANDLER, use REQUEST_HANDLER\n";
 
-  die "$class->new(): APACHE_HANDLER parameter must be specified."
-    if !$args{'APACHE_HANDLER'};
+    $args{REQUEST_HANDLER} = $args{APACHE_HANDLER};
+  }
+
+  die
+    "usage: Bedrock::Context->new( CONFIG => config, REQUEST_HANDLER => handler\n"
+    if !$args{REQUEST_HANDLER} || !$args{CONFIG};
+
+  $args{APACHE_HANDLER} = $args{REQUEST_HANDLER};  # until we scour for APACHE...
 
   my $self = bless {}, $class;
 
-  my $config;
+  my $config = eval {
+    if ( $args{CONFIG} ) {
+      return $self->config( $args{CONFIG} );
+    }
+    else {
+      return $self->config( Bedrock::Config->new( $args{CONFIG_FILE} ) );
+    }
+  };
 
-  if ( $args{'CONFIG'} ) {
-    $config = $self->config( $args{'CONFIG'} );
-  }
-  else {
-    $config = $self->config( Bedrock::Config->new( $args{'CONFIG_FILE'} ) );
-  }
+  croak "ERROR: could not create a configuration object\n$EVAL_ERROR"
+    if !$config || $EVAL_ERROR;
 
-  # FIXME: we need to replace the notion of "APACHE_HANDLER" in favor
-  # of the request object and detangle code from knowing about
-  # upstream HTTP request initiators...i.e. could be Apache, Nginx, etc
-  $self->request( $args{'APACHE_HANDLER'} );
-  $self->apache_handler( $args{'APACHE_HANDLER'} );
+  $self->request( $args{REQUEST_HANDLER} );
 
   # ditto for response...
-  if ( $args{'OUTPUT_HANDLER'} ) {
-    $self->output_handler( $args{'OUTPUT_HANDLER'} );
-    $self->response( $args{'OUTPUT_HANDLER'} );
+  if ( $args{OUTPUT_HANDLER} ) {
+    $self->output_handler( $args{OUTPUT_HANDLER} );
+    $self->response( $args{OUTPUT_HANDLER} );
   }
   else {
-    $self->output_handler( $args{'APACHE_HANDLER'} );
+    $self->output_handler( $args{REQUEST_HANDLER} );
     $self->response( $self->request );
   }
 
@@ -102,6 +102,11 @@ sub new {
 
   return $self;
 }
+
+########################################################################
+# convience logging methods that you might NOT want to use if you
+# want to see the real file and line number of log messages!!
+########################################################################
 
 {
   ## no critic (RequireArgUnpacking)
@@ -116,14 +121,14 @@ sub find_log4perl_conf {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self && $self->{LOG4PERL} && -r $self->{LOG4PERL} ) {
-    return $self->{LOG4PERL};
+  if ( $self && $self->config->{LOG4PERL} && -r $self->config->{LOG4PERL} ) {
+    return $self->config->{LOG4PERL};
   }
 
   ## no critic (RequireInterpolationOfMetachars)
   my @config_paths = (
     getcwd(), $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
-    '@libdir@/bedrock/config',
+    $DEFAULT_BEDROCK_CONFIG_PATH
   );
 
   foreach my $path ( grep { defined && -d $_ } @config_paths ) {
@@ -134,9 +139,6 @@ sub find_log4perl_conf {
   return $EMPTY;
 }
 
-########################################################################
-# smoke 'em if ya gottem?, otherwise all Bedrock messages will end up
-# in STDERR...ala Bedrock::Logger (check it out)
 ########################################################################
 sub init_log4perl_logger {
 ########################################################################
@@ -152,12 +154,19 @@ sub init_log4perl_logger {
   $initialized = Log::Log4perl->init($log4perl_conf);
 
   if ($initialized) {
-    Log::Log4perl->get_logger->info(
-      sprintf 'Initialized Log::Log4perl from %s',
-      $log4perl_conf );
+    if ( $self && $self->config->{LOG4PERL_LEVEL} ) {
+      my $level = $LOG4PERL_LOG_LEVELS{ $self->config->{LOG4PERL_LEVEL} };
+
+      Log::Log4perl->get_logger->level($level);
+    }
+
+    Log::Log4perl->get_logger->trace(
+      sprintf 'logging initialized with %s logger',
+      ref $self || 'default' );
   }
   else {
-    print {*STDERR} sprintf 'Could not initialize Log::Log4perl from %s',
+    print {*STDERR} sprintf
+      'WARNING: could not initialize Log::Log4perl using %s',
       $log4perl_conf;
   }
 
@@ -175,7 +184,8 @@ sub upload_file {
 
   my $platform = $self->cgi->param('platform');
 
-  die 'upload_file upload error: ', $self->cgi->cgi_error() if !$fh;
+  die 'upload_file upload error: ', $self->cgi->cgi_error()
+    if !$fh;
 
   if ( is_hash( $args[0] ) ) {
     $options = $args[0];
@@ -189,6 +199,7 @@ sub upload_file {
   $self->debug( 'upload_file options: ' . Bedrock::Dump::compact($options) );
 
   my $upload_content_type = $self->cgi->uploadInfo($fh)->{'Content-Type'};
+
   $options->{'content-type'} //= $options->{'Content-type'};
 
   # check to see if this is a valid mime-type to be uploaded
@@ -264,7 +275,7 @@ sub upload_file {
   my $cipher;
 
   if ( $options->{passkey} ) {
-    $options->{'cipher'} = $options->{'cipher'} || 'DES';
+    $options->{cipher} = $options->{cipher} || 'DES';
 
     $cipher = Crypt::CBC->new(
       -cipher => $options->{cipher},
@@ -317,7 +328,7 @@ sub upload_file {
     ( file           => $uploaded_file,
       $form_var      => "$name$ext",
       'content-type' => $upload_content_type,
-      'cipher'       => $options->{'cipher'} // $EMPTY,
+      'cipher'       => $options->{cipher} // $EMPTY,
     )
   );
 
@@ -341,6 +352,13 @@ sub cgi {
 }
 
 ########################################################################
+# Usage      : getInputValue(names)
+#            : getInputValue()
+# Purpose    : returns array of input values or the names
+# Parameters : names : list of input variable names
+# Returns    : list of values or the list of variable names
+# Errors     : none
+########################################################################
 sub getInputValue {  ## no critic (Capitalization)
 ########################################################################
   my ( $self, @args ) = @_;
@@ -361,6 +379,7 @@ sub getInputValue {  ## no critic (Capitalization)
 
     foreach my $name (@args) {
       my @values = $self->cgi->param($name);
+
       if ( @values > 1 ) {
         $input->{$name} = Bedrock::Array->new(@values);
       }
@@ -497,32 +516,32 @@ sub getCookieValue {  ## no critic (Capitalization)
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return if !exists $ENV{'HTTP_COOKIE'};
+  return if !exists $ENV{HTTP_COOKIE};
 
-  my $raw_cookie = $ENV{'HTTP_COOKIE'};
+  my $raw_cookie = $ENV{HTTP_COOKIE};
 
-  if ( !exists $self->{'__cookies__'} ) {
+  if ( !exists $self->{__cookies__} ) {
 
-    $self->{'__cookies__'} = {};
+    $self->{__cookies__} = {};
 
     for my $cookie ( split /[;,]\s?/xsm, $raw_cookie ) {
       $cookie =~ s/^\s*(.*?)\s*$/$1/xsm;
 
       my ( $key, $value ) = split /=/xsm, $cookie;
 
-      $self->{'__cookies__'}->{$key} = Text::URLEncode::Decode($value);
+      $self->{__cookies__}->{$key} = Text::URLEncode::Decode($value);
     }
   }
 
   if ( @args == 1 ) {
-    return $self->{'__cookies__'}->{ $args[0] };
+    return $self->{__cookies__}->{ $args[0] };
   }
   elsif ( @args > 1 ) {
-    my @values = map { $self->{'__cookies__'}->{$_} } @args;
+    my @values = map { $self->{__cookies__}->{$_} } @args;
     return @values;
   }
   else {
-    return sort keys %{ $self->{'__cookies__'} };
+    return sort keys %{ $self->{__cookies__} };
   }
 }
 
@@ -543,14 +562,6 @@ sub output_handler {
   my (@args) = @_;
 
   return _set( @args, 'OUTPUT_HANDLER' );
-}
-
-########################################################################
-sub apache_handler {
-########################################################################
-  my (@args) = @_;
-
-  return _set( @args, 'APACHE_HANDLER' );
 }
 
 ########################################################################
@@ -610,6 +621,10 @@ sub request {
 }
 
 ########################################################################
+sub apache_handler { goto &request; }
+########################################################################
+
+########################################################################
 sub response {
   my (@args) = @_;
 ########################################################################
@@ -653,13 +668,13 @@ __END__
 
 =head1 PUBLIC
 
-Bedrock::Context - provides contextual methods for web applications
+Bedrock::Context - provides contextual methods for Bedrock applications
 
 =head1 SYNOPSIS
 
  use Bedrock::Context;
 
- my $ctx = Bedrock::Context->new( CONFIG => $config, APACHE_HANDLER => $handler );
+ my $ctx = Bedrock::Context->new( CONFIG => $config, REQUEST_HANDLER => $handler );
 
 =head1 DESCRIPTION
 
@@ -672,27 +687,35 @@ output based on the context (web, cli) of the application.
 
  new( args )
 
-Constructor for Apache modules.  Returns the created object.
+Constructor for context object.  Returns the created object.
 
 Mandatory arguments are as follows:
 
 =over 5
 
-=item  APACHE_HANDLER
+=item REQUEST_HANDLER
 
-Apache handler object
+A reference to an object that provides a standard set of methods for
+interacting with HTTP requests.
 
 =item OUTPUT_HANDLER
 
-Output handler supporting a `print()' method. Defaults to APACHE_HANDLER if not specified.
+Output handler supporting at least a `print()' method. Defaults to
+REQUEST_HANDLER if not specified.
 
 =item CONFIG
 
-Hash containing config info
+Hash containing configuration information. This is usually a
+deserialized representation of F<tagx.xml> if this module is being
+used as part of the Bedrock application. It does not necessarily have
+to contain Bedrock configuraiton information. See L</NOTES> below.
 
 =item CONFIG_FILE
 
-Name of the configuration file.
+Name of a configuration file containing a serialized representation
+(usually Bedrock XML) of configruation values. Configuration files can
+be represented as Bedrock XML (F<.xml>), JSON (F<.json>), or YAML
+(F<.yaml>) files.
 
 =back
 
@@ -796,7 +819,7 @@ Returns a CGI object.
 
 =head2 getInputValue
 
- getInputValue( key )
+ getInputValue( [name, ...] )
 
 Method to get input parameter(s)/value(s). Invoked either with
 

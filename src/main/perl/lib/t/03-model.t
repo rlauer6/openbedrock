@@ -141,6 +141,10 @@ END {
     $dbi->do('drop database foo');
     $dbi->disconnect;
   };
+
+  if ( -e 'users.mdl' ) {
+    unlink 'users.mdl';
+  }
 }
 
 1;
