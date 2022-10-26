@@ -46,6 +46,7 @@ use Test::More tests => 10;
 use Bedrock::Constants qw{:defaults};
 use Bedrock::BedrockConfig;
 use Data::Dumper;
+use DBI;
 use English qw{-no_match_vars};
 
 use_ok('BLM::Startup::UserSession');
@@ -61,6 +62,8 @@ sub bind_module {
 
   tie %{$obj}, $module, $ctx, $config;  ## no critic (ProhibitTies)
 
+  diag( 'bind_module ', Dumper( [$obj] ) );
+
   return $obj;
 }
 
@@ -69,7 +72,7 @@ my $config_file = "$DEFAULT_BEDROCK_CONFIG_PATH/mysql-session.xml";
 
 my $config = eval { return Bedrock::Config->new($config_file); };
 
-BAIL_OUT("could read $config_file")
+BAIL_OUT("could not read $config_file")
   if !$config;
 
 my $session_config = $config->{config};
@@ -79,152 +82,172 @@ $session_config->{verbose}             = 0;
 
 my $ctx = Faux::Context->new( CONFIG => { SESSION_DIR => '/tmp' } );
 
-my $session = eval { return bind_module( $ctx, $session_config ); };
+my ( $dsn, $user, $password )
+  = @{$session_config}{qw{ data_source username password}};
 
-########################################################################
-subtest 'TIEHASH' => sub {
-########################################################################
-  ok( !$EVAL_ERROR, 'bound module' );
+my $db_available = eval {
+  my $dbi = DBI->connect( $dsn, $user, $password );
 
-  isa_ok( $session, 'BLM::Startup::UserSession' );
+  my $ping = $dbi->ping;
+
+  $dbi->disconnnect;
+
+  return $ping;
 };
 
-########################################################################
-subtest 'session id' => sub {
-########################################################################
-  ok( $session->{session}, 'session id exists' );
+my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
 
-  like( $session->{session}, qr/^[\da-f]{32}$/xsm, 'session is a md5 hash' );
-};
+SKIP: {
+  skip 'no database available', 9 if !$db_available;
 
 ########################################################################
-subtest 'create_session_dir' => sub {
+  subtest 'TIEHASH' => sub {
 ########################################################################
-  my $session_dir = $session->create_session_dir;
+    ok( !$EVAL_ERROR, 'bound module' );
 
-  ok( $session_dir, 'create_session_dir() - returns a directory' );
-
-  ok( -d $session_dir, 'create_session_dir() - directory exists' );
-
-  ok( -w $session_dir, 'create_session_dir() - session is writeable' );
-};
-
-my $file;
-
-########################################################################
-subtest 'create_session_file' => sub {
-########################################################################
-  $file = $session->create_session_file( 'test.jroc', $session_config );
-
-  ok( -s $file, 'file written' );
-
-  my $obj = eval {
-    open my $fh, '<', $file
-      or die "could not open $file for reading\n";
-
-    local $RS = undef;
-
-    require JSON::PP;
-
-    my $content = <$fh>;
-
-    close $fh;
-
-    return JSON::PP->new->decode($content);
+    isa_ok( $session, 'BLM::Startup::UserSession' )
+      or do {
+      diag( Dumper( [$session] ) );
+      BAIL_OUT('session is not instantiated properly');
+      };
   };
 
-  is_deeply( $obj, $session_config, 'object serialized correctly' )
-    or diag( Dumper( [ $obj, $session_config ] ) );
-};
-
-my $session_id = $session->{session};
-
 ########################################################################
-subtest 'close' => sub {
+  subtest 'session id' => sub {
 ########################################################################
-  $session->{foo} = 'bar';
+    ok( $session->{session}, 'session id exists' );
 
-  eval { return $session->closeBLM; };
-
-  ok( !$EVAL_ERROR, 'closeBLM' )
-    or diag( Dumper( [$EVAL_ERROR] ) );
-};
-
-########################################################################
-subtest 'save' => sub {
-########################################################################
-  $ENV{session} = $session_id;
-
-  $session = eval { return bind_module( $ctx, $session_config ); };
-  is( $session->{foo}, 'bar', 'session saved' )
-    or diag( Dumper( [$session] ) );
-};
-
-########################################################################
-subtest 'register' => sub {
-########################################################################
-  my $rc = eval {
-    return $session->register(
-      'fflintstone', 'W1lma',
-      'Fred',        'Flintstone',
-      'fflintstone@openbedrock.net'
-    );
+    like( $session->{session}, qr/^[\da-f]{32}$/xsm,
+      'session is a md5 hash' );
   };
 
-  if ( !$rc || $EVAL_ERROR ) {
-    if ( $EVAL_ERROR =~ /username\sexists/xsm ) {
-      diag('user exists...so presumably this worked at some point!');
-    }
-    else {
-      BAIL_OUT( 'error trying to register a new user:' . $EVAL_ERROR );
-    }
-  }
-  else {
-    ok( $rc, 'registered user' );
-  }
+########################################################################
+  subtest 'create_session_dir' => sub {
+########################################################################
+    my $session_dir = $session->create_session_dir;
 
-};
+    ok( $session_dir, 'create_session_dir() - returns a directory' );
+
+    ok( -d $session_dir, 'create_session_dir() - directory exists' );
+
+    ok( -w $session_dir, 'create_session_dir() - session is writeable' );
+  };
 
 ########################################################################
-subtest 'login' => sub {
+  subtest 'create_session_file' => sub {
 ########################################################################
-  eval { $session->login( 'fflintstone', 'Wilma' ); };
+    my $file = $session->create_session_file( 'test.jroc', $session_config );
 
-  ok( $EVAL_ERROR, 'bad login' );
+    ok( -s $file, 'file written' );
 
-  like( $EVAL_ERROR, qr/^Unable\sto\slogin\suser/xsm );
+    my $obj = eval {
+      open my $fh, '<', $file
+        or die "could not open $file for reading\n";
 
-  my $session_id = $session->{session};
+      local $RS = undef;
 
-  eval { $session->login( 'fflintstone', 'W1lma' ); };
+      require JSON::PP;
 
-  ok( !$EVAL_ERROR, 'login fflintstone' )
-    or diag( Dumper( [$EVAL_ERROR] ) );
+      my $content = <$fh>;
 
-  ok( $session_id ne $session->{session}, 'new session id' );
+      close $fh;
 
-  ok( $session->{username} eq 'fflintstone', 'username is fflintstone' );
-};
+      return JSON::PP->new->decode($content);
+    };
 
-########################################################################
-subtest 'remove user' => sub {
-########################################################################
+    is_deeply( $obj, $session_config, 'object serialized correctly' )
+      or diag( Dumper( [ $obj, $session_config ] ) );
 
-  ok( $session->remove_user( 'fflintstone', 'W1lma' ), 'remove user' );
-
-  eval { $session->login( 'fflintstone', 'W1lma' ); };
-
-  ok( $EVAL_ERROR, 'removed user cannot login' );
-};
-
-########################################################################
-END {
-  if ( -e $file ) {
     unlink $file;
 
     my $session_dir = $session->create_session_dir;
+
     rmdir $session_dir;
-  }
+  };
+
+  my $session_id = $session->{session};
+
+########################################################################
+  subtest 'close' => sub {
+########################################################################
+    $session->{foo} = 'bar';
+
+    eval { return $session->closeBLM; };
+
+    ok( !$EVAL_ERROR, 'closeBLM' )
+      or diag( Dumper( [$EVAL_ERROR] ) );
+  };
+
+########################################################################
+  subtest 'save' => sub {
+########################################################################
+    $ENV{session} = $session_id;
+
+    $session = eval { return bind_module( $ctx, $session_config ); };
+    is( $session->{foo}, 'bar', 'session saved' )
+      or diag( Dumper( [$session] ) );
+  };
+
+########################################################################
+  subtest 'register' => sub {
+########################################################################
+    my $rc = eval {
+      return $session->register(
+        'fflintstone', 'W1lma',
+        'Fred',        'Flintstone',
+        'fflintstone@openbedrock.net'
+      );
+    };
+
+    if ( !$rc || $EVAL_ERROR ) {
+      if ( $EVAL_ERROR =~ /username\sexists/xsm ) {
+        diag('user exists...so presumably this worked at some point!');
+      }
+      else {
+        BAIL_OUT( 'error trying to register a new user:' . $EVAL_ERROR );
+      }
+    }
+    else {
+      ok( $rc, 'registered user' );
+    }
+
+  };
+
+########################################################################
+  subtest 'login' => sub {
+########################################################################
+    eval { $session->login( 'fflintstone', 'Wilma' ); };
+
+    ok( $EVAL_ERROR, 'bad login' );
+
+    like( $EVAL_ERROR, qr/^Unable\sto\slogin\suser/xsm );
+
+    my $session_id = $session->{session};
+
+    eval { $session->login( 'fflintstone', 'W1lma' ); };
+
+    ok( !$EVAL_ERROR, 'login fflintstone' )
+      or diag( Dumper( [$EVAL_ERROR] ) );
+
+    ok( $session_id ne $session->{session}, 'new session id' );
+
+    ok( $session->{username} eq 'fflintstone', 'username is fflintstone' );
+  };
+
+########################################################################
+  subtest 'remove user' => sub {
+########################################################################
+
+    ok( $session->remove_user( 'fflintstone', 'W1lma' ), 'remove user' );
+
+    eval { $session->login( 'fflintstone', 'W1lma' ); };
+
+    ok( $EVAL_ERROR, 'removed user cannot login' );
+  };
+}
+
+########################################################################
+END {
 
 }
 
