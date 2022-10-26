@@ -101,7 +101,9 @@ BEDROCK_APACHE = \
     Bedrock/Apache/BedrockSessionFiles.pm.in \
     Bedrock/Apache/BedrockCloudSessionFiles.pm.in \
     Bedrock/Apache/BedrockDocs.pm.in \
-    Bedrock/Apache/BedrockModPerl.pm.in
+    Bedrock/Apache/BedrockModPerl.pm.in \
+    Bedrock/Apache/Constants.pm.in \
+    Bedrock/Apache/HandlerUtils.pm.in
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
@@ -371,10 +373,11 @@ test: Test/Bedrock.pm
 	  DBI_PASS=bedrock; \
 	fi; \
 	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" \
+	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
 	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $$TEST
 
 prove.sh: Test/Bedrock.pm
-	echo "$(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
+	echo "BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
 	chmod 755 prove.sh
 
 CLEANFILES = \

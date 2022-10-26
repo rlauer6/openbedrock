@@ -5,7 +5,7 @@ drop table if exists session;
 create table session
  (
   id           int(11)      not null auto_increment primary key,
-  session      varchar(50)  not null default '',
+  session      varchar(50)  default null,
   login_cookie varchar(50)  not null default '',
   username     varchar(50)  not null default '',
   password     varchar(30)  default null,

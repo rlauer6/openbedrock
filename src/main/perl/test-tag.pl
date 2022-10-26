@@ -8,11 +8,15 @@ use English qw{-no_match_vars};
 
 use Test::Bedrock qw{run config};
 
+########################################################################
 my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
 
 my $test_file = sprintf 't/%s.yml', $name;
-my $config    = config();
+
+my $config = config();
+
 $config->{LOG4PERL} = 't/log4perl.conf';
+$config->{LogLevel} = $ENV{LogLevel};
 
 run( $test_file, yaml => 1, config => $config );
 

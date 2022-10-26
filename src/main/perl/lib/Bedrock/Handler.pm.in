@@ -51,7 +51,6 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
   REDIRECT             => Apache2::Const::REDIRECT,
   CACHE_BLOCK_SIZE     => 1024,
   DEFAULT_CACHE_BLOCKS => 256,
-  EMPTY                => q{},
 };
 
 use Bedrock::BedrockConfig;
@@ -93,7 +92,8 @@ if ( cache_enabled() ) {
         size   => CACHE_BLOCK_SIZE * $cache_blocks,
       };
 
-      return tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;  ## no critic (Miscellanea::ProhibitTies)
+      ## no critic (ProhibitTies)
+      return tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;
     }
   };
 
@@ -139,19 +139,20 @@ sub init_request {
 
   my $r = $self->request_handler;
 
-  # under mod_perl naked directory requests are passed along prior to
-  # file checking.  Thus the content_type is directory
+  # * under 'mod_perl' naked directory requests are passed along prior to
+  #   file checking.  Thus the content_type is directory
   #
-  # under mod_cgi those same requests come through via the "virtual" modifier on the Action directive
-  #   8<
+  # * under 'mod_cgi' those same requests come through via the "virtual"
+  #   modifier on the Action directive:
+  #
   #     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
-  #   8<
 
-  $self->{file}                    = EMPTY;
+  $self->{file} = $EMPTY;
+
   $self->{_config_files_processed} = [];
 
   if ( $r->content_type && $r->content_type =~ /directory/xsm ) {
-    $ENV{PATH_TRANSLATED} = $r->filename;  ## no critic Variables::RequireLocalizedPunctuationVars
+    $ENV{PATH_TRANSLATED} = $r->filename;  ## no critic RequireLocalizedPunctuationVars
     $r->content_type('text/html');
   }
   else {
@@ -170,16 +171,16 @@ sub init_request {
   {
     no warnings 'uninitialized';  ## no critic TestingAndDebugging::ProhibitNoWarnings
 
-    $self->log_debug( sprintf 'SCRIPT_NAME.....[%s]', $ENV{SCRIPT_NAME} );
-    $self->log_debug( sprintf 'request file....[%s]', $self->{file} );
-    $self->log_debug( sprintf 'URI.............[%s]', $r->uri || q{} );
-    $self->log_debug( sprintf 'URI_DIR.........[%s]', $self->{uri_dir} );
-    $self->log_debug( sprintf 'URI_NAME........[%s]', $self->{uri_name} );
-    $self->log_debug( sprintf 'PATH_INFO.......[%s]', $ENV{PATH_INFO} );
-    $self->log_debug( sprintf 'PATH_TRANSLATED.[%s]', $ENV{PATH_TRANSLATED} );
-    $self->log_debug( sprintf 'filename........[%s]', $self->{filename} );
-    $self->log_debug( sprintf 'path............[%s]', $self->{path} );
-    $self->log_debug( sprintf 'mod_perl........[%s]', $ENV{MOD_PERL} );
+    $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]', $ENV{SCRIPT_NAME} );
+    $r->log->debug( sprintf 'request file....[%s]', $self->{file} );
+    $r->log->debug( sprintf 'URI.............[%s]', $r->uri || q{} );
+    $r->log->debug( sprintf 'URI_DIR.........[%s]', $self->{uri_dir} );
+    $r->log->debug( sprintf 'URI_NAME........[%s]', $self->{uri_name} );
+    $r->log->debug( sprintf 'PATH_INFO.......[%s]', $ENV{PATH_INFO} );
+    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]', $ENV{PATH_TRANSLATED} );
+    $r->log->debug( sprintf 'filename........[%s]', $self->{filename} );
+    $r->log->debug( sprintf 'path............[%s]', $self->{path} );
+    $r->log->debug( sprintf 'mod_perl........[%s]', $ENV{MOD_PERL} );
   }
 
   return $self;
@@ -213,13 +214,14 @@ sub read_config {
   my $full_path = full_path( $path, $filename, '.xml' );
 
   my $config = eval { return Bedrock::Config->new($full_path); };
+  my $r      = $self->request_handler;
 
   if ( !$config || $EVAL_ERROR ) {
-    $self->log_warn( sprintf 'could not read %s: [%s] [%s]',
+    $r->log->warn( sprintf 'could not read %s: [%s] [%s]',
       $full_path, $EVAL_ERROR, $OS_ERROR );
   }
   else {
-    $self->log_debug("successfully read $full_path");
+    $r->log->debug("successfully read $full_path");
     $self->config_files_processed($full_path);
   }
 
@@ -281,12 +283,18 @@ sub load_config_from_cache {
 ########################################################################
   my ($self) = @_;
 
-  my $key = $ENV{SERVER_NAME} // $PID;
+  # note the only time $ENV{SERVER_NAME} should be undef is if we are
+  # executing outside the web environment, in which case, cacheing
+  # makes little sense.
+
+  my $key = $ENV{SERVER_NAME} // $PROGRAM_NAME;
 
   my $config = $BEDROCK_CONFIG_CACHE{$key};
 
+  my $r = $self->request_handler;
+
   if ($config) {
-    $self->log_info('loading configuration from cache');
+    $r->log_info('loading configuration from cache');
     $config = Bedrock::Config->newFromString($config);
   }
   else {
@@ -409,9 +417,11 @@ sub error {
 ########################################################################
   my ( $self, $err_msg, $code ) = @_;
 
+  my $r = $self->request_handler;
+
   $code //= SERVER_ERROR;
 
-  $self->log_error($err_msg);
+  $r->log->error($err_msg);
 
   $self->restore_dir;
 
@@ -443,18 +453,22 @@ sub get_bedrock_config {
 ########################################################################
   my ($self) = @_;
 
+  my $r = $self->request_handler;
+
   my $bedrock_config_path;
 
   if ( $ENV{BEDROCK_CONFIG_PATH} ) {
     $bedrock_config_path = realpath( $ENV{BEDROCK_CONFIG_PATH} );
   }
   else {
-    $self->log_warn(
+    $r->log->error(
       'No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.'
     );
   }
 
   my @config_paths;
+
+  $r->log->debug( sprintf "%%ENV: %s\n", Dumper( [ \%ENV ] ) );
 
   if ( $ENV{CONFIG_PATH} ) {
     @config_paths = split /:/xsm, $ENV{CONFIG_PATH};
@@ -463,18 +477,22 @@ sub get_bedrock_config {
   }
   else {
     if ($bedrock_config_path) {
-      $self->log_warn(
+
+      $r->log->info(
         sprintf
           'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
         $bedrock_config_path
       );
     }
     else {
-      $self->log_warn('No CONFIG_PATH or BEDROCK_CONFIG_PATH');
+      $r->log->error('No CONFIG_PATH or BEDROCK_CONFIG_PATH');
     }
   }
 
   my @paths = grep {defined} ( $bedrock_config_path, @config_paths );
+
+  $r->log->debug( sprintf "paths: %s\n",
+    Dumper( [ $bedrock_config_path, @config_paths ] ) );
 
   # it's probably okay, not to find this...
   my $config = $self->read_config( $bedrock_config_path, 'tagx' );
@@ -530,14 +548,19 @@ END_OF_MESSAGE
   # look for more config files to merge
   my @config_d_paths = map { $_ . '.d' } @paths;
 
+  $r->log->debug(
+    sprintf "additional paths to search: %s",
+    Dumper( [ \@config_d_paths, \@config_paths ] )
+  );
+
   foreach my $path ( @config_d_paths, @config_paths ) {
     next if !$path || !-d $path;
 
-    $self->log_debug( sprintf 'Searching [%s] for config files', $path );
+    $r->log->debug( sprintf 'Searching [%s] for config files', $path );
 
     foreach
       my $file ( _list_xml_files( $path, 'tagx.xml', 'tagx_apps.xml' ) ) {
-      $self->log_debug( sprintf 'Found a configuration file: [%s]', $file );
+      $r->log->debug( sprintf 'Found a configuration file: [%s]', $file );
 
       $self->config_files_processed($file);
 
@@ -565,10 +588,10 @@ END_OF_MESSAGE
   foreach my $path (@module_paths) {
 
     foreach my $file ( _list_xml_files($path) ) {
-      $self->log_debug(
+      $r->log->debug(
         sprintf 'Found a potential module configuration file: [%s]', $file );
 
-      $self->log_debug( sprintf 'Merging [%s]', $file );
+      $r->log->debug( sprintf 'Merging [%s]', $file );
 
       my $module_config = Bedrock::Config->new($file);
       $config->merge_modules( { MODULES => [$module_config] } );
@@ -604,7 +627,7 @@ END_OF_MESSAGE
         $dir =~ s/^$ENV{DOCUMENT_ROOT}//xsm;
       }
 
-      $dir = $dir // EMPTY;
+      $dir = $dir // $EMPTY;
 
       foreach my $key ( keys %{$app_config} ) {
         if ( $key ne "/$dir" ) {
@@ -702,21 +725,6 @@ returned is the fully exploded configuration environment for Bedrock.
 The configuration (may) have come from the cache if caching has been
 enabled.  See L<CONFIGURATION CACHING>
 
-=head2 log_info
-
-=head2 log_error
-
-=head2 log_warn
-
-=head2 log_debug
-
- log_debug( message )
-
-Logs a message with stack information at the given log level to
-Apache's error log.
-
-new
-
 =head2 cache_enabled
 
 Returns boolean value indicating if the configuration caching is
@@ -728,9 +736,13 @@ default: off
 
 =head2 config
 
+Returns the fully merged Bedrock configuration object.
+
 =head2 config_files_processed
 
 =head2 error
+
+Logs a message to the log file and restores the original directory.
 
 =head2 full_path
 
@@ -746,21 +758,38 @@ Deprecated: use load_config()
 
 =head2 get_bedrock_admin_dir
 
+Returns the relative URI for the Bedrock documenation. Typically C</bedrock>.
+
 =head2 get_uri_dir
+
+Returns the directory portion of URI parsed from the request object's C<uri()> method.
 
 =head2 request_handler
 
+Returns the request object. Apache running with C<mod_perl> enabled will
+return an L<Apache2::RequestRec> object.  If Bedrock is running as a
+CGI this method will return an L<Apache::Bedrock::Request_cgi> object.
+
 =head2 restore_dir
+
+Restores the directory to the current working directory at the time
+that this object was instantiated.
 
 =head2 uri_dir
 
-=head2 apache_handler
+See L</get_uri_dir>
+
+=head2 apache_handler (deprecated)
 
  apache_handler( [request-handler] )
+
+Use L</request_handler> instead.
 
 =head1 ENVIRONMENT METHODS
 
 =head2 is_mod_perl
+
+Boolean indicating whether C<mod_perl> is enabled.
 
 =head2 pwd
 
@@ -768,18 +797,31 @@ Returns the mod_perl version string if mod_perl is enabled.
 
 =head1 CONFIGURATION FILE METHODS
 
+=head2 config
+
+Returns the configuration object if it has been read.
+
 =head2 get_bedrock_config
 
  get_bedrock_config()
 
-Bedrock looks for the master F<tagx.xml> in
-C<$ENV{BEDROCK_CONFIG_PATH}>, however it can be overridden or merged
-with local configuration files.  To override the master, add this to
-the master F<tagx.xml> file
+Returns the configuration object. If it has not yet been initialized,
+this method will attempt to load the configuration object by calling
+C<load_config()>.
+
+Bedrock looks for configuration files, including F<tagx.xml> in paths
+indicated by C<$ENV{BEDROCK_CONFIG_PATH}> and C<$ENV{CONFIG_PATH}>.
+
+If Bedrock detects multiple F<tagx.xml> files in your paths, Bedrock
+will use the value of C<REPLACE_CONFIG> in the most recently read
+configuration file to determine whether values in this F<tagx.xml>
+should be merged or replace the previous configuration.
 
  <scalar name="REPLACE_CONFIG">yes</scalar>
 
 =head2 load_config_from_cache
+
+Loads the serialized configuration object from cache.
 
 =head2 read_config
 
@@ -790,43 +832,63 @@ object. Updates the C<config_files_processed> array.
 
 =head2 read_data_source
 
-=head2 _find_files
-
-=head2 _list_xml_files
+Reads the F<data-sources.xml> file.
 
 =head1 LOGGING METHODS
 
-The methods are mostly the equivalent to Apache' request object
-methods for logging. These methods will additionally log the method
-and line number of the caller.  Apache's default log message size is
-apparently 8K. There does not seem to be any way to increase that
-size. Apache will truncate message longer than 8K.
+The methods are basically equivalent to Apache' request object methods
+for logging. These methods will additionally log the caller and the
+line number of the caller.
+
+Equivalent to:
+
+ my $r = $self->request_handler;
+
+ $r->log->debug(sprintf '[%s]: %s %s', $caller, $caller_line_no, $message);
+
+I<NOTE>:
+
+=over 10
+
+Apache's default log message size is apparently 8K. There does not
+seem to be any way to increase that size. Apache will truncate message
+longer than 8K.
+
+=back
 
 =head2 log_debug
 
-=head2 log_error
+Log a message with caller and caller's line number a the B<debug> level.
 
 =head2 log_info
 
+Log a message with caller and caller's line number a the B<info> level.
+
 =head2 log_warn
+
+Log a message with caller and caller's line number a the B<warn> level.
+
+=head2 log_error
+
+Log a message with caller and caller's line number a the B<error> level.
 
 =head1 CONFIGURATION CACHING
 
-Bedrock's configuration can be cached to decrease startup
+Bedrock's configuration can be cached to potentially decrease startup
 times. Caching is done using shared memory.
 
 =head2 Why cache the configuration?
 
-Creating Bedrock's configuration object is not a simple matter of
-reading a single configuration file.  Thus caching Bedrock's config
+Creating Bedrock's configuration object is the result of merging
+several different configuration files. Caching Bedrock's config
 object can avoid a lot of config file mashing which includes; file
 I/O, XML parsing, and merging of hash objects.
 
-Caching of the configuration file can be used with mod_perl or when
-running Bedrock as a CGI making Bedrock's startup times up to 50%
+Caching of the configuration file can be used with C<mod_perl> or when
+running Bedrock as a CGI, making Bedrock's startup times up to 50%
 faster.
 
-=head2 Initializing the cache
+=head2 Initializing the Cache
 
 A shared memory segment should be created sometime before the
 Apache parent process is started (typically F<startup.pl>). It should
@@ -843,7 +905,7 @@ Note that use of the shared memory key C<BCFG> is not optional.  If you
 want Bedrock to know about your shared memory segment, you and Bedrock
 must agree on the key name - we chose C<BCFG>.
 
-For a non-mod_perl environment (Bedrock running as a perl CGI script)
+For a non-C<mod_perl> environment (Bedrock running as a Perl CGI script)
 you would need to create the shared memory segment at boot time or
 before your Apache server was started.  Also, you do NOT want the
 shared memory destroyed when the process terminates, thus you would
@@ -857,30 +919,32 @@ things).
 
 The cache is populated with a serialized (Bedrock XML) version of the
 config object.  Empirically you're going to need at least 128K or so
-depending on how many directories you've scattered your Bedrock files
-amongst.  Each directory that is I<Bedrock enabled> (.roc file is being
-processed therein) may have its own configuration (Learn about
-I<tagx_apps.xml> on the Bedrock Wiki).
+depending on how much data is contained in your configuration files.
 
-Our shared memory segment size, must account for the possibility that
-you might have a per directory configuration via F<tagx_apps.xml>.
-Thus the hash key for getting the configuration object is based on the
-directory from which the object is being served.  Make sure the size
-here and the size in your shared memory initialization script agree.
-Set the cached size (in MB) in the Apache configuration file using the
-C<SetEnv> directive.  The default is 256MB.
+Since Bedrock allows per directory configurations files, the size of
+your configuration object could get quite large. You can learn more about
+per directory configuation using I<tagx_apps.xml> on the L<Bedrock Wiki|http://twiki.openbedrock.net>..
+
+Again, you shared memory segment size, must account for the
+possibility that you might have a per directory configurations via
+F<tagx_apps.xml>.  Thus the hash key for getting the configuration
+object is based on the directory from which the object is being
+served.  Make sure the size here and the size in your shared memory
+initialization script agree.  Set the cached size (in MB) in the
+Apache configuration file using the C<SetEnv> directive.  The default
+is 256MB.
 
  SetEnv BEDROCK_CACHE_CONFIG On
  SetEnv BEDROCK_CACHE_CONFIG_SIZE 256
 
 =head2 More Gory Details
 
-In this module (Apache::Bedrock) we tie the hash object
+In this module  we tie the hash object
 (C<%BEDROCK_CONFIG_CACHE>) to the shared memory segment using the
 C<IPC::Shareable> module.  We do this in an eval block in the event
-that the shared memory is not available.  If an error occurs during
-the tie, we simply will have an empty hash object and thus cacheing is
-disabled.  The absence of the shared memory key is essentially then
+that the shared memory is not available. If an error occurs during
+the tie, we will have an empty hash object and thus cacheing is
+disabled. The absence of the shared memory key is essentially then
 our trigger to cache or not to cache.
 
 When the Bedrock handler() method is invoked, we check the cache
@@ -888,10 +952,11 @@ before creating a config object.
 
  $BEDROCK_CONFIG_CACHE{$key};
 
-If the serialized object exists, great, if not, we do the config
-dance and create a config object.  We then store the serialized
-config object back in the hash used to cache the configs.  If we're
-not caching, we do it anyway, no harm, no foul here.
+If the serialized object exists, it gets used, if not, we do the
+initialize the config object. The configuration object is then stored
+as a serialized object back in the hash used to cache the
+configurations.  If we're not caching, we do it anyway, no harm, no
+foul here.
 
 The I<key> used as the hash index into the cache (not to be confused
 with the shared memory "key" that allows multiple processes to access
@@ -900,19 +965,19 @@ C<SERVER_NAME> environment variable and the absolute path to the file
 being processed through the handler.  This is done because Bedrock
 supports the possibility of per directory configurations.
 
-Keeping in mind that the mod_perl handler server many virtual hosts
-we need to make sure that the correct config object is accessed.
+Keeping in mind that the C<mod_perl> handler server many virtual hosts
+so we need to make sure that the correct config object is accessed.
 Using the key as described above to store and fetch the serialized
 config object will (should) insure that the correct config object is
 being used for the correct virtual host and for the correct directory
-within that virtual host.  Again, recall that Bedrock allows per directory
-configuration via F<tagx_apps.xml>.
+within that virtual host.  Did we mention that Bedrock allows per
+directory configuration via F<tagx_apps.xml>?
 
 The shared memory object should probably be destroyed when the Apache
 parent is terminated.  Again, note that in this module
 (C<Bedrock::Handler>) we neither create, nor destroy the shared memory
-segment, but we use it if it is available.  IOW those wishing to take
-advantage of caching have some housekeeping to do.
+segment, we use it only if it is available.  In other words, if you
+want to take advantage of caching you have some housekeeping to do.
 
 =head2 Cache Manipulation
 

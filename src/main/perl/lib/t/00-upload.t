@@ -52,7 +52,7 @@ sub create_upload_stream {
     Content      => [ uploaded_file => [$filename] ],
   )->content;
 
-  unlink "/tmp/$filename";
+  unlink $filename;
 
   return ( $post_content, $filename );
 }
@@ -128,8 +128,9 @@ is( <$fh>, $LOREM_IPSUM, 'content uploaded correctly' );
 
 close $fh;
 
-END {
+unlink $filename;
 
+END {
 }
 
 1;

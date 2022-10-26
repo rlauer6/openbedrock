@@ -24,22 +24,16 @@ use strict;
 use warnings;
 
 use File::Basename;
-use Bedrock::Constants qw{:booleans};
+use Bedrock::Constants qw{:booleans :chars :log_levels};
+use Bedrock::Context qw{init_log4perl_logger};
 use Data::Dumper;
 
-use List::Util qw{pairs};
+use List::Util qw{pairs none};
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
 use Readonly;
-
-Readonly::Hash our %LEVELS => (
-  'error' => 3,
-  'warn'  => 2,
-  'info'  => 1,
-  'debug' => 0,
-);
 
 Readonly::Hash our %MIME_TYPES => (
   htm  => 'text/html',
@@ -56,21 +50,62 @@ Readonly::Hash our %MIME_TYPES => (
 ########################################################################
 sub new {
 ########################################################################
-  my ($class) = @_;
+  my ( $class, %options ) = @_;
 
-  return bless {}, $class;
+  my $self = bless \%options, $class;
+
+  my $fh = $self->{output_handle};
+
+  if ( !$fh ) {
+    $fh = select;
+
+    if ( !ref $fh && ref \$fh ne 'GLOB' ) {
+      no strict 'refs';  ## no critic (ProhibitNoStrict)
+
+      $fh = \*$fh;
+
+      $self->{output_handle} = $fh;
+    }
+  }
+
+  $self->{LogLevel} = $ENV{LogLevel} || $ENV{BedrockLogLevel};
+  $self->init_logger;
+
+  return $self;
+}
+
+########################################################################
+sub init_logger {
+########################################################################
+  my ($self) = @_;
+
+  my $level = $self->{log_level} // $EMPTY;
+
+  if ( none { $level eq $_ } qw{ error fatal warn info debug } ) {
+    $level = 'error';
+  }
+
+  $self->{log_level} = $level;
+
+  init_log4perl_logger($level);
+
+  return $self;
 }
 
 ########################################################################
 sub get_loglevel {
 ########################################################################
-  return $LEVELS{ get_loglevel_str() };
+  my ($self) = @_;
+
+  return $LOG4PERL_LOG_LEVELS{ $self->get_loglevel_str };
 }
 
 ########################################################################
 sub get_loglevel_str {
 ########################################################################
-  return $ENV{BedrockLogLevel} || 'info';
+  my ($self) = @_;
+
+  return $self->{log_level} || 'error';
 }
 
 ########################################################################
@@ -78,8 +113,11 @@ sub log_message {
 ########################################################################
   my ( $self, $logmsg, $level ) = @_;
 
-  my %NUMERIC_LEVELS = reverse %LEVELS;
-  $level = $NUMERIC_LEVELS{$level};
+  $level = lc $level;
+
+  if ( none { $level eq $_ } keys %LOG4PERL_LOG_LEVELS ) {
+    $level = 'debug';
+  }
 
   return $self->get_logger->$level($logmsg);
 }
@@ -89,7 +127,12 @@ sub _log {
 ########################################################################
   my ( $level, $self, @args ) = @_;
 
-  return $self->get_logger->$level(@args);
+  my $logger = $self->get_logger;
+
+  # set the level for the handler
+  $logger->level( $LOG4PERL_LOG_LEVELS{ $self->{log_level} } );
+
+  return $logger->$level(@args);
 }
 
 ########################################################################
@@ -110,7 +153,13 @@ sub warn  { goto &log_warn; }  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
 sub log {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
-  return shift->get_logger;
+  my ($self) = @_;
+
+  my $logger = $self->get_logger;
+  my $level  = $self->{log_level} || 'error';
+  $logger->level( $LOG4PERL_LOG_LEVELS{$level} );
+
+  return $logger;
 }
 
 # note: we probably don't want to pollute Bedrock with magic mime-type
@@ -133,7 +182,9 @@ sub content_type {
   my ( $name, $path, $ext )
     = fileparse( $ENV{PATH_TRANSLATED}, qr/[.][^.]+$/xsm );
 
-  my $mime_type = $MIME_TYPES{$ext} // 'application/octet-stream';
+  my ($mime_type) = grep { $ext =~ /$_/xsm } keys %MIME_TYPES;
+
+  $mime_type = $MIME_TYPES{$mime_type} // 'application/octet-stream';
 
   return $mime_type;
 }
@@ -209,7 +260,7 @@ sub headers_in {
     delete $http_vars{ 'HTTP_' . $key };
   }
 
-  return \%http_vars;
+  return %http_vars;
 }
 
 ########################################################################
@@ -223,6 +274,8 @@ sub err_headers_out { goto &cgi_header_out; }
 sub cgi_header_out {
 ########################################################################
   my ( $self, @headers ) = @_;
+
+  $self->{headers} //= $EMPTY;
 
   if (@headers) {
     foreach my $p ( pairs @headers ) {
@@ -241,7 +294,7 @@ sub send_http_header {
   my ($self) = @_;
 
   if ( $self->{headers} ) {
-    print $self->{headers}, "\r\n";
+    $self->print( $self->{headers}, "\r\n" );
   }
 
   $self->{headers} = undef;
@@ -252,7 +305,9 @@ sub send_http_header {
 ########################################################################
 sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 ########################################################################
-  return close STDOUT;
+  my ($self) = @_;
+
+  return close $self->{output_handle};
 }
 
 ########################################################################
@@ -260,7 +315,9 @@ sub print {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return print @args;
+  my $fh = $self->{output_handle};
+
+  return print {$fh} @args;
 }
 
 1;
@@ -273,7 +330,7 @@ __END__
 
 =head1 NAME
 
-C<Apache::Bedrock::Request_cgi>
+<Apache::Bedrock::Request_cgi - request object suitable for use by Bedrock
 
 =head1 SYNOPSIS
 
@@ -295,7 +352,10 @@ C<Apache::Bedrock::Request_cgi>
 
 =head1 DESCRIPTION
 
-Provides a CGI (non mod_perl) version of Bedrock.
+Provides a request object suitable for use by
+L<Bedrock::Apache::Bedrock>. Implements enough of the the methods
+found in C<Apache2::RequestRec> to support Bedrock running under
+Apache as a CGI script (C<bedrock.cgi>)..
 
 =head1 METHODS
 
@@ -347,33 +407,76 @@ Outputs the HTTP headers to STDOUT.
 
 =head1 LOGGING METHODS
 
-Logging is done using Log::Log4perl.
+The request object implements a set of methods suitable for use by
+L<Bedrock::Apache::Bedrock> including the C<log()> method found in
+<Apache2::RequestRec>.
 
-By default the L<Bedrock::Context> constructor will initialize logging
-by looking for a F<log4perl.conf> file in Bedrock's configuration
-path.
+C<log()> method returns a logger with the methods below that are
+used by L<Bedrock::Apache::Bedrock> during its initialization phase.
 
-See L<Bedrock::Context> for details on how to configure logging.
+ debug()
+ info()
+ warn()
+ error()
+
+The log methods simply call C<Log::Log4perl>'s analogous
+methods.
+
+=head1 LOG LEVEL
+
+The loggers implemented here should, by default log at the level
+specified by the C<LogLevel> directive in your Apache configuration
+file. However, to determine the proper logging level specified by that
+directive would first require knowing the context of the request
+(which virtual host if any is handling the request) and then parsing
+the configuration for that context to find the C<LogLevel>
+directive. Since that seems a bit overkill to provide a temporary
+logging capability while Bedrock intializes itself (and sets up its
+own loggging), the request object will look for an environment
+variable of the same name (C<LogLevel>). If there is no C<LogLevel>
+set in the environment, the logging level will be set to Apache's
+default (C<warn>).
+
+=head1 CONFIGURATION
+
+As mentioned above, the log methods provided by the C<log> method are
+just covers to L<Log::Log4perl>'s methods. L<Log::Log4perl> is also
+used by Bedrock's internals for logging and is initialized by
+L<Bedrock::Context> during the startup phase. The context object tries
+to find a suitable F<log4perl.conf> file to initialize
+L<Log::Log4perl> if it has not been initialized already. Since
+L<Log::Log4perl> should really only be initialized once, this method
+will call C<Bedrock::Context::init_log4perl_logger> with the
+C<LogLevel> you have specified. The L<Log::Log4perl> configuration
+when logging from this class has been added to the default
+F<log4perl.conf> file. Note that the appender configured only logs the
+message using a minimal ConversionPattern since the log format for
+this phase is configured by Apache's C<LogFormat> directive.
+
+ log4perl.appender.BedrockCGI=Log::Log4perl::Appender::Screen
+ log4perl.appender.BedrockCGI.autoflush=1
+ log4perl.appender.BedrockCGI.stderr=1
+ log4perl.appender.BedrockCGI.layout=PatternLayout
+ log4perl.appender.BedrockCGI.layout.ConversionPattern=%m%n
+ log4perl.category.Apache.Request_cgi=WARN, BedrockCGI
 
 =head2  get_loglevel
 
-Returns a numberic log level based on the current logging level
-defined by the environment variable C<BedrockLogLevel>.
-
- 0 => debug
- 1 => info
- 2 => warn
- 3 => error
-
-default: 1 (info)
+Returns a <Log::Log4perl> log level based on the current logging level
+defined by the environment variable C<LogLevel>.
 
 =head2  get_loglevel_str
 
 Returns the logging level as a string.
 
+  debug
+  info
+  warn
+  error
+
 =head2  log
 
-Returns a Log::Log4perl logger.
+Returns a L<Log::Log4perl> logger.
 
 =head2  debug
 

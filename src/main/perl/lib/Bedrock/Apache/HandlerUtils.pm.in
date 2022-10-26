@@ -1,0 +1,239 @@
+package Bedrock::Apache::HandlerUtils;
+
+use strict;
+use warnings;
+
+use Role::Tiny;
+
+use Bedrock::Handler;
+use Bedrock::Constants qw{:chars};
+use Bedrock::Apache::Constants qw{:http};
+
+use CGI::Cookie;
+use Data::Dumper;
+use DBI;
+use English qw{-no_match_vars};
+use File::Basename;
+
+########################################################################
+sub get_cookie {
+########################################################################
+  my ( $r, $cookie ) = @_;
+
+  my %cookies = eval { return CGI::Cookie->parse( $ENV{HTTP_COOKIE} ); };
+
+  if ($EVAL_ERROR) {
+    $r->log->error( sprintf "ERROR parsing cookies: [%s]\n%s\n",
+      $ENV{HTTP_COOKIE}, $EVAL_ERROR );
+  }
+
+  my $cookie_value = $cookies{$cookie} ? $cookies{$cookie}->value : undef;
+
+  $r->log->debug( 'Cookies: ' . Dumper [ \%cookies, $ENV{HTTP_COOKIE} ] );
+
+  return $cookie_value;
+}
+
+########################################################################
+sub get_session_cookie {
+########################################################################
+  my ($r) = @_;
+
+  return get_cookie( $r, 'session' );
+}
+
+########################################################################
+sub check_session {
+########################################################################
+  my ($bedrock_handler) = @_;
+
+  my $r = $bedrock_handler->request_handler;
+
+  # get the session cookie so we know where to look for the file
+  my $session = get_session_cookie($r);
+
+  if ( !$session ) {
+    $r->log->error('no session cookie');
+    die "no or expired session\n";
+  }
+
+  validate_session( $bedrock_handler, $session );
+
+  return;
+}
+
+########################################################################
+sub validate_session {
+########################################################################
+  my ( $handler, $session ) = @_;
+
+  my $r = $handler->request_handler;
+
+  my $config = $handler->config->get_module_config('usersession');
+
+  die "no config available\n"
+    if !$config || !keys %{$config};
+
+  my $dsn = $config->{data_source};
+
+  die "no data_source in configuration\n"
+    if !$dsn;
+
+  my ( $username, $password, $table_name )
+    = @{$config}{qw{username password table_name}};
+
+  my @user = eval {
+    my $dbi = DBI->connect( $dsn, $username, $password );
+
+    my $query = <<'END_OF_SQL';
+select *
+  from %s
+  where session = ? and expires > now()
+END_OF_SQL
+
+    $query = sprintf $query, $config->{table_name};
+
+    my @result = $dbi->selectrow_array( $query, undef, $session );
+
+    $dbi->disconnect;
+
+    return @result;
+  };
+
+  if ( !@user || $EVAL_ERROR ) {
+    $r->log->error(
+      sprintf 'invalid session or session timed out. error: [%s]',
+      $EVAL_ERROR );
+
+    die "no or expired session\n";
+  }
+
+  return;
+}
+
+########################################################################
+sub dump_session_info {
+########################################################################
+  my ( $r, $filename, $session_dir, $session ) = @_;
+
+  $r->log->debug( sprintf 'SESSION_DIR......[%s]', $session_dir );
+  $r->log->debug( sprintf 'session..........[%s]', $session );
+  $r->log->debug( sprintf 'filename.........[%s]', $filename );
+
+  return;
+}
+
+########################################################################
+sub dump_request_info {
+########################################################################
+  my ($r) = @_;
+
+  my $path_info   = $ENV{PATH_INFO}       // $EMPTY;
+  my $path_xlated = $ENV{PATH_TRANSLATED} // $EMPTY;
+  my $http_cookie = $ENV{HTTP_COOKIE}     // $EMPTY;
+
+  $r->log->debug( __PACKAGE__ . ' started.' );
+
+  $r->log->debug( sprintf 'request file.....[%s]', $r->filename );
+  $r->log->debug( sprintf 'URI..............[%s]', $r->uri );
+  $r->log->debug( sprintf 'PATH_INFO........[%s]', $path_info );
+  $r->log->debug( sprintf 'PATH_TRANSLATED..[%s]', $path_xlated );
+  $r->log->debug( sprintf 'HTTP_COOKIE......[%s]', $http_cookie );
+
+  return;
+}
+
+########################################################################
+sub get_file_info {
+########################################################################
+  my ($r) = @_;
+
+  dump_request_info($r);
+
+  # filename (however actual file will exist under user's session directory)
+  my ( $name, $path, $ext ) = fileparse( $r->filename, qr/[.]([^.]*)$/xsm );
+
+  my $bedrock_handler = Bedrock::Handler->new($r);
+
+  my $config = $bedrock_handler->get_config();
+
+  my $session = check_session($bedrock_handler);
+
+  my $session_dir = $config->{SESSION_DIR};
+
+  my $filename = sprintf '%s/%s/%s%s', $session_dir, $session, $name, $ext;
+
+  dump_session_info( $r, $filename, $session_dir, $session );
+
+  my $file_info = {
+    session     => $session,
+    session_dir => $session_dir,
+    filename    => $filename,
+    config      => $config,
+  };
+
+  my $error_code = verify_file( $r, $filename );
+
+  return $file_info;
+}
+
+########################################################################
+sub verify_file {
+########################################################################
+  my ( $r, $filename ) = @_;
+
+  if ( !-e $filename ) {
+    $r->log->error( sprintf 'file [%s] not found', $filename );
+    die "file not found\n";
+  }
+  elsif ( !-r $filename ) {
+    $r->log->error( sprintf 'file [%s] is not readable', $filename );
+    die "permission error\n";
+  }
+
+  $r->log->debug( sprintf 'file [%s] found', $filename );
+
+  return;
+}
+
+########################################################################
+sub is_mod_perl {
+########################################################################
+  return defined $ENV{MOD_PERL};
+}
+
+########################################################################
+sub set_error_status {
+########################################################################
+  my ( $r, $err ) = @_;
+
+  my $status;
+
+  if ( $err =~ /not\sfound/xsm ) {
+    $status = $NOT_FOUND;
+  }
+  elsif ( $err =~ /not\sreadable/xsm ) {
+    $status = $FORBIDDEN;
+  }
+  elsif ( $err =~ /no\sor\sexpired\ssession/xsm ) {
+    $status = $HTTP_UNAUTHORIZED;
+  }
+  else {
+    $status = $SERVER_ERROR;
+  }
+
+  if ( is_mod_perl() ) {
+    $r->status($status);
+  }
+  else {
+    $r->cgi_header_out( 'Status', '500' );
+  }
+
+  $r->send_http_header;
+
+  return $status;
+}
+
+1;
+
+__END__

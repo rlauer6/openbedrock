@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -24,33 +22,120 @@ package Apache::BedrockAutocomplete;
 use strict;
 use warnings;
 
-BEGIN {
-  require Apache2::compat if $ENV{MOD_PERL};
-}
+use Role::Tiny::With;
+with 'Bedrock::Apache::HandlerUtils';
 
-use Apache2::Const -compile => qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
-use Apache2::Log;
-use APR::Const -compile => qw(:error SUCCESS);
+use Bedrock;
+use Bedrock::Apache::Constants qw{:all};
+use Text::URLEncode qw{Encode};
 
-#
-# Define the following mod_perl constants since we could be using
-# this module both as a mod_perl module and in a CGI
-#
-use constant NOT_FOUND    => Apache2::Const::NOT_FOUND;
-use constant SERVER_ERROR => Apache2::Const::SERVER_ERROR;
-use constant FORBIDDEN    => Apache2::Const::FORBIDDEN;
-use constant OK           => Apache2::Const::OK;
-use constant DECLINED     => Apache2::Const::DECLINED;
-use constant REDIRECT     => Apache2::Const::REDIRECT;
-
-use Bedrock::Handler;
-use CGI::Cookie;
 use Data::Dumper;
-use File::Basename;
-use IO::File;
+use English qw{-no_match_vars};
 use JSON;
 
-use vars qw/%ENV/;
+# cache the autocomplete files
+our %FILES;
+
+########################################################################
+sub handler {
+########################################################################
+  my ($r) = @_;
+
+  my $file_info = eval { return get_file_info($r); };
+
+  if ( !$file_info || $EVAL_ERROR ) {
+    return set_error_status( $r, $EVAL_ERROR );
+  }
+
+  my $filename = $file_info->{filename};
+
+  my $config = $file_info->{config};
+
+  my $json = JSON->new;
+
+  my $ac_config = $config->{autocomplete} || {};
+
+  my $cache_off;
+
+  if ( defined $ac_config->{cache} ) {
+    $cache_off = $ac_config->{cache} !~ /on/ixsm;
+  }
+  else {
+    $cache_off = $ENV{REQUEST_URI} =~ /no_cache/xsm;
+  }
+
+  my $list = $FILES{ $r->filename };
+
+  if ( $cache_off || !$list ) {
+    $list = eval {
+
+      open my $fh, '<', $filename  ## no critic (RequireBriefOpen)
+        or do {
+        $r->log->error( sprintf 'could not open file [%s] for reading',
+          $filename );
+
+        return set_error_status( $r, 'not found' );
+        };
+
+      local $RS = undef;
+
+      my $content = <$fh>;
+
+      close $fh;
+
+      return $json->decode($content);
+    };
+
+    if ($EVAL_ERROR) {
+      my $error = Encode($EVAL_ERROR);
+
+      if ( defined $ENV{MOD_PERL} ) {
+        $r->status($SERVER_ERROR);
+      }
+      else {
+        $r->cgi_header_out( 'Status', '500' );
+      }
+
+      print <<"END_OF_HTML";
+{ "error" : "$error" }
+END_OF_HTML
+
+      $r->send_http_header;
+
+      return $OK;
+    }
+
+    $FILES{ $r->filename } = $list;
+    $r->log->debug('cache refreshed');
+  }
+  else {
+    $r->log->debug( sprintf 'read %s from cache', $r->filename );
+  }
+
+  my $term = $ENV{QUERY_STRING};
+
+  my $result = [];
+
+  if ( $term =~ /term\=([^&]*)\&?/ixsm ) {
+    $result = [ map { $_->{label} =~ /^$1/i ? $_ : () } @{$list} ];  ## no critic
+  }
+  else {
+    $result = $list;
+  }
+
+  $r->content_type('application/json');
+  $r->send_http_header;
+
+  print $json->encode($result);
+
+  return $OK;
+}
+
+1;
+
+__END__
+
+## no critic (RequirePodSections)
 
 =pod
 
@@ -58,21 +143,27 @@ use vars qw/%ENV/;
 
 C<Apache::BedrockAutocomplete>
 
+=head1 SYNOPSIS
+
+ cookie="session=32733cca688df39044832be9928183ed; path=/; expires=Mon, 24-Oct-2022 20:53:58 GMT;"; \
+ curl -b "$cookie" http://example.com/autocomplete/clients.jroc?term=gro
+
 =head1 DESCRIPTION
 
-Implements an Apache handler that serves I<autocomplete> files from a
-Bedrock session directory.  This is typically used when a web
-developer wants to provide an autocomplete service as part of a web
-application user interface.
+Implements an Apache handler that serves L<autocomplete
+files|/Autocomplete Files> files from a user's session directory.
+This module is typically used as part of a web application that
+requires an autocomplete API.
+
+Autcomplete files are JSON files with terms that will searched
+for when a query is sent with a term fragment.
 
 =head1 INSTALLATION NOTES
 
-You'll need to setup the Apache handler in order to automatically
-serve files from your user's session directory.
+Follow these steps to implement an autocompletion service on your
+Apache server.
 
-=head2 Setting Up the Apache Handler
-
-Setup the handler in your Apache configuration file thusly:
+=head2 1. Set Up the Apache Handler
 
   Action bedrock-autocomplete /cgi-bin/bedrock-autocomplete.cgi virtual
 
@@ -93,56 +184,57 @@ Setup the handler in your Apache configuration file thusly:
   
   </Directory>
 
-If you want to use the CGI version instead of the C<mod_perl> version
-of the handler, copy the CGI handler to your F</cgi-bin>
-directory. F<bedrock-autocomplete.cgi> is distributed as part of
-Bedrock and can be found at
-F<@libdir@/bedrock/cgi-bin/bedrock-autocomplete.cgi>.
+You can configure the handler for use with C<mod_perl> or as a CGI script.
 
-=head2 The Session Directory
+To use the CGI version, copy the CGI handler to your F</cgi-bin>
+directory.
 
-The C<Apache::BedrockAutocomplete> handler essentially serves up a
-JSON file that is stored in a session directory.  A session directory
-is created (by you) using the C<$session> object's
-C<create_session_dir()> method. This creates a directory (outside of
-the webserver's C<DOCUMENT_ROOT>) specific to the user's session.  The
-idea being, only that user will be able to access files from that
-session directory.  Recall to implement persistent sessions in the
-first place, users should have cookies enabled.
+ cp @libdir@/bedrock/cgi-bin/bedrock-autocomplete.cgi /var/www/cgi-bin
+ chmod +x /var/www/cgi-bin/bedrock-autocomplete.cgi
+ chown apache:apache /var/www/cgi-bin/bedrock-autocomplete.cgi
+
+=head2 2. Create a Session Directory
+
+The C<Apache::BedrockAutocomplete> handler reads JSON file that is
+stored in a user's session directory.
+
+Assuming you have configured user sessions using something similar to
+L<BLM::Startup::UserSession>, user session directories can be created
+using the C<$session> object's C<create_session_dir()> method. This
+creates a directory (outside of the webserver's C<DOCUMENT_ROOT>)
+that is specific to the user's session.
+
+Only the user associted with that session will be able to access files
+from that session directory. Recall that to implement persistent
+sessions in the first place, users should have cookies enabled.
+
 
 You place an appropriately formatted file in that directory and then
 access the session url (F</autocomplete/filename.jroc>).
 
-I<Files in session directories are B<not> automatically removed when
-sessions expire.>
+=head2 3. Create an Autocomplete File
 
-You should probably implement some kind of cron job to remove stale
-session directories. You can find session directories older than 1 day
-and might be able to assume they are stale.
+Create a JSON autocomplete file and place it in your user's session
+directory.
 
- $ find /var/www/vhosts/mysitesession -maxdepth 1 -type d -mtime +1
+ <sink:list>
+ [ { "label" : "Bedrock", "value" : "1" },
+   {  "label" : "Perl", "value" : "2"} ]
+ </sink>
 
-To be sure, look up the last part of the session directory name (the
-session id) in your session table.  If you can't find it, then the
-session has expired.
+ <null $session.create_session_file("test.jroc", $list)>
 
- for a in $(find /var/www/vhosts/mysite/session -maxdepth 1 -type d -mtime +1); do 
-   session=$(basename $a)
-   id=$(echo "select id from session where id = '"$session"'" | mysql -u fred --password=flintstone bedrock)
-   [ "$id" = "" ] && rm -rf /var/www/vhosts/mysite/session/$session
- done
+=head1 Autocomplete Files
 
-=head2 Autocomplete Files
-
-The format of file is really up to you or how you expect to process
-the file. If you use the F<.jroc> extension, the Bedrock will return
+The format of file is really up to you based on  how you expect to process
+the file on your client. If you use the F<.jroc> extension, the handler will return
 the file with an I<application/json> Content-Type header.
 
 Typically, an autocomplete file looks some like this if you are using
 jQuery's autocomplete facility:
 
  [ { "label" : "Bedrock", "value" : "1" },
-   {  "label" : "Perl", "value", "2"} ]
+   {  "label" : "Perl", "value" : "2"} ]
 
 
 I<From jQuery's documenation:>
@@ -161,161 +253,12 @@ B<Multiple types supported:>
       used for both, e.g., if you provide only value properties, the
       value will also be used as the label.
 
-=cut
-
-# +------------------------------+
-# | mod_perl HANDLER STARTS HERE |
-# +------------------------------+
-
-# cache the autocomplete files
-our %FILES;
-
-sub handler {
-  my $r = shift;
-
-  $r->log->debug( "Apache::SessionFiles started.");
-  $r->log->debug( sprintf( "[%s]: request file.....[%s] " , (caller(0))[3], $r->filename ) );
-  $r->log->debug( sprintf( "[%s]: URI..............[%s] " , (caller(0))[3], $r->uri ) );
-  $r->log->debug( sprintf( "[%s]: PATH_INFO........[%s] " , (caller(0))[3], $ENV{PATH_INFO} ) );
-  $r->log->debug( sprintf( "[%s]: PATH_TRANSLATED..[%s] " , (caller(0))[3], $ENV{PATH_TRANSLATED} ) );
-  $r->log->debug( sprintf( "[%s]: HTTP_COOKIE......[%s] " , (caller(0))[3], $ENV{HTTP_COOKIE} ) );
-  $r->log->debug( sprintf( "[%s]: content_type.....[%s] " , (caller(0))[3], $r->content_type ) );
-
-  # filename (however actual file will exist under user's session directory)
-  my ($name, $path, $ext) = fileparse( $r->filename, qr/\.([^.]*)$/ );
-
-  # get the session cookie so we know where to look for the file
-  my $session = get_session_cookie($r);
-
-  unless ( $session ) {
-    $r->log->error("ERROR: No session found.");
-    return NOT_FOUND;
-  }
-
-  my $conf = eval {
-    my $bedrock_handler = Bedrock::Handler->new( $r );
-    $bedrock_handler->get_config();
-  };
-
-  if ( $@ ) {
-    $r->log->debug( sprintf( "ERROR: %s ", $@) );
-    return NOT_FOUND;
-  }
-
-  my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
-
-  $r->log->debug( sprintf( "[%s]: SESSION_DIR......[%s] " , (caller(0))[3], $conf->{SESSION_DIR} ) );
-  $r->log->debug( sprintf( "[%s]: session..........[%s] " , (caller(0))[3], $session ) );
-  $r->log->debug( sprintf( "[%s]: filename.........[%s] " , (caller(0))[3], $filename ) );
-
-  my $list = $FILES{$r->filename};
-  my $json = JSON->new;
-  my $ac_config = $conf->{autocomplete} || {} ;
-
-  my $cache_off;
-
-  if ( defined $ac_config->{cache} ) {
-    $cache_off = $ac_config->{cache} !~/on/i;
-  }
-  else {
-    $cache_off = $ENV{REQUEST_URI} =~/no_cache/;
-  }
-
-  if ( $cache_off || ! $list ) {
-    unless ( -e $filename ) {
-      $r->log->error("FILE NOT FOUND: [$filename]");
-      return NOT_FOUND;
-    }
-    elsif ( -r $filename ) {
-      $r->log->debug("FILE FOUND: [$filename]");
-    }
-    else {
-      return FORBIDDEN;
-    }
-    
-    my $ac_contents;
-    
-    open FILE, "<$filename";
-    {
-      local $/;
-      $ac_contents = <FILE>;
-    }
-    
-    close FILE;
-    
-    $list = eval {
-      $json->decode($ac_contents);
-    };
-    
-    if ( $@ ) {
-      $r->content_type('text/html');
-      $r->send_http_header;
-      print <<eom;
-<pre>
-error: $@
-</pre>
-eom
-      return SERVER_ERROR;
-    }
-    
-    $FILES{$r->filename} = $list;
-    $r->log->debug("cache refreshed");
-  }
-  else {
-    $r->log->debug("cache active");
-  }
-
-  my $term = $ENV{QUERY_STRING};
-  my $result = [];
-
-  if ( $term =~/term\=([^&]*)\&?/i ) {
-    $result = [  map { $_->{label} =~/^$1/i ? $_ : () } @{$list} ];
-  }
-  else {
-    $result = $list;
-  }
-
-  $r->content_type('application/json');
-  $r->send_http_header;
-
-  print $json->encode($result);
-
-  return OK;
-}
-
-# parse out the session cookie from the HTTP_COOKIEs
-sub get_session_cookie {
-  my $r = shift;
-
-  my %cookies;
-  my $session;
-
-  eval {
-    %cookies = CGI::Cookie->parse($ENV{HTTP_COOKIE});
-    $r->log->debug('Cookies ' . Dumper [\%cookies] );
-  };
-  
-  if ( $@ ) {
-    $r->log->error(sprintf("ERROR parsing cookies: [%s]\n%s\n", $ENV{HTTP_COOKIE}, $@));
-  }
-  else {
-    $session = $cookies{session}->value;
-  }
-
-  return $session;
-}
-
-=pod
-
 =head1 SEE OTHER
 
-C<Bedrock::Handler>, C<Bedrock::Apache::Request_cgi>
+L<Bedrock::Handler>, L<Bedrock::Apache::Request_cgi>, L<BLM::Startup::UserSession>
 
 =head1 AUTHOR
 
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-1;
-

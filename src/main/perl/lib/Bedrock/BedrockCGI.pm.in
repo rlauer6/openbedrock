@@ -29,6 +29,8 @@ use strict;
 use warnings;
 
 use Bedrock qw{:utils};
+use Carp;
+use Carp::Always;
 use Apache::Bedrock;
 use Apache::Request_cgi;
 use Bedrock::Constants qw{:chars :booleans};
@@ -71,6 +73,8 @@ sub new {
     $options{ lc $_ } = $options{$_};
   }
 
+  $self->{output_handle} = $options{output_handle};
+
   $self->config;
 
   $self->context;
@@ -96,6 +100,8 @@ sub new {
     $self->flush_output;  # send header
   }
 
+  $self->get_logger->debug( Dumper( [$self] ) );
+
   return $self;
 }
 
@@ -109,7 +115,6 @@ sub autoflush {
   }
 
   return $self->{autoflush};
-
 }
 
 ########################################################################
@@ -172,8 +177,8 @@ sub context {
 
   if ( !exists $self->{_ctx} ) {
     $self->{_ctx} = Bedrock::Context->new(
-      APACHE_HANDLER => $self->handler,
-      CONFIG         => $self->config,
+      REQUEST_HANDLER => $self->handler,
+      CONFIG          => $self->config,
     );
   }
 
@@ -251,18 +256,23 @@ sub exec {  ## no critic (ProhibitBuiltinHomonyms)
 }
 
 ########################################################################
-sub handler {
+sub request {
 ########################################################################
   my ($self) = @_;
 
-  if ( !exists $self->{APACHE_HANDLER} ) {
-    $self->{APACHE_HANDLER} = Apache::Request_cgi->new;
+  if ( !exists $self->{request} ) {
+    $self->{request}
+      = Apache::Request_cgi->new( output_handle => $self->{output_handle} );
   }
 
-  return $self->{APACHE_HANDLER};
+  return $self->{request};
+
 }
 
-# initialize the session
+########################################################################
+sub handler { goto &request; }
+########################################################################
+
 ########################################################################
 sub init_session {
 ########################################################################
@@ -305,7 +315,7 @@ sub log {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, $message, $level ) = @_;
 
-  $level //= 'debug';
+  $level //= 'info';
 
   return $self->get_logger->$level($message);
 }
@@ -325,8 +335,8 @@ sub session {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  die 'No SESSION object available.'
-    if !exists $self->{SESSION};
+  return
+    if !$self->{SESSION};
 
   if ( @args > 1 ) {
     return $self->{SESSION}->{ $args[0] } = $args[1];
@@ -437,10 +447,12 @@ sub flush_output {
   }
 
   if ( exists $self->{DATA} && length $self->{DATA} ) {
-    print $self->{DATA};
+    $self->handler->print( $self->{DATA} );
+
+    $self->{DATA} = $EMPTY;
   }
   elsif ($buffer) {
-    print $buffer;
+    $self->handler->print($buffer);
   }
 
   return;
@@ -681,7 +693,11 @@ with it.  Anything in the print buffer prior to the error is removed.
 
  handler()
 
-Returns an Apache request handler
+Returns an HTTP request handler
+
+=head2 request
+
+See L</handler>
 
 =head2 print
 

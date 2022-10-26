@@ -1,59 +1,47 @@
 use strict;
 use warnings;
 
+use lib qw{ . };
+
+use Bedrock;
+use Apache::Request_cgi;
+
 use Cwd qw{abs_path};
 use Data::Dumper;
 use English qw{-no_match_vars};
 use IO::Scalar;
-use IPC::Shareable;
 
-use Test::More tests => 3;
+use Test::More tests => 4;
 
 BEGIN {
+  $ENV{LogLevel} = 'debug';
+
   use_ok('Bedrock::Handler');
 }
 
-my $request_handler = bless  {}, 'Faux::Handler';
+require 't/faux-handler.pl';
+
 my $log = q{};
 
-{
-  no strict 'refs';
-
-  
-  my $logger_fh = IO::Scalar->new(\$log);
-  
-  foreach my $m ( qw{ error debug warn fatal info }) {
-    *{'Faux::Logger::' . $m} = sub {
-      print ${logger_fh} @_, "\n";
-    };
-  }
-
-  *{'Faux::Handler::log'} = sub {
-    return bless {}, 'Faux::Logger'
-  };
-
-  *{'Faux::Handler::filename'} = sub {
-    return $PROGRAM_NAME;
-  };
-
-  *{'Faux::Handler::uri'} = sub {
-    return q{/};
-  };
-
-  *{'Faux::Handler::content_type'} = sub {
-    return 'text/html';
-  };
-}
+# provides /dev/null logging
+my $request_handler = faux_handler( \$log );
 
 my $config_path = abs_path '../../../main/bedrock/config';
 
 local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
+local $ENV{CONFIG_PATH}         = 'config';
 
 my $handler = Bedrock::Handler->new($request_handler);
-isa_ok($handler, 'Bedrock::Handler');
+
+isa_ok( $handler, 'Bedrock::Handler' );
+
+my $config = $handler->config;
+isa_ok( $config, 'Bedrock::Config' );
+
+diag( Dumper( [ $config->get_module_config('usersession') ] ) );
 
 local $ENV{MOD_PERL} = 'mod_perl';
 
-ok($handler->is_mod_perl eq 'mod_perl', 'is_mod_perl');
+ok( $handler->is_mod_perl eq 'mod_perl', 'is_mod_perl' );
 
 1;

@@ -25,6 +25,10 @@ use warnings;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
+use Bedrock qw{:utils};
+use Bedrock::Array;
+use Bedrock::Constants qw(:all);
+use Bedrock::XML;
 use Carp;
 use Data::Dumper;
 use Digest::MD5;
@@ -37,9 +41,7 @@ use File::Temp qw(tempfile);
 use IO::Handle;
 use Log::Log4perl::Level;
 use POSIX qw(strftime);
-
-use Bedrock::Constants qw(:all);
-use Bedrock::XML;
+use Scalar::Util qw{blessed};
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -47,8 +49,8 @@ with 'Bedrock::Logger';
 use parent qw( Bedrock::Hash );
 
 # +---------------------------------------------------------------+
-# | You should implement the functions below if you want to create|
-# | a session manager.  For examples see:                         |
+# | Iimplement the functions below to create a session manager.   |
+# | For examples see:                                             |
 # |                                                               |
 # |  BLM::Startup::MySQLSession                                   |
 # |  BLM::Startup::PostgreSQLSession                              |
@@ -66,7 +68,6 @@ use parent qw( Bedrock::Hash );
 # |          is instantiated.                                     |
 # | Returns: none                                                 |
 # +---------------------------------------------------------------+
-
 sub CONNECT {
   my ( $self, %options ) = @_;
 
@@ -731,6 +732,37 @@ sub cleanup_session_dir {
 }
 
 ########################################################################
+sub create_session_file {
+########################################################################
+  my ( $self, $filename, $content ) = @_;
+
+  my $session_dir = $self->create_session_dir;
+
+  die "could not create session directory\n"
+    if !$self->create_session_dir;
+
+  my $path = sprintf '%s%s', $session_dir, $filename;
+
+  if ( is_hash($content) || is_array($content) ) {
+    $content
+      = is_hash($content)
+      ? Bedrock::Hash->new( %{$content} )
+      : Bedrock::Array->new( @{$content} );
+
+    $content = JSON::PP->new->encode( $content->devolve );
+  }
+
+  open my $fh, '>', $path
+    or die "could not open $path for writing\n";
+
+  print {$fh} $content;
+
+  close $fh;
+
+  return $path;
+}
+
+########################################################################
 sub create_session_tempfile {
 ########################################################################
   my ( $obj, $template, %options ) = @_;
@@ -1198,7 +1230,7 @@ sub TIEHASH {
 
   my $name = $config->{param};
 
-  croak "`param' not set in config"
+  croak q{`param' not set in config}
     if !$name;
 
   # Create session object
@@ -1486,6 +1518,8 @@ __END__
 C<BLM::Startup::SessionManager> - Base class for implementing Bedrock sessions.
 
 =head1 SYNOPSIS
+
+ use parent qw{BLM::Startup::SessionManager};
 
 =head1 DESCRIPTION
 
@@ -1931,6 +1965,23 @@ Return a 1 if the operation is successful.
 Update password associated with the username given.  Return a 1 if the
 update is successful.
 
+=head2 cleanup_session_dir
+
+ cleanup_session_dir( 0 | 1 )
+
+Indicate whether or not the C<login()> method should attempt to
+cleanup session directories.
+
+=head2 copy2session
+
+ copy2session(path)
+
+Copies the file indicated by C<path> to the session directory.  Throws
+an exception of the file does not exist, is empty or is unreadable. If
+the path is the name of a file, it is assumed to be in the document
+root.
+
+
 =head2 create_session_dir
 
  create_session_dir([sub-dir])
@@ -1944,19 +1995,6 @@ Your F<tagx.xml> file should define a C<SESSION_DIR> value that
 provides the root for the session directory.
 
  <scalar name="SESSION_DIR">/var/www/vhosts/mydomain.com/session</scalar>
-
-=pod
-
-=head2 cleanup_session_dir
-
- cleanup_session_dir( 0 | 1 )
-
-Indicate whether or not the C<login()> method should attempt to
-cleanup session directories.
-
-=cut
-
-=pod
 
 =head2 create_session_tempfile
 
@@ -1988,21 +2026,13 @@ Suffix (extension).
 
 =back
 
-=cut
+=head2 create_session_file
 
-=pod
+ create_session_file( filename, content )
 
-=head2 copy2session
-
- copy2session(path)
-
-Copies the file indicated by C<path> to the session directory.  Throws
-an exception of the file does not exist, is empty or is unreadable. If
-the path is the name of a file, it is assumed to be in the document
-root.
-
-=cut
-
+Writes the content the session directory using the filename specified.
+If the C<content> parameter is a hash or array it will be deserialize
+as a JSON object.
 
 =head1 SEE ALSO
 

@@ -22,45 +22,8 @@ package Apache::Bedrock;
 use strict;
 use warnings;
 
-BEGIN {
-  if ( defined $ENV{MOD_PERL} ) {
-    require Apache2::compat;
-  }
-}
-
-use Apache2::Const -compile => qw(
-  HTTP_UNSUPPORTED_MEDIA_TYPE
-  HTTP_UNAUTHORIZED
-  NOT_FOUND
-  OK
-  SERVER_ERROR
-  FORBIDDEN
-  DECLINED REDIRECT :log
-);
-
-use Apache2::Log;
-
-use APR::Const -compile => qw(:error SUCCESS);
-
-#
-# Define the following mod_perl constants since we could be using
-# this module both as a mod_perl module and in a CGI
-#
-
-use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
-  NOT_FOUND => Apache2::Const::NOT_FOUND,
-
-  SERVER_ERROR => Apache2::Const::SERVER_ERROR,
-  FORBIDDEN    => Apache2::Const::FORBIDDEN,
-  OK           => Apache2::Const::OK,
-  DECLINED     => Apache2::Const::DECLINED,
-  REDIRECT     => Apache2::Const::REDIRECT,
-  UNSUPPORTED  => Apache2::Const::HTTP_UNSUPPORTED_MEDIA_TYPE,
-  EMPTY        => q{},
-  SLASH        => q{/},
-};
-
 use Bedrock;
+use Bedrock::Apache::Constants qw{:http};
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw{:chars};
 use Bedrock::Context;
@@ -91,27 +54,17 @@ use Symbol;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
-# +---------------------+
-# | HANDLER STARTS HERE |
-# +---------------------+
-
 ########################################################################
 sub handler {
 ########################################################################
   my ($r) = @_;
 
-  # start HiRes timer
-  my $t0;
-
-  # Apache's LogLevel, not Bedrock's
-  if ( get_loglevel($r) eq 'debug' ) {
-    $t0 = Benchmark->new;
-  }
+  my $t0 = Benchmark->new;
 
   my $bedrock_handler = init_bedrock_handler($r);
 
   # errors are handled in the init_bedrock_handler() subroutine
-  return OK if !$bedrock_handler;
+  return $OK if !$bedrock_handler;
 
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
@@ -124,30 +77,28 @@ sub handler {
 
     # check mime-type
     if ( $r->content_type !~ /text\/html|application\/json|text\/plain/xsm ) {
-      $bedrock_handler->error( sprintf 'content type: [%s] not supported',
+      $r->log->error( sprintf 'content type: [%s] not supported',
         $r->content_type );
 
-      return UNSUPPORTED;
+      return $UNSUPPORTED;
     }
 
     if ( !-e $r->filename ) {
-      $bedrock_handler->error( sprintf 'file does not exist: [%s]', $file );
+      $r->log->error( sprintf 'file does not exist: [%s]', $file );
 
-      return NOT_FOUND;
+      return $NOT_FOUND;
     }
 
     if ( !-r $r->filename ) {
-      $bedrock_handler->error( sprintf 'file permissions deny access: [%s]',
-        $file );
+      $r->log->error( sprintf 'file permissions deny access: [%s]', $file );
 
-      return FORBIDDEN;
+      return $FORBIDDEN;
     }
   }
   else {
-    $bedrock_handler->error( sprintf 'attempt to serve directory: [%s]',
-      $r->uri );
+    $r->log->error( sprintf 'attempt to serve directory: [%s]', $r->uri );
 
-    return FORBIDDEN;
+    return $FORBIDDEN;
   }
 
   local $SIG{__DIE__}  = undef;
@@ -189,7 +140,7 @@ sub handler {
   my $app_dir = $bedrock_handler->{path};
 
   if ( !chdir $app_dir ) {
-    return $bedrock_handler->error( sprintf 'chdir(%s) failed: [%s]',
+    return $r->log->error( sprintf 'chdir(%s) failed: [%s]',
       $app_dir, $OS_ERROR );
   }
 
@@ -207,19 +158,20 @@ sub handler {
     ALLOW_SNIPPET_TAG  => $conf->{ALLOW_SNIPPET_TAG},
   );
 
-  $bedrock_handler->debug( sprintf 'INCLUDE_DIR.......[%s]',
-    $conf->{INCLUDE_DIR} // EMPTY );
-  $bedrock_handler->debug( sprintf 'PEBBLE_DIR........[%s]',
-    $conf->{PEBBLE_DIR} // EMPTY );
-  $bedrock_handler->debug( sprintf 'ALLOW_SNIPPET_TAG.[%s]',
-    $conf->{ALLOW_SNIPPET_TAG} // EMPTY );
+  $r->log->info( sprintf 'INCLUDE_DIR.......[%s]',
+    $conf->{INCLUDE_DIR} // $EMPTY );
+  $r->log->info( sprintf 'PEBBLE_DIR........[%s]',
+    $conf->{PEBBLE_DIR} // $EMPTY );
+  $r->log->info(
+    sprintf 'ALLOW_SNIPPET_TAG.[%s]',
+    $conf->{ALLOW_SNIPPET_TAG} // $EMPTY
+  );
 
   # load generic startup BLMs
   my $modules = $conf->get_module_config();
 
   if ( !$modules ) {
-    return $bedrock_handler->error(
-      'error in config file: MODULES is not defined.');
+    return $r->log->error('error in config file: MODULES is not defined.');
   }
 
   # custom plugins
@@ -251,13 +203,12 @@ sub handler {
     $type = $type || 'hash';
 
     if ( !$binding ) {
-      return $bedrock_handler->error(
-        sprintf q{'binding' not defined for module (%s)}, $idx );
+      return $r->log->error( sprintf q{'binding' not defined for module (%s)},
+        $idx );
     }
 
     if ( !any {/$type/xsm} qw{ hash array handle object} ) {
-      return $bedrock_handler->error(
-        sprintf 'invalid type (%s) in module (%s)',
+      return $r->log->error( sprintf 'invalid type (%s) in module (%s)',
         $type, $idx );
     }
 
@@ -277,7 +228,7 @@ sub handler {
           exit -1;
         }
         else {
-          return $bedrock_handler->error($errstr);
+          return $r->log->error($errstr);
         }
       }
 
@@ -301,8 +252,8 @@ sub handler {
         $errstr = sprintf q{could not bind module (%s) as '%s'}, $module,
           $binding;
 
-        $bedrock_handler->log_error($errstr);
-        $bedrock_handler->log_error($bind_error);
+        $r->log->error($errstr);
+        $r->log->error($bind_error);
 
         if ($abort_if_error) {
 
@@ -312,25 +263,9 @@ sub handler {
             exit -1;
           }
           else {
-            $r->content_type('text/html');
-            $r->send_http_header;
+            send_init_error( $r, $errstr, $bind_error );
 
-            print <<"EOM";
-<html>
-<head>
-<title>Bedrock Initialization Error</title>
-</head>
-<body>
-<div style="color:red;">An error was encountered while trying to initialize Bedrock</div>
-<pre>
-$errstr
-----
-<p>$bind_error</p>
-</pre>
-</body>
-</html>
-EOM
-            return OK;
+            return $OK;
           }
         }
       }
@@ -370,8 +305,7 @@ EOM
 
   # Croak if no header module
   if ( !$pre_bound{HEADER} ) {
-    return $bedrock_handler->error(
-      sprintf 'error in config file: No header module' );
+    return $r->log->error( sprintf 'error in config file: No header module' );
   }
 
   $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );  ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
@@ -380,6 +314,15 @@ EOM
   eval { $tx->output };
 
   my $err = $EVAL_ERROR;
+
+  # benchmark
+  my $t1 = Benchmark->new;
+
+  $r->log->info(
+    sprintf 'processing complete: %s %s',
+    timestr( timediff( $t1, $t0 ), 'all' ),
+    $err ? 'with error' : 'no errors'
+  );
 
   if ($err) {
     if ( is_bedrock_shell($r) ) {
@@ -422,35 +365,33 @@ EOM
 
       if ( $err !~ /\Asnippet/xsm ) {
 
-        $bedrock_handler->log_error( sprintf 'Error on line [%d] (%s) - %s',
-          $line, $file, $err );
+        print {*STDERR} sprintf 'Error on line [%d] (%s) - %s',
+          $line, $file, $err;
 
         # print the lines surrounding error
         if ( $line > 1 ) {
-          $bedrock_handler->log_error( sprintf "  [%3d] %s\n",
-            $line - 1, $lines[ $line - 2 ] );
+          print {*STDERR} sprintf "  [%3d] %s\n",
+            $line - 1, $lines[ $line - 2 ];
         }
 
-        $bedrock_handler->log_error( sprintf ">>[%3d] %s\n",
-          $line, $lines[ $line - 1 ] );
+        print {*STDERR} sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ];
 
         if ( $line != @lines ) {
-          $bedrock_handler->log_error( sprintf "  [%3d] %s\n",
-            $line + 1, $lines[$line] );
+          print {*STDERR} sprintf "  [%3d] %s\n", $line + 1, $lines[$line];
         }
       }
       else {
-        $bedrock_handler->log_error("$err");
+        print {*STDERR} "$err";
       }
     }
     else {
-      $bedrock_handler->log_error(
+      $r->log->error(
         sprintf
           'script [%s] with mime-type [%s] encountered the following error:',
         $bedrock_handler->{file}, $r->content_type
       );
 
-      $bedrock_handler->log_error("$err");
+      $r->log->error("$err");
 
       my $error_location
         = $conf->{BEDROCK_ERROR_LOCATION}
@@ -463,7 +404,7 @@ EOM
         $bedrock_handler->restore_dir;
 
         if ( is_mod_perl() ) {
-          $r->status(SERVER_ERROR);
+          $r->status($SERVER_ERROR);
         }
         else {
           $r->content_type('application/json');
@@ -476,7 +417,7 @@ EOM
         print <<"EOM";
 { error : "$err" }
 EOM
-        return OK;
+        return $OK;
       }
       else {
         $tx->show_error($error_location);
@@ -514,18 +455,7 @@ EOM
     }
   }
 
-  # benchmark
-  my $t1 = Benchmark->new;
-
-  if ( get_loglevel($r) eq 'debug' ) {
-
-    $bedrock_handler->log_debug( 'log level ' . get_loglevel($r) );
-
-    $bedrock_handler->log_debug(
-      'processing complete: ' . timestr( timediff( $t1, $t0 ), 'all' ) );
-  }
-
-  return OK;
+  return $OK;
 }
 
 ########################################################################
@@ -585,6 +515,33 @@ sub is_bedrock_shell {
 sub is_mod_perl {
 ########################################################################
   return defined $ENV{MOD_PERL};
+}
+
+########################################################################
+sub send_init_error {
+########################################################################
+  my ( $r, $errstr, $bind_error ) = @_;
+
+  $r->content_type('text/html');
+  $r->send_http_header;
+
+  print <<"END_OF_HTML";
+<html>
+  <head>
+    <title>Bedrock Initialization Error</title>
+  </head>
+  <body>
+    <div style="color:red;">An error was encountered while trying to initialize Bedrock</div>
+    <pre>
+$errstr
+----
+<p>$bind_error</p>
+    </pre>
+  </body>
+</html>
+END_OF_HTML
+
+  return;
 }
 
 1;
