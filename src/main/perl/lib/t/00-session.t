@@ -163,13 +163,26 @@ subtest 'save' => sub {
 ########################################################################
 subtest 'register' => sub {
 ########################################################################
-  my $rc = $session->register(
-    'fflintstone', 'W1lma',
-    'Fred',        'Flintstone',
-    'fflintstone@openbedrock.net'
-  );
+  my $rc = eval {
+    return $session->register(
+      'fflintstone', 'W1lma',
+      'Fred',        'Flintstone',
+      'fflintstone@openbedrock.net'
+    );
+  };
 
-  ok( $rc, 'registered user' );
+  if ( !$rc || $EVAL_ERROR ) {
+    if ( $EVAL_ERROR =~ /username\sexists/xsm ) {
+      diag('user exists...so presumably this worked at some point!');
+    }
+    else {
+      BAIL_OUT( 'error trying to register a new user:' . $EVAL_ERROR );
+    }
+  }
+  else {
+    ok( $rc, 'registered user' );
+  }
+
 };
 
 ########################################################################
@@ -193,7 +206,9 @@ subtest 'login' => sub {
   ok( $session->{username} eq 'fflintstone', 'username is fflintstone' );
 };
 
+########################################################################
 subtest 'remove user' => sub {
+########################################################################
 
   ok( $session->remove_user( 'fflintstone', 'W1lma' ), 'remove user' );
 

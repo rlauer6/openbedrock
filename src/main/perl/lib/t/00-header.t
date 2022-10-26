@@ -184,8 +184,12 @@ subtest 'see_other' => sub {
   $header->see_other('/foo');
 
   $header->print_header($ctx);
-  like( $output,
-    qr/\AStatus:\s303\sSee\sOther\r\nLocation:\s\/foo\r\n\r\n\z/xsm )
+  my @headers = sort grep {$_} split /\r\n/, $output;
+
+  is( $headers[0], 'Location: /foo' )
+    or diag( Dumper( [$output] ) );
+
+  is( $headers[1], 'Status: 303 See Other' )
     or diag( Dumper( [$output] ) );
 };
 
@@ -195,7 +199,12 @@ subtest 'location' => sub {
   $header->location('/foo');
 
   $header->print_header($ctx);
-  like( $output, qr/\AStatus:\s302\sFound\r\nLocation:\s\/foo\r\n\r\n\z/xsm )
+  my @headers = sort grep {$_} split /\r\n/, $output;
+
+  is( $headers[0], 'Location: /foo' )
+    or diag( Dumper( [$output] ) );
+
+  is( $headers[1], 'Status: 302 Found' )
     or diag( Dumper( [$output] ) );
 };
 

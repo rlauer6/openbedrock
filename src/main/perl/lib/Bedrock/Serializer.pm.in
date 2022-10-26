@@ -7,44 +7,48 @@ use Scalar::Util qw/reftype/;
 
 use Role::Tiny;
 use Data::Dumper;
+use Bedrock qw{:utils};
+use English qw{-no_match_vars};
 
-BEGIN {
-  use Exporter ();
-  use vars qw (@ISA @EXPORT @EXPORT_OK);
-  @ISA = qw (Exporter);
-}
+use parent qw{Exporter};
 
-@EXPORT_OK = qw/evolve devolve/;
+our @EXPORT_OK = qw/evolve devolve/;
 
+########################################################################
 sub new {
-  my $class = shift;
-  my $config = shift;
+########################################################################
+  my ( $class, $config ) = @_;
+
   my $self = bless {}, ref($class) || $class;
 
-  $self->{_config} =  $config || {};
+  $self->{_config} = $config || {};
 
   return $self;
 }
 
+########################################################################
 sub config {
-  return $_[0]->{_config};
+########################################################################
+  my ($self) = @_;
+
+  return $self->{_config};
 }
 
+########################################################################
 sub options {
-  my $self = shift;
-  my $config = shift;
-  my $options = shift;
+########################################################################
+  my ( $self, $config, $options ) = @_;
 
-  if ( $config ) {
-    if ( $options ) {
+  if ($config) {
+    if ($options) {
       $self->{_options} = $options;
     }
-    elsif ( ref($self->config) && $self->config->{$config}) {
-      if ( $self->config->{$config}->can('devolve')) {
-	$self->{_options} = $self->config->{$config}->devolve;
+    elsif ( ref( $self->config ) && $self->config->{$config} ) {
+      if ( $self->config->{$config}->can('devolve') ) {
+        $self->{_options} = $self->config->{$config}->devolve;
       }
       else {
-	$self->{_options} = $self->config->{$config};
+        $self->{_options} = $self->config->{$config};
       }
     }
     else {
@@ -52,48 +56,55 @@ sub options {
     }
   }
 
-  $self->{_options};
+  return $self->{_options};
 }
 
-before serialize => sub { 
-  my $orig = shift;
-  my $data = shift;
-  $orig->options('in', shift);
+########################################################################
+before serialize => sub {
+########################################################################
+  my ( $orig, $data, $this ) = @_;
+
+  return $orig->options( 'in', $this );
 };
 
-before deserialize => sub { 
-  my $orig = shift;
-  my $data = shift;
-  $orig->options('out', shift);
+########################################################################
+before deserialize => sub {
+########################################################################
+  my ( $orig, $data, $this ) = @_;
+
+  return $orig->options( 'out', $this );
 };
 
 # convert Bedrock objects -> regular perl objects
+########################################################################
 sub devolve {
-  my $this = shift;
+########################################################################
+  my ($this) = @_;
 
-  if ( ref($this) && reftype($this) eq 'HASH' ) {
+  if ( is_hash($this) ) {
     my $that = {};
-    
-    eval { keys %$this; };
 
-    die ref($this) . ' trapped.' if $@;
+    eval { keys %{$this}; };
+
+    die ref($this) . ' trapped.'
+      if $EVAL_ERROR;
 
     foreach ( keys %{$this} ) {
-      $that->{$_} = &devolve( $this->{$_} );
+      $that->{$_} = devolve( $this->{$_} );
     }
 
     return $that;
   }
-  elsif ( UNIVERSAL::isa($this, 'ARRAY') ) { 
+  elsif ( is_array($this) ) {
     my $that = [];
 
     foreach ( @{$this} ) {
-      push @{$that}, &devolve($_);
+      push @{$that}, devolve($_);
     }
 
     return $that;
   }
-  elsif ( ref($this) ) {
+  elsif ( ref $this ) {
     die "invalid object\n";
   }
   else {
@@ -102,32 +113,35 @@ sub devolve {
 }
 
 # promote regular perl objects -> Bedrock objects
+########################################################################
 sub evolve {
-  my $this = shift;
+########################################################################
+  my ($this) = @_;
 
-  if ( ref($this) eq 'HASH' ) {
+  if ( is_hash($this) ) {
     bless $this, 'Bedrock::Hash';
-    
-    foreach ( keys %$this ) {
+
+    foreach ( keys %{$this} ) {
       $this->{$_} = evolve( $this->{$_} );
     }
 
     return $this;
   }
-  elsif ( ref($this) eq 'ARRAY' ) {
+  elsif ( is_array($this) ) {
     bless $this, 'Bedrock::Array';
-    
-    for ( my $idx = 0 ; $idx < @$this ; $idx++ ) {
+
+    for ( my $idx = 0; $idx < @{$this}; $idx++ ) {
       $this->[$idx] = evolve( $this->[$idx] );
     }
-    
+
     return $this;
   }
-  elsif ( ref($this) =~/boolean/i ) {
-    return ( $this ) ? 1 : 0; 
+  elsif ( ref($this) =~ /boolean/xsmi ) {
+    return ($this) ? 1 : 0;
   }
-  elsif ( ref($this) ) {
+  elsif ( ref $this ) {
     warn 'Object ' . ref($this) . ' already promoted.';
+    return $this;
   }
   else {
     return $this;
@@ -135,3 +149,5 @@ sub evolve {
 }
 
 1;
+
+__END__
