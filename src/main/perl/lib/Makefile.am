@@ -361,7 +361,7 @@ clean-local:
 	find . -name '*.pm' -exec rm {} \;
 	rm -rf *.tdy
 
-test: Test/Bedrock.pm
+test: Test/Bedrock.pm Test/Utils.pm
 	echo "$$TEST"; \
 	if test -z "$$TEST"; then \
 	  TEST="t"; \

@@ -55,13 +55,14 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
 
 use Bedrock::BedrockConfig;
 use Carp;
+use Carp::Always;
 use Cwd qw/realpath fastcwd/;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Basename;
 use File::Find;
 use List::Util qw{ any };
-use Bedrock::Constants qw{:chars};
+use Bedrock::Constants qw{:chars :defaults};
 
 # see pod for notes on caching...
 
@@ -105,7 +106,9 @@ if ( cache_enabled() ) {
 ########################################################################
 sub new {
 ########################################################################
-  my ( $class, $r ) = @_;
+  my ( $class, $r, %options ) = @_;  # TODO: %options
+
+  $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
   my $self = bless {}, $class;
 
@@ -172,15 +175,18 @@ sub init_request {
     no warnings 'uninitialized';  ## no critic TestingAndDebugging::ProhibitNoWarnings
 
     $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]', $ENV{SCRIPT_NAME} );
+    $r->log->debug( sprintf 'CONFIG_PATH.....[%s]', $ENV{CONFIG_PATH} );
+    $r->log->debug( sprintf 'BEDROCK_CONFIG_PATH.....[%s]',
+      $ENV{BEDROCK_CONFIG_PATH} );
+    $r->log->debug( sprintf 'PATH_INFO.......[%s]', $ENV{PATH_INFO} );
+    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]', $ENV{PATH_TRANSLATED} );
+    $r->log->debug( sprintf 'mod_perl........[%s]', $ENV{MOD_PERL} );
     $r->log->debug( sprintf 'request file....[%s]', $self->{file} );
     $r->log->debug( sprintf 'URI.............[%s]', $r->uri || q{} );
     $r->log->debug( sprintf 'URI_DIR.........[%s]', $self->{uri_dir} );
     $r->log->debug( sprintf 'URI_NAME........[%s]', $self->{uri_name} );
-    $r->log->debug( sprintf 'PATH_INFO.......[%s]', $ENV{PATH_INFO} );
-    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]', $ENV{PATH_TRANSLATED} );
     $r->log->debug( sprintf 'filename........[%s]', $self->{filename} );
     $r->log->debug( sprintf 'path............[%s]', $self->{path} );
-    $r->log->debug( sprintf 'mod_perl........[%s]', $ENV{MOD_PERL} );
   }
 
   return $self;
@@ -192,13 +198,13 @@ sub init_request {
 ########################################################################
 sub full_path {
 ########################################################################
-  my ( $path, $filename, $default_ext ) = @_;
+  my ( $path, $name, $default_ext ) = @_;
 
-  my @parsed_path = fileparse( "$path/$filename", qr/[.][^.]*/xsm );
+  my $ext;
 
-  $parsed_path[2] ||= $default_ext;
+  ( $name, $path, $ext ) = fileparse( "$path/$name", qr/[.][^.]+$/xsm );
 
-  return sprintf '%s%s%s', @parsed_path[ ( 1, 0, 2 ) ];
+  return sprintf '%s%s%s', $path, $name, ( $ext || $default_ext );
 }
 
 ########################################################################
@@ -211,10 +217,11 @@ sub read_config {
 
   return if !$path || !$filename;
 
+  my $r = $self->request_handler;
+
   my $full_path = full_path( $path, $filename, '.xml' );
 
   my $config = eval { return Bedrock::Config->new($full_path); };
-  my $r      = $self->request_handler;
 
   if ( !$config || $EVAL_ERROR ) {
     $r->log->warn( sprintf 'could not read %s: [%s] [%s]',
@@ -455,9 +462,9 @@ sub get_bedrock_config {
 
   my $r = $self->request_handler;
 
-  my $bedrock_config_path;
+  my $bedrock_config_path = $ENV{BEDROCK_CONFIG_PATH};
 
-  if ( $ENV{BEDROCK_CONFIG_PATH} ) {
+  if ($bedrock_config_path) {
     $bedrock_config_path = realpath( $ENV{BEDROCK_CONFIG_PATH} );
   }
   else {
@@ -467,8 +474,6 @@ sub get_bedrock_config {
   }
 
   my @config_paths;
-
-  $r->log->debug( sprintf "%%ENV: %s\n", Dumper( [ \%ENV ] ) );
 
   if ( $ENV{CONFIG_PATH} ) {
     @config_paths = split /:/xsm, $ENV{CONFIG_PATH};

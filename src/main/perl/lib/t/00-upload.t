@@ -52,6 +52,7 @@ sub create_upload_stream {
     Content      => [ uploaded_file => [$filename] ],
   )->content;
 
+  # remove from cwd
   unlink $filename;
 
   return ( $post_content, $filename );
@@ -128,7 +129,8 @@ is( <$fh>, $LOREM_IPSUM, 'content uploaded correctly' );
 
 close $fh;
 
-unlink $filename;
+# remove uploaded file
+unlink "/tmp$filename";
 
 END {
 }

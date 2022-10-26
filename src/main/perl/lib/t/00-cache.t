@@ -30,7 +30,7 @@ require 't/faux-handler.pl';
 
 my $log = q{};
 
-my $request_handler = faux_handler( \$log );
+my $request_handler = faux_request_handler( \$log );
 
 my $config_path = abs_path '../../../main/bedrock/config';
 

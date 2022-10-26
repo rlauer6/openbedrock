@@ -6,10 +6,20 @@ use warnings;
 
 use IO::Scalar;
 use English qw{_no_match_vars};
+use Data::Dumper;
 
-sub faux_handler {
+########################################################################
+# Usage      : fax_request_handler(ref)
+# Purpose    : provides mock methods for request handler, logs at all
+#            : levels to scalar passed
+# Parameters : ref to scalar
+# Returns    : ref to scalar
+# Errors     : none
+########################################################################
+sub faux_request_handler {
+########################################################################
   my ($log) = @_;
-
+      
   die q{usage: faux_handler($log)} . "\n"
     if !ref $log;
 
@@ -19,7 +29,9 @@ sub faux_handler {
 
   foreach my $m (qw{ error debug warn fatal info trace }) {
     *{ 'Faux::Logger::' . $m } = sub {
-      print ${logger_fh} @_, "\n";
+      my ( $self, @message ) = @_;
+
+      return _log($self, $logger_fh, @message);
     };
   }
 
@@ -39,7 +51,34 @@ sub faux_handler {
     return 'text/html';
   };
 
+  *{'Faux::Handler::DESTROY'} = sub {
+    close $logger_fh;
+  };
+    
   return bless {}, 'Faux::Handler';
+}
+
+sub _log {
+  my ( $self, $logger_fh, @message ) = @_;
+
+  my $depth = 0;
+  my @stack;
+  
+  while ( my @frame = caller( $depth++ ) ) {
+    push @stack, \@frame;
+  }
+  
+  my $frame;
+  
+  while ( $frame = pop @stack ) {
+    last if $frame->[3] !~ /Test::|eval|main/xsm;
+  }
+  
+  my ($caller_package, $lineno) = @{$frame}[(3,2)];
+
+  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join q{}, @message;
+  
+  return print ${logger_fh} $log_message, "\n";
 }
 
 1;

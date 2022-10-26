@@ -1,0 +1,204 @@
+package Test::Utils;
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use English qw{-no_match_vars};
+use File::Copy;
+use File::Path qw{make_path};
+use File::Temp qw{tempdir};
+use List::Util qw{uniq};
+
+use parent qw{Exporter};
+
+use Readonly;
+
+Readonly our $TRUE    => 1;
+Readonly our $FALSE   => 0;
+Readonly our $SUCCESS => 1;
+Readonly our $FAILURE => 0;
+Readonly our $YES     => 'yes';
+Readonly our $NO      => 'no';
+
+Readonly our $AMPERSAND          => q{&};
+Readonly our $ASTERISK           => q{*};
+Readonly our $COLON              => q{:};
+Readonly our $COMMA              => q{,};
+Readonly our $DASH               => q{-};
+Readonly our $DOUBLE_COLON       => q{::};
+Readonly our $DOT                => q{.};
+Readonly our $DOLLAR_SIGN        => q{$};
+Readonly our $EMPTY              => q{};
+Readonly our $EQUALS_SIGN        => q{=};
+Readonly our $PERIOD             => q{.};
+Readonly our $PERCENT            => q{%};
+Readonly our $QUESTION_MARK      => q{?};
+Readonly our $SLASH              => q{/};
+Readonly our $SEMICOLON          => q{;};
+Readonly our $SPACE              => q{ };
+Readonly our $TEMPLATE_DELIMITER => q{@};
+Readonly our $UNDERSCORE         => q{_};
+Readonly our $PLUS_SIGN          => q{+};
+Readonly our $MINUS_SIGN         => q{-};
+
+our @EXPORT_OK = ();
+
+our %EXPORT_TAGS = (
+  'subs' => [
+    qw(
+      fetch_test_descriptions
+      slurp
+      create_temp_dir
+    ),
+  ],
+  'booleans' => [
+    qw(
+      $TRUE
+      $FALSE
+      $SUCCESS
+      $FAILURE
+      $YES
+      $NO
+    ),
+  ],
+  'chars' => [
+    qw(
+      $ASTERISK
+      $AMPERSAND
+      $COLON
+      $COLOR
+      $COMMA
+      $DASH
+      $DOLLAR_SIGN
+      $DOUBLE_COLON
+      $DOT
+      $EMPTY
+      $EQUALS_SIGN
+      $PERIOD
+      $PERCENT
+      $PLUS_SIGN
+      $MINUS_SIGN
+      $QUESTION_MARK
+      $SEMICOLON
+      $SLASH
+      $SPACE
+      $TEMPLATE_DELIMITER
+      $UNDERSCORE
+    )
+  ],
+);
+
+foreach my $k ( keys %EXPORT_TAGS ) {
+  push @EXPORT_OK, @{ $EXPORT_TAGS{$k} };
+}
+
+$EXPORT_TAGS{'all'} = [@EXPORT_OK];
+
+########################################################################
+# Usage      : fetch_test_descriptions(fh)
+# Purpose    : read test descriptions from __DATA__ section to
+#            : determine test plan
+# Parameters : fh => handle to source of name => description pairs
+# Returns    : hash of test (name, description)
+# Errors     : none
+########################################################################
+sub fetch_test_descriptions {
+########################################################################
+  my ($fh) = @_;
+
+  my %test_descriptions;
+
+  no warnings 'once';  ## no critic (ProhibitNoWarning)
+
+  while ( my $test = <$fh> ) {
+    chomp $test;
+
+    $test =~ s/\A\s*(.*)\s*\z/$1/xsm;
+
+    next if $test =~ /^[#]/xsm || !$test;
+    last if $test =~ /^END_OF_PLAN/xsm;
+
+    my ( $name, $description ) = split /\s*=>\s*/xsm, $test;
+    $test_descriptions{$name} = $description;
+  }
+
+  return %test_descriptions;
+}
+
+########################################################################
+sub slurp {
+########################################################################
+  my ($file) = @_;
+
+  local $RS = undef;
+
+  open my $fh, '<', $file
+    or die "could not open $file for reading";
+
+  my $content = <$fh>;
+
+  close $fh;
+
+  return $content;
+}
+
+########################################################################
+# Usage      : create_temp_dir( options )
+# Purpose    : create a temp directory and possibly copy files to it
+# Parameters : options => hash of arguments
+#                dir      => array or name of directories to create
+#                manifest => hash of arguments
+#                  source   => source directory
+#                  dest_dir => destination directory
+#                  files    => array of file names
+# Returns    : temporary directory created
+# Errors     : throws exceptions if cannot create path or copy files
+########################################################################
+sub create_temp_dir {
+########################################################################
+  my (%options) = @_;
+
+  my $temp_dir = tempdir( CLEANUP => $options{cleanup} // $TRUE );
+
+  my ( $manifest, $dir ) = @options{qw{manifest dir}};
+
+  $manifest //= [];
+  $dir      //= [];
+
+  if ($dir) {
+    my $dir_list = ref $dir ? $dir : [$dir];
+
+    my @path_list = map {"$temp_dir/$_"}
+      ( uniq @{$dir_list}, map { $_->{dest_dir} } @{$manifest} );
+
+    if (@path_list) {
+      my $paths_created = make_path(@path_list);
+
+      die sprintf "could not create path(s): %s %s\n", $paths_created,
+        join "$COMMA ", @path_list
+        if $paths_created < @path_list;
+    }
+  }
+
+  foreach my $file_list ( @{$manifest} ) {
+    my ( $source, $dest_dir, $files )
+      = @{$file_list}{qw{source dest_dir files}};
+
+    $files //= [];
+
+    foreach my $file ( @{$files} ) {
+
+      copy( "$source/$file", "$temp_dir/$dest_dir" );
+
+      die "could not copy $source/$file $temp_dir/$dest_dir\n"
+        if -e "$temp_dir/dest_dir/$file";
+    }
+  }
+
+  return $temp_dir;
+}
+
+1;
+
+__END__
