@@ -3,7 +3,7 @@ use warnings;
 
 use lib qw{ . };
 
-use Bedrock;
+use Bedrock qw{create_temp_dir};
 use Bedrock::Constants qw{:defaults};
 
 use Cwd qw{abs_path getcwd};

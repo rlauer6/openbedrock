@@ -15,7 +15,6 @@ my $test_file = sprintf 't/%s.yml', $name;
 
 my $config = config();
 
-$config->{LOG4PERL} = 't/log4perl.conf';
 $config->{LogLevel} = $ENV{LogLevel};
 
 run( $test_file, yaml => 1, config => $config );

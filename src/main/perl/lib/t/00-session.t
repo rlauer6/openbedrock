@@ -43,7 +43,8 @@ use lib qw{.};
 
 use Test::More tests => 10;
 
-use Bedrock::Constants qw{:defaults};
+use Bedrock qw{slurp_file};
+use Bedrock::Constants qw{:defaults :chars};
 use Bedrock::BedrockConfig;
 use Data::Dumper;
 use DBI;
@@ -82,20 +83,22 @@ $session_config->{verbose}             = 0;
 
 my $ctx = Faux::Context->new( CONFIG => { SESSION_DIR => '/tmp' } );
 
-my ( $dsn, $user, $password )
+my ( $dsn, $username, $password )
   = @{$session_config}{qw{ data_source username password}};
 
 my $db_available = eval {
-  my $dbi = DBI->connect( $dsn, $user, $password );
+  my $dbi = DBI->connect( $dsn, $username, $password );
 
-  my $ping = $dbi->ping;
+  my $ping = $dbi->ping ? 'up' : $EMPTY;
 
-  $dbi->disconnnect;
+  $dbi->disconnect;
 
   return $ping;
 };
 
 my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
+
+diag( 'db_available ' . $db_available );
 
 SKIP: {
   skip 'no database available', 9 if !$db_available;
@@ -141,16 +144,9 @@ SKIP: {
     ok( -s $file, 'file written' );
 
     my $obj = eval {
-      open my $fh, '<', $file
-        or die "could not open $file for reading\n";
-
-      local $RS = undef;
-
       require JSON::PP;
 
-      my $content = <$fh>;
-
-      close $fh;
+      my $content = slurp_file $file;
 
       return JSON::PP->new->decode($content);
     };

@@ -4,40 +4,27 @@ use warnings;
 use Data::Dumper;
 use Test::More tests => 5;
 use File::Temp qw/:POSIX/;
+use Bedrock qw{slurp_file};
 
 BEGIN {
   use_ok( 'TagX::Log', 'start_logger', 'log_message' );
-}
-
-sub slurp {
-  my $tmpfile = shift;
-
-  open( my $fh, "<$tmpfile" ) or die "could not open log file";
-
-  my $text = eval {
-    local $/;
-    <$fh>;
-  };
-
-  close $fh;
-
-  return $text;
 }
 
 my $tmpfile = tmpnam();
 start_logger( LOG_FILE => $tmpfile );
 ok( -e $tmpfile, 'create a log file' );
 
-my $max_size = -s $tmpfile; # current size of log file just opened...
+my $max_size = -s $tmpfile;  # current size of log file just opened...
 
-log_message( undef, "the quick brown fox ate a chicken" );
+log_message( undef, 'the quick brown fox ate a chicken' );
 
-my $text = eval { slurp $tmpfile; };
+my $text = eval { slurp_file $tmpfile; };
 
-BAIL_OUT("could not read log file $tmpfile")
-  unless $text;
+if ( !$text ) {
+  BAIL_OUT("could not read log file $tmpfile");
+}
 
-like( $text, qr/the quick brown fox ate a chicken/, 'logged a message' );
+like( $text, qr/the quick brown fox ate a chicken/sm, 'logged a message' );
 
 start_logger(
   LOG_FILE    => $tmpfile,
@@ -51,13 +38,22 @@ start_logger(
   LOG_FORMAT => '%c'
 );
 
-$text = eval { slurp $tmpfile };
+$text = eval { slurp_file $tmpfile };
 
-BAIL_OUT("could not read log file $tmpfile")
-  unless $text;
+if ( !$text ) {
+  BAIL_OUT("could not read log file $tmpfile");
+}
 
-like( $text, qr/^\d{2}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/, 'logged with date' );
+like(
+  $text,
+  qr/^\d{2}\/\d{2}\/\d{2}\s\d{2}:\d{2}:\d{2}/xsm,
+  'logged with date'
+);
 
 END {
   eval { unlink $tmpfile };
 }
+
+1;
+
+__END__

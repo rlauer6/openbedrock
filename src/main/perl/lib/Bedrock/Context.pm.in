@@ -24,22 +24,22 @@ use warnings;
 
 use parent qw{Exporter};
 
+use Bedrock qw{:booleans :file};
 use Bedrock::Array;
 use Bedrock::Hash;
-use Bedrock::Constants qw{:chars :log_levels :defaults};
+use Bedrock::Constants qw{:all};
 use Bedrock::Dump;
 use Bedrock::Log;
-use Bedrock qw{:utils};
 use CGI;
 use Carp;
 use Crypt::CBC;
 use Crypt::DES;
-use Cwd;
+use Cwd qw{getcwd abs_path};
 use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Basename;
 use IO::File;
-use List::Util qw{ none pairs };
+use List::Util qw{ none pairs uniq };
 use Scalar::Util qw{ reftype };
 use Text::URLEncode;
 
@@ -74,6 +74,11 @@ sub new {
 
   my $self = bless {}, $class;
 
+  # Populate the configuration object...note that if the caller is
+  # Apache::Bedrock, then the CONFIG object is most likely the fully
+  # merged Bedrock site configuration. There may not be a use case for
+  # calling Bedrock::Context with anything but Bedrock's configuration
+  # object.
   my $config = eval {
     if ( $args{CONFIG} ) {
       return $self->config( $args{CONFIG} );
@@ -88,7 +93,6 @@ sub new {
 
   $self->request( $args{REQUEST_HANDLER} );
 
-  # ditto for response...
   if ( $args{OUTPUT_HANDLER} ) {
     $self->output_handler( $args{OUTPUT_HANDLER} );
     $self->response( $args{OUTPUT_HANDLER} );
@@ -98,10 +102,7 @@ sub new {
     $self->response( $self->request );
   }
 
-  my ( $log_level, $log4perl_conf )
-    = @{$config}{qw{ LogLevel LOG4PERL }};
-
-  init_log4perl_logger( $log_level, $log4perl_conf );
+  init_log4perl_logger();
 
   return $self;
 }
@@ -122,25 +123,48 @@ sub new {
 ########################################################################
 sub find_log4perl_conf {
 ########################################################################
+  my (%options) = @_;
 
-  ## no critic (RequireInterpolationOfMetachars)
-  my @config_paths = (
-    getcwd(), $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
-    $DEFAULT_BEDROCK_CONFIG_PATH
-  );
+  my $config_paths = $options{path_list};
 
-  foreach my $path ( grep { defined && -d $_ } @config_paths ) {
-    return "$path/log4perl.conf"
-      if -e "$path/log4perl.conf";
+  my $file = $options{file} // 'log4perl.conf';
+
+  # At one point we added `getcwd` to the list of paths to search.
+  # This is a really bad idea since we don't know where the
+  # current working directory is when this is being called. We may end
+  # up doing a really deep search. Accordingly, we restrict the search
+  # paths to the specified configuration directories. Alternatively,
+  # the configuration variable LOG4PERL can be used to explicitly call
+  # out the file.
+
+  if ( !$config_paths ) {
+    my @paths = split /:/xsm, $ENV{CONFIG_PATH} // $EMPTY;
+
+    push @paths, grep {defined} $ENV{BEDROCK_CONFIG_PATH},
+      $DEFAULT_BEDROCK_CONFIG_PATH;
+
+    $config_paths = [ uniq map { abs_path $_ } @paths ];
   }
 
-  return $EMPTY;
+  my ($path) = find_in_path(
+    find_one  => $TRUE,
+    path_list => $config_paths,
+    file      => $file,
+  );
+
+  return $path;
 }
 
 ########################################################################
+# Usage      :
+# Purpose    :
+# Parameters :
+# Returns    :
+# Errors     :
+########################################################################
 sub init_log4perl_logger {
 ########################################################################
-  my ( $level, $log4perl_conf ) = @_;
+  my ($log4perl_conf) = @_;
 
   my $initialized = Log::Log4perl->initialized;
 
@@ -152,19 +176,15 @@ sub init_log4perl_logger {
   return $initialized
     if !$log4perl_conf;
 
+  if ( !ref $log4perl_conf ) {
+    my $log4perl_conf_text = slurp_file $log4perl_conf;
+
+    $log4perl_conf = \$log4perl_conf_text;
+  }
+
   $initialized = Log::Log4perl->init($log4perl_conf);
 
-  if ($initialized) {
-    if ($level) {
-      my $level = $LOG4PERL_LOG_LEVELS{$level};
-
-      Log::Log4perl->get_logger->level($level);
-    }
-
-    Log::Log4perl->get_logger->debug( sprintf 'logging initialized: %s',
-      $log4perl_conf );
-  }
-  else {
+  if ( !$initialized ) {
     print {*STDERR} sprintf
       'WARNING: could not initialize Log::Log4perl using %s',
       $log4perl_conf;
@@ -378,7 +398,7 @@ sub getInputValue {  ## no critic (Capitalization)
     my $input = {};
 
     foreach my $name (@args) {
-      my @values = $self->cgi->param($name);
+      my @values = $self->cgi->multi_param($name);
 
       if ( @values > 1 ) {
         $input->{$name} = Bedrock::Array->new(@values);

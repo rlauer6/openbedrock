@@ -23,7 +23,7 @@ package TagX::TAG::WithBody::If;
 use strict;
 use warnings;
 
-use Bedrock qw{:utils};
+use Bedrock qw{:booleans compile_regexp};
 use Bedrock::Constants qw{:chars :booleans};
 use Cwd;
 use Data::Dumper;
@@ -140,13 +140,18 @@ sub evaluate {
         }
       }
 
-      $self->get_logger->info( Dumper( [ 'here', $op, $v, $_ ] ) );
+      $self->get_logger->trace(
+        sub {
+          sprintf "op: %s\narg: %s\nref arg: %s\n", $op, Dumper( [$v] ),
+            ref $v;
+        }
+      );
 
-      $_ eq '--object'  && return ref($v) && reftype($v) eq 'HASH';
-      $_ eq '--hash'    && return ref($v) && reftype($v) eq 'HASH';
-      $_ eq '--blm'     && return ref($v) =~ /blm/xsmi;
-      $_ eq '--plugin'  && return ref($v) =~ /blm/xsmi;
-      $_ eq '--array'   && return ref($v) && reftype($v) eq 'ARRAY';
+      $_ eq '--object'  && return is_hash($v);
+      $_ eq '--hash'    && return is_hash($v);
+      $_ eq '--blm'     && return ref($v) =~ /^blm/xsmi;
+      $_ eq '--plugin'  && return ref($v) =~ /^blm/xsmi;
+      $_ eq '--array'   && return is_array($v);
       $_ eq '--scalar'  && return !ref $v;
       $_ eq '--ref'     && return ref $v;
       $_ eq '--defined' && return defined $v;
@@ -162,7 +167,7 @@ sub evaluate {
 
     my $ref = ref $lhs;
     {
-      no warnings qw/uninitialized/;
+      no warnings qw/uninitialized/;  ## no critic (ProhibitNoWarnings)
 
       for ( lc $cond ) {
         if ( looks_like_number($lhs) && looks_like_number($rhs) ) {
@@ -185,32 +190,55 @@ sub evaluate {
 
         $_ eq '--and' and return $lhs && $rhs;
         $_ eq '--or'  and return $lhs || $rhs;
-        $_ eq '--ref' and return ref($lhs) =~ /$rhs/;
 
-        if ( $_ eq '--reftype' ) {
-          return !ref $lhs
-            if $rhs eq 'SCALAR';
+        # --ref(type)
+        if ( $_ =~ /^--ref/xsm ) {
+          $rhs = compile_regexp($rhs);
 
-          return ref($lhs) && reftype($lhs) eq $rhs;
+          $self->get_logger->trace("--ref(type): $_, $lhs, $rhs");
+
+          my $thing = $_ eq '--ref' ? ref($lhs) : reftype($lhs);
+          $thing //= 'SCALAR';
+
+          if ( ref($rhs) eq 'Regexp' ) {
+            return $thing =~ $rhs;
+          }
+          else {
+            return $thing eq $rhs;
+          }
         }
 
         if ( $_ eq '--re' ) {
-          my $re = ( $rhs =~ /^qr/xsm ) ? eval $rhs : eval "qr/\$rhs/";
+          ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars))
+          my $re = compile_regexp($rhs);
 
-          if ( $^V ge 'v5.10' ) {
-            $lhs =~ /$re/;
+          # we really only support >= 5.10 anyway
+          if ( $PERL_VERSION ge 'v5.10' ) {
+            if ( $lhs =~ $re ) {
+              my %capture_group = %LAST_PAREN_MATCH;
 
-            my %capture_group = %+;
-            return $lhs =~ /$re/ ? ( 1, \%capture_group ) : undef;
+              $self->get_logger->trace( 'capture group: ',
+                Dumper( \%capture_group ) );
+
+              foreach ( 1 .. @{^CAPTURE} ) {
+                $capture_group{ '_' . $_ } = ${^CAPTURE}[ $_ - 1 ];
+              }
+
+              $self->get_logger->trace( 'result: ', Dumper( \@{^CAPTURE} ) );
+              $self->get_logger->trace( 'capture group: ',
+                Dumper( \%capture_group ) );
+
+              return $lhs =~ $re ? ( 1, \%capture_group ) : undef;
+            }
           }
           else {
-            return $lhs =~ /$re/;
+            return $lhs =~ $re;
           }
         }
 
         if ( $_ eq '--exists' ) {
           die "invalid argument for '--exists': HASH --exists KEY\n"
-            unless ref($lhs) && reftype($lhs) eq 'HASH';
+            if !is_hash($lhs);
 
           return ( exists $lhs->{$rhs} ) ? $TRUE : $FALSE;
 
@@ -326,7 +354,7 @@ Bedrock monadic (has 1 argument) boolean expressions include:
  --not     arg1 => true if ! arg1
  --exists  arg1 => true if exists arg1
  --defined arg1 => true if defined arg1
- --ref     arg1 => true if arg1 is ref
+ --ref     arg1 => true if arg1 is ref (arg1 can be regexp or string)
  --scalar  arg1 => true if arg1 is a scalar
  --array   arg1 => true if arg1 is an array object
  --hash    arg1 => true if arg1 is a hash object
@@ -416,23 +444,34 @@ Of course, there is always C<E<lt>sinkE<gt>>.
 
 C<--re> evaluates simple regular expressions using the following Perl pseudo code
 
-   $lhs =~ /$rhs/
+   $lhs =~ $rhs
 
-...however you can make them a tad more complex by using a quoted
-regular expression.
+The regular expression on the right hand side of C<--re> can be of the form:
 
- <if $input.name --re "qr/foo/i">foo!</if>
+ /regexp/
 
-The regular expression you pass is (C<$rhs>). I<Note that the Bedrock
-parser will look for 'qr' at the beginning of your string to determine
-if it is a regular expression.>
+or
+
+ qr/regexp/
+
+In the former case, the regexp will be compiled as C<qr/$rhs/xsm>.
+
+If the regular expression will not compile, Bedrock will throw an exception.
 
 =item 6.
 
-C<--ref> evaluates to true if C<ref($arg1) = $arg2>
+The right hand side of the C<--ref> operator can be a string or a regular expression. Regular expressions take the form as describe in Note 7.
 
-  <if $input --ref "BLM:Startup::Input">
-    This is the input object!
+  <if $input --ref "BLM::Startup::Input">
+    This is true...
+  </if>
+
+  <if $input --ref '/^BLM/'>
+    ...and so is this
+  </if
+
+  <if $input --ref 'qr/^blm/i'>
+    ...and of course this is too...
   </if>
 
 =item 7.
@@ -482,18 +521,25 @@ argument is considered to be a pathname relative to the document root.
 
 =item 10.
 
-Named capture groups in regular expressions
+Bedrock does not allow variables to begin with integers, therefore
+capture groups in regular expressions can be accessed using
+C<$_1>..C<$_n>.
 
-If you are running a version of perl > 5.10, then you regular
-expression may include named capture groups.
+ <if $path_info --re '/members\/([a-zA-Z])$'>
+   <null:contact $contact.get_contacts_by_letter($_1, $_1, 'member')>
+ </if>
+
+They can also be accessed as named captured groups.
 
  <if $path_info --re '/members\/(?<letter\>[a-zA-Z])$'>
    <null:contact $contact.get_contacts_by_letter($letter, $letter, 'member')>
  </if>
 
-B<Please note the escaping of the final E<gt> (greater than) symbol.  If
-you do not escape the E<gt>, Bedrock will report a syntax error while trying to
-parse your statement. Alternately, avoid using the E<lt>, E<gt> symbols as delimiters.>
+B<Note the escaping of the final E<gt> (greater than) symbol.>
+
+If you do not escape the E<gt>, Bedrock will report a syntax error
+while trying to parse your statement. Alternately, avoid using the
+E<lt>, E<gt> symbols as delimiters. in named capture groups.
 
  <if $path_info --re "/members\/(?'letter'[a-zA-Z])$">
    <null:contact $contact.get_contacts_by_letter($letter, $letter, "member")>

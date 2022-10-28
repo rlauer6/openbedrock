@@ -24,10 +24,12 @@ use strict;
 use warnings;
 
 use AppConfig qw{ARGCOUNT_NONE ARGCOUNT_ONE};
+use Bedrock qw{slurp_file};
 use Bedrock::Constants qw{:chars :booleans :defaults :log_levels};
 use Bedrock::VERSION qw{ $ID $BUILD_DATE $RELEASE};
+use Bedrock::Context qw{init_log4perl_logger find_log4perl_conf};
 use Carp;
-use Cwd qw{ getcwd realpath };
+use Cwd qw{ getcwd abs_path };
 use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Basename;
@@ -52,7 +54,7 @@ sub new {
 
   $self->init_options;
 
-  $self->init_log4perl_logger;
+  $self->init_logger;
 
   $self->init_database_config;
 
@@ -233,7 +235,7 @@ sub read_resource_file {
     $rc_file = $default_rc_file;
   }
 
-  $self->debug( sprintf 'using resource file: %s', $rc_file // $EMPTY );
+  $self->{options}->{rc} = $rc_file // $EMPTY;
 
   if ($rc_file) {
     $self->{config} = AppConfig->new(
@@ -252,8 +254,11 @@ sub read_resource_file {
 
     # command line overrides the value in resource file for these options
     if ( exists $varlist{config} && !$self->{options}->{config} ) {
-      ## no critic (RequireLocalizedPunctuationVars)
-      $ENV{CONFIG_PATH} = realpath( $self->{config}->config() );
+      my $config_path = $self->{config}->config();
+
+      if ( $config_path && -d $config_path ) {
+        $self->{options}->{config} = abs_path($config_path);
+      }
     }
 
     if ( exists $varlist{logfile} && !$self->{options}->{logfile} ) {
@@ -295,7 +300,7 @@ sub init_options {
     cleanup  => $FALSE,
     tempdir  => $DOT,
     db       => 'database',
-    config   => $ENV{CONFIG_PATH} ? realpath( $ENV{CONFIG_PATH} ) : $EMPTY,
+    config   => $ENV{CONFIG_PATH} ? abs_path( $ENV{CONFIG_PATH} ) : $EMPTY,
   );
 
   # set default values
@@ -314,41 +319,52 @@ sub init_options {
 }
 
 ########################################################################
-# Usage      : init_log4perl_logger
-# Purpose    : initializes logging for the request handler only
+sub fix_log4perl_category {
+########################################################################
+  my ( $log4perl_conf, $logfile ) = @_;
+
+  my $log4perl_conf_text = slurp_file $log4perl_conf;
+
+  $log4perl_conf_text =~ s/(BedrockShell[.]filename)=(.*?)$/$1=$logfile/xsm;
+
+  $log4perl_conf_text
+    =~ s/(category[.]Bedrock)=(.*?)Bedrock$/$1=ERROR, BedrockShell/xsm;
+
+  $log4perl_conf_text
+    =~ s/(category[.]TagX)=(.*?)Bedrock$/$1=ERROR, BedrockShell/xsm;
+
+  return $log4perl_conf_text;
+}
+
+########################################################################
+# Usage      : init_logger
+# Purpose    : initializes Log4::Log4perl logging
 #            : the caller (Apache::Bedrock) will initialize its own logger
 # Parameters : none
 # Returns    : Log::Log4perl logger
 # Errors     : none
 ########################################################################
-sub init_log4perl_logger {
+sub init_logger {
 ########################################################################
   my ($self) = @_;
 
   # set loglevel
-  my $level = $self->{options}->{loglevel} // 'error';
+  my $logfile = $self->{options}->{logfile} // '/tmp/bedrock.log';
 
-  my $logfile = $self->{options}->{logfile};
+  my $log4perl_conf = find_log4perl_conf();
 
-  my $log4perl_conf .= <<'END_OF_CONFIG';
-log4perl.rootLogger=INFO, Bedrock
-log4perl.appender.Bedrock=Log::Log4perl::Appender::File
-log4perl.appender.Bedrock.filename = %s
-log4perl.appender.Bedrock.mode=append
-log4perl.appender.Bedrock.layout=PatternLayout
-log4perl.appender.Bedrock.layout.ConversionPattern=%%d (%%r ms) (%%p) [%%P] [%%l] %%c - %%m%%n
-log4perl.category.Bedrock=ERROR, Bedrock
-log4perl.additivity.Bedrock.additivity=0
-log4perl.category.TagX=ERROR, Bedrock
-log4perl.additivity.TagX=0
-END_OF_CONFIG
+  my $log4perl_conf_text = fix_log4perl_category( $log4perl_conf, $logfile );
 
-  $log4perl_conf = sprintf $log4perl_conf, $logfile;
+  init_log4perl_logger( \$log4perl_conf_text );
 
-  Log::Log4perl->init( \$log4perl_conf );
+  my $log_level_str = $self->{options}->{loglevel} // 'error';
 
-  return $self->get_logger('Bedrock')
-    ->level( $LOG4PERL_LOG_LEVELS{ lc $level } );
+  my $log_level = $LOG4PERL_LOG_LEVELS{ lc $log_level_str };
+  $self->get_logger->level($log_level);
+
+  $self->get_logger->info('Logging initialized...');
+
+  return $self->get_logger;
 }
 
 ########################################################################

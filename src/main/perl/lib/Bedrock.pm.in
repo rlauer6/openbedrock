@@ -19,18 +19,58 @@ package Bedrock;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-use File::Basename;
-use English qw{-no_match_vars};
-
 use strict;
 use warnings;
 
+use Bedrock::Constants qw{:booleans :chars};
+use Cwd qw{getcwd abs_path};
+use English qw{-no_match_vars};
+use File::Basename;
+use File::Copy;
+use File::Find;
+use File::Path qw{make_path};
+use File::Temp qw{tempdir};
+use List::Util qw{uniq};
+use Scalar::Util qw{reftype blessed};
+
 use parent qw{Exporter};
-use Scalar::Util qw{reftype};
 
-our @EXPORT_OK = qw{is_array is_hash force_array is_scalar};
+our @EXPORT_OK = qw(
+  compile_regexp
+  create_temp_dir
+  find_in_path
+  force_array
+  is_array
+  is_bedrock_array
+  is_bedrock_hash
+  is_blessed
+  is_hash
+  is_regexp
+  is_scalar
+  slurp_file
+);
 
-our %EXPORT_TAGS = ( utils => [@EXPORT_OK] );
+our %EXPORT_TAGS = (
+  all  => [@EXPORT_OK],
+  file => [
+    qw(
+      slurp_file
+      find_in_path
+      create_temp_dir
+    ),
+  ],
+  booleans => [
+    qw(
+      is_array
+      is_bedrock_array
+      is_bedrock_hash
+      is_blessed
+      is_hash
+      is_regexp
+      is_scalar
+    ),
+  ],
+);
 
 BEGIN {
 
@@ -87,11 +127,453 @@ sub is_scalar {
 }
 
 ########################################################################
+sub is_regexp {
+########################################################################
+  my ($thing) = @_;
+
+  return _is( $thing, 'Regexp' );
+}
+
+########################################################################
 sub _is {
 ########################################################################
   my ( $thing, $type ) = @_;
 
-  return ref $thing && reftype($thing) eq $type;
+  return ref $thing && ( reftype($thing) eq $type || ref $thing eq $type );
+}
+
+########################################################################
+sub is_bedrock_object {
+########################################################################
+  my ( $thing, $type ) = @_;
+
+  return ref($thing) && ref($thing) =~ /^Bedrock::$type$/xsm;
+}
+
+########################################################################
+sub is_bedrock_hash {
+########################################################################
+  my ($thing) = @_;
+
+  return is_bedrock_object $thing, 'hash';
+}
+
+########################################################################
+sub is_bedrock_array {
+########################################################################
+  my ($thing) = @_;
+
+  return is_bedrock_object $thing, 'array';
+}
+
+########################################################################
+sub is_blessed {
+########################################################################
+  my ($thing) = @_;
+
+  return ref $thing && blessed $thing;
+}
+
+########################################################################
+# Usage      : find_in_path(options)
+# Purpose    : return a list of paths to a file or file pattern
+# Parameters : hash of options
+#            :   pattern   => regexp to use for finding files
+#            :   file      => file to find if not using a pattern
+#            :   max_items => max items to return
+#            :   path_list => array of paths to search (default: cwd)
+# Returns    : in list context, list of files found
+#            : in scalar context, number of files found
+# Errors     : throws exception 'found' if finding just 1 file
+########################################################################
+sub find_in_path {
+########################################################################
+  my (%options) = @_;
+
+  my ( $max_items, $file, $pattern ) = @options{qw{max_items file pattern}};
+
+  if ( $options{find_one} ) {
+    $max_items = 1;
+  }
+
+  my $path_list = $options{path_list};
+  $path_list //= getcwd;
+
+  $path_list = is_array($path_list) ? $path_list : [$path_list];
+
+  my @found_list;
+
+  $pattern //= $file;
+
+  my $cwd = getcwd;
+
+  eval {
+    find(
+      { wanted => sub {
+          return if /^[.]+$/xsm;
+
+          my $found;
+
+          if ( is_regexp($pattern) ) {
+            $found = $_ =~ $pattern;
+          }
+          else {
+            $found = $_ eq $pattern;
+          }
+
+          if ($found) {
+            no warnings 'once';  ## no critic (ProhibitNoWarnings)
+
+            push @found_list, abs_path $File::Find::name;
+
+            die 'found'
+              if $max_items && @found_list >= $max_items;
+          }
+        },
+        no_chdir => $FALSE,
+      },
+      @{$path_list}
+    );
+  };
+
+  my $err = $EVAL_ERROR;
+
+  chdir $cwd;
+
+  if ( $err && $err !~ /found/xsm ) {
+    print {*STDERR} $err;
+
+    @found_list = ();
+  }
+
+  return @found_list;
+}
+
+########################################################################
+# Usage      : create_temp_dir( options )
+# Purpose    : create a temp directory and possibly copy files to it
+# Parameters : options => hash of arguments
+#                cleanup  => remove directory when program terminates
+#                dir      => array or name of directories to create
+#                manifest => hash of arguments
+#                  source   => source directory
+#                  dest_dir => destination directory
+#                  files    => array of file names
+# Returns    : temporary directory created
+# Errors     : throws exceptions if cannot create path or copy files
+# Examples   : create_temp_dir( dir => 'foo')
+#            : create_temp_dir( manifest => [ { files => [ 'foo.bar' ]} ]
+########################################################################
+sub create_temp_dir {
+########################################################################
+  my (%options) = @_;
+
+  my $temp_dir = tempdir( CLEANUP => $options{cleanup} // $TRUE );
+
+  my ( $manifest, $dir ) = @options{qw{manifest dir}};
+
+  $manifest //= [];
+  $dir      //= [];
+
+  if ($dir) {
+    my $dir_list = ref $dir ? $dir : [$dir];
+
+    my @path_list = map {"$temp_dir/$_"}
+      ( uniq @{$dir_list}, map { $_->{dest_dir} || () } @{$manifest} );
+
+    if (@path_list) {
+      my $paths_created = make_path(@path_list);
+
+      die sprintf "could not create path(s): %s %s\n", $paths_created,
+        join "$COMMA ", @path_list
+        if $paths_created < @path_list;
+    }
+  }
+
+  foreach my $file_list ( @{$manifest} ) {
+    my ( $source, $dest_dir, $files )
+      = @{$file_list}{qw{source dest_dir files}};
+
+    $files    //= [];
+    $source   //= getcwd;
+    $dest_dir //= $EMPTY;  # just copy files to temp directory
+
+    foreach my $file ( @{$files} ) {
+
+      copy( "$source/$file", "$temp_dir/$dest_dir" );
+
+      die "could not copy $source/$file $temp_dir/$dest_dir\n"
+        if -e "$temp_dir/dest_dir/$file";
+    }
+  }
+
+  return $temp_dir;
+}
+
+########################################################################
+sub slurp_file {
+########################################################################
+  my ($file) = @_;
+
+  local $RS = undef;
+
+  open my $fh, '<', $file
+    or die "could not open $file for reading: $OS_ERROR";
+
+  my $content = <$fh>;
+
+  close $fh;
+
+  return $content;
+}
+
+########################################################################
+# Usage      : compile_regexp(regexp|string)
+# Purpose    : returns a regular expression the argument if the
+#            : argument does not look like a regexp
+# Parameters : a regular expression of the form qr/.../ or /.../
+# Returns    : Regexp or original string if it doesn's smell like a regexp
+# Errors     : throws an exception if evaluation of regexp fails
+########################################################################
+sub compile_regexp {
+########################################################################
+  my ($arg) = @_;
+
+  return $arg
+    if is_regexp($arg);
+
+  my $regexp;
+
+  if ( ( $arg =~ /^qr/xsm ) || $arg =~ /\A\/([^\/]+)\/$/xsm ) {
+    ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars))
+
+    $regexp = eval { $1 ? eval q{qr/$1/} : eval $arg; };
+
+    die "$arg doesn't look like a regular expression\n"
+      if !$regexp;
+
+    return $regexp;
+  }
+
+  return $arg;
 }
 
 1;
+
+__END__
+
+## no critic (RequirePodSections)
+
+=pod
+
+=head1 NAME
+
+Bedrock - fixes path in module hierarchy, provide utility functions
+
+=head1 SYNOPSIS
+
+ use Bedrock qw{:all};
+
+ my $text = slurp_file 'foo.txt';
+
+=head1 DESCRIPTION
+
+A set of utilities that are used throughout the Bedrock
+implementation.
+
+=head1 EXPORT TAGS
+
+=head2 :all
+
+C<:booleans>, C<:file>, C<compile_regexp>, C<force_array>
+
+=head2 :booleans
+
+ is_array
+ is_bedrock_array
+ is_bedrock_hash
+ is_blessed
+ is_hash
+ is_regexp
+ is_scalar
+
+=head2 :file
+
+ create_temp_file
+ slurp_file
+ find_in_path
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 OBJECT METHODS
+
+=head3 is_array
+
+Equivalent to:
+
+ ref $x && reftype($x) eq 'ARRAY'
+
+=head3 is_bedrock_array
+
+Equivalent to:
+
+ ref $x && ref($x) eq 'Bedrock::Array'
+
+=head3 is_bedrock_hash
+
+Equivalent to:
+
+ ref $x && ref($x) eq 'Bedrock::Hash'
+
+=head2 is_blessed
+
+Equivalent to:
+
+ ref $x && blessed($x)
+
+=head3 is_hash
+
+Equivalent to:
+
+ ref $x && reftype($x) eq 'HASH'
+
+=head3 is_regexp
+
+Equivalent to:
+
+ ref $x && ref($x) eq 'Regexp'
+
+=head3 is_scalar
+
+Equivalent to:
+
+ ref $x
+
+=head2 FILE UTILITIES
+
+=head3 find_in_path
+
+ find_in_path(options)
+
+In list context, returns a list of files found in a list of path based
+on a filter pattern or a file name. In scalar context, returns the
+number of files found.
+
+Either C<file> or C<pattern> is required. Options are described below:
+
+=over 5
+
+=item max_items
+
+Maximum number of items to return.
+
+=item path_list
+
+An array reference to a list of paths to search. If no C<path_list> is
+passed or the list is empty, the current working directory (and it's
+sub-directories) will be traversed.
+
+=item file
+
+The name of the file to search for.
+
+=item pattern
+
+A regular expression that will be used as a filter.
+
+=back
+
+Examples:
+
+Find the first occurrence of file F<foo> in current working directory ( and sub-directories
+).
+
+ my ($file) = find_in_path(file => 'foo', max_items => 1);
+
+More less equivalent to:
+
+ $ find . -name foo
+
+Find all files named F<foo> in a list of directories.
+
+ my @files = find_in_path( file => 'foo', path_list => [ $ENV{PATH} ] );
+
+Find all F<.xml> files in list of directories.
+
+ my @xml_files = find_in_path(pattern => qr/[.]xml$/, path_list => [$ENV{CONFIG_PATH}]);
+
+=head3 slurp_file
+
+Returns entire contents of a file. Throws an exception if the file
+cannot be opened.
+
+=head3 create_temp_dir
+
+Creates a temporary directory (or sub-directories) and optionally
+copies files to them. Returns the name of the temporary directory created
+
+ create_temp_dir(options)
+
+=over 5
+
+=item cleanup
+
+Boolean that indicates that the directory and all files beneath it
+should be removed when the program terminates.
+
+=item manifest
+
+Reference to a hash where each element of the hash represent a set of
+files to be copied from a soruce to a sub-directory of the temporary
+directory.
+
+=over 10
+
+=item source
+
+Source of the files to copy.
+
+=item dest_dir
+
+Destination directory.  If omitted, files are copied to the root of
+the temporary directory.
+
+=item files
+
+List of file names to copy.
+
+=back
+
+=item dir
+
+=back
+
+=head2 MISCELLANEOUS
+
+=head3 compile_regexp
+
+ compile_regexp(regexp)
+
+Returns a compiled regular expression from a string or regexp that is
+passed.  If a regexp is passed it simply gets returned.
+
+A regular expression is considered anything that begins with C<qr> or
+if the string matches the regular expression C</\/([^\/]+)\//>. In
+other words, a string between two C</> charaters.
+
+Throws an exception if the regular expression cannot be compiled.
+
+=head3 force_array
+
+Returns a reference to an array that contains the passed
+parameter(s). If the passed value is an array reference it is
+returned. Useful for ensuring a value is a reference for creating an
+array reference.
+
+ my $array = force_array(@_);
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
