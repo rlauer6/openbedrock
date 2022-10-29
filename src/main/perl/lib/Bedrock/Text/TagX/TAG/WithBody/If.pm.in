@@ -29,6 +29,7 @@ use Cwd;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use Scalar::Util qw/reftype looks_like_number/;
+use version;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -213,22 +214,12 @@ sub evaluate {
           my $re = compile_regexp($rhs);
 
           # we really only support >= 5.10 anyway
-          if ( $PERL_VERSION ge 'v5.10' ) {
+          if ( version->parse($PERL_VERSION) >= version->parse('v5.10') ) {
             if ( $lhs =~ $re ) {
-              my %capture_group = %LAST_PAREN_MATCH;
 
-              $self->get_logger->trace( 'capture group: ',
-                Dumper( \%capture_group ) );
+              my $capture_group = $self->get_capture_group();
 
-              foreach ( 1 .. @{^CAPTURE} ) {
-                $capture_group{ '_' . $_ } = ${^CAPTURE}[ $_ - 1 ];
-              }
-
-              $self->get_logger->trace( 'result: ', Dumper( \@{^CAPTURE} ) );
-              $self->get_logger->trace( 'capture group: ',
-                Dumper( \%capture_group ) );
-
-              return $lhs =~ $re ? ( 1, \%capture_group ) : undef;
+              return $lhs =~ $re ? ( 1, $capture_group ) : undef;
             }
           }
           else {
@@ -257,6 +248,43 @@ sub evaluate {
 }
 
 ########################################################################
+sub get_capture_group {
+########################################################################
+  my ($self) = @_;
+
+  # named captured group
+  my %capture_group = %LAST_PAREN_MATCH;
+
+  $self->get_logger->trace(
+    sprintf "CAPTURE:\n%s\nLAST_MATCH_START:\n%s\nVERSION:\n%s",
+    Dumper( \@{^CAPTURE} ),
+    Dumper( \@LAST_MATCH_START ),
+    $PERL_VERSION,
+  );
+
+  # introduced after perl 5.25.7 UGHHHHH...mutha..trucker..wtf
+  if ( version->parse($PERL_VERSION) >= version->parse('v5.27') ) {
+
+    $self->get_logger->trace( 'result: ', Dumper( \@{^CAPTURE} ) );
+
+    foreach ( 1 .. @{^CAPTURE} ) {
+      $capture_group{ '_' . $_ } = ${^CAPTURE}[ $_ - 1 ];
+    }
+  }
+  else {
+    $self->get_logger->trace( 'result: ', Dumper( \@LAST_MATCH_START ) );
+
+    foreach ( 1 .. @LAST_MATCH_START ) {
+      $capture_group{ '_' . $_ } = eval sprintf '$%d', $_;
+    }
+  }
+
+  $self->get_logger->trace( 'capture group: ', Dumper( \%capture_group ) );
+
+  return \%capture_group;
+}
+
+########################################################################
 sub finalize {
 ########################################################################
   my ( $self, $tx, @context ) = @_;
@@ -264,6 +292,7 @@ sub finalize {
   my %options;
 
   my @argv = $self->parse_options( \%options, @context );
+
   $self->dump_options( \%options, @argv );
 
   # If no args defined, means we are executing the else branch
