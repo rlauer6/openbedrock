@@ -33,7 +33,115 @@ use Carp;
 use Data::Dumper;
 use Scalar::Util qw/reftype/;
 
+########################################################################
+sub describe_table {
+########################################################################
+  my ( $self, $dbi, $table ) = @_;
+
+  $dbi   //= $self->get_dbi;
+  $table //= $self->get_table;
+
+  croak sprintf 'usage: %s->describe_table($dbi, $table)', __PACKAGE__
+    if !( $dbi && $table );
+
+  my $sth = $dbi->prepare("describe $table");
+  $sth->execute;
+
+  my %table_def;
+
+  while ( my $r = $sth->fetchrow_hashref ) {
+    my $field_name = $r->{Field};
+
+    my $field_spec = { map { ( lc $_, $r->{$_} ) } keys %{$r} };
+
+    my $field = Bedrock::Model::Field->new($field_spec);
+
+    $table_def{$field_name} = $field;
+  }
+
+  return \%table_def;
+}
+
+########################################################################
+sub as_string {
+########################################################################
+  my ( $self, $model ) = @_;
+
+  $model = $model || $self->fetch_model();
+
+  my $model_as_string = "our \$MODEL = new Bedrock::Hash(\n%s\n);";
+
+  my $field_template = "%s => new Bedrock::Model::Field({\n%s\n})";
+
+  chomp $field_template;
+
+  my @columns;
+
+  foreach my $field_name ( keys %{$model} ) {
+    my $field = $model->{$field_name};
+    if ( !ref($field) || ref($field) ne 'Bedrock::Model::Field' ) {
+      croak Dumper [$field];
+    }
+
+    $field->set_null(
+      defined $field->get_null() ? lc( $field->get_null() ) : 'yes' );
+    $field->set_key(
+      defined $field->get_key() ? lc( $field->get_key() ) : undef );
+    my @column_defs;
+
+    push @column_defs, sprintf q{ field => '%s'}, $field->get_field;
+    push @column_defs, sprintf q{ type => "%s"},  $field->get_type();
+    push @column_defs, sprintf q{ null => '%s'},  $field->get_null();
+
+    if ( $field->get_extra ) {
+      push @column_defs, sprintf q{ extra => '%s'}, $field->get_extra;
+    }
+
+    if ( $field->get_key ) {
+      push @column_defs, sprintf q{ key => '%s'}, $field->get_key;
+    }
+
+    if ( $field->get_default ) {
+      push @column_defs, sprintf q{ default => '%s'}, $field->get_default;
+    }
+
+    if ( $field_name =~ /^\d/xsm ) {
+      $field_name = "'$field_name'";
+    }
+
+    push @columns, sprintf $field_template,
+      $field_name,
+      join ",\n", @column_defs;
+  }
+
+  return sprintf $model_as_string, join ",\n\n", @columns;
+}
+
+########################################################################
+sub fetch_model {
+########################################################################
+  my ($self) = @_;
+
+  return $self->describe_table;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
+
+=head1 NAME
+
+=head1 SYNOPSIS
+
+=head1 METHODS AND SUBROUTINES
+
 =head2 describe_table
+
+=head2 fetch_model
 
  describe_table( dbi, table-name );
 
@@ -42,30 +150,6 @@ Keys are the names of the columns in the table.
 
 See L<Bedrock::Model::Field>
 
-=cut
-
-sub describe_table {
-  my $self = shift;
-  my $dbi = shift || $self->get_dbi;
-  my $table = shift || $self->get_table;
-  
-  croak "usage: " . __PACKAGE__ . "->describe_table($dbi, $table)\n"
-    if ! ( $dbi && $table );
-    
-  my $sth = $dbi->prepare("describe $table");
-  $sth->execute;
-
-  my %table_def;
-  
-  while ( my $r = $sth->fetchrow_hashref ) {
-    $table_def{ $r->{Field} }
-      = Bedrock::Model::Field->new( { map { lc($_), $r->{$_}; } keys %$r } );
-  }
-  
-  return \%table_def;
-}
-
-=pod
 
 =head2 as_string
 
@@ -76,54 +160,9 @@ from an existing MySQL table.
 
   print $model_serializer->as_string($model);
 
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
 =cut
 
-sub as_string {
-  my ($self, $model) = @_;
-  
-  $model = $model || $self->fetch_model();
-  
-  my $model_as_string = "our \$MODEL = new Bedrock::Hash(\n%s\n);";
-  
-  my $field_template = "%s => new Bedrock::Model::Field({\n%s\n})";
-  
-  chomp $field_template;
-  
-  my @columns;
-  
-  foreach my $field_name (keys %{$model}) {
-    my $field = $model->{$field_name};
-    if ( ! ref($field) || ref($field) ne 'Bedrock::Model::Field' ) {
-      croak Dumper [ $field ];
-    }
-    
-    $field->set_null(defined $field->get_null() ? lc($field->get_null()) : 'yes');
-    $field->set_key(defined $field->get_key() ? lc($field->get_key()) : undef);
-    my @column_defs;
-    
-    push @column_defs, sprintf(" field => '%s'", $field->get_field);
-    push @column_defs, sprintf(" type => \"%s\"", $field->get_type());
-    push @column_defs, sprintf(" null => '%s'", $field->get_null());
-    push @column_defs, sprintf(" extra => '%s'", $field->get_extra) if $field->get_extra;
-    push @column_defs, sprintf(" key => '%s'", $field->get_key) if $field->get_key;
-    push @column_defs, sprintf(" default => '%s'", $field->get_default) if $field->get_default;
-    
-    if ( $field_name =~/^\d/ ) {
-      $field_name = "'$field_name'";
-    }
-    
-    push @columns, sprintf($field_template,
-			   $field_name,
-			   join(",\n", @column_defs));
-  }
-
-  return sprintf($model_as_string, join(",\n\n", @columns));
-}
-
-sub fetch_model {
-  my ($self) = @_;
-  
-  $self->describe_table;
-}
-
-1;

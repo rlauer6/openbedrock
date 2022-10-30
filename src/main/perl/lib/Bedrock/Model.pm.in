@@ -25,20 +25,328 @@ use warnings;
 
 use parent qw/Class::Accessor::Fast/;
 
-use Scalar::Util qw/reftype blessed/;
-use Data::Dumper;
-use Carp;
-
 use Bedrock::Model::Migration;
-  
+use Carp;
+use Data::Dumper;
+use English qw{-no_match_vars};
+use Scalar::Util qw/reftype blessed/;
+
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine verbose debug/);
+__PACKAGE__->mk_accessors(
+  qw/dbi table model dry_run serializer engine verbose debug/);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  $class = ref($class) || $class;
+
+  my $args = ref( $args[0] ) ? $args[0] : {@args};
+
+  $args->{engine} = 'MySQL' || $args->{engine};
+
+  my $self = $class->SUPER::new($args);
+
+  my $serializer
+    = _init_serializer( $self->get_dbi, $self->get_table, $self->get_engine );
+
+  $self->set_serializer($serializer);
+
+  return $self;
+}
+
+########################################################################
+sub describe_table {
+########################################################################
+  my ( $self, $serializer, $dbi, $table ) = @_;
+
+  $serializer = $serializer || $self->get_serializer;
+  $dbi        = $dbi        || $self->get_dbi;
+  $table      = $table      || $self->get_table;
+
+  return $self->$serializer->describe_table( $dbi, $table );
+}
+
+########################################################################
+sub model_as_string {
+########################################################################
+  my ( $self, $model ) = @_;
+
+  $model = $model || $self->get_model;
+
+  return $self->get_serializer->as_string($model);
+}
+
+########################################################################
+sub as_string {
+########################################################################
+  goto &model_as_string;
+}
+
+########################################################################
+sub to_string {
+########################################################################
+  goto &mode_as_string;
+}
+
+# +-----------------+
+# | PRIVATE METHODS |
+# +-----------------+
+
+########################################################################
+sub _init_serializer {
+########################################################################
+  my ( $dbi, $table, $engine ) = @_;
+
+  my $serializer = "Bedrock::Model::Serializer::$engine";
+
+  eval "require $serializer";  ## no critic (ProhibitStringyEval)
+
+  return $serializer->new( { dbi => $dbi, table => $table } );
+}
+
+########################################################################
+sub create_table {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $table = $args{table}
+    || $self->check_table();
+
+  my $model = $args{model}
+    || $self->check_model();
+
+  my $dbi = $args{dbi}
+    || $self->check_dbi();
+
+  my $dry_run = $args{dry_run}
+    || ref($self) ? $self->get_dry_run() : undef;
+
+  my $sth = $dbi->prepare('show tables like ?');
+  $sth->execute($table);
+
+  my ($result) = $sth->fetchrow_array;
+
+  if ( $result && lc $result eq lc $table ) {
+    if ( $args{verbose} || $self->get_verbose ) {
+      print {*STDERR} "table $table already exists!\n";
+    }
+
+    my $migration = $self->verify_model( $dbi, %args );
+
+    if ( $migration->should_migrate
+      && ( $args{verbose} || $self->get_verbose ) ) {
+      print {*STDERR} "WARNING: Migration required\n";
+      print {*STDERR} Dumper [ $migration->get_migration ];
+    }
+
+    return $migration;
+  }
+
+  return _create_table(
+    model   => $model,
+    dry_run => $dry_run,
+    table   => $table,
+    dbi     => $dbi
+  );
+}
+
+########################################################################
+sub create {
+########################################################################
+  my ( $self, $dbi, %args ) = @_;
+
+  my $class = ref($self) || $self;
+
+  my $model = $class->_model;
+
+  if ( !ref $model || reftype($model) ne 'ARRAY' || @{$model} ) {
+    croak "$class must provide a MODEL\n";
+  }
+
+  my $table = $class->_table_name;
+
+  croak "could not determine table name from $class\n"
+    if !$table;
+
+  my $sth = $dbi->prepare('show tables like ?');
+  $sth->execute($table);
+
+  my ($result) = $sth->fetchrow_array;
+
+  if ( $result && lc $result eq lc $table ) {
+    warn "table $table already exists!\n";
+    my $migration = $class->verify_model( $dbi, %args );
+
+    if ($migration) {
+      print {*STDERR} 'WARNING: Model is out of sync with database';
+    }
+  }
+  else {
+    my $stmnt = eval {
+      $self->create_table( dbi => $dbi, table => $table, model => $model );
+    };
+
+    croak "error creating table: $table\n$EVAL_ERROR"
+      if $EVAL_ERROR;
+  }
+
+  return $table;
+}
+
+########################################################################
+sub _create_table {
+########################################################################
+  my %args = @_;
+
+  my $model = $args{model};
+
+  if ( !ref($model) || reftype($model) ne 'HASH' ) {
+    croak "model argument must be a hash\n" . Dumper [$model];
+  }
+
+  foreach my $k ( keys %{$model} ) {
+
+    if (!ref( $model->{$k} )
+      || ref( $model->{$k} ) ne 'Bedrock::Model::Field' ) {
+
+      croak "$k is not a Bedrock::Model::Field object:\n"
+        . Dumper( $model->{$k} );
+    }
+  }
+
+  my @column_defs = map { $_->as_string } values %{ $args{model} };
+
+  my $query = <<'END_OF_SQL';
+create table if not exists %s (
+    %s
+)
+END_OF_SQL
+
+  my $create_statement = sprintf $query, $args{table}, join ",\n    ",
+    @column_defs;
+
+  if ( !$args{dry_run} ) {
+    eval { $args{dbi}->do($create_statement); };
+
+    if ($EVAL_ERROR) {
+      croak "$create_statement: $EVAL_ERROR";
+    }
+  }
+
+  return $create_statement;
+}
+
+########################################################################
+sub verify_model {
+########################################################################
+  my ( $class, $dbi, %args ) = @_;
+
+  my $self = ref($class) ? $class : $class->new( { dbi => $dbi } );
+
+  return Bedrock::Model::Migration->new(
+    { model => $self, dry_run => 1, %args } );
+}
+
+########################################################################
+sub migrate_model {
+########################################################################
+  my ( $self, $dbi ) = @_;
+
+  $dbi //= $self->get_dbi;
+
+  return Bedrock::Model::Migration->new( { model => $self } );
+}
+
+########################################################################
+sub fetch_model {
+########################################################################
+  my ($self) = @_;
+
+  return $self->get_serializer->fetch_model;
+}
+
+########################################################################
+sub rename_field {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  $self->check_dbi;
+
+  Bedrock::Model::Migration->new( { model => $self } )->rename_field(@args)
+    ->execute();
+
+  return $self;
+}
+
+########################################################################
+sub add_field {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $model = $self->get_model;
+
+  my $field = Bedrock::Model::Field->new( \%args );
+
+  croak "field $args{field} exists\n"
+    if defined $model->{ $args{field} };
+
+  $model->{ $args{field} } = $field;
+
+  return $self;
+}
+
+########################################################################
+sub check_dbi {
+########################################################################
+  my ($self) = @_;
+
+  my $dbi = blessed($self) ? $self->get_dbi() : undef;
+
+  croak "no database handle set\n"
+    if !$dbi;
+
+  return $dbi;
+}
+
+########################################################################
+sub check_table {
+########################################################################
+  my ($self) = @_;
+
+  my $table = ref $self ? $self->get_table() : undef;
+
+  croak "no table set\n"
+    if !$table;
+
+  return $table;
+}
+
+########################################################################
+sub check_model {
+########################################################################
+  my ($self) = @_;
+
+  my $model = ref $self ? $self->get_model() : undef;
+
+  croak "no model available\n"
+    if !ref $model || reftype($model) ne 'HASH' || !%{$model};
+
+  return $model;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
 =head1 NAME
 
-C<Bedrock::Model>
+Bedrock::Model - An ORM for Bedrock
 
 =head1 SYNOPSIS
                   
@@ -91,7 +399,7 @@ C<Bedrock::Model>
 
 Class for creating/modifying MySQL tables.
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
@@ -114,66 +422,6 @@ fields are C<Bedrock::Model::Field> objects.
 
 =back
 
-=cut
-
-sub new {
-  my $class = shift;
-  $class = ref($class) || $class;
-  
-  my $args = ref($_[0]) ? $_[0] : { @_ };
-  $args->{engine} = 'MySQL' || $args->{engine};
-
-  my $self = $class->SUPER::new($args);
-
-  my $serializer = _init_serializer($self->get_dbi, $self->get_table, $self->get_engine);
-
-  $self->set_serializer($serializer);
-  
-  $self;
-}
-
-sub describe_table {
-  my ($self, $serializer, $dbi, $table) = @_;
-  
-  $serializer = $serializer || $self->get_serializer;
-  $dbi        = $dbi        || $self->get_dbi;
-  $table      = $table      || $self->get_table;
-  
-  return $self->$serializer->describe_table($dbi, $table);
-}
-
-sub model_as_string {
-  my ($self, $model) = @_;
-  
-  $model = $model || $self->get_model;
-
-  return $self->get_serializer->as_string($model);
-}
-
-sub as_string {
-  goto &model_as_string;
-}
-
-sub to_string {
-  goto &mode_as_string;
-}
-
-# +-----------------+
-# | PRIVATE METHODS |
-# +-----------------+
-
-sub _init_serializer {
-  my ($dbi, $table, $engine) = @_;
-  
-  my $serializer = "Bedrock::Model::Serializer::$engine";
-  
-  eval "require $serializer";
-  
-  return $serializer->new( { dbi => $dbi, table => $table } );
-}
-
-=pod
-
 =head2 create_table
 
  create_table()
@@ -182,53 +430,6 @@ sub _init_serializer {
 See C<new()> for argument descriptions.
 
 Creates a new table based on the object's model.
-
-=cut
-
-sub create_table {
-  my ($self, %args) = @_;
-
-  my $table = $args{table} ||
-    $self->check_table();
-  
-  my $model = $args{model} ||
-    $self->check_model();
-  
-  my $dbi = $args{dbi} ||
-    $self->check_dbi();
-  
-  my $dry_run = $args{dry_run} ||
-    ref($self) ? $self->get_dry_run() : undef;
-
-  my $sth = $dbi->prepare("show tables like ?");
-  $sth->execute($table);
-  my ($result) = $sth->fetchrow_array;
-  
-  if ( $result && lc($result) eq lc($table) ) {
-    if ( $args{verbose} || $self->get_verbose ) {
-      print STDERR "table $table already exists!\n";
-    }
-    
-    my $migration = $self->verify_model($dbi, %args);
-    
-    if ( $migration->should_migrate
-      && ( $args{verbose} || $self->get_verbose ) ) {
-      print STDERR "WARNING: Migration required\n";
-      print STDERR Dumper [ $migration->get_migration ];
-    }
-    
-    return $migration;
-  }
-  
-  return _create_table(
-    model   => $model,
-    dry_run => $dry_run,
-    table   => $table,
-    dbi     => $dbi
-  );
-}
-
-=pod
 
 =head2 create
 
@@ -239,82 +440,6 @@ sub create_table {
 Class method to create the table.  This method can be called as an
 instance or class method depending on the need. It checks to make sure
 you have a valid model defined for the class.
-
-=cut
-
-sub create {
-  my ($self, $dbi, %args) = @_;
-
-  my $class = ref($self) || $self;
-  
-  my $model = $class->_model;
-  
-  unless (ref($model) && (reftype($model) eq 'ARRAY') && @{$model}) {
-    die "$class must provide a MODEL\n";
-  }
-  
-  my $table = $class->_table_name;
-  
-  die "could not determine table name from $class\n"
-    unless $table;
-  
-  my $sth = $dbi->prepare("show tables like ?");
-  $sth->execute($table);
-  my ($result) = $sth->fetchrow_array;
-  
-  if ( $result && lc($result) eq lc($table) ) {
-    warn "table $table already exists!\n";
-    my $migration = $class->verify_model($dbi, %args);
-    if ( $migration ) {
-      print STDERR "WARNING: Model is out of sync with database";
-    }
-  }
-  else {
-    my $stmnt = eval {
-      $self->create_table(dbi => $dbi, table => $table, model => $model);
-    };
-  
-    die "error creating table: $table\n$@"
-      if $@;
-  }
-  
-  return $table;
-}
-
-sub _create_table {
-  my %args = @_;
-  
-  my $model = $args{model};
-  
-  if ( ! ref($model) || reftype($model) ne 'HASH' ) {
-    croak "model argument must be a hash\n" . Dumper [$model];
-  }
-
-  foreach my $k ( keys %$model ) {
-    if ( ! ref($model->{$k}) ||  ref($model->{$k}) ne 'Bedrock::Model::Field' ) {
-      croak "$k is not a Bedrock::Model::Field object:\n" . Dumper($model->{$k});
-    }
-  }
-  
-  my @column_defs = map { $_->as_string } values %{$args{model}}; 
-  
-  my $create_statement = sprintf( "create table %s %s (\n    %s\n)\n",
-  "if not exists", $args{table}, join( ",\n    ", @column_defs ) );
-
-  unless ($args{dry_run}) {
-    eval {
-      $args{dbi}->do($create_statement);
-    };
-    
-    if ( $@ ) {
-      die "$create_statement: $@";
-    }
-  }
-  
-  return $create_statement;
-}
-
-=pod
 
 =head2 verify_model
 
@@ -327,18 +452,6 @@ determine if a migration is required, but not suitable for execution.
    print STDERR "model our of sync with database table...";
  }
 
-=cut
-
-sub verify_model {
-  my ($class, $dbi, %args) = @_;
-
-  my $self = ref($class) ? $class : $class->new({dbi => $dbi});
-      
-  Bedrock::Model::Migration->new({ model => $self, dry_run => 1, %args });
-}
-
-=pod
-
 =head2 migrate_model
 
 Creates a C<Bedrock::Model::Migration> object suitable for querying to
@@ -350,30 +463,11 @@ determine if a migration is required and suitable for execution.
    $migration->execute();
  }
 
-=cut
-
-sub migrate_model {
-  my $self = shift;
-  my $dbi = shift || $self->get_dbi;
-
-  Bedrock::Model::Migration->new({ model => $self});
-}
-
-=pod
-
 =head2 fetch_model
 
 Returns a reference to a hash that represents the model derived
 directly from the MySQL table.  The hash contains the columns as keys
 and C<Bedrock::Model::Field> objects as values.
-
-=cut
-
-sub fetch_model {
-  shift->get_serializer->fetch_model;
-}
-
-=pod
 
 =head2 rename_field
 
@@ -381,78 +475,15 @@ sub fetch_model {
 
 Renames a column.  I<Note that this method will alter the database and the model.>
 
-=cut
-
-sub rename_field {
-  my $self = shift;
-  
-  $self->check_dbi;
-  
-  Bedrock::Model::Migration->new({ model => $self })->rename_field(@_)->execute();
-
-  return $self;
-}
-
-=pod
 
 =head2 add_field
 
- add_field( field => name, type => type, [ extra => extra-options, default => default, key => ] );
+ add_field(
+   field => name,
+   type  => type,
+   [ extra => extra-options, default => default, key => ]
+ );
 
-=cut
-
-sub add_field {
-  my $self = shift;
-  my %args = @_;
-
-  my $model = $self->get_model;
-
-  my $field = new Bedrock::Model::Field(\%args);
-  
-  die "field $args{field} exists\n"
-    if defined $model->{$args{field}};
-
-  $model->{$args{field}} = $field;
-  
-  return $self;
-}
-
-sub check_dbi {
-  my $self = shift;
-  
-  my $dbi = blessed($self) ? $self->get_dbi() : undef;
-
-  die "no database handle set\n"
-    unless $dbi;
-
-  $dbi;
-}
-
-sub check_table {
-  my $self = shift;
-  
-  my $table = ref($self) ? $self->get_table() : undef;
-
-  die "no table set\n"
-    unless $table;
-
-  $table;
-}
-
-sub check_model {
-  my $self = shift;
-  
-  my $model = ref($self) ? $self->get_model() : undef;
-
-  die "no model available\n"
-    unless ref($model) && reftype($model) eq 'HASH' && %{$model};
-
-  $model;
-}
-
-1;
-
-=pod
 
 =head1 AUTHOR
 

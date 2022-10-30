@@ -30,27 +30,268 @@ use Data::Dumper;
 use Carp;
 
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(qw/field null extra default type key ignore_unknown_keys/);
+__PACKAGE__->mk_accessors(
+  qw/field null extra default type key ignore_unknown_keys/);
+
+# ready made fields and field sets
+
+our %City = (
+  city => Bedrock::Model::Field->new(
+    { field => 'city',
+      type  => 'varchar(64)',
+      null  => 'yes'
+    }
+  )
+);
+
+our %State = (
+  state => Bedrock::Model::Field->new(
+    { field => 'state',
+      type  => 'varchar(2)',
+      null  => 'yes'
+    }
+  )
+);
+
+our %Zip = (
+  zip => Bedrock::Model::Field->new(
+    { field => 'zip',
+      type  => 'varchar(9)',
+      null  => 'yes',
+      set   => sub {
+        my ( $f, $v ) = @_;
+
+        $v =~ s/[^[:digit:]]//xsmg;
+
+        return $v;
+      },
+      get => sub {
+        my ( $f, $v ) = @_;
+
+        my $z = $v;
+
+        $z =~ s/[^[:digit:]]//xsmg;
+
+        if ( length $z == 9 ) {
+          $v = sprintf '%s-%s', unpack 'a5a4', $z;
+        }
+
+        return $v;
+      }
+    }
+  )
+);
+
+our %Id = (
+  id => Bedrock::Model::Field->new(
+    { field => 'id',
+      type  => 'int(11)',
+      extra => 'auto_increment',
+      key   => 'pri',
+      null  => 'no'
+    }
+  )
+);
+
+our %Email = (
+  email => Bedrock::Model::Field->new(
+    { field => 'email',
+      type  => 'varchar(64)',
+      null  => 'no'
+    }
+  )
+);
+
+our %Phone = (
+  phone => Bedrock::Model::Field->new(
+    { field => 'phone',
+      type  => 'varchar(10)',
+      null  => 'yes',
+      set   => sub {
+        my ( $f, $v ) = @_;
+
+        $v && $v =~ s/[^[:digit:]]//xsmg;
+
+        return $v;
+      }
+    }
+  )
+);
+
+our %Address = (
+  street_address_1 => Bedrock::Model::Field->new(
+    { field => 'street_address_1',
+      type  => 'varchar(64)',
+      null  => 'yes'
+    }
+  ),
+  street_address_2 => Bedrock::Model::Field->new(
+    { field => 'street_address_2',
+      type  => 'varchar(64)',
+      null  => 'yes'
+    }
+  ),
+  %City,
+  %Zip,
+);
+
+our %Timestampable = (
+  last_updated_by => Bedrock::Model::Field->new(
+    { field => 'last_updated_by',
+      type  => 'varchar(64)',
+      null  => 'yes'
+    }
+  ),
+  last_updated => Bedrock::Model::Field->new(
+    { field   => 'last_updated',
+      type    => 'timestamp',
+      default => 'current_timestamp',
+      extra   => 'on update current_timestamp'
+    }
+  )
+);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $self = $class->SUPER::new(@args);
+
+  foreach ( 'field', 'type' ) {
+    croak "$_ is required\n"
+      if !$self->get($_);
+  }
+
+  return $self;
+}
+
+########################################################################
+sub as_string {
+########################################################################
+  my ($self) = @_;
+
+  my @options;
+
+  if ( $self->get_null() && lc $self->get_null() eq 'yes' ) {
+    push @options, 'NULL';
+  }
+  elsif ( $self->get_null() && lc $self->get_null() eq 'no' ) {
+    push @options, 'NOT NULL';
+  }
+  else {
+    push @options, 'NULL';
+  }
+
+  if ( $self->get_extra() ) {
+    push @options, $self->get_extra();
+  }
+
+  if ( defined $self->get_default() ) {
+
+    if ( $self->get_type() =~ /enum/i ) {
+      # quote enum default 'contact', e.g.
+      push @options, 'DEFAULT ' . q{'} . $self->get_default() . q{'};
+    }
+    else {
+
+      if ( length $self->get_default() ) {
+        push @options, 'DEFAULT ' . $self->get_default();
+      }
+      else {
+        push @options, 'DEFAULT ' . q{''};
+      }
+    }
+  }
+
+  if ( $self->get_key() ) {
+    if ( lc $self->get_key() eq 'pri' ) {
+      push @options, 'primary key';
+    }
+    elsif ( lc $self->get_key() eq 'uni' ) {
+      push @options, 'unique key';
+    }
+    else {
+      # we do this because the table state will tell us of a multi
+      # field index, but the model has no way (yet) to indicate that
+      # the field is indexed thusly.  Hence for comparisons ignore key
+      # differences for these indices.
+
+      if ( !$self->get_ignore_unknown_keys() ) {
+        push @options, $self->get_key();
+      }
+    }
+  }
+
+  return lc sprintf '%s %s %s',
+    $self->get_field(), $self->get_type(), join q{ }, @options;
+}
+
+########################################################################
+sub phone_field {
+########################################################################
+  my ($phone_field) = @_;
+
+  my %phone = %Phone;
+
+  $phone{field} = $phone_field;
+
+  return %phone;
+}
+
+########################################################################
+sub email_field {
+########################################################################
+  my ($email_field) = @_;
+
+  my %email = %Email;
+  $email{field} = $email_field;
+
+  return %email;
+}
+
+########################################################################
+sub id_field {
+########################################################################
+  my ($id_field) = @_;
+
+  my %id = %Id;
+
+  $id{field} = $id_field;
+
+  return %id;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
 =head1 NAME
 
+Bedrock::Model::Field - field specfication class for Bedrock's ORM
+
 =head1 SYNOPSIS
+
+my $field = Bedrock::Model::Field->new( { field => $field_name, type => $type);
+
 
 =head1 DESCRIPTION
 
-=head2 Pre-defined fields and field sets
+=head1 PRE-DEFINED FIELDS
 
 Use the pre-defined fields to create consistent schema definitions
 across tables and applications.
 
- our $MODEL = new Bedrock::Hash(
-                                %Bedrock::Model::Field::Id,
-                                %Bedrock::Model::Field::Email,
-                                %Bedrock::Model::Field::Address,
-                                %Bedrock::Model::Field::Phone
-                              );
+ our $MODEL = Bedrock::Hash->(
+   %Bedrock::Model::Field::Id,
+   %Bedrock::Model::Field::Email,
+   %Bedrock::Model::Field::Address,
+   %Bedrock::Model::Field::Phone
+  );
 
 =over 5
 
@@ -80,231 +321,38 @@ the zip code.
 
 =back
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
 =head2 as_string
 
-=cut
+Returns the field definition as a string;
 
-sub new {
-  my $class = shift;
-  my $self = $class->SUPER::new(@_);
 
-  foreach ('field', 'type') {
-    croak "$_ is required\n"
-      unless $self->get($_);
-  }
-  
-  return $self;
-}
-
-  
-sub as_string {
-  my $self = shift;
-
-  my @options;
-
-  if ( $self->get_null() && lc($self->get_null()) eq 'yes') {
-    push @options, 'NULL';
-  }
-  elsif ( $self->get_null() && lc($self->get_null()) eq 'no') {
-    push @options, 'NOT NULL';
-  }
-  else {
-    push @options, 'NULL';
-  }
-  
-  push @options, $self->get_extra() if $self->get_extra();
-  
-  if ( defined $self->get_default() ) {
-    if ( $self->get_type() =~/enum/i ) {
-      # quote enum default 'contact', e.g.
-      push @options, 'DEFAULT ' . "'" . $self->get_default() . "'";
-    }
-    else {
-      if ( length($self->get_default()) ) {
-	push @options, 'DEFAULT ' . $self->get_default();
-      }
-      else {
-	push @options, 'DEFAULT ' . "''";
-      }
-    }
-  }
-  
-  if ( $self->get_key() ) {
-    if ( lc($self->get_key()) eq 'pri' ) {
-      push @options, 'primary key'
-    }
-    elsif ( lc($self->get_key()) eq 'uni' ) {
-      push @options, 'unique key';
-    }
-    else {
-      # we do this because the table state will tell us of a multi
-      # field index, but the model has no way (yet) to indicate that
-      # the field is indexed thusly.  Hence for comparisons ignore key
-      # differences for these indices.
-      push @options, $self->get_key()
-	unless $self->get_ignore_unknown_keys();
-    }
-  }
-  
-  lc sprintf("%s %s %s", $self->get_field(), $self->get_type(), join(" ", @options));
-}
-
-# ready made fields and field sets
-
-our %City = (
-	     city => new Bedrock::Model::Field({
-						field => 'city',
-						type => 'varchar(64)',
-						null => 'yes'
-					       })
-	    );
-
-our %State = (
-	      state => new Bedrock::Model::Field({
-						  field => 'state',
-						  type => 'varchar(2)',
-						  null => 'yes'
-						 })
-	     );
-				   
-our %Zip = (
-	    zip => new Bedrock::Model::Field({
-					      field => 'zip',
-					      type => 'varchar(9)',
-					      null => 'yes',
-					      set => sub {
-						my ($f,$v) = @_;
-						
-						$v =~s/[^0-9]//g;
-						$v;
-					      },
-					      get => sub {
-						my ($f,$v) = @_;
-						my $z = $v;
-						$z =~s/[^0-9]//g;
-						if ( length($z) == 9 ) {
-						  $v = sprintf("%s-%s", unpack 'a5a4', $z);
-						}
-						$v;
-					      }
-					 })
-	   );
-
-our %Id = (
-	   id => new 
-	   Bedrock::Model::Field({
-				  field => 'id',
-				  type => 'int(11)',
-				  extra => 'auto_increment',
-				  key => 'pri',
-				  null => 'no'
-				 })
-	  );
-
-our %Email = (
-	      email => new
-	      Bedrock::Model::Field({
-				     field => 'email',
-				     type => 'varchar(64)',
-				     null => 'no'
-				    })
-	     );
-
-our %Phone = (
-	      phone => new
-	      Bedrock::Model::Field({
-				     field => 'phone',
-				     type => 'varchar(10)',
-				     null => 'yes',
-				     set => sub {
-				       my ($f,$v) = @_;
-				       
-				       $v && $v =~s/[^0-9]//g;
-				       $v;
-				     }
-				    }
-				   )
-	     );
-
-our %Address = (
-		street_address_1 => new
-		Bedrock::Model::Field({
-				       field => 'street_address_1',
-				       type => 'varchar(64)',
-				       null => 'yes'
-				      }),
-		street_address_2 => new
-		Bedrock::Model::Field({
-				       field => 'street_address_2',
-				       type => 'varchar(64)',
-				       null => 'yes'
-				      }),
-		%City,
-		%Zip
-	       );
-
-our %Timestampable = (
-		      last_updated_by => new
-		      Bedrock::Model::Field({
-					     field => 'last_updated_by',
-					     type => 'varchar(64)',
-					     null => 'yes'
-					    }),
-		      last_updated => new
-		      Bedrock::Model::Field({
-					     field => 'last_updated',
-					     type => 'timestamp',
-					     default => 'current_timestamp',
-					     extra => 'on update current_timestamp'
-					    })
-		     );
-
-=pod
-
-=head2 phone_field
-
-  phone_field(name)
-
-=head2 email_field
-
- email_field(name)
-
-=head2 zip_field
-
- zip_field(name)
-
-=head2 state_field
-
- state_field(name)
-
-Class methods that provide an alternate way of declaring a
+=head2 Class methods that provide an alternate way of declaring a
 pre-defined field by giving it a name other than the default name
 
 Example: Bedrock::Model::Field::phone_field('cell_phone');
 
+=head3 phone_field
+
+  phone_field(name)
+
+Creates a phone number type field.
+
+=head3 email_field
+
+ email_field(name)
+
+Creates an email type field.
+
+=head3 zip_field
+
+ zip_field(name)
+
+Creates a zip code field.
+
+=head3 state_field
+
+ state_field(name)
+
 =cut
-
-sub phone_field {
-  my %phone = %Phone;
-  $phone{field} = shift;
-  
-  %phone;
-}
-
-sub email_field {
-  my %email = %Email;
-  $email{field} = shift;
-  
-  %email;
-}
-
-sub id_field {
-  my %id = %Id;
-  $id{field} = shift;
-  
-  %id;
-}
-
-1;
