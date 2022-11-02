@@ -1,6 +1,3 @@
-#!@PERL@ -w
-
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -24,86 +21,103 @@
 package BLM::Date;
 
 use strict;
+use warnings;
+
 use Date::Calc qw(:all);
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
-use Bedrock::Hash;
 use Bedrock::Array;
+use Bedrock::Constants qw(:chars);
+use List::Util qw(any);
 
-@ISA = qw(Bedrock::Hash);
+use parent qw(Bedrock::Hash);
 
+########################################################################
 sub TIEHASH {
-  my $class   = shift;
-  my $self    = bless {}, $class;
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $self = bless {}, $class;
+
   my $private = {};
+
   $self->{'__private'} = \$private;
 
-  if ( @_ == 0 ) {
+  if ( @args == 0 ) {
 
     # init with current date and time
     @{$private}{qw(sec min hour mday mon year wday yday isdst)} = localtime;
+
     $private->{'mon'}++;
+
     $private->{'yday'}++;
+
     $private->{'year'} += 1900;
   }
-  elsif ( @_ == 2 ) {
-    if ( $_[0] eq 'localtime' ) {
-      @{$private}{qw(sec min hour mday mon year wday yday isdst)} =
-      localtime( $_[1] );
+  elsif ( @args == 1 ) {
+
+    # init with days since 1900
+    $private->{'days_since_1900'} = $args[0];
+
+    @{$private}{qw(year mon mday)} = Add_Delta_Days(
+      1900,  # year
+      1,     # month
+      1,     # mday
+      $private->{'days_since_1900'} - 1
+    );       # delta days
+
+    @{$private}{qw(hour min sec)} = ( 0, 0, 0 );
+  }
+  elsif ( @args == 2 ) {
+
+    if ( $args[0] eq 'localtime' ) {
+
+      @{$private}{qw(sec min hour mday mon year wday yday isdst)}
+        = localtime $args[1];
+
       $private->{'mon'}++;
+
       $private->{'yday'}++;
+
       $private->{'year'} += 1900;
     }
   }
-  elsif ( @_ == 1 ) {
-
-    # init with days since 1900
-    $private->{'days_since_1900'} = shift;
-    @{$private}{qw(year mon mday)} = Add_Delta_Days(
-                                     1900,                               # year
-                                     1,                                  # month
-                                     1,                                  # mday
-                                     $private->{'days_since_1900'} - 1
-                                                   );    # delta days
-    @{$private}{qw(hour min sec)} = ( 0, 0, 0 );
-  }
-  elsif ( @_ == 3 ) {
+  elsif ( @args == 3 ) {
 
     # we have ($yy, $mm, $dd) as args
     # Invoke Date::Calc's routine which does check for validity
-    $private->{'days_since_1900'} = &Delta_Days( 1900, 1, 1, @_ ) + 1;
-    @{$private}{qw(year mon mday hour min sec)} = ( @_, 0, 0, 0 );
+    $private->{'days_since_1900'} = Delta_Days( 1900, 1, 1, @args ) + 1;
+
+    @{$private}{qw(year mon mday hour min sec)} = ( @args, 0, 0, 0 );
   }
-  elsif ( @_ == 4 ) {
+  elsif ( @args == 4 ) {
 
     # we have ($yy, $mm, $dd, $hour) as args
     # Invoke Date::Calc's routine which does check for validity
-    $private->{'days_since_1900'} =
-    ( &Delta_DHMS( 1900, 1, 1, 0, 0, 0, @_, 0, 0 ) )[0] + 1;
-    @{$private}{qw(year mon mday hour min sec)} = ( @_, 0, 0 );
+    $private->{'days_since_1900'}
+      = ( Delta_DHMS( 1900, 1, 1, 0, 0, 0, @args, 0, 0 ) )[0] + 1;
+
+    @{$private}{qw(year mon mday hour min sec)} = ( @args, 0, 0 );
   }
-  elsif ( @_ == 5 ) {
+  elsif ( @args == 5 ) {
 
     # we have ($yy, $mm, $dd, $hour, $min) as args
     # Invoke Date::Calc's routine which does check for validity
-    $private->{'days_since_1900'} =
-    ( &Delta_DHMS( 1900, 1, 1, 0, 0, 0, @_, 0 ) )[0] + 1;
-    @{$private}{qw(year mon mday hour min sec)} = ( @_, 0 );
+    $private->{'days_since_1900'}
+      = ( Delta_DHMS( 1900, 1, 1, 0, 0, 0, @args, 0 ) )[0] + 1;
+
+    @{$private}{qw(year mon mday hour min sec)} = ( @args, 0 );
   }
-  elsif ( @_ == 6 ) {
+  elsif ( @args == 6 ) {
 
     # we have ($yy, $mm, $dd, $hour, $min, $secs) as args
     # Invoke Date::Calc's routine which does check for validity
-    $private->{'days_since_1900'} =
-    ( &Delta_DHMS( 1900, 1, 1, 0, 0, 0, @_ ) )[0] + 1;
-    @{$private}{qw(year mon mday hour min sec)} = @_;
+    $private->{'days_since_1900'}
+      = ( Delta_DHMS( 1900, 1, 1, 0, 0, 0, @args ) )[0] + 1;
+
+    @{$private}{qw(year mon mday hour min sec)} = @args;
   }
   else {
-    die "BLM::Date->new(@_): Invalid date\n";
+    die "BLM::Date->new(@args): Invalid date\n";
   }
 
   #  At this point we should have the following valid elements
@@ -113,76 +127,101 @@ sub TIEHASH {
   #  We can compute the following
   #    wday(0..6, with 0 = Sunday), yday (1..366)
 
-  $self;
+  return $self;
 }
 
+########################################################################
 sub private {
-  ${ $_[0]->{'__private'} };
+########################################################################
+  my ($self) = @_;
+
+  return ${ $self->{'__private'} };
 }
 
+########################################################################
 my $weekday = sub {
-  my $private = shift;
-  unless ( exists $private->{'wday'} ) {
+########################################################################
+  my ($private) = @_;
+
+  if ( !exists $private->{'wday'} ) {
 
     # we count wday from 0 => Sunday, whereas Date::Calc computes
     # Day_of_Week from 1 => Monday, so we are in sync here except
     # for Day_of_Week => 7, which we must convert to wday => 0
-    $private->{'wday'} = &Day_of_Week( @{$private}{qw(year mon mday)} );
-    $private->{'wday'} = 0 if $private->{'wday'} == 7;
+    $private->{'wday'} = Day_of_Week( @{$private}{qw(year mon mday)} );
+
+    if ( $private->{'wday'} == 7 ) {
+      $private->{'wday'} = 0;
+    }
   }
-  $private->{'wday'};
+
+  return $private->{'wday'};
 };
 
+########################################################################
 sub STORE {
-  die ref( $_[0] ),
-  ": properties of this object cannot be modified (RTFM, Luke)\n";
+########################################################################
+  die "properties of this object cannot be modified\n";
 }
 
+########################################################################
 sub FETCH {
-  my $self    = shift;
-  my $what    = shift;
+########################################################################
+  my ( $self, $what ) = @_;
+
   my $private = $self->private;
-  return $private->{$what} if exists $private->{$what};
-  return $private if $what eq '__private';
+
+  return $private->{$what}
+    if exists $private->{$what};
+
+  return $private
+    if $what eq '__private';
 
   for ($what) {
 
     # handle common requests first
     $_ eq 'DD'
-    and return $private->{'DD'} = sprintf( "%02d", $private->{'mday'} );
+      and return $private->{'DD'} = sprintf '%02d', $private->{'mday'};
     $_ eq 'MM'
-    and return $private->{'MM'} = sprintf( "%02d", $private->{'mon'} );
+      and return $private->{'MM'} = sprintf '%02d', $private->{'mon'};
     $_ eq 'YYYY'
-    and return $private->{'YYYY'} = sprintf( "%04d", $private->{'year'} );
+      and return $private->{'YYYY'} = sprintf '%04d', $private->{'year'};
     $_ eq 'HH24'
-    and return $private->{'HH24'} = sprintf( "%02d", $private->{'hour'} );
+      and return $private->{'HH24'} = sprintf '%02d', $private->{'hour'};
     $_ eq 'MI'
-    and return $private->{'MI'} = sprintf( "%02d", $private->{'min'} );
+      and return $private->{'MI'} = sprintf '%02d', $private->{'min'};
     $_ eq 'SS'
-    and return $private->{'SS'} = sprintf( "%02d", $private->{'sec'} );
+      and return $private->{'SS'} = sprintf '%02d', $private->{'sec'};
 
     # year handling
     $_ eq 'Y'
-    and return $private->{'Y'} =
-    substr( sprintf( "%04d", $private->{'year'} ), 3 );
+      and return $private->{'Y'}
+      = substr sprintf( '%04d', $private->{'year'} ), 3;
+
     $_ eq 'YY'
-    and return $private->{'YY'} =
-    substr( sprintf( "%04d", $private->{'year'} ), 2 );
+      and return $private->{'YY'}
+      = substr sprintf( '%04d', $private->{'year'} ), 2;
     $_ eq 'YYY'
-    and return $private->{'YYY'} =
-    substr( sprintf( "%04d", $private->{'year'} ), 1 );
+      and return $private->{'YYY'}
+      = substr sprintf( '%04d', $private->{'year'} ), 1;
 
     # day handling
     $_ eq 'D' and do {
 
       # Return weekday (1..7) with 1 => Sunday
-      $weekday->($private) unless exists $private->{'wday'};
+      if ( !exists $private->{'wday'} ) {
+        $weekday->($private);
+      }
+
       return $private->{'D'} = $private->{'wday'} + 1;
     };
+
     $_ eq 'DDD' and do {
       return $private->{'DDD'} = $private->{'yday'}
-      if exists $private->{'yday'};
-      return $private->{'DDD'} = &Day_of_Year( @{$private}{qw(year mon mday)} );
+        if exists $private->{'yday'};
+
+      return $private->{'DDD'}
+        = Day_of_Year( @{$private}{qw(year mon mday)} );
     };
 
     # Return Abbreviated day of the week.
@@ -191,91 +230,117 @@ sub FETCH {
     # What we need to do is pass wday for all except when wday is 0 when
     # we pass 7
     $_ eq 'DY' and do {
-      $weekday->($private) unless exists $private->{'wday'};
+
+      if ( !exists $private->{'wday'} ) {
+        $weekday->($private);
+      }
+
       my $arg = $private->{'wday'};
-      $arg = 7 unless $arg;
-      return $private->{'DY'} = &Day_of_Week_Abbreviation($arg);
-    };
-    $_ eq 'DAY' and do {
-      $weekday->($private) unless exists $private->{'wday'};
-      my $arg = $private->{'wday'};
-      $arg = 7 unless $arg;
-      return $private->{'DAY'} = &Day_of_Week_to_Text($arg);
+
+      $arg ||= 7;
+
+      return $private->{'DY'} = Day_of_Week_Abbreviation($arg);
     };
 
-    /^(days_since_1900|day_of_century|D_1900)$/ and do {
-      $private->{'days_since_1900'} =
-      &Delta_Days( 1900, 1, 1, @{$private}{qw(year mon mday)} ) + 1
-      unless exists $private->{'days_since_1900'};
-      return $private->{'day_of_century'} = $private->{'D_1900'} =
-      $private->{'days_since_1900'};
+    $_ eq 'DAY' and do {
+      if ( !exists $private->{'wday'} ) {
+        $weekday->($private);
+      }
+
+      my $arg = $private->{'wday'};
+      $arg ||= 7;
+
+      return $private->{'DAY'} = Day_of_Week_to_Text($arg);
+    };
+
+    /^days_since_1900|day_of_century|D_1900$/xsm and do {
+
+      if ( !exists $private->{'days_since_1900'} ) {
+        $private->{'days_since_1900'}
+          = Delta_Days( 1900, 1, 1, @{$private}{qw(year mon mday)} ) + 1;
+      }
+
+      return $private->{'day_of_century'} = $private->{'D_1900'}
+        = $private->{'days_since_1900'};
     };
 
     # week handling
     $_ eq 'IW'
-    and return $private->{'IW'} =
-    ( &Week_of_Year( @{$private}{qw(year mon mday)} ) )[0];
+      and return $private->{'IW'}
+      = ( Week_of_Year( @{$private}{qw(year mon mday)} ) )[0];
+
     $_ eq 'W'
-    and return $private->{'W'} =
-    int( $private->{'mday'} / 7 ) + ( $private->{'mday'} % 7 ? 1 : 0 );
+      and return $private->{'W'}
+      = int( $private->{'mday'} / 7 ) + ( $private->{'mday'} % 7 ? 1 : 0 );
+
     $_ eq 'WW' and do {
-      unless ( exists $private->{'DDD'} ) {
-        $private->{'DDD'} = ( exists $private->{'yday'}
-                              ? $private->{'yday'}
-                              : &Day_of_Year( @{$private}{qw(year mon mday)} )
-                            );
+      if ( !exists $private->{'DDD'} ) {
+        $private->{'DDD'} = (
+          exists $private->{'yday'}
+          ? $private->{'yday'}
+          : Day_of_Year( @{$private}{qw(year mon mday)} )
+        );
       }
-      return $private->{'WW'} =
-      int( $private->{'DDD'} / 7 ) + ( $private->{'DDD'} % 7 ? 1 : 0 );
+
+      return $private->{'WW'}
+        = int( $private->{'DDD'} / 7 ) + ( $private->{'DDD'} % 7 ? 1 : 0 );
     };
 
     # month handling
     $_ eq 'MON' and do {
-      $private->{'MONTH'} = &Month_to_Text( $private->{'mon'} )
-      unless exists $private->{'MONTH'};
-      return $private->{'MON'} = sprintf( "%.3s", $private->{'MONTH'} );
+
+      if ( !exists $private->{'MONTH'} ) {
+        $private->{'MONTH'} = Month_to_Text( $private->{'mon'} );
+      }
+
+      return $private->{'MON'} = sprintf '%.3s', $private->{'MONTH'};
     };
+
     $_ eq 'MONTH'
-    and return $private->{'MONTH'} = &Month_to_Text( $private->{'mon'} );
+      and return $private->{'MONTH'} = Month_to_Text( $private->{'mon'} );
 
     # hour handling
-    /^(HH|HH12)$/ and do {
-      return $private->{'HH'} = $private->{'HH12'} =
-      sprintf( "%02d",
-                 $private->{'hour'} > 12
-               ? $private->{'hour'} - 12
-               : $private->{'hour'} );
+    /^HH|HH12$/xsm and do {
+      return $private->{'HH'} = $private->{'HH12'}
+        = sprintf '%02d', $private->{'hour'} > 12
+        ? $private->{'hour'} - 12
+        : $private->{'hour'};
     };
 
     # Seconds handling
     $_ eq 'SSSSS'
-    and return $private->{'SSSSS'} =
-    $private->{'hour'} * 3600 + $private->{'min'} * 60 + $private->{'sec'};
+      and return $private->{'SSSSS'}
+      = $private->{'hour'} * 3600
+      + $private->{'min'} * 60
+      + $private->{'sec'};
 
     # meridian
-    /^(AM|PM)$/
-    and return $private->{'AM'} = $private->{'PM'} =
-    $private->{'hour'} > 12 ? 'PM' : 'AM';
+    /^AM|PM$/xsm
+      and return $private->{'AM'} = $private->{'PM'}
+      = $private->{'hour'} > 12 ? 'PM' : 'AM';
 
-    die ref($self), ": unknown property ($_)\n";
+    die "unknown property ($_)\n";
   }
 
-  return $private->{$what} if exists $private->{$what};
+  return $private->{$what}
+    if exists $private->{$what};
 
-  if ( $what =~ /^(year|month|day)$/ ) {
+  if ( any { $what eq $_ } qw{ year month day} ) {
     _day_of_century( $self, $self->{'day_of_century'} );
 
     return $self->{$what};
   }
-  elsif ( $what =~ /^day_of_century$/ ) {
+  elsif ( $what eq 'day_of_century' ) {
     my $base_date = Date_to_Days( 1900, 1, 1 ) - 1;
-    my $this_date =
-    Date_to_Days( $self->{'year'}, $self->{'month'}, $self->{'day'} );
+
+    my $this_date
+      = Date_to_Days( $self->{'year'}, $self->{'month'}, $self->{'day'} );
+
     $self->{'day_of_century'} = $this_date - $base_date;
 
     return $self->{$what};
   }
-  elsif ( $what =~ /^today$/ ) {
+  elsif ( $what eq 'today' ) {
     my ( $year, $month, $day ) = Today();
 
     $self->{'year'}  = $year;
@@ -286,50 +351,60 @@ sub FETCH {
 
     return Date_to_Text( Today() );
   }
-  elsif ( $what =~ /^day_of_year$/ ) {
+  elsif ( $what eq 'day_of_year' ) {
     return Day_of_Year( $self->{'year'}, $self->{'month'}, $self->{'day'} );
   }
-  elsif ( $what =~ /^day_of_week$/ ) {
+  elsif ( $what eq 'day_of_week' ) {
     return Day_of_Week( $self->{'year'}, $self->{'month'}, $self->{'day'} );
   }
-  elsif ( $what =~ /^day_text$/ ) {
+  elsif ( $what eq 'day_text' ) {
     return Day_of_Week_to_Text(
-             Day_of_Week( $self->{'year'}, $self->{'month'}, $self->{'day'} ) );
+      Day_of_Week( $self->{'year'}, $self->{'month'}, $self->{'day'} ) );
   }
-  elsif ( $what =~ /^month_text$/ ) {
+  elsif ( $what eq 'month_text' ) {
     return Month_to_Text( $self->{'month'} );
   }
 }
 
+########################################################################
 sub _day_of_century {
-  my $self  = shift;
-  my $value = shift;
+########################################################################
+  my ( $self, $value ) = @_;
 
-  my ( $year, $month, $day, $hour, $min, $sec ) =
-  Add_Delta_DHMS( 1900, 1, 1, 0, 0, 0, $value - 1, 0, 0, 0 );
+  my ( $year, $month, $day, $hour, $min, $sec )
+    = Add_Delta_DHMS( 1900, 1, 1, 0, 0, 0, $value - 1, 0, 0, 0 );
 
   $self->{'year'}  = $year;
   $self->{'month'} = $month;
   $self->{'day'}   = $day;
-  $value;
+
+  return $value;
 }
 
+########################################################################
 sub calendar {
+########################################################################
   my $self = shift;
 
   my @weeks;
-  foreach ( split( "\n", Calendar( $self->{'year'}, $self->{'mon'} ) ) ) {
+
+  foreach ( split /\n/xsm, Calendar( $self->{'year'}, $self->{'mon'} ) ) {
     push @weeks, $_;
   }
+
   splice @weeks, 0, 3;
 
-  my @days_of_the_week = ( 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN' );
+  my @days_of_the_week = map { uc $_ } qw(mod tue wed thu fri sat sun);
+
   my $cal = Bedrock::Array->new;
 
   foreach (@weeks) {
-    my @line = unpack "A4" x 7, $_;
-    my $day  = 0;
-    my $w    = Bedrock::Hash->new;
+    my @line = unpack 'A4' x 7, $_;
+
+    my $day = 0;
+
+    my $w = Bedrock::Hash->new;
+
     foreach my $item (@line) {
       $w->{ $days_of_the_week[$day] } = $item ? 0 + $item : undef;
       $day++;
@@ -340,14 +415,14 @@ sub calendar {
   return $cal;
 }
 
-#
-# Make a calendar as an array of arrays
-#
+########################################################################
 sub cal {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
   my @weeks;
-  foreach ( split( "\n", Calendar( $self->{'year'}, $self->{'mon'} ) ) ) {
+
+  foreach ( split /\n/xsm, Calendar( $self->{'year'}, $self->{'mon'} ) ) {
     push @weeks, $_;
   }
 
@@ -357,20 +432,23 @@ sub cal {
 
   # Object for holding the calendar
   my $cal = Bedrock::Array->new;
+
   foreach (@weeks) {
 
-# 1. Unpack each week-line
-# 2. Do an int() on each date to remove leading and trailing spaces
-# 3. Since int() returns 0 if no date in some field, make it undef to avoid printing 0's
+    # 1. Unpack each week-line
+    # 2. Do an int() on each date to remove leading and trailing spaces
+    # 3. Since int() returns 0 if no date in some field, make it undef to avoid printing 0's
     my @cal;
-    for my $day ( unpack "A4" x 7, $_ ) {
-      if ( defined($day) and length($day) > 0 ) {
-        push @cal, int($day);
+    for my $day ( unpack 'A4' x 7, $_ ) {
+
+      if ( defined $day && length $day > 0 ) {
+        push @cal, int $day;
       }
       else {
-        push @cal, '';
+        push @cal, $EMPTY;
       }
     }
+
     push @{$cal}, Bedrock::Array->new(@cal);
   }
 
@@ -378,49 +456,65 @@ sub cal {
   return $cal;
 }
 
+########################################################################
 sub format_mysql {
-  my $self   = shift;
-  my $format = shift;
+########################################################################
+  my ( $self, $format ) = @_;
 
-  $format =~ s/%M/$self->{'MONTH'}/g;
-  $format =~ s/%W/$self->{'DAY'}/g;
-  $format =~ s/%D/&English_Ordinal($self->{'DD'})/eg;
-  $format =~ s/%Y/$self->{'YYYY'}/g;
-  $format =~ s/%y/$self->{'YY'}/g;
-  $format =~ s/%a/$self->{'DY'}/g;
-  $format =~ s/%d/$self->{'DD'}/g;
-  $format =~ s/%e/$self->{'mday'}/g;
-  $format =~ s/%m/$self->{'MM'}/g;
-  $format =~ s/%c/$self->{'mon'}/g;
-  $format =~ s/%b/$self->{'MON'}/g;
-  $format =~ s/%j/$self->{'DDD'}/g;
-  $format =~ s/%H/$self->{'HH24'}/g;
-  $format =~ s/%k/$self->{'hour'}/g;
-  $format =~ s/%h/$self->{'HH'}/g;
-  $format =~ s/%I/$self->{'HH'}/g;
-  $format =~ s/%i/$self->{'SS'}/g;
-  $format =~ s/%r/$self->{'HH'}:$self->{'MI'}:$self->{'SS'} $self->{'AM'}/g;
-  $format =~ s/%T/$self->{'HH24'}:$self->{'MI'}:$self->{'SS'}/g;
-  $format =~ s/%s/$self->{'SS'}/ig;
-  $format =~ s/%p/$self->{'PM'}/g;
-  $format =~ s/%w/$self->{'D'} - 1/eg;
-  $format =~ s/%%/%/g;
-  $format;
+  $format =~ s/%M/$self->{'MONTH'}/xsmg;
+  $format =~ s/%W/$self->{'DAY'}/xsmg;
+  $format =~ s/%D/&English_Ordinal($self->{'DD'})/egxsm;
+  $format =~ s/%Y/$self->{'YYYY'}/xsmg;
+  $format =~ s/%y/$self->{'YY'}/xsmg;
+  $format =~ s/%a/$self->{'DY'}/xsmg;
+  $format =~ s/%d/$self->{'DD'}/xsmg;
+  $format =~ s/%e/$self->{'mday'}/xsmg;
+  $format =~ s/%m/$self->{'MM'}/xsmg;
+  $format =~ s/%c/$self->{'mon'}/xsmg;
+  $format =~ s/%b/$self->{'MON'}/xsmg;
+  $format =~ s/%j/$self->{'DDD'}/xsmg;
+  $format =~ s/%H/$self->{'HH24'}/xsmg;
+  $format =~ s/%k/$self->{'hour'}/xsmg;
+  $format =~ s/%h/$self->{'HH'}/xsmg;
+  $format =~ s/%I/$self->{'HH'}/xsmg;
+  $format =~ s/%i/$self->{'SS'}/xsmg;
+  $format
+    =~ s/%r/$self->{'HH'}:$self->{'MI'}:$self->{'SS'} $self->{'AM'}/xsmg;
+  $format =~ s/%T/$self->{'HH24'}:$self->{'MI'}:$self->{'SS'}/xsmg;
+  $format =~ s/%s/$self->{'SS'}/igxsm;
+  $format =~ s/%p/$self->{'PM'}/xsmg;
+  $format =~ s/%w/$self->{'D'} - 1/egxsm;
+  $format =~ s/%%/%/xsmg;
+
+  return $format;
 }
 
+########################################################################
 sub date_delta {
-  my $self = shift;
-  die "Usage: \$date.date_delta(\$days)\n" unless @_ == 1;
-  my $days_since_1900 = $self->{'days_since_1900'} + shift;
+########################################################################
+  my ( $self, $days ) = @_;
+
+  die "Usage: \$date.date_delta(\$days)\n"
+    if !defined $days;
+
+  my $days_since_1900 = $self->{'days_since_1900'} + $days;
+
   return $self->new($days_since_1900);
 }
 
-sub localtime {
-  my $self = shift;
-  return Bedrock::Array->new( localtime( $_[0] || time) );
+########################################################################
+sub localtime {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $time ) = @_;
+
+  return Bedrock::Array->new( localtime( $time || time ) );
 }
 
 1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -789,73 +883,4 @@ C<localtime> function.
 =back
 
 =cut
-
-#
-# Revision 1.18  2012/04/13 21:22:10  eutl420
-# - pod typo
-#
-# Revision 1.17  2011/09/15 16:05:31  eutl420
-# - perl tidy
-#
-# Revision 1.16  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.15  2011/07/12 19:10:35  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.14  2010/11/29 15:57:50  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.13  2010/11/20 18:40:35  rlauer
-# - cleanup pod
-# - document AM/PM
-#
-# Revision 1.12  2010/11/15 02:27:56  rlauer
-# - make PUBLIC, minor documentation tweaks
-#
-# Revision 1.11  2009/12/29 12:18:40  rlauer
-# udpate docs
-#
-# Revision 1.10  2009/12/28 23:30:08  rlauer
-# add way to instantiate based on a localtime scalar
-#
-# Revision 1.9  2009/12/28 20:32:32  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.8  2009/12/26 15:38:44  rlauer
-# fix docs to reflect Bedrock II syntax
-#
-# Revision 1.7  2008/12/03 14:01:18  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.6  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.5  2001/02/14 15:35:43  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.4  2000/10/16 13:49:45  sridhar
-# Fixed calendar generation to avoid some perl warnings.
-#
-# Revision 1.3  2000/10/06 14:50:33  sridhar
-# Major revamping
-# 1. Constructor can take 1 arg(days since Jan 1, 1900), 3 args(year,
-# month, day), 4, 5 or 6 args(year, month, day, hour, min and sec)
-# 2. Properties are similar to Oracle date format elements
-# 3. The date object may not be modified once it is constructed.
-# 4. Have two interfaces to the calendar capabilities, one returning an
-# array of objects, and another returning an array of arrays.
-# 5. Have a format_mysql() for formatting the date (and time) using
-# mysql-like date format elements.
-# 6. POD documentation
-#
-#
 

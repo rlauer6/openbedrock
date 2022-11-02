@@ -1,10 +1,14 @@
 package OAuth2::Exception;
 
+use strict;
+use warnings;
+
 sub new {
-  my $class = shift;
+  my ( $class, @args ) = @_;
+
   $class = ref($class) || $class;
 
-  bless { @_ }, $class;
+  return bless {@args}, $class;
 }
 
 package BLM::Startup::OAuth2;
@@ -12,14 +16,265 @@ package BLM::Startup::OAuth2;
 use warnings;
 use strict;
 
+use Bedrock qw(:booleans);
+use Bedrock::Constants qw(:booleans :chars);
 use Bedrock::Hash;
 use Data::Dumper;
-use Net::OAuth2::Profile::WebServer;
-use Net::OAuth2::AccessToken;
+use English qw{-no_match_vars};
 use JSON;
+use Net::OAuth2::AccessToken;
+use Net::OAuth2::Profile::WebServer;
 use Scalar::Util qw/reftype/;
 
 use parent qw/Bedrock::Application::Plugin/;
+
+########################################################################
+sub redirect_uri {
+########################################################################
+  my ( $self, $app ) = @_;
+
+  my $redirect_uri = lc
+    sprintf '%s://%s/%s',
+    $self->protocol, $self->host, $self->config->{$app}->{redirect_uri};
+
+  return $redirect_uri;
+}
+
+########################################################################
+sub auth {
+########################################################################
+  my ( $self, $app ) = @_;
+
+  if ($app) {
+    die "no such application defined in the configuration file\n"
+      if !defined $self->config->{$app} || !ref $self->config->{$app};
+
+    my $redirect_uri = $self->redirect_uri($app);
+
+    $self->{_auth} = Net::OAuth2::Profile::WebServer->new(
+      client_id          => $self->config->{client_id},
+      client_secret      => $self->config->{client_secret},
+      site               => $self->config->{site},
+      authorize_path     => $self->config->{authorize_path},
+      access_token_path  => $self->config->{access_token_path},
+      refresh_token_path => $self->config->{refresh_token_path},
+      scope              => $self->scope( $self->config->{$app}->{scope} ),
+      redirect_uri       => $redirect_uri
+    );
+
+    $self->application($app);
+  }
+
+  return $self->{_auth};
+}
+
+########################################################################
+sub thaw_session {
+########################################################################
+  my ( $self, $auth, $auth_session ) = @_;
+
+  $auth //= $self->auth;
+
+  if ( !$auth_session ) {
+
+    if ( $self->application && $self->session->{ $self->application } ) {
+      die OAuth2::Exception->new( error => 'no session' )
+        if $self->config->{use_session} !~ /y/xsm;
+
+      $auth_session = $self->session->{ $self->application };
+    }
+  }
+
+  my $token = Net::OAuth2::AccessToken->session_thaw( $auth_session,
+    profile => $auth );
+
+  $self->{_access_token} = $token->expired ? undef : $token;
+
+  return $self->{_access_token};
+}
+
+########################################################################
+sub freeze_session {
+########################################################################
+  my ( $self, $access_token, $app ) = @_;
+
+  $access_token //= $self->get_access_token;
+  $app          //= $self->application;
+
+  my $frozen_session = $access_token->session_freeze;
+
+  if ( $app && $self->config->{use_session} =~ /y/ixsm ) {
+    $self->session->{$app} = $frozen_session;
+  }
+
+  return $frozen_session;
+}
+
+########################################################################
+sub create_access_token {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $auth;
+
+  if ( ref( $args[0] ) && $args[0]->isa('Net::OAuth2::Profile::WebServer') ) {
+    $auth = shift @args;
+  }
+
+  $auth = $auth || $self->auth;
+
+  my %options = @args;
+
+  return Net::OAuth2::AccessToken->new( profile => $auth, %options );
+}
+
+########################################################################
+sub get_access_token {
+########################################################################
+  my ( $self, $code, $auth ) = @_;
+
+  $auth //= $self->auth;
+
+  if ( defined $code ) {
+    $self->{_access_token} = $auth->get_access_token($code);
+  }
+
+  return ( ref( $self->{_access_token} ) && !$self->{_access_token}->expired )
+    ? $self->{_access_token}
+    : undef;
+}
+
+########################################################################
+sub json_response {
+########################################################################
+  my ( $self, $response ) = @_;
+
+  my $json_response;
+
+  if ( ref($response) && $response->isa('HTTP::Response') ) {
+    die OAuth2::Exception->new(
+      error             => 'not a valid response',
+      error_description => 'ref: [' . ref($response) . ']'
+    );
+  }
+
+  my $e = OAuth2::Exception->new;
+
+  if ( $response->is_success ) {
+    if ( $response->header('Content-Type') ne 'application/json' ) {
+      $e->{warning} = 'content may not be JSON. Content-Type: ['
+        . $response->header('Content-Type') . ']';
+    }
+
+    $json_response = eval { from_json( $response->decoded_content ); };
+
+    if ($EVAL_ERROR) {
+      @{$e}{qw/error error_description content response/} = (
+        'unable to parse JSON',     $EVAL_ERROR,
+        $response->decoded_content, $response,
+      );
+    }
+  }
+  else {
+    @{$e}{qw/error error_descripton content response/} = (
+      $response->code, $response->message, $response->decoded_content,
+      $response,
+    );
+  }
+
+  die if exists $e->{error};
+
+  return Bedrock::Hash->new( $json_response ? %{$json_response} : () );
+}
+
+########################################################################
+sub authorize {
+########################################################################
+  my ( $self, $auth, %options ) = @_;
+
+  $auth //= self->auth;
+
+  return $auth->authorize(%options);
+}
+
+########################################################################
+sub application {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->{_application} = $args[0];
+
+    if ( $self->config->{use_session} =~ /y/ixsm ) {
+      $self->session->{'oauth2.app'} = $self->{_application};
+    }
+  }
+
+  return $self->{_application};
+}
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ($self) = @_;
+
+  $self->SUPER::init_plugin();
+
+  if ( defined $self->config->{default_application} ) {
+    $self->application( $self->config->{default_application} );
+  }
+
+  return $TRUE;
+}
+
+########################################################################
+sub get_config_value {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $config = $self->config();
+
+  if ( @args == 1 ) {
+    return $config->{ $args[0] };
+  }
+  elsif ( @args == 2 ) {
+    $config->{ $args[0] } = $args[1];
+    return $args[1];
+  }
+  else {
+    return $config;
+  }
+}
+
+########################################################################
+sub protocol {
+########################################################################
+  my ($self) = @_;
+
+  my $proto = $ENV{SERVER_PROTOCOL};
+
+  return $proto =~ /^(HTTPS?)/xsmi ? $1 : 'HTTP';
+}
+
+########################################################################
+sub host {
+########################################################################
+  return $ENV{HTTP_HOST};
+}
+
+########################################################################
+sub scope {
+########################################################################
+  my ( $self, $scope ) = @_;
+
+  return is_array($scope) ? join( $SPACE, @{$scope} ) : $scope;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
@@ -30,6 +285,7 @@ C<$oauth2>
 =head1 SYNOPSIS
 
  <!-- Create a Net::OAuth2::Profile::WebServer object -->
+
  <if $session.get('oauth2.app')>
    <null:auth $oauth2.auth($session.get('oauth2.app'))>
  <else>
@@ -37,6 +293,7 @@ C<$oauth2>
  </if>
 
  <!-- Do we have an access token? If not, get one from session or possibly use the code returned from the end point -->
+
  <if $session.get($session.get('oauth2.app'))>
    <null:token $oauth2.thaw_session()>
  <elsif $input.code>
@@ -135,12 +392,7 @@ page to access the OAuth2 server.  See L</thaw_session>.
 
 =back
 
-=head1 METHODS
-
-=cut
-
-
-=pod
+=head1 METHODS AND SUBROUTINES
 
 =head2 redirect_uri
 
@@ -155,19 +407,6 @@ the OAuth2 server.  Some services (Google for example) require that
 you register these URIs before they can be used in order to create a
 more secure environment.
 
-=cut
-
-
-sub redirect_uri {
-  my $self = shift;
-  my $app = shift;
-
-  my $redirect_uri = lc(sprintf("%s://%s/%s", $self->protocol, $self->host, $self->config->{$app}->{redirect_uri}));
-}
-
-
-=pod
-
 =head2 auth
 
  auth( [application] )
@@ -180,35 +419,6 @@ no arguments, once this method is called with an application value.
 
  <null:auth $oauth2.auth()>
 
-=cut
-
-sub auth {
-  my $self = shift;
-  my $app = shift;
-  
-  if ( $app ) {
-    die "no such application defined in the configuration file"
-      unless defined $self->config->{$app} && ref($self->config->{$app});
-
-    my $redirect_uri = $self->redirect_uri($app);
-    
-    $self->{_auth} = Net::OAuth2::Profile::WebServer->new(
-							  client_id          => $self->config->{client_id},
-							  client_secret      => $self->config->{client_secret},
-							  site               => $self->config->{site},
-							  authorize_path     => $self->config->{authorize_path},
-							  access_token_path  => $self->config->{access_token_path},
-							  refresh_token_path => $self->config->{refresh_token_path},
-							  scope              => $self->scope($self->config->{$app}->{scope}),
-							  redirect_uri       => $redirect_uri
-							 );
-    $self->application($app);
-  }
-  
-  return $self->{_auth};
-}
-
-=pod
 
 =head2 thaw_session
 
@@ -248,28 +458,6 @@ Don't confuse C<auth-session> with Bedrock's persistent session store.
 
 =back
 
-=cut
-
-sub thaw_session {
-  my $self = shift;
-  my $auth = shift || $self->auth;
-  my $auth_session = shift;
-
-  unless ( $auth_session ) {
-    if ( $self->application && $self->session->{$self->application} ) {
-      die new OAuth2::Exception( error => 'no session' )
-	unless $self->config->{use_session} =~/y/;
-
-      $auth_session = $self->session->{$self->application};
-    }
-  }
-
-  my $token = Net::OAuth2::AccessToken->session_thaw($auth_session, profile => $auth );
-
-  $self->{_access_token} = $token->expired ? undef : $token;
-}
-
-=pod
 
 =head2 freeze_session
 
@@ -300,23 +488,6 @@ persistent session if you've set C<use_session> to B<yes>.
    </object>
  </object>
 
-=cut
-
-sub freeze_session {
-  my $self = shift;
-  my $access_token = shift || $self->get_access_token;
-  my $app = shift || $self->application;
-
-  my $frozen_session = $access_token->session_freeze;
-
-  if ( $app && $self->config->{use_session} =~/y/i ) {
-    $self->session->{$app} = $frozen_session;
-  }
-
-  $frozen_session;
-}
-
-=pod
 
 =head2 create_access_token
 
@@ -331,24 +502,6 @@ object is used. C<options> is a hash of options (not a reference).
 
  <null:token $oauth2.create_access_token( $auth, 'refresh_token', $refresh_token )>
 
-=cut
-
-sub create_access_token {
-  my $self = shift;
-  my $auth;
-
-  if ( ref($_[0]) && $_[0]->isa('Net::OAuth2::Profile::WebServer') ) {
-    $auth = shift;
-  }
-
-  $auth = $auth || $self->auth;
-
-  my %options = @_;
-
-  return Net::OAuth2::AccessToken->new( profile => $auth, %options);
-}
-
-=pod
 
 =head2 get_access_token
 
@@ -359,21 +512,6 @@ C<code> you received from the OAuth2 end point for an access token.
 Uses the current C<Net::OAuth2::Profile::WebServer> object by calling
 the C<auth()> method if C<auth> is not provided.
 
-=cut
-
-sub get_access_token {
-  my $self = shift;
-  my $code = shift;
-  my $auth = shift || $self->auth;
-  
-  if ( defined $code ) {
-    $self->{_access_token} = $auth->get_access_token($code);
-  }
-  
-  return (ref($self->{_access_token}) && ! $self->{_access_token}->expired) ? $self->{_access_token} : undef;
-}
-
-=pod
 
 =head2 json_response
 
@@ -390,49 +528,6 @@ the exception object for more details.
 You might consider subclassing this method to provide your own custom
 exceptions or at least trap the exceptions thrown by this method.
 
-=cut
-
-sub json_response {
-  my $self = shift;
-  my $response = shift;
-
-  my $json_response;
-
-  unless ( ref($response) && $response->isa('HTTP::Response') ) {
-    die new OAuth2::Exception(error => 'not a valid response', error_description => 'ref: [' . ref($response) . ']');
-  }
-
-  my $e = new OAuth2::Exception;
-
-  if ( $response->is_success ) {
-    if ( $response->header('Content-Type') ne 'application/json' ) {
-      $e->{warning} = 'content may not be JSON. Content-Type: [' . $response->header('Content-Type') . ']';
-    }
-
-    $json_response = eval {
-      from_json($response->decoded_content);
-    };
-
-    if ($@) {
-      @{$e}{qw/error error_description content response/} = ( 
-							     'unable to parse JSON',
-							     $@,
-							     $response->decoded_content,
-							     $response
-							    );
-    }
-  }
-  else {
-    @{$e}{qw/error error_descripton content response/} = ($response->code, $response->message, $response->decoded_content, $response);
-  }
-  
-  die if exists $e->{error};
-
-  return Bedrock::Hash->new($json_response ? %$json_response : ());
-}
-
-
-=pod
 
 =head2 authorize
 
@@ -444,26 +539,9 @@ an authorization code that you can exchange for an access token.  Uses
 the default C<Net::OAuth2::Profile::WebServer> object if none is
 passed.
 
-=cut
-
-sub authorize {
-  my $self = shift;
-  my $auth = shift || $self->auth;
-  my %options = @_;
-
-  my $url = $auth->authorize( %options );
-
-  return $url;
-}
-
-=pod
 
 =head1 MISCELLANEOUS METHODS
 
-=cut
-
-
-=pod
 
 =head2 application
 
@@ -478,22 +556,6 @@ Consider that you may have multiple tokens you are using for multiple
 APIs.  By using this method you can switch between tokens when thawing
 them from Bedrock's session.
 
-=cut
-
-sub application {
-  my $self = shift;
-
-  if ( @_ ) {
-    $self->{_application} = $_[0];
-    if ( $self->config->{use_session} =~/y/i ) {
-      $self->session->{'oauth2.app'} = $self->{_application};
-    }
-  }
-
-  return $self->{_application};
-}
-
-=pod
 
 =head2 init_plugin
 
@@ -526,21 +588,6 @@ will look like this if you have an access token.
       }
     }
 
-=cut
-
-sub init_plugin {
-  my $self = shift;
-
-  $self->SUPER::init_plugin();
-
-  if ( defined $self->config->{default_application} ) {
-    $self->application($self->config->{default_application});
-  }
-
-  1;
-}
-
-=pod
 
 =head2 get_config_value
 
@@ -556,26 +603,6 @@ object. You can also access the configuration object directly.
  <null:oauth2_config $oauth2.config()>
  <null:some_key $oauth2_config.some_key>
 
-=cut
-
-sub get_config_value {
-  my $self = shift;
-
-  my $config = $self->config();
-
-  if ( @_ == 1) {
-    return $config->{$_[0]};
-  }
-  elsif ( @_ == 2 ) {
-    $config->{$_[0]} = $_[1];
-    return $_[1];
-  }
-  else {
-    return $config;
-  }
-}
-
-=pod
 
 =head2 protocol
 
@@ -584,30 +611,11 @@ sub get_config_value {
 Returns the current web server protocol (extracted from
 C<SERVER_PROTOCOL>).
 
-=cut
-
-sub protocol {
-  my $self = shift;
-  my $proto = $ENV{SERVER_PROTOCOL};
-
-  $proto =~/^(HTTPS?)/i;
-
-  return lc($1 || 'HTTP');
-}
-
-=pod
 
 =head2 host
 
 Returns the current C<HTTP_HOST> value from the environment.
 
-=cut
-
-sub host {
-  return $ENV{HTTP_HOST};
-}
-
-=pod
 
 =head2 scope
 
@@ -621,16 +629,6 @@ This method is only necessary to create the canonical scope value, it
 does not do anything more than that.  It is used internally, and may
 not be useful otherwise.
 
-=cut
-
-sub scope {
-  my $self = shift;
-  my $scope = shift;
-
-  return ( ref($scope) && reftype($scope) eq 'ARRAY' ) ? join(" ", @$scope) : $scope;
-}
-
-=pod
 
 =head1 HOW IT WORKS
 
@@ -815,9 +813,9 @@ to be considered.
 
 =head1 SEE OTHER
 
-You really should read the documentation for these modules to
+A full reading of the ocumentation for these modules to
 understand more about the methods available and the arguments they
-accept.
+accept is recommended.
 
 C<Net::OAuth2::Profile::WebServer>, C<Net::OAuth2::AccessToken>, C<Net::OAuth2::Profile>
 
@@ -826,5 +824,3 @@ C<Net::OAuth2::Profile::WebServer>, C<Net::OAuth2::AccessToken>, C<Net::OAuth2::
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-1;
