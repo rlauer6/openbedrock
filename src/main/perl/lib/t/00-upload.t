@@ -130,7 +130,7 @@ is( <$fh>, $LOREM_IPSUM, 'content uploaded correctly' );
 close $fh;
 
 # remove uploaded file
-unlink "/tmp$filename";
+unlink "/tmp/$filename";
 
 END {
 }
