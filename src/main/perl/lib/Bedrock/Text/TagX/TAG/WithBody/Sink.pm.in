@@ -23,9 +23,12 @@ package TagX::TAG::WithBody::Sink;
 use strict;
 use warnings;
 
+use Bedrock qw(:booleans);
 use Bedrock::Hash;
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
+
+use Text::URLEncode qw(htmlencode encode decode);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -43,13 +46,13 @@ sub evolve {
 ########################################################################
   my $this = shift;
 
-  if ( ref($this) eq 'HASH' ) {
+  if ( is_hash($this) ) {
     foreach ( keys %{$this} ) {
       $this->{$_} = evolve( $this->{$_} );
     }
     return Bedrock::Hash->new( %{$this} );
   }
-  elsif ( ref($this) eq 'ARRAY' ) {
+  elsif ( is_array($this) ) {
     for my $idx ( 0 .. $#{$this} ) {
       $this->[$idx] = evolve( $this->[$idx] );
     }
@@ -60,7 +63,9 @@ sub evolve {
   }
 }
 
+########################################################################
 sub define_options {
+########################################################################
   return (
     'bedrock-xml'  => undef,
     'define-var=s' => undef,
@@ -69,11 +74,16 @@ sub define_options {
     'json'         => undef,
     'serializer=s' => undef,
     'xml'          => undef,
+    'noexec'       => undef,
+    'uriencode'    => undef,
+    'uridecode'    => undef,
     'yaml'         => undef,
   );
 }
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
@@ -89,12 +99,12 @@ sub finalize {
     $options{'define-var'} = $tag_opts->{name};
   }
 
-  die "Use only one of --HTMLEncode or --HTMLDecode here.\n"
-    if $options{'htmlencode'} and $options{'htmldecode'};
+  die "Use only one of --htmlencode or --htmldecode here.\n"
+    if $options{'htmlencode'} && $options{'htmldecode'};
 
   # Create a frame for output. Note very carefully that we assign the frame
   # to a lexical variable. Hence the destructor for the frame is not invoked
-  # When the lexical variable goes out of scope, the frame is destructed,
+  # When the lexical variable goes out of scope, the frame is destroyed,
   # and since we didn't invoke $frame->end_frame, the contents of the frame
   # are discarded.
   #
@@ -105,6 +115,9 @@ sub finalize {
   #
   my $frame = $tx->out_handle->create_frame;
 
+  $self->get_logger->debug(
+    Dumper( [ 'frame data:', $tx->out_handle->frame_data ] ) );
+
   $self->get_logger->debug('Entering <SINK> block ..');
 
   $self->SUPER::finalize( $tx, @context );
@@ -113,58 +126,58 @@ sub finalize {
 
   my $data = $tx->out_handle->frame_data;
 
-  if ( $options{'htmlencode'} ) {  ## no critic (ProhibitCascadingIfElse)
-    $data =~ s/\x26/\&amp;/xsmg;
-    $data =~ s/\x3c/\&lt;/xsmg;
-    $data =~ s/\x3e/\&gt;/xsmg;
+  my %serializers = (
+    htmlencode => sub { htmlencode($data); },
+    htmldecode => sub {
+      $data =~ s/\x26amp;/\x26/xsmg;
+      $data =~ s/\x26lt;/\x3c/xsmg;
+      $data =~ s/\x26gt;/\x3e/xsmg;
+    },
+    json => sub {
+      my $handler = $self->io_handler( $tx, 'JSON' );
 
-    $self->get_logger->trace(
-      sub { return sprintf 'HTMLEncoded to <%s>', $data } );
-  }
-  elsif ( $options{'htmldecode'} ) {
-    $data =~ s/\x26amp;/\x26/xsmg;
-    $data =~ s/\x26lt;/\x3c/xsmg;
-    $data =~ s/\x26gt;/\x3e/xsmg;
+      $data = $handler->deserialize( $data, {@argv} );
+    },
+    xml => sub {
+      # see if --xml in context of a file handle output
+      die
+        "Use the --xml option of <sink> to deserialize XML to a Bedrock object.  If you wanted to write XML use <var --xml>.\n"
+        if @argv == 1;
 
-    $self->get_logger->trace(
-      sub { return sprintf 'HTMLDecoded to <%s>', $data } );
+      my $handler = $self->io_handler( $tx, 'XML' );
+      $data = $handler->deserialize( $data, {@argv} );
+    },
+    'bedrock-xml' => sub {
+      die
+        "Use the --bedrock-xml option of <sink> to deserialize Bedrock XML to a Bedrock object.  If you wanted to write Bedrock XML use <var --bedrock-xml>.\n"
+        if @argv == 1;
 
-  }
-  elsif ( $options{'json'} ) {
-    my $handler = $self->io_handler( $tx, 'JSON' );
+      my $handler = $self->io_handler( $tx, 'BedrockXML' );
+      $data = $handler->deserialize( $data, {@argv} );
+    },
+    uriencode => sub {
+      encode($data);
+    },
+    uridecode => sub {
+      decode($data);
+    },
+    yaml => sub {
+      # see if --yaml in context of a file handle output
+      die
+        "Use the --yaml option of <sink> to deserialize YAML to a Bedrock object.  If you wanted to write YAML use <var --yaml>.\n"
+        if @argv == 1;
 
-    $data = $handler->deserialize( $data, {@argv} );
-  }
-  elsif ( $options{'xml'} ) {
-    # see if --xml in context of a file handle output
-    die
-      "Use the --xml option of <sink> to deserialize XML to a Bedrock object.  If you wanted to write XML use <var --xml>.\n"
-      if @argv == 1;
+      my $handler = $self->io_handler( $tx, 'YAML' );
+      $data = $handler->deserialize( $data, {@argv} );
+    },
+    serializer => sub {
+      my $handler = $self->io_handler( $tx, $options{serializer} );
+      $data = $handler->deserialize( $data, {@argv} );
+    },
+  );
 
-    my $handler = $self->io_handler( $tx, 'XML' );
-    $data = $handler->deserialize( $data, {@argv} );
-  }
-  elsif ( $options{'bedrock-xml'} ) {
-    # see if --bedrock-xml in context of a file handle output
-    die
-      "Use the --xml option of <sink> to deserialize Bedrock XML to a Bedrock object.  If you wanted to write XML use <var --xml>.\n"
-      if @argv == 1;
-
-    my $handler = $self->io_handler( $tx, 'BedrockXML' );
-    $data = $handler->deserialize( $data, {@argv} );
-  }
-  elsif ( $options{'yaml'} ) {
-    # see if --yaml in context of a file handle output
-    die
-      "Use the --yaml option of <sink> to deserialize YAML to a Bedrock object.  If you wanted to write YAML use <var --yaml>.\n"
-      if @argv == 1;
-
-    my $handler = $self->io_handler( $tx, 'YAML' );
-    $data = $handler->deserialize( $data, {@argv} );
-  }
-  elsif ( $options{'serializer'} ) {
-    my $handler = $self->io_handler( $tx, $options{serializer} );
-    $data = $handler->deserialize( $data, {@argv} );
+  if ( my ($filter) = grep { exists $options{$_} } keys %serializers ) {
+    $serializers{$filter}->();
   }
 
   # <sink:foo $fd> probably does not make any sense, so we EITHER
@@ -172,7 +185,7 @@ sub finalize {
   if ( exists $options{'define-var'} ) {
     $self->get_logger->debug(
       sub {
-        sprintf "Assigning contents of <SINK> to %s\n",
+        sprintf "assigning contents of <sink>...</sink> to %s\n",
           $options{'define-var'};
       }
     );
@@ -220,14 +233,22 @@ been previously opened.
 
 =head1 OPTIONS
 
+ --bedrock-xml
  --define-var = "var-name"
  --htmlencode
  --htmldecode
- --json 
+ --json
+ --noexec
+ --serializer = name
  --xml
  --yaml
 
 =over 5
+
+=item --bedrock-xml
+
+The content of the E<lt>sinkE<gt> block is considered to be a Bedrock
+XML string. Bedrock will convert it into a Bedrock object or array.
 
 =item --define-var
 
@@ -243,8 +264,25 @@ Interpret the contents of the sink body as HTML entities.
 
 =item --json
 
-The content of the E<lt>sinkE<gt> block is considered to be a JSON string.  Bedrock will convert it
-into a Bedrock object or array.
+The content of the E<lt>sinkE<gt> block is considered to be a JSON
+string.  Bedrock will convert it into a Bedrock object or array.
+
+=item --noexec
+
+The contents of the tag are considered to be raw text that should be
+stored in a variable if one is specified using the C<--define-var>
+option or the C<sink:name> syntax.
+
+ <sink:foo --noexec><var $test></sink>
+
+...would store the raw text I<E<lt>var $testE<gt>> in the variable
+C<$foo>.
+
+=item --serializer
+
+The name of a custom serializer that implments the
+L<Bedrock::Serializer> interface. See L<Bedrock::Serializer::JSON> for
+an example serializer.
 
 =item --xml
 
@@ -252,6 +290,14 @@ The content of the E<lt>sinkE<gt> block is considered to be an XML
 string.  Bedrock will convert it into a Bedrock object or array.
 I<See the E<lt>varE<gt> tag for details regarding XML conversions in
 Bedrock.>
+
+=item uriencode
+
+URI encode the block of text.
+
+=item uridecode
+
+URI decode the block of text.
 
 =item --yaml
 
@@ -284,35 +330,45 @@ a handle to an open file descriptor.
 
 Initialize a variable with some text:
 
-  <sink --define-var="foo">This is a test of sinking some text to the scalar "foo"</sink>
-  <var $foo>
+ <sink --define-var="foo">This is a test of sinking some text to the scalar "foo"</sink>
+ <var $foo>
 
-Create a Bedrock array of hashes using JSON notation:
+=item Creating a Bedrock array of hashes using JSON notation
 
-  <sink:foo --json>
-  [ 
-    {item: "chairs", price: "100"},
-    {item: "cooler", price: "29.95"},
-    {item: "corona", price: "32"}
-  ]
-  </sink>
+ <sink:foo --json>
+ [ 
+   {item: "chairs", price: "100"},
+   {item: "cooler", price: "29.95"},
+   {item: "corona", price: "32"}
+ ]
+ </sink>
 
-Create a Bedrock object usin XML notation:
+=item Creating Bedrock hash object using XML notation
 
-  <sink:foo --xml>
-  <document>
-    <item>
-      <date>01/03/2010</date>
-      <text>This is some text</text>
-    </item>
-  </document>
-  </sink>
+ <sink:foo --xml>
+ <document>
+   <item>
+     <date>01/03/2010</date>
+     <text>This is some text</text>
+   </item>
+ </document>
+ </sink>
 
-=item Sinking text to a handle
+ <var $foo.item.text>
 
-  <open:fh --mode="w" ($config.LOGDIR + "/foo.bar")>
-  <sink $fh>Write this line to the specified handle</sink>
+I<Note that deserializing XML will discard the root element>
 
+=item Writing content to a file handle
+
+ <open:fh --mode="w" ($config.LOGDIR + "/foo.bar")>
+ <sink $fh>Write this line to the specified handle</sink>
+
+=item HTML encoding a block of text
+
+ <sink:html --htmlencode>
+ This is a test "--htmlencode".
+ </sink>
+  
 =back 
 
 =head1 SEE OTHER

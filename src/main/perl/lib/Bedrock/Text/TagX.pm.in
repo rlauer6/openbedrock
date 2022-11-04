@@ -23,9 +23,10 @@ package Text::TagX;
 use strict;
 use warnings;
 
-use Bedrock qw{slurp_file};
+use Bedrock qw{slurp_file :booleans};
 use Bedrock::Constants qw{:booleans :chars :regexp};
 use Carp;
+use Cwd;
 use English qw{-no_match_vars};
 use File::Basename;
 use IO::Scalar;
@@ -86,26 +87,31 @@ use TagX::Term::Var;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
+# NOTE: logging during parsing is unaffected by --verbose option
+# if you want to see some debugging output you need to set the log level
+# of the TagX category directly in the Lo::Log4perl configuration file
 ########################################################################
 sub parse {
 ########################################################################
   my ($self) = @_;
 
-  my $newscan = $TRUE;
-
-  my $obj = TagX::TAG::WithBody::Cache->new($self);
-
-  my $input = $self->{'input'};
-
   my $optstring = $EMPTY;
 
   my $text = $EMPTY;
+
   my $line = 0;
+
   my $file = $self->{'error'}->file;
 
   local $_ = undef;
 
-  my $raw;
+  my $raw = $FALSE;
+
+  my $obj = TagX::TAG::WithBody::Cache->new($self);
+
+  my $newscan = $TRUE;
+
+  my $input = $self->{'input'};
 
   INPUT:
   while (<$input>) {
@@ -136,6 +142,12 @@ sub parse {
 
           # And set the current object options
           $obj = $obj->options($optstring);
+
+          $self->get_logger->trace( 'options string: ', $optstring );
+
+          if ( $optstring =~ /--noexec/xsm ) {
+            $raw = $TRUE;
+          }
 
           # Start a new scan after this
           $newscan = $TRUE;
@@ -390,6 +402,12 @@ sub parse {
         if (s/$OPTIONS_EXPR//oixsm) {
           my $options = $1;
 
+          $self->get_logger->trace( 'options string: ', $1 );
+
+          if ( $1 =~ /--noexec/xsm ) {
+            $raw = $TRUE;
+          }
+
           if ( ref($obj) eq 'TagX::TAG::NoBody::Comment' && /$/xsm ) {
             $_ = $EMPTY;
           }
@@ -427,7 +445,7 @@ sub parse {
 
         if ($raw) {
 
-          if ( $end =~ /\/(pebbledef|noexec)/xsm ) {
+          if ( $end =~ /\/(pebbledef|sink|noexec)/xsm ) {
             $obj->text($text);
             $obj  = $obj->end_child;
             $raw  = $FALSE;
@@ -621,13 +639,14 @@ sub define_name {
 ########################################################################
   my ( $self, $name, $value ) = @_;
 
-  my @components = split /[.]/oixsm, $name;
+  my @components = split /[.]/oixsm, $name || $EMPTY;
 
-  return if !@components;
+  return
+    if !@components;
 
   $self->get_logger->debug(
     sub {
-      return sprintf 'components are (%s)', join $SPACE, @components;
+      return sprintf 'components are (%s):', join $SPACE, @components;
     }
   );
 
@@ -637,12 +656,12 @@ sub define_name {
     if (/^\Q[\E(\d+)\Q]\E/xsm) {
 
       # array element
-      if ( reftype($found) eq 'ARRAY' ) {
+      if ( is_array($found) ) {
         $found = $found->[$1];
         next;
       }
       else {
-        $self->get_logger( ref $self )->error(
+        $self->get_logger->error(
           sub {
             return
               sprintf
@@ -660,16 +679,16 @@ sub define_name {
       # hash element
       my $key = $1;
 
-      if ( reftype($found) eq 'HASH' ) {
+      if ( is_hash($found) ) {
         $found = $found->{$key};
       }
       else {
 
         # Support syntax for accessing hash contained in an array
         # if the array contains only one element
-        if ( ( reftype($found) ne 'ARRAY' ) || @{$found} != 1 ) {
+        if ( !is_array($found) || @{$found} != 1 ) {
 
-          $self->get_logger( ref $self )->error(
+          $self->get_logger->error(
             sub {
               sprintf "Cannot define [%s] component in [%s]: %s is an array\n"
                 . "containing more than one element .. cannot access it as a hash\n",
@@ -679,8 +698,10 @@ sub define_name {
 
           return;
         }
+
         $found = $found->[0]->{$key};
       }
+
       next;
     }
 
@@ -729,31 +750,28 @@ sub define_pebble {
 ########################################################################
 sub pebble {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $pebble_name, @search_path ) = @_;
 
-  my $pebble;
-
-  if ( ref $args[0] ) {
+  if ( ref $pebble_name ) {
     foreach my $pebble ( keys %{ $self->pebble_cache } ) {
-      return $pebble if $args[0] == $self->pebble_cache->{$pebble}->{handle};
+      return $pebble
+        if $pebble_name == $self->pebble_cache->{$pebble}->{handle};
     }
 
     return 'anonymous';
   }
-  else {
-    my $pebble_name = $args[0];
 
-    $pebble = $self->fetch_pebble($pebble_name);  # look in cache, first
+  my $pebble = $self->fetch_pebble($pebble_name);  # look in cache, first
 
-    if ( !$pebble ) {
-      my $file = $self->find_file(@args);
+  return $pebble
+    if $pebble;
 
-      die sprintf "could not find pebble: %s\n", $pebble_name
-        if !$file;
+  my $file = $self->find_file( $pebble_name, '.peb', @search_path );
 
-      $pebble = $self->fetch_pebble( $pebble_name, $file );
-    }
-  }
+  die sprintf "could not find pebble: %s\n", $pebble_name
+    if !$file;
+
+  $pebble = $self->fetch_pebble( $pebble_name, $file );
 
   return $pebble;
 }
@@ -764,10 +782,15 @@ sub config {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return
-    if !$self->ctx || !$self->ctx->can('config');
+  my $ctx = $self->ctx // {};
 
-  return $self->ctx->config(@args);
+  return $ctx->config(@args)
+    if $ctx->can('config');
+
+  return @args ? $ctx->{CONFIG}->{ $args[0] } : $ctx->{CONFIG}
+    if exists $ctx->{CONFIG} && is_hash( $ctx->{CONFIG} );
+
+  return;
 }
 
 ########################################################################
@@ -825,31 +848,38 @@ sub fetch_pebble {
 ########################################################################
 sub find_file {
 ########################################################################
-  my ( $self, $file, $ext, @dirs ) = @_;
+  my ( $self, $file, $ext, @search_paths ) = @_;
 
-  # @dirs is a list of directories to search
+  my $logger = $self->get_logger;
+
+  $logger->trace( Dumper( [ $file, $ext, \@search_paths ] ) );
+
+  die "invalid pebble name - absolute paths are not supported\n"
+    if $file =~ /^[\/.]/xsm;
+
+  my $document_root = $ENV{DOCUMENT_ROOT} || getcwd;
 
   # ~ (tilde) means DOCUMENT_ROOT
-  if ( defined $ENV{DOCUMENT_ROOT} && $file =~ /^\~/xsm ) {
-    $file =~ s/^\~/$ENV{'DOCUMENT_ROOT'}\//xsm;
+  if ( $file =~ /^\~/xsm ) {
+    $file =~ s/^\~/$document_root\//xsm;
+    push @search_paths, $document_root;
+    $logger->debug( sprintf 'using DOCUMENT_ROOT: [%s]', $document_root );
   }
 
   # if given an extension, then if the name does not have that
   # extension, add it
-  if ( defined $ext && $file !~ /[.].*?$/xsm ) {
+  if ( defined $ext && $file !~ /[.][^.]+$/xsm ) {
     $file .= $ext;
   }
 
-  return -e $file ? $file : undef
-    if $file =~ /^\//xsm;
+  @search_paths = map { split /:/xsm } grep {defined} @search_paths;
 
-  my @all_dirs = map { split /:/xsm } grep {defined} @dirs;
+  $logger->debug( sprintf "searching for pebble: %s in:\n %s",
+    $file, join "\n", @search_paths );
 
-  foreach ( map { $_ . $SLASH . $file } @all_dirs ) {
-    return $_ if -e $_;
-  }
+  my ($path) = grep { -e $_ } map {"$_/$file"} @search_paths;
 
-  return;
+  return $path;
 }
 
 ########################################################################
@@ -871,19 +901,6 @@ sub param {
 
   return;
 }
-
-########################################################################
-sub out_handle {
-########################################################################
-  my ( $self, @args ) = @_;
-
-  if ( @args == 1 ) {
-    $self->{'out_handle'} = $args[0];
-  }
-
-  return $self->{'out_handle'};
-}
-
 #
 # Constructor -- Invoked as follows
 #    $Class_or_Object->new( $Input_Handle [, $Output_Handle [, $Error_Handler ] ] )
@@ -999,15 +1016,22 @@ sub getoption {
 }
 
 ########################################################################
-sub ctx {
+sub _set_get {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $key, $self, @args ) = @_;
 
   if (@args) {
-    $self->{ctx} = $args[0];
+    $self->{$key} = $args[0];
   }
 
-  return $self->{ctx};
+  return $self->{$key};
+}
+
+########################################################################
+{
+  ## no critic (RequireArgUnpacking)
+  sub ctx        { unshift @_, 'ctx';        goto &_set_get; }
+  sub out_handle { unshift @_, 'out_handle'; goto &_set_get; }
 }
 
 ########################################################################
@@ -1045,3 +1069,71 @@ sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 }
 
 1;
+
+__END__
+
+## no critic (RequirePodSections)
+
+=pod
+
+=head1 NAME
+
+Text::TagX - Bedrock's tag parser and support methods
+
+=head1 SYNOPSIS
+
+ use Bedrock;
+
+ use Text::TagX;
+ 
+ my $output = q{};
+
+ my $fh = IO::Scalar->new(\$output);
+
+ my $tx = Text::TagX->new($fh, $ctx);
+
+ $tx->param( %parameters );
+
+ my $error = eval { $tx->output; };
+
+ die Dumper [ $tx->error ]
+   if $EVAL_ERROR;
+
+=head1 DESCRIPTION
+
+Bedrock's tag parser interprets and processes Bedrock tags to create text output.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 parse
+
+=head2 output
+
+=head2 show_error
+
+=head2 error
+
+=head2 config
+
+=head2 find_file
+
+=head2 param
+
+=head2 out_handle
+
+=head2 new
+
+=head2 options
+
+=head2 getoption
+
+=head2 ctx
+
+=head2 close
+
+=head1 AUTHOR
+
+=head1 SEE OTHER
+
+=cut
+

@@ -147,7 +147,9 @@ use Bedrock::BedrockConfig;
 use Bedrock::Constants qw{:chars :booleans :defaults};
 use Bedrock::Handler;
 use Carp;
+use Data::Dumper;
 use English qw{-no_match_vars};
+use File::Temp qw{ tempfile };
 use IO::Scalar;
 use JSON;
 use List::Util qw{ any none};
@@ -183,13 +185,21 @@ sub run {
   foreach my $t ( @{$tests} ) {
     check_test($t);
 
+    my $tempfile
+      = $t->{tempfile} ? create_temp_file( %{ $t->{tempfile} } ) : $EMPTY;
+
     my %r = bedrock(
       $t->{test},
-      name   => $name,
-      env    => $t->{env},
-      param  => $t->{param},
-      config => $config,
+      name     => $name,
+      env      => $t->{env},
+      param    => $t->{param},
+      config   => $config,
+      tempfile => $tempfile,
     );
+
+    if ( $tempfile && $t->{tempfile}->{cleanup} ) {
+      unlink $tempfile;
+    }
 
     # are we looking for an error?
     if ( $t->{error} ) {
@@ -216,6 +226,27 @@ sub run {
     # default for all results is equal to
     my $op = $t->{op} || 'is';
 
+    if ( $t->{trim} ) {
+      my $result = $r{output};
+
+      $result =~ s/\A\s*(.*?)\z/$1/xsm;
+
+      $r{output} = $result;
+    }
+
+    if ( $t->{chomp} ) {
+
+      my $result = $r{output};
+
+      $result =~ s/\n*\z//xsm;
+
+      if ( $t->{chomp} == 2 ) {
+        $result =~ s/\A\n*//xsm;
+      }
+
+      $r{output} = $result;
+    }
+
     if ( ref $op ) {
       $op = 'cmp_ok';
     }
@@ -240,6 +271,9 @@ sub run {
       cmp_ok => sub {
         return cmp_ok( $r{output}, $t->{op}->{cmp_ok}, $t->{result},
           $t->{name} );
+      },
+      isa_ok => sub {
+        return isa_ok( $r{output}, $t->{result}, $t->{name} );
       },
     );
 
@@ -358,6 +392,38 @@ sub bedrock {
     error  => $EVAL_ERROR,
     output => $output
   );
+}
+
+########################################################################
+sub create_temp_file {
+########################################################################
+  my (%options) = @_;
+
+  use File::Copy;
+
+  my ( $name, $content, $dir ) = @options{qw{ name content dir}};
+
+  my ( $fh, $filename ) = tempfile('test-XXXXXX');
+
+  if ($content) {
+    print {$fh} $content;
+  }
+
+  close $fh;
+
+  if ($name) {
+    rename $filename, $name;
+    $filename = $name;
+  }
+
+  if ($dir) {
+    if ( -d $dir ) {
+      move( $filename, "$dir/$filename" );
+      $name = "$dir/$name";
+    }
+  }
+
+  return $name;
 }
 
 ########################################################################
@@ -648,6 +714,42 @@ A test is represented by a hash that contains at least a C<test> and C<result> k
 
 The name of the test. This will be reported on the TAP output.
 
+=item tempfile
+
+A hash of parameters for creating a temporary directory and possibly a subdirectory and file.
+
+=over 10
+
+=item cleanup
+
+Boolean that determines if the temporary file should be removed after the test completes.
+
+=item dir
+
+Name of a subdirectory to create. If you include this value, the file will be moved to this directory.
+
+=item name
+
+Name of a file to create in the temporary or subdirectory.
+
+=item content
+
+Contents of the file.
+
+=back
+
+Example:
+
+ tempfile:
+   name: foo.peb
+   dir: t
+   cleanup: 1
+   content: |
+     <var $ARGV.join(",")>
+
+The file F<foo.peb> will be created and moved to the F<t> directory
+relative to the current working directory.
+
 =item test
 
 The Bedrock snippet to execute.
@@ -661,6 +763,16 @@ expression as the result to compare.  Example:
  /hello world/i
  /^\s*hello world\s*$/si
 
+=item chomp
+
+Flag indicating that the result should have new lines removed.
+C<chomp> value of 1 indicates chomping at end only. C<chomp> value of
+2 will remove new lines from both ends of result.
+
+=item trim
+
+Boolean that indicates if whitespace should be removed from front and end of result.
+
 =item op
 
 The C<Test::More> operation to use for comparing the ouput of the
@@ -669,6 +781,8 @@ snippet to the result.  Valid values are:
 =over 10
 
 =item is
+
+=item isa_ok
 
 =item isnt
 

@@ -23,35 +23,40 @@ package TagX::TAG::NoBody::Pebble;
 use strict;
 use warnings;
 
-use vars qw($PWD);
-
+use Bedrock qw(:booleans);
 use Bedrock::Array;
 use Bedrock::BufferStream;
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Dump;
-use TagX::TAG::NoBody;
+use Cwd;
+use English qw{-no_match_vars};
+use Scalar::Util qw/reftype/;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use Cwd;
-use Scalar::Util qw/reftype/;
-
 use parent qw{ Exporter TagX::TAG::NoBody };
 
+########################################################################
 sub finalize {
+########################################################################
   my ( $self, $tx, @context ) = @_;
 
   my %options = (
-    'file=s'      => undef,
-    'object=s'    => undef,
-    'pebble=s'    => undef,
-    'expand-args' => undef,
-    'json'        => undef,
+    'file=s'        => undef,
+    'define-var=s'  => undef,
+    'return-var=s', => undef,
+    'object=s'      => undef,
+    'pebble=s'      => undef,
+    'expand-args'   => undef,
+    'json'          => undef,
   );
 
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
+
+  my $define_var = $options{'define-var'};
 
   my $pwd = fastcwd;
 
@@ -59,34 +64,41 @@ sub finalize {
   my $pebble_text;
   my $pebble_name = 'anonymous';
 
-  if ( exists $options{'file'} ) {
-    $pebble_name = $options{'file'};
-
-    $pebble_text = $tx->pebble( $pebble_name, '.peb', $pwd,
-      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+  if ( $options{file} ) {
+    $self->get_logger->warn('--file option is no longer supported');
+    $options{pebble} = $options{file};
   }
-  elsif ( exists $options{'pebble'} ) {
+
+  my @search_paths = (
+    getcwd, $ENV{PEBBLE_DIR},
+    @{ $self->config }{qw( PEBBLE_DIR BEDROCK_PEBBLE_DIR)}
+  );
+
+  $self->get_logger->error( Dumper( \@search_paths ) );
+
+  if ( exists $options{'pebble'} ) {
+    die "use :name or --pebble but not both\n"
+      if $argv[0] =~ /\A:/xsm;
+
     $pebble_name = $options{'pebble'};
-
-    $pebble_text = $tx->pebble( $pebble_name, '.peb',
-      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+    $pebble_text = $tx->pebble( $pebble_name, @search_paths );
   }
-  elsif ( $argv[0] =~ /^:/xsm ) {
+  elsif ( $argv[0] =~ /\A:/xsm ) {
     my $tag_opts = $self->parse_tag_name( shift @argv );
 
-    if ( $tag_opts->{name} =~ s/^(.*?)([.]peb)?$/$1/xsm ) {
-      $pebble_name = $1;
-    }
+    $pebble_name = $tag_opts->{name};
 
-    $pebble_text = $tx->pebble( $pebble_name, '.peb',
-      @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)} );
+    $pebble_text = $tx->pebble( $pebble_name, @search_paths );
   }
   elsif ( exists $options{'object'} ) {
+    die "use :name or --object but not both\n"
+      if $argv[0] =~ /\A:/xsm;
+
     $pebble_text = $options{'object'};
 
     $self->get_logger->debug(
       sub {
-        return sprintf 'Preparing to exec object [%s]', $input;
+        return sprintf 'Preparing to exec object [%s]', $input // $EMPTY;
       }
     );
 
@@ -95,7 +107,7 @@ sub finalize {
     $pebble_text = shift @argv;
   }
   else {
-    die "Must specify file or buffer as argument to <pebble>.\n";
+    die "Must specify pebble name or string as argument to <pebble>.\n";
   }
 
   $self->get_logger->trace(
@@ -110,72 +122,106 @@ sub finalize {
 
   $self->get_logger->debug(
     sub {
-      "Created a buffer stream object [" . $input . "]";
+      sprintf 'Created a buffer stream object [%s]', $input;
     }
   );
 
   die "Unable to find specified pebble ([$pebble_name].\n"
     if !$input;
 
-  my $subform = $tx->new($input);
+  my $output = $EMPTY;
+
+  my $fh;
+
+  if ( $options{'define-var'} ) {
+    $fh = IO::Scalar->new( \$output );
+  }
+
+  my $subform = $tx->new( $input, $fh );
+
   $tx->{'VARS'}->new_frame;
 
   if ( exists $options{'json'} ) {
-    eval { @argv = ( $self->decode_json_string( join( '', @argv ) ) ); };
+    eval { @argv = ( $self->decode_json_string( join $EMPTY, @argv ) ); };
 
-    die "invalid json string: " . join( '', @argv ) . "\n"
-      if $@;
+    die sprintf "invalid JSON string\n", join $EMPTY, @argv
+      if $EVAL_ERROR;
   }
 
-  my @expanded;
+  my $ARGV = Bedrock::Array->new(@argv);
 
-  if ( $options{'expand-args'} ) {
+  $self->get_logger->debug( Dumper( [ 'ARGV: ', $ARGV ] ) );
 
-    my $i = 0;
-
-    for my $item (@argv) {
-      if ( ref($item) && reftype($item) eq 'ARRAY' ) {
-        push @expanded, @{$item};
-      }
-      else {
-        push @expanded, $item;
-      }
-      $i++;
-    }
-
-    $self->get_logger->debug(
-      sub {
-        Bedrock::Dump::compact [ 'expand-args', \@expanded ];
-      }
-    );
-
-  }
-  else {
-    @expanded = @argv;
-  }
-
-  $tx->param( 'ARGV' => Bedrock::Array->new(@expanded) );
+  $tx->param(
+    _ARGV => $ARGV,
+    ARGV  => $options{'expand-args'} ? expand_args(@argv) : $ARGV
+  );
 
   $self->get_logger->debug(
     sub {
-      "Starting the exec with [" . $subform . "] ..";
+      sprintf 'Starting the exec with [%s]', $subform;
     }
   );
 
   $subform->output;
 
+  if ($fh) {
+    $fh->close;
+  }
+
   $self->get_logger->debug(
     sub {
-      "Completed exec with [" . $subform . "] ..";
+      sprintf "Completed exec with [%s]\n%s", $subform, $output;
     }
   );
 
+  my ( $return_var, $return_var_as ) = split /:/xsm,
+    $options{'return-var'} // q{};
+
+  $return_var_as //= $return_var;
+
+  my $return_val;
+
+  if ( $return_var && exists $tx->{VARS}->{$return_var} ) {
+    $return_val = $tx->{VARS}->{$return_var};
+  }
+
   $tx->{'VARS'}->end_frame;
+
+  # set vars in global namespace
+  if ($define_var) {
+    $tx->{'VARS'}->{$define_var} = $output;
+  }
+
+  if ($return_var) {
+    $tx->{'VARS'}->{$return_var_as} = $return_val;
+  }
 
   return;
 }
 
+########################################################################
+sub expand_args {
+########################################################################
+  my (@args) = @_;
+
+  my @expanded;
+
+  for my $item (@args) {
+    if ( is_array($item) ) {
+      push @expanded, @{$item};
+    }
+    else {
+      push @expanded, $item;
+    }
+  }
+
+  return Bedrock::Array->new(@expanded);
+}
+
 1;
+
+## no critic (RequirePodSections)
 
 __END__
 
@@ -185,7 +231,7 @@ __END__
 
 =head1 PURPOSE
 
-Invoke a Bedrock macro.
+Invoke a Bedrock pebble..
 
 =head1 SYNTAX
 
@@ -193,78 +239,153 @@ Invoke a Bedrock macro.
 
 =head1 DESCRIPTION
 
-The C<E<lt>pebbleE<gt>> tag is used to include small Bedrock page or
-snippet at the insertion point of the tag.  Additionally, the Bedrock
-snippet is passed the value of the expressions in the tag as an array
-object named C<$ARGV>.  The Bedrock snippet is evaluated in itE<039>s own
-namespace thus providing a Bedrock I<macro> creation facility.
+The C<E<lt>pebbleE<gt>> tag is used to execute a small Bedrock snippet
+at the insertion point of the tag. The Bedrock snippet is passed the
+value of the expressions in the tag as an array object named C<$ARGV>.
+Unlike the C<E<lt>includeE<gt>> tag, the Bedrock snippet is evaluated
+in itE<039>s own namespace thus providing a mechanism to essentially
+create Bedrock I<macros> (affectionately known as I<pebbles>).
 
 =head1 OPTIONS
 
- --file        = file name
- --pebble      = pebble name
+ --define-var  = variable to sink output to
  --expand-args
+ --file        = file name
+ --object      = name of Bedrock object containging the pebble
+ --pebble      = pebble name
+ --return-var  = variable to hold a return object
 
 =over 5
 
-=item --file
+=item --define-var
 
-Fully qualified name of a file.  If the file is of the form
-C<~/filename> then the file is taken to be relative to the
-C<DOCUMENT_ROOT>.
+Name of a variable that will hold the ouput of the pebble. Normally
+output is inserted at the point where pebble tag is located.  This
+allows you to capture the output and prevent the text from showing up
+at that location. You can then use this text in other parts of your
+page. Equivalent to:
 
-=item --pebble
-
-The name of a file with a C<.peb> extension in either the current
-working directory, site pebble directory (C<PEBBLE_DIR>) or the
-Bedrock global pebble directory (C<BEDROCK_PEBBLE_DIR>).
+ <sink:foo><pebble:poo 1 2 3</sink>
 
 =item --expand-args
 
-Expand arrays being passing as arguments to the pebble.  In essence,
-array references are sent as lists, rather than 1 element scalars.
+If an array is being passed as an argument to the pebble, this options
+directs Bedrock to create a list from the array rather than passing a
+scalar reference to the array.
+
+=item --file
+
+B<For security reasons, this option is no longer supported.>
+
+=item --json
+
+Indicates that the input arguments to the pebble are a JSON
+string. The string will be converted into a Perl object and become the
+input to the pebble (C<$ARGV.[0]>).
+
+ <pebbledef:leepoo>
+ <trace --output $ARGV.[0]>
+ </pebbledef>
+
+ <pebble:leepoo --json '[ 1,2,3]'>
+
+=item --object
+
+You can pass the pebble macro as Bedrock object using this option.
+
+  <sink:macro --noexec>
+  <var $env.PATH>
+  </sink>
+  <pebble --object=$macro>
+
+=item --pebble
+
+The name of a pebble.
+
+Pebbles can be stored in a file with a C<.peb>
+extension in which case the name of the pebble corresponds to the name
+portion of the file.
+
+Pebble should be located in either the same directory as the page
+being processed, the site's pebble directory (C<PEBBLE_DIR>) or
+Bedrock's global pebble directory (C<BEDROCK_PEBBLE_DIR>).
+
+Bedrock object's can also be used to store a pebble. Pass the object
+directly, not the name of the object using the C<--object> option.
+
+The pebble name can also be the name used when you defined a pebble
+using the C<E<lt>pebbledefE<gt>> tag.
+
+=item --return-var
+
+You can return a value as a Bedrock variable by setting the same named
+variable in your Pebble's namespace. This allows you to create
+Bedrock objects in your pebbles for use in your global namespace.
+
+ <pebbledef:foo>
+ <null:boo 1 2 3>
+ </pebbledef>
+
+ <pebble:foo --return-var=boo>
+ <var $boo>
+
+If you want to create a variable of a different name use a colon to separate the name of the variable in your pebble and the name you want to create in the gobal namespace.
+
+ <pebble:foo --return-var=boo:biz>
+ <var $biz>
 
 =back
 
 =head1 NOTES
 
-The C<E<lt>pebbleE<gt>> tag will create a separate namespace within
-which a set of Bedrock statements will be executed.  Pebbles (files
-with a C<.peb> extension) should normally be installed in the siteE<039>s
+=over 5
+
+=item 1. The C<E<lt>pebbleE<gt>> tag will create a separate namespace
+when it is being executed.
+
+=item 2. Arguments are passed as a list which you can access in your
+pebble through the variable C<$ARG>.
+
+=item 3. Values are passed as is, array references are not expanded
+unless you specify the C<--expand-args> option. The unexpanded version of
+your argument list is available as C<$_ARGV>.
+
+=item 4. Pebbles should be installed in the siteE<039>s
 pebble directory specified in the F<tagx.xml> file (C<PEBBLE_DIR>),
 however they can be located in your document hierarchy as well.
 
-As a rule of thumb, application specific pebbles may be better
+=item 5. As a rule of thumb, application specific pebbles may be better
 positioned within your application hierarchy while more generalized
 site pebbles should exist in the siteE<039>s C<PEBBLE_DIR>.
 
-In practice, pebbles can be a pre-cursor to a plugin.  You may find it
-convenient to prototype a snippet of functionality as a pebble, but
-find it deserves a more robust treatment as a plugin.
+=back
 
-Bedrock installs a handful of example pebbles located in the system
+=head2 Prototyping
+
+Pebbles can be use to prototype some functionality that
+might later be converted into a Plugin. Any pebble that becomes too
+complex is better implemented as a Plugin.
+
+=head2 Examples
+
+Bedrock includes handful of example pebbles located in the system
 pebble directory (C<BEDROCK_PEBBLE_DIR>).
 
-Bedrock will use the following protocol when looking for pebbles to
-execute:
+=head2 Locating Your Pebble
+
+Bedrock uses the following search paths when looking for pebbles:
 
 =over 5
 
-=item 1. 
+=item 0. If the pebble name does not have an extension it is assumed to be .peb
 
-A fully qualified filename specified by the C<--file=> option.
+=item 1. Current working directory (same directory as page being processed)
 
-=item 2.
+=item 2. PEBBLE_DIR as defined in the environment
 
-A file with a C<.peb> extension specified with the C<--pebble=>
-directive located in the C<PEBBLE_DIR> as specfied in F<tagx.xml>.
+=item 3. PEBBLE_DIR as defined in F<tagx.xml>
 
-=item 3.
-
-A file with a C<.peb> extension whose name is specified after the
-colon in the tag name, starting first in the current working directory
-and then proceeding to look in the C<PEBBLE_DIR> as specified in
-F<tagx.xml>.
+=item 4. BEDROCK_PEBBLE_DIR as defined in F<tagx.xml>
 
 =back
 
@@ -276,8 +397,9 @@ As previously stated, variables within the context of your pebble
 occupy their own namespace, thus you do not have to be concerned about
 name collision.
 
-Suppose you want a simple pebble to create an unordered list from an
-array.  LetE<039>s suppose the pebbleE<039>s interface is defined thusly:
+Let's suppose you want a to build a simple pebble to create an
+unordered list from an array.  LetE<039>s suppose the pebbleE<039>s
+interface is defined thusly:
 
  <pebble:ul id-name class-name list>
 
@@ -293,7 +415,7 @@ Invoke the pebble as follows:
 
  <pebble:ul foo foo_class here there everywhere>
 
-=head1 EXAMPLE
+=head1 EXAMPLES
 
 =over 5
 
@@ -308,9 +430,9 @@ passing the arguments 1 and C<$input.hack>.
 =item * Invoke a pebble in the current working directory
 
 Invoke the pebble C<mypeb.inc>, located in the current working
-directory passing the arguments 1 and C<$input.hack>.
+directory passing the arguments 1 and C<$input.name>.
 
-  <pebble --file="mypeb.inc" "1" $input.hack>
+  <pebble --file="mypeb.peb" 1 $input.name>
 
 =item * Expand an array and pass as arguments
 
@@ -323,7 +445,7 @@ singleton whose value is an array reference.
 =item * Invoke a pebble and pass an object
 
 Invoke the pebble C<mypeb.peb>, located in the sytem pebble directory
-passing the C<$args> as a singleton whose value is an array reference.
+passing the C<$args> as a single object whose value is an array reference.
 
   <pebble:mypeb $args>
 
