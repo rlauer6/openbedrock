@@ -101,10 +101,41 @@ subtest 'regexp_capture_group' => sub {
   is( $capture_groups->{'foo'}, 'test' );
 };
 
+########################################################################
+subtest 'regexp_evaluate_group' => sub {
+########################################################################
+  my $regexp = 'qr/(?<foo>[ia]s)/xsmi';
+
+  my $str = 'this is a test of a regexp that has a bunch of captured groups';
+
+  my %capture_group = regexp_evaluate( $str, $regexp, 1 );
+  is( keys %capture_group, 2, '2 capture groups' );
+
+  ok( $capture_group{'_1'}, '_1 exists in capture group' );
+
+  isa_ok( $capture_group{'_1'}, 'ARRAY' )
+    or diag( Dumper( \%capture_group ) );
+
+  is( @{ $capture_group{'_1'} }, 3, '3 matches found' );
+
+  is( scalar( grep { $_ =~ /[ia]s/xsm } @{ $capture_group{'_1'} } ),
+    3, '3 matched [ia]s' );
+
+  ok( $capture_group{foo}, 'foo exists in capture group' );
+
+  isa_ok( $capture_group{foo}, 'ARRAY' );
+
+  is( @{ $capture_group{foo} }, 3, '3 matches found' );
+
+  is( scalar( grep { $_ =~ /[ia]s/xsm } @{ $capture_group{foo} } ),
+    3, '3 matched [ia]s' );
+};
+
 1;
 
 __DATA__
 regexp_compile => compile a regular expression
 regexp_capture_group => return the capture groups
+regexp_evaluate_group => compile and evaluate
   
 END_OF_PLAN  

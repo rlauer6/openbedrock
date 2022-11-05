@@ -44,15 +44,17 @@ sub closure {
 sub define_options {
 ########################################################################
   return (
+    'alias=s'             => undef,
+    'counter-increment=i' => 1,
+    'counter-start=i'     => 0,
+    'define-counter=s'    => undef,
     'define-index=s'      => undef,
-    'start-index=i'       => undef,
+    'define-var=s'        => $UNDERSCORE,
     'end-index=i'         => undef,
     'max-items=i'         => undef,
-    'counter-start=i'     => 0,
-    'counter-increment=i' => 1,
-    'define-counter=s'    => undef,
-    'alias=s'             => undef,
-    'define-var=s'        => $UNDERSCORE,
+    'range=s'             => undef,
+    'start-index=i'       => undef,
+
   );
 
 } ## end sub define_options
@@ -76,7 +78,6 @@ sub finalize {
 
   if ( @argv > 1 ) {
 
-    # Force the argument list into an array
     $logger->trace(
       sub {
         sprintf 'More than one argument found -- forced into an array: (%s)',
@@ -145,12 +146,7 @@ sub finalize {
     }
 
     # defaults
-    $start  = 0;
     $nItems = @{$data};
-    $end    = $nItems - 1;
-  }
-  else {
-    $start = 0;
   }
 
   #
@@ -184,7 +180,17 @@ sub finalize {
     $counter = $options{'define-counter'};
   }
 
+  if ( !defined $start && !defined $end && $options{range} ) {
+    ( $start, $end ) = split /\s*[,:]\s*/xsm, $options{range};
+
+    die "invalid range\n"
+      if $start > $end || ( $nItems && $end > $nItems - 1 );
+  }
+
   my $alias = $options{'alias'} || $options{'define-var'};
+
+  $start //= 0;
+  $end   //= $nItems - 1;
 
   $logger->trace(
     sub {
@@ -276,8 +282,7 @@ Iterate over an array (list) or hash.
 
 =head1 DESCRIPTION
 
-Use the C<foreach> tag to iterate over a container.  Containers can be
-arrays, lists, hashes and record sets.
+Use the C<foreach> tag to iterate over an array, hash, recordsets or lists.
 
 =head1 OPTIONS
 
@@ -295,13 +300,10 @@ arrays, lists, hashes and record sets.
 
 =item --define-var
 
-Name of the scalar object to use as the the current iteration value
-(formerly "alias").  If not provided, Bedrock will use the default
-variable (C<$_>) to hold the current data element of the container
-object.
+Name of the scalar object use to hold each element of the object in turn.  If not provided, Bedrock will use the defaultvariable (C<$_>) to hold the current data element of the object.
 
-When iterating over hashes, you can you specify the key, value and
-current index names using a comma delimited list of variable names.
+When iterating over hashes, you can you specify variable names to hold the I<key>, I<value> and
+I<index>. Separate the names with comma. Note that these variables are local in scope.
 
  <hash:fruit apple 1 pear 2 orange 3>
 
@@ -314,23 +316,24 @@ current index names using a comma delimited list of variable names.
 
 =item --define-index
 
-Name of a variable which will be incremented by 1 each time through the loop.
+Name of a variable which will be incremented by the counter increment
+(default is 1) each time through the loop.
 
 =item --start-index
 
-Offset into the array to start iterating over.
+Offset into the array to begin the iteration.
 
 =item --end-index
 
-Index of last value in array to iterate over.
+Index that will cause the loop to end.
 
 =item --max-items
 
-Maximum number of times to iterate.
+Maximum number of times to execute the loop.
 
 =item --define-counter
 
-Name of a variable to use as an alternate indexing variable.
+Name of a variable to use as an alternate indexing variable. The default is C<$_>.
 
 =item --counter-start
 
@@ -338,7 +341,7 @@ Start value of the counter variable.
 
 =item --counter-increment
 
-Increment to use for the counter variable.
+Increment to use for the counter variable. Default is 1.
 
 =item --alias
 
@@ -360,14 +363,15 @@ options to control the number of times the block is processed.
 
   --max-items  => total number of times to execute the block
 
+If no limit is placed, then the entire list, starting at the start
+index (default 0) will be processed.
+
 =item * Iterating over hashes
 
 Iterating over hashes entails traversing the hash in key order
 I<(which in Bedrock 2 happens to be the order in which the hash was
-defined)> and presenting a three-element hash within the scope of the
-loop.  The hash members are naturally 'key' and 'value', and 'index'.
-The names of these variables can be overridden using the
-C<--define-var> option.
+defined)> and presenting a three-element hash (C<$_>) within the scope of the
+loop.  The hash members are named  C<key> and C<value>, and C<index>.
 
   $_.key   => the current hash key 
   $_.value => the current hash value associate with that key
@@ -384,45 +388,36 @@ equivalent would look something like:
 I<All hashes are ordered hashes, thus they are traversed in the
 order in which they were defined.>
 
-The name of the three-element hash by default is C<$_> however you can
-change that using C<--define-alias>.
+The key and value are store in the default variable C<$_> unless you
+override that using C<--define-var>. In that case the
+key, value and index are scalars with the names you have provided.
 
-When iterating over hashes the key C<index> is also exposed that indicates
-the 0 based index of the current hash element.
-
-The keys are also exposed as scalars whose names are C<$key>,
-C<$value>, and C<$index> or the names you provided in the
-C<--define-var> option.
+ <foreach --define-var="key,value,index">
+   [<var $index>] <var $key> => <var $value></foreach>
 
 These variables ($key, $value, $index) are lexically scoped within the
 body of the C<foreach> tag.
 
 =item * Iterating over Recordsets
 
-A I<recordset> in Bedrock is both a logically defined object type as
-well as real object type.  Logically speaking a record set is an array
-of hashes.  We see logical recordsets when we use the Bedrock
+The  I<recordset> object is an array of hashes. Recordsets are returned when using the Bedrock
 C<E<lt>sqlselectE<gt>> tag.
 
  <sqlselect "select * from customer" --define-var="rs"></sqlselect>
 
-...or when using C<BLM::IndexedTableHandler> to return rows from a table
-using a SQL query.
+Recordsets are also returned by the C<BLM::IndexedTableHandler> C<select_list()> method.
 
  <null:list $customer.select_list("select * from customer where state='PA')>
 
-...however we can promote logical record sets to real recordsets
-object that provides a number of useful methods to manipulate records
-using various techniques (See the C<E<lt>recordsetE<gt>> tag
-documentation).
+Recordset objects provide a number of useful methods.  (See the L<E<lt>recordsetE<gt>> tag for more information).
 
-In any event we iterate over logical or real recordsets using the
-C<E<lt>foreachE<gt>> tag.  When traversing a recordset the hash
-members of each array element are exposed as scalars.  These scalars
-are I<lexically scoped>, that is, they only exist within the context of
-the C<E<lt>foreachE<gt>> tag.  Each array element is a hash and the
-hash itself is exposed as either the default variable ($_) or one that
-you specify using the C<--define-var> option.
+You can iterate over recordsets using the C<E<lt>foreachE<gt>> tag.
+When iterating over recordsets the hash members of each array element
+are exposed as scalars.  These scalars are I<lexically scoped>, that
+is, they only exist within the context of the C<E<lt>foreachE<gt>>
+tag.  Each array element in the recordset is a hash.  Along with the
+scalars the hash itself is exposed as either the default variable ($_)
+or as a nmae that you specified using the C<--define-var> option.
 
  <null:list $customer.select_list("select * from customer where state='PA')>
 
