@@ -68,6 +68,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \
+    Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
     Bedrock/Template.pm \

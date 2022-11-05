@@ -25,8 +25,11 @@ use warnings;
 
 use English qw/-no_match_vars/;
 
-use parent qw (Exporter TagX::TAG::WithBody);
+use Bedrock qw(:booleans);
+use Bedrock::RegExp;
 use Bedrock::Constants qw{:chars :booleans};
+
+use parent qw (Exporter TagX::TAG::WithBody);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -82,64 +85,39 @@ sub finalize {
   my $errstr = $EVAL_ERROR;
 
   my %options;
+
   my @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
-  if ( @argv > 0 ) {
-    my $rhs = "@argv";
+  return $self->SUPER::finalize( $tx, @context )
+    if !@argv;
 
-    my $re = ( $rhs =~ /^qr/i ) ? eval $rhs : eval "qr/$rhs/ism";  ## no critic (ProhibitStringyEval)
+  my $rhs = "@argv";
 
-    my $test = ( $errstr =~ $re );
+  my $re = eval { regexp_compile($rhs) };
 
-    if ($test) {
-      my %capture_group = %LAST_PAREN_MATCH;
+  die "invalid regular expression\n$EVAL_ERROR"
+    if $EVAL_ERROR;
 
-      map { $context[0]->{$_} = $capture_group{$_}; } keys %capture_group;
+  $EVAL_ERROR = $errstr;  ## no critic (RequireLocalizedPunctuationVars)
+
+  my $matched = is_regexp($re) ? $errstr =~ $re : $errstr =~ /$re/ism;  ## no critic (RequireExtendedFormatting)
+
+  if ($matched) {
+    my %capture_groups = %{ regexp_capture_group() };
+
+    for ( keys %capture_groups ) {
+      $context[0]->{$_} = $capture_groups{$_};
     }
 
-    # note that the evals above will reset $@ so we reset it so we can
-    # continue with other <catch> blocks
-    $EVAL_ERROR = $errstr;  ## no critic (RequireLocalizedPunctuationVars)
-
-    if ($test) {
-      $self->get_logger->debug(
-        sub {
-          sprintf "Caught exception [%s]\nusing regexp [%s]", $EVAL_ERROR,
-            $rhs;
-        }
-      );
-
-      $self->SUPER::finalize( $tx, @context );
-
-      $self->get_logger->debug('Done handling exception');
-    }
-    elsif ( $self->catch ) {
-      $self->get_logger->debug(
-        sub {
-          sprintf 'Trying next exception handler for %s', $EVAL_ERROR;
-        }
-      );
-
-      $self->catch->finalize( $tx, @context );
-    }
-    else {
-      $self->get_logger->debug(
-        sub {
-          sprintf 'No exception handler for (%s)', $EVAL_ERROR;
-        }
-      );
-
-      die;
-    }
+    return $self->SUPER::finalize( $tx, @context );
   }
-  else {
-    # A catch-all exception handler
-    $self->get_logger->debug('<catch> exception handler');
 
-    $self->SUPER::finalize( $tx, @context );
-  }
+  return $self->catch->finalize( $tx, @context )
+    if $self->catch;
+
+  die;
 
   return;
 }
@@ -156,12 +134,11 @@ __END__
 
 =head1 PURPOSE
 
-Begins the "catch" portion or exception handling portion of a try/catch block.
+Begins the C<catch> portion of exception handling in C<try/catch> block.
 
 =head1 SYNTAX
 
   <catch [regexp]>
-
 
 =head1 DESCRIPTION
 
@@ -188,20 +165,26 @@ the default exception path.
 
 =item regexp
 
-C<regexp> can be simple string that represents a regular expression that will be
-matched against the current exception to determine if this catch block
-should be evaluated.  The catch blocks are examined in order and if no
-regular expression is matched the default catch block will be used.
+The C<regexp> argument can be a string that simply represents a value
+that should be compared to the exception or it can be a true regular
+expression.
 
-Simple regular expresssions are evaluated in a case-insensitive manner.
+Regular expressions are identified by Bedrock as strings between two
+'/' characters (I</regexp/>) or more formally as a quoted regexp of
+the form I<qr/regexp/flags>.
 
-You can also use quoted regular expressions, the same kind used by Perl.
+The catch blocks are examined in order. If no regular expression is
+matched the default catch block (one that has no regular expression
+argument) will be used.
+
+String that do not represent regular expresssions are evaluated in a
+case-insensitive manner.
 
  <catch "qr/error 1/i">
 
 ...is equivalent to:
 
- <catch "error 1"
+ <catch "error 1">
 
 You can also use capture groups in more complex regular expressions:
 
