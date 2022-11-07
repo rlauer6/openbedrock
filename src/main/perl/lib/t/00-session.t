@@ -73,8 +73,9 @@ my $config_file = "$DEFAULT_BEDROCK_CONFIG_PATH/mysql-session.xml";
 
 my $config = eval { return Bedrock::Config->new($config_file); };
 
-BAIL_OUT("could not read $config_file")
-  if !$config;
+if ( !$config ) {
+  BAIL_OUT("could not read $config_file");
+}
 
 my $session_config = $config->{config};
 $session_config->{data_source} .= ':127.0.0.1';

@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 12;
+use Test::More;
 
 use DBI;
 use Data::Dumper;
@@ -12,19 +12,19 @@ use Readonly;
 Readonly my $TRUE  => 1;
 Readonly my $FALSE => 0;
 
-BEGIN {
-  use_ok('BLM::IndexedTableHandler');
-}
-
 ########################################################################
 require 't/db-setup.pl';
 
 my $dbi = eval { return connect_db(); };
 
-if ( !$dbi || $EVAL_ERROR ) {
-  diag($EVAL_ERROR);
-  BAIL_OUT("could not connect to database\n");
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
 }
+else {
+  plan tests => 12;
+}
+
+use_ok('BLM::IndexedTableHandler');
 
 eval {
   $dbi->do('create database foo');

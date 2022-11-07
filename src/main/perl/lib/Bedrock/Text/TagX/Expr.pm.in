@@ -23,24 +23,33 @@ package TagX::Expr;
 use strict;
 use warnings;
 
-use parent qw{Exporter};
-
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use Scalar::Util qw(looks_like_number reftype);
-use List::Util qw{ none any };
+use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::RegExp;
+use Cwd;
 use Data::Dumper;
 use English qw{-no_match_vars};
+use List::Util qw{ none any pairs};
+use Log::Log4perl::Level;
+use Scalar::Util qw(looks_like_number reftype);
 
-use Cwd;
-use Bedrock::Constants qw{:chars :booleans};
+use parent qw{Exporter};
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+use Readonly;
+
+Readonly::Array our @COMPARISON_OPS =>
+  qw{eq ne gt ge lt le re or and ref file exists};
+
+Readonly::Array our @UNARY_OPS =>
+  qw{ not defined exists array scalar hash object};
+
+Readonly::Array our @BINARY_OPS => ( map {"--$_"} @COMPARISON_OPS ),
+  split //xsm, '+.-*/';
 
 ########################################################################
-my $Verbose;
-
 our %STRING_CMP = (
   '--gt' => sub {
     my ( $a, $b ) = map { $_ // $EMPTY } @_;
@@ -110,18 +119,12 @@ our %STRING_CMP = (
 
   '--re' => sub {
     # $lhs may be undef
-    my ( $lhs, $rhs ) = @_;
+    my ( $lhs, $rhs, $self ) = @_;
     $lhs = $lhs // $EMPTY;
 
-    my $re = ( $rhs =~ /^qr/ ) ? eval $rhs : eval "qr/\$rhs/";
+    my $re = regexp_compile($rhs);
 
-    # capture groups supported for perl >= 5.10
-    if ( $^V ge 'v5.10' ) {
-      return $lhs =~ /$re/ ? ( 1, eval { my %cg = %+; \%cg; } ) : undef;
-    }
-    else {
-      return $lhs =~ /$re/;
-    }
+    return $lhs !~ $re ? $FALSE : ( $TRUE, regexp_capture_group() );
   },
 
   '--exists' => sub {
@@ -170,6 +173,65 @@ our %NUMBER_CMP = (
   },
 );
 
+our %ARITHMETIC_OPERATIONS = (
+  $PLUS_SIGN => sub {
+    my ( $l, $r ) = @_;
+
+    if ( looks_like_number($l) && looks_like_number($r) ) {
+      $l += $r;
+    }
+    else {
+      $l .= $r;
+    }
+    return $l;
+  },
+  $MINUS_SIGN => sub {
+    my ( $l, $r ) = @_;
+
+    if ( looks_like_number($l) && looks_like_number($r) ) {
+      $l -= $r;
+    }
+    else {
+      $l =~ s/$r$//xsmg;  # "barfoobar" - "bar" = "foo" ?
+    }
+
+    return $l;
+  },
+  $ASTERISK => sub {
+    my ( $l, $r ) = @_;
+
+    if ( looks_like_number($l) && looks_like_number($r) ) {
+      $l *= $r;
+    }
+    elsif ( looks_like_number($r) ) {
+      $l = $l x $r;
+    }
+
+    return $l;
+  },
+  $SLASH => sub {
+    my ( $l, $r ) = @_;
+    if ( looks_like_number($l) && looks_like_number($r) ) {
+      die "illegal division by zero\n"
+        if $r == 0;
+
+      $l = $l / $r;
+    }
+    else {
+      $l =~ s/$r//xsmg;
+    }
+
+    return $l;
+  },
+  $DOT => sub {
+    my ( $l, $r ) = @_;
+
+    $l .= $r;
+
+    return $l;
+  },
+);
+
 ########################################################################
 sub new {
 ########################################################################
@@ -213,8 +275,8 @@ sub new {
         }
       }
     }
-    elsif ( any { $op eq $_ }
-      map {"--$_"} qw{eq ne gt ge lt le re or and ref file exists } ) {
+    elsif ( any { $op eq $_ } map {"--$_"} @COMPARISON_OPS ) {
+
       die sprintf "Invalid number of arguments(%s) for operator (%s)\n",
         $nargs - 1, $op
         if $nargs != 3;
@@ -233,10 +295,7 @@ sub new {
       die "Token `$op' is illegal here.\n";
     }
   }
-  elsif (
-    any { lc $op_or_lhs eq $_ }
-    map {"--$_"} qw{ not defined exists array scalar hash object}
-  ) {
+  elsif ( any { lc $op_or_lhs eq $_ } map {"--$_"} @UNARY_OPS ) {
 
     die sprintf
       "Unary operator %s requires a single argument: found %d instead\n",
@@ -263,15 +322,17 @@ sub verbose {
 ########################################################################
   my ( $self, @args ) = @_;
 
+  my $logger = $self->get_logger;
+
   if (@args) {
-    $Verbose = $args[0];
+    $logger->level( $args[0] > 1 ? $TRACE : $DEBUG );
   }
 
-  return $Verbose;
+  return any { $logger->level eq $_ } ( $DEBUG, $TRACE );
 }
 
 ########################################################################
-sub eval {  ## no critic (ProhibitBuiltinHomonyms)
+sub eval {  ## no critic (ProhibitBuiltinHomonyms, RequireArgUnpacking)
 ########################################################################
   my $self = shift;
 
@@ -291,88 +352,29 @@ sub eval {  ## no critic (ProhibitBuiltinHomonyms)
     if ( @args > 0 ) {
 
       # binary operators
-      $op = shift @args;
+      $op = lc shift @args;
 
-      if ( $op
-        =~ /^(--(eq|ne|gt|ge|lt|le|or|and|reftype|ref|re|file|exists)|[\+\.\-\*\/])$/i
-      ) {
-        $op = lc $1;
-      }
-      else {
-        die "Invalid operator `$op'.\n";
-      }
+      die "Invalid operator `$op'.\n"
+        if !any { $op eq $_ } @BINARY_OPS;
 
       $logger->debug("op is [$op]");
 
-      if ( $op =~ /^[\+\-\.\*\/]$/ ) {
+      # if ( $op =~ /^[\+\-\.\*\/]$/ ) {
+      if ( any { $op eq $_ } qw{+ - . * /} ) {
 
         my $str = $l->eval(@_);
 
         $logger->debug("$l eval'ed to [$str]");
 
-        do {
-          $l = shift @args;
+        unshift @args, $op;
+
+        foreach my $p ( pairs @args ) {
+          ( $op, $l ) = @{$p};
 
           my $str2 = $l->eval(@_);
 
-          for ($op) {
-
-            # arithmetic addition or string catenation
-            /\+/ && do {
-              if ( looks_like_number($str) && looks_like_number($str2) ) {
-                $str = $str + $str2;
-              }
-              else {
-                $str .= $str2;
-              }
-              last;
-            };
-
-            # multiplication or string replication
-            /\*/ && do {
-              if ( looks_like_number($str) && looks_like_number($str2) ) {
-                $str = $str * $str2;
-              }
-              elsif ( looks_like_number($str2) ) {
-                $str = $str x $str2;
-              }
-              next;
-            };
-
-            # division or string reduction?
-            /\// && do {
-              if ( looks_like_number($str) && looks_like_number($str2) ) {
-                $str = $str / $str2 if $str2;
-              }
-              else {
-                $str =~ s/$str2//g;
-              }
-              last;
-            };
-
-            # subtraction or replacement (at end) with null
-            /\-/ && do {
-              if ( looks_like_number($str) && looks_like_number($str2) ) {
-                $str = $str - $str2;
-              }
-              else {
-                $str =~ s/${str2}$//g;  # "barfoobar" - "bar" = "barfoo" ?
-              }
-              last;
-            };
-
-            # string catenation
-            /\./ && do {
-              $str .= $str2;
-              last;
-            };
-          }
-
-          if ( @args > 1 ) {
-            $op = shift @args;
-          }
-
-        } while ( @args > 0 );
+          $str = $ARITHMETIC_OPERATIONS{$op}->( $str, $str2 );
+        }
 
         return $str;
       }
@@ -395,10 +397,12 @@ sub eval {  ## no critic (ProhibitBuiltinHomonyms)
             $result = $NUMBER_CMP{$op}( $lval, $rval );
           }
           else {
-            $logger->debug( 'result: ' . $STRING_CMP{$op}( $lval, $rval ) );
+            $logger->debug(
+              'result: ' . $STRING_CMP{$op}( $lval, $rval, $self )
+                // $EMPTY );
 
             my $cg;
-            ( $result, $cg ) = $STRING_CMP{$op}( $lval, $rval );
+            ( $result, $cg ) = $STRING_CMP{$op}( $lval, $rval, $self );
 
             # grab capture group from regular expression if op is --re
             if ( $result && $op-- eq '--re' ) {

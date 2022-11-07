@@ -3,30 +3,32 @@
 use strict;
 use warnings;
 
-use Test::More tests => 13;
-
 use DBI;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use List::Util qw{none};
 use Readonly;
+use Test::More;
 
 Readonly my $TRUE  => 1;
 Readonly my $FALSE => 0;
-
-BEGIN {
-  use_ok('BLM::DBHandler');
-}
 
 require 't/db-setup.pl';
 
 my $dbi = eval { connect_db() };
 
-if ($dbi) {
-  eval { create_db($dbi); };
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
+}
+else {
+  plan tests => 13;
 }
 
-if ( !$dbi || $EVAL_ERROR ) {
+use_ok('BLM::DBHandler');
+
+eval { create_db($dbi); };
+
+if ($EVAL_ERROR) {
   BAIL_OUT("could not create database and table for test: $EVAL_ERROR\n");
 }
 

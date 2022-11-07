@@ -10,16 +10,6 @@ package main;
 use strict;
 use warnings;
 
-use Test::More tests => 8;
-
-use DBI;
-use Data::Dumper;
-use English qw{-no_match_vars};
-
-BEGIN {
-  use_ok('Bedrock::Model::Handler');
-}
-
 my $model_def = <<'EOT';
 our $MODEL = Bedrock::Hash->new(
     id => Bedrock::Model::Field->new(
@@ -66,12 +56,22 @@ close $fh;
 ########################################################################
 require 't/db-setup.pl';
 
+use Test::More;
+
+use DBI;
+use Data::Dumper;
+use English qw{-no_match_vars};
+
 my $dbi = eval { return connect_db(); };
 
-if ( !$dbi || $EVAL_ERROR ) {
-  diag($EVAL_ERROR);
-  BAIL_OUT("could not connect to database\n");
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
 }
+else {
+  plan tests => 4;
+}
+
+use_ok('Bedrock::Model::Handler');
 
 eval {
   $dbi->do('create database foo');

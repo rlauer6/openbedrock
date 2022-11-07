@@ -351,9 +351,9 @@ sub eval_args {
 
   my $logger = $self->get_logger( ref $self );
 
-  $logger->trace(
+  $logger->debug(
     sub {
-      sprintf 'Context arguments are: (%s)', join $COMMA, @eval_args;
+      sprintf 'Context arguments are: (%s)', Dumper( [ \@eval_args ] );
     }
   );
 
@@ -365,6 +365,9 @@ sub eval_args {
   foreach my $p ( pairs %{ $self->{'__options_to_eval'} } ) {
     my ( $key, $value ) = @{$p};
 
+    $logger->trace( sprintf 'option: %s value: %s',
+      $key, $value // '<undef>' );
+
     my $ref = ref $value;
 
     if ( $ref eq 'ARRAY' ) {
@@ -373,8 +376,12 @@ sub eval_args {
       my @optvals;
 
       for my $arg ( @{$value} ) {
+
         if ( ref $arg ) {
           push @optvals, $arg->eval(@eval_args);
+
+          $self->get_logger->trace( sprintf 'eval returned: [%s]',
+            join $COMMA, @eval_args );
         }
         else {
           push @optvals, $arg;
@@ -402,10 +409,14 @@ sub eval_args {
   my @args;
 
   for my $arg ( @{ $self->{'__args_to_eval'} } ) {
+    $logger->debug( sprintf 'arg: %s',
+      Dumper( [ $arg, $self->{'__args_to_eval'} ] ) );
 
     # arguments to the while loop should not be evaluated at this point
     if ( ref $arg && ref($self) !~ /while/xsmi ) {
-      push @args, $arg->eval(@eval_args);
+      my $value = $arg->eval(@eval_args);
+      $logger->debug( sprintf 'value: %s', Dumper( [$value] ) );
+      push @args, $value;
     }
     else {
       push @args, $arg;
@@ -440,61 +451,60 @@ sub parse_tag_name {
 ########################################################################
   my ( $self, $tag ) = @_;
 
-  my $logger = $self->get_logger( ref $self );
-
   my $tagtype = { type => $EMPTY, name => $EMPTY };
 
-  if ( $tag && $tag =~ /^:/xsm ) {
-    if ( $tag =~ /^:\s+/xsm ) {
-      die "missing variable name of class after ':'\n";
+  return $tagtype
+    if !$tag || $tag !~ /^:/xsm;
+
+  if ( $tag =~ /^:\s+/xsm ) {
+    die "missing variable name of class after ':'\n";
+  }
+
+  # -----------------------
+  #   <plugin:class:name>
+  #   <plugin:class>
+  # -----------------------
+
+  if ( ref($self) =~ /plugin$/xsmi ) {
+    if ( $tag =~ /^:(.+[^:]):(\w+)/xsm ) {
+      @{$tagtype}{qw/type name/} = ( $1, $2 );
     }
-
-    # -----------------------
-    #   <plugin:class:name>
-    #   <plugin:class>
-    # -----------------------
-
-    if ( ref($self) =~ /plugin$/xsmi ) {
-      if ( $tag =~ /^:(.+[^:]):(\w+)/xsm ) {
-        @{$tagtype}{qw/type name/} = ( $1, $2 );
-      }
-      elsif ( $tag =~ /^:(.*)/xsm ) {
-        $tagtype->{name} = $tagtype->{type} = $1;
-      }
+    elsif ( $tag =~ /^:(.*)/xsm ) {
+      $tagtype->{name} = $tagtype->{type} = $1;
     }
+  }
 
-    # -----------------------
-    #   <null:type:name>
-    #   <null:name>
-    # -----------------------
+  # -----------------------
+  #   <null:type:name>
+  #   <null:name>
+  # -----------------------
 
-    elsif ( ref($self) =~ /null$/ixsm ) {
+  elsif ( ref($self) =~ /null$/ixsm ) {
 
-      if ( $tag =~ /^:([^:]+):([^:].+)$/xsm ) {
-        my ( $type, $name ) = ( $1, $2 );
+    if ( $tag =~ /^:([^:]+):([^:].+)$/xsm ) {
+      my ( $type, $name ) = ( $1, $2 );
 
-        if ( any { $type eq $_ } qw{ hash var object array } ) {
-          @{$tagtype}{qw/type name/} = ( $type, $name );
-        }
-        else {
-          die "invalid type ($type)\n";
-        }
+      if ( any { $type eq $_ } qw{ hash var object array } ) {
+        @{$tagtype}{qw/type name/} = ( $type, $name );
       }
       else {
-        $tagtype->{name} = ( split /:/xsm, $tag )[1];
+        die "invalid type ($type)\n";
       }
     }
-
-    # -----------------------
-    #   <tag:name>
-    # -----------------------
-
     else {
       $tagtype->{name} = ( split /:/xsm, $tag )[1];
     }
   }
 
-  $logger->trace(
+  # -----------------------
+  #   <tag:name>
+  # -----------------------
+
+  else {
+    $tagtype->{name} = ( split /:/xsm, $tag )[1];
+  }
+
+  $self->get_logger->trace(
     sub {
       return sprintf 'tag => [%s], 1 => [%s], 2=> [%s]', $tag,
         @{$tagtype}{qw{type name}};

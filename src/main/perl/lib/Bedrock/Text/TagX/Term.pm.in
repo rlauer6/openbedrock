@@ -86,24 +86,41 @@ sub _find_in_context {
 }
 
 ########################################################################
+# IMPORTANT NOTE:
+#
+# This method explicitly returns 'undef' because of the way
+# Text::TAG::eval_arg() calls Text::TagX::Term::Var::eval() in list context.
+#
+#   push @optvals, $arg->eval(@eval_args);
+#
+# ...the method is NOT returning a failure value when it executes 'return
+# undef', it is returning the value of the resolved variable which can
+# be 'undef'.  Failing to explicitly return 'undef' will result in
+# subtle but devastingly difficult bugs to find...YOU HAVE BEEN
+# WARNED!!
+#
+########################################################################
 sub resolve_var {
 ########################################################################
   my ( $self, $name, @args ) = @_;
 
   $self->get_logger->debug("begin eval with ($name, @args)");
 
-  if ( $name =~ s/^\*// ) {
+  if ( $name =~ s/^[*]//xsm ) {
     $name = $self->resolve_var( $DOLLAR_SIGN . $name, @args );
   }
   else {
-    $name =~ s/^\$//;
+    $name =~ s/^\$//xsm;
   }
 
-  my @components = split /[.]/oi, $name;
+  my @components = split /[.]/oixsm, $name;
 
   $self->get_logger->debug("components of name are (@components)");
 
   my $first = shift @components;
+
+  ## see important note above
+  ## no critic (ProhibitExplicitReturnUndef)
 
   if ( !$first ) {
     $self->get_logger->debug(
@@ -113,7 +130,7 @@ sub resolve_var {
   }
 
   if (@components) {
-    if ( $first !~ /^\w+$/o ) {
+    if ( $first !~ /^\w+$/oxsm ) {
       $self->get_logger->debug(
         "$self: First component [$first] of name [$name] is not a word.");
 
@@ -121,7 +138,7 @@ sub resolve_var {
     }
   }
   else {
-    if ( $first !~ /^(\w+|\@)$/o ) {
+    if ( $first !~ /^\w+|\@$/oxsm ) {
       $self->get_logger->debug(
         "$self: First component [$first] of name [$name] is not a word or `\@'."
       );
@@ -139,7 +156,7 @@ sub resolve_var {
     $first, $found // $EMPTY );
 
   for (@components) {
-    if (/^\Q[\E(-?\d+)\Q]\E/oi) {
+    if (/^\Q[\E(-?\d+)\Q]\E/xsmoi) {
 
       # array element
       my $i = $1;
@@ -149,7 +166,7 @@ sub resolve_var {
       if ( !is_array($found) ) {
         $self->get_logger->debug( sprintf '[%s] is not an array.', $found );
 
-        return;
+        return undef;
       }
 
       $self->get_logger->debug( sprintf '[%s] is an array', $found );
@@ -159,7 +176,7 @@ sub resolve_var {
     }
 
     # simple scalar variable indexing supported $foo.[$i]
-    elsif (/^\Q[\E\$([a-z_]\w*)\Q]\E/oi) {
+    elsif (/^\Q[\E\$([[:lower:]_]\w*)\Q]\E/oixsm) {
 
       my $i = $self->_find_in_context( $1, @args );
 
@@ -175,7 +192,7 @@ sub resolve_var {
       if ( !is_array($found) ) {
         $self->get_logger->debug( sprintf '[%s] is not an array.', $found );
 
-        return;
+        return undef;
       }
 
       $self->get_logger->debug( sprintf '[%s] is an array', $found );
@@ -184,13 +201,13 @@ sub resolve_var {
       next;
     }
 
-    if ( /^{(.*?)}/oi or /^([^.]+)/oi ) {
+    if ( /^{(.*?)}/oixsm or /^([^.]+)/oixsm ) {
 
       # hash element
       my $key = $1;
       $self->get_logger->debug(
         sprintf 'looking for a hash component [%s] in [%s]',
-        $key, $found );
+        $key, $found // '<undef>' );
 
       if ( is_hash($found) ) {
         $self->get_logger->debug( sprintf '[%s] is a hash', $found );
@@ -217,11 +234,11 @@ sub resolve_var {
               sub {
                 sprintf
                   '[%s] is an array containing more than one element...cannot access it as a hash',
-                  $found;
+                  $found // '<undef>';
               }
             );
 
-            return;
+            return undef;
           }
         }
 
@@ -236,14 +253,17 @@ sub resolve_var {
         $found = $found->[0]->{$key};
       }
 
-      $self->get_logger->debug( sub { sprintf 'found component [%s]', $found }
-      );
+      $self->get_logger->debug(
+        sub { sprintf 'found component [%s]', $found // '<undef>' } );
 
       next;
     }
 
-    # illegal
-    return;
+    # illegal, probably should throw an exception here?
+    $self->get_logger->warn( sprintf 'illegal construction found: [%s]',
+      $name );
+
+    return undef;
   }
 
   return $found;

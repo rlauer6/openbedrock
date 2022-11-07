@@ -1,24 +1,24 @@
 use strict;
 use warnings;
 
-use Test::More tests => 3;
+use Test::More;
 
 use DBI;
 use English qw{-no_match_vars};
-
-BEGIN {
-  use_ok('BLM::IndexedTableHandler') or BAIL_OUT($EVAL_ERROR);
-}
 
 ########################################################################
 require 't/db-setup.pl';
 
 my $dbi = eval { return connect_db(); };
 
-if ( !$dbi || $EVAL_ERROR ) {
-  diag($EVAL_ERROR);
-  BAIL_OUT("could not connect to database\n");
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
 }
+else {
+  plan tests => 3;
+}
+
+use_ok('BLM::IndexedTableHandler');
 
 eval {
   $dbi->do('create database foo');
@@ -58,8 +58,12 @@ if ($EVAL_ERROR) {
 is( $ith->max_id(), 10, 'max_id()' );
 
 END {
-  eval { $dbi->do('drop database foo'); };
-  $dbi->disconnect;
+  eval {
+    if ( $dbi && $dbi->ping ) {
+      $dbi->do('drop database foo');
+      $dbi->disconnect;
+    }
+  };
 }
 
 1;

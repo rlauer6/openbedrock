@@ -37,25 +37,25 @@ package main;
 use strict;
 use warnings;
 
-use Test::More tests => 5;
+use Test::More;
 
 use DBI;
 use Data::Dumper;
 use English qw{-no_match_vars};
-
-BEGIN {
-  use_ok('Bedrock::Model::Handler');
-}
 
 ########################################################################
 require 't/db-setup.pl';
 
 my $dbi = eval { return connect_db(); };
 
-if ( !$dbi || $EVAL_ERROR ) {
-  diag($EVAL_ERROR);
-  BAIL_OUT("could not connect to database\n");
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
 }
+else {
+  plan tests => 5;
+}
+
+use_ok('Bedrock::Model::Handler');
 
 eval {
   $dbi->do('create database foo');
