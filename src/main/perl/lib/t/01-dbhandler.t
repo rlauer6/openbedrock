@@ -281,8 +281,8 @@ subtest 'date_format' => sub {
     'ISO 8601 format'
   ) or diag( Dumper( [$date] ) );
 
-  $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', -4 );
-  my $perl_date = scalar localtime time;
+  $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', 0 );
+  my $perl_date = scalar gmtime time;
 
   while ( $perl_date =~ s/\s\s/ /xsmg ) { };  # remove multiple whitespace
 

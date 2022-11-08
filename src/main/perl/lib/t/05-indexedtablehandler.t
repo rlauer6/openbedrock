@@ -16,7 +16,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 7;
+  plan tests => 6;
 }
 
 use_ok('BLM::IndexedTableHandler')
@@ -49,49 +49,17 @@ my $ith
 isa_ok( $ith, 'BLM::IndexedTableHandler' )
   or BAIL_OUT($EVAL_ERROR);
 
-my $count = 0;
+my $curtime = eval { $ith->curtime(); };
 
-while ( my $rec = <DATA> ) {
-  chomp $rec;
+ok($curtime, 'curtime()');
+like($curtime, qr/\d{2}:\d{2}/xsm, 'looks like a time');
 
-  my ( $firstname, $lastname, $nickname ) = split /[,]/xsm, $rec;
+my $now = eval { $ith->now() };
 
-  $ith->set(
-    id        => 0,
-    firstname => $firstname,
-    lastname  => $lastname,
-    nickname  => $nickname,
-  );
+ok($now, 'now');
 
-  $ith->save();
-  $count++;
-}
-
-ok( $count == 3, 'loaded 3 records' );
-
-ok( @{ $ith->select_list('select * from foo') } == 3, 'read 3 record' );
-
-my $ac = $ith->autocomplete();
-
-isa_ok( $ac, 'ARRAY' );
-
-# 8 because Clyde does not have a last name
-ok( @{$ac} == 8, 'all rows, all columns' )
-  or diag( Dumper( [$ac] ) );
-
-$ac = $ith->autocomplete(
-  query => 'lastname like ? or nickname like ?',
-  args  => [ 'k%', 'k%' ]
-);
-
-ok( @{$ac} == 5, 'all rows, all columns not like "k"' );
-
-if ($EVAL_ERROR) {
-  diag( Dumper( [ 'autocomplete: ', $ac ] ) )
-    or diag( Dumper( [$ac] ) );
-
-  BAIL_OUT("Could not write records...$EVAL_ERROR\n");
-}
+like($now, qr/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/xsm, 'looks like data')
+ or diag($now);
 
 END {
   eval {

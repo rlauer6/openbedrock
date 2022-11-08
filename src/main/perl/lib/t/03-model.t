@@ -68,7 +68,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 4;
+  plan tests => 8;
 }
 
 use_ok('Bedrock::Model::Handler');
