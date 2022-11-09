@@ -12,6 +12,7 @@ CONFIG = \
     mysql-session.xml.in \
     perl_bedrock.conf22.in \
     perl_bedrock.conf24.in \
+    rest.xml.in \
     startup.pl.in \
     tagx.xml.in \
     tagx_apps.xml.in

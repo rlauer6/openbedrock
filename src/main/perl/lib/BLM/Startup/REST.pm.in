@@ -1,0 +1,362 @@
+package BLM::Startup::REST;
+
+use strict;
+use warnings;
+
+use Bedrock::Constants qw(:booleans);
+use Bedrock qw(:booleans);
+
+use Bedrock::RegExp;
+use Carp;
+use Data::Dumper;
+use JSON::PP;
+use Log::Log4perl::Level;
+use Scalar::Util qw(blessed);
+
+use Readonly;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use parent qw{Bedrock::Hash Class::Accessor::Fast};
+
+our $VERSION = '0.01';
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw{
+    config
+    context
+    env_ok
+    error
+    global_config
+    header
+    input
+    method
+    path_info
+    result
+    routes
+    status
+  }
+);
+
+Readonly::Hash our %HTTP_ERRORS => (
+  '400' => 'BAD REQUEST',
+  '401' => 'UNAUTHORIZED',
+  '403' => 'FORBIDDEN',
+  '404' => 'FILE NOT FOUND',
+  '405' => 'METHOD NOT ALLOWED',
+  '500' => 'INTERNAL SERVER ERROR',
+  '505' => q{},
+);
+
+########################################################################
+sub TIEHASH {
+########################################################################
+  my ( $class, $ctx, $config ) = @_;
+
+  my $self = bless {}, $class;
+
+  $self->set_context($ctx);
+
+  $self->set_config($config);
+
+  # keep in mind this object may not exist because it is not pre-bound
+  $self->set_input( $self->get_context->{'INPUT'} );
+
+  $self->set_method( $ENV{REQUEST_METHOD} );
+
+  $self->set_path_info( $ENV{PATH_INFO} || $ENV{BEDROCK_PATH_INFO} );
+
+  $self->set_env_ok( $config->{env}
+      && $config->{env} =~ /^y/xsmi ? $TRUE : $FALSE );
+
+  if ( $config->{loglevel} eq 'debug' ) {
+    $self->get_logger->level($DEBUG);
+  }
+
+  $self->set_routes(
+    [ [ 'GET', 'version', \&version, 'returns the version' ],
+      [ 'GET',                        'routes',
+        sub { return routes($self) }, 'returns routes by request method'
+      ],
+      [ 'GET', 'env', sub { return $self->get_env_ok ? \%ENV : {}; } ],
+    ]
+  );
+
+  return $self;
+} ## end sub TIEHASH
+
+########################################################################
+sub routes {
+########################################################################
+  my ($self) = @_;
+
+  my %route_map;
+
+  my $routes = $self->get_routes;
+
+  for my $r ( @{$routes} ) {
+    my ( $method, $route, undef, $notes ) = @{$r};
+    $method = uc $method;
+
+    if ( !is_array( $route_map{$method} ) ) {
+      $route_map{$method} = [];
+    }
+
+    push @{ $route_map{$method} }, "$route:$notes";
+  }
+
+  return \%route_map;
+}
+
+########################################################################
+sub version {
+########################################################################
+  return { version => $VERSION };
+}
+
+########################################################################
+# [ ['GET', 'foo/bar/(\d)', sub {}] ... ]
+########################################################################
+sub run {
+########################################################################
+  my ($self) = @_;
+
+  my $routes = $self->get_routes;
+
+  $self->get_logger->debug(
+    sub {
+      return sprintf "PATH_INFO: %s REQUEST_METHOD: %s routes: \n%s",
+        $ENV{PATH_INFO}, $ENV{REQUEST_METHOD}, Dumper($routes);
+    }
+  );
+
+  die "no routes\n"
+    if !is_array($routes) || !@{$routes};
+
+  my $result;
+
+  foreach my $r ( @{$routes} ) {
+
+    my ( $method, $path, $sub ) = @{$r};
+    $method = uc $method;
+
+    $self->get_logger->debug(
+      "checking route ($path, $method)):  $ENV{PATH_INFO}, $ENV{REQUEST_METHOD}"
+    );
+
+    next if $method ne $ENV{REQUEST_METHOD};
+
+    my $re = regexp_compile($path);
+
+    next if $ENV{PATH_INFO} !~ $re;
+
+    $self->get_logger->debug("route: [$path] matches");
+
+    my $capture_group = regexp_capture_group();
+
+    $result = eval { $sub->($capture_group); };
+
+    last;
+  }
+
+  return $result;
+}
+
+########################################################################
+sub raise {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $status = $args{status} // $self->get_status;
+
+  $self->set_status($status);
+
+  my %result = (
+    status_text => $HTTP_ERRORS{$status} // 'UNKNOWN',
+    status      => 'error',
+    code        => $status,
+    $self->get_env_ok ? ( env => \%ENV ) : (),
+  );
+
+  my $errstr = $args{error} || $self->get_error;
+
+  $self->get_logger->error($errstr);
+
+  my @error = split /\s*[|]\s*/xsm, $errstr;
+
+  $result{msg} = $error[1] // $error[0];
+
+  $self->set_result( Bedrock::Hash->new(%result) );
+
+  if ( $self->header && ref( $self->header ) =~ /BLM::Startup::Header/xsm ) {
+    $self->header->set( 'Status', $status );
+  }
+
+  return $self->get_result;
+}
+
+########################################################################
+sub print_result {
+########################################################################
+  my ( $self, $pretty ) = @_;
+
+  my $result = $self->get_result // {};
+
+  $result = blessed($result) ? $result->devolve : $result;
+
+  return JSON::PP->new->utf8->pretty($pretty)->encode($result);
+}
+
+########################################################################
+sub header {
+########################################################################
+  my ($self) = @_;
+
+  return $self->get_context->{'HEADER'};
+} ## end sub header
+
+1;
+
+__END__
+
+## no critic (RequirePodSections)
+
+=pod
+
+=head1 NAME
+
+BLM::Startup::REST - Plugin to support REST APIs
+
+=head1 SYNOPSIS
+
+ <sink><try>
+ 
+  <if $REST.get_method() --eq 'GET'>
+ 
+    <!-- /(\d+) -->
+    <if $REST.get_path_info() --re '^/(?<id\>\\d+)\/?'>
+
+      <if $_1 --eq 123>
+        <hash:contact name rob address '211 Southgate' id $_1>
+        <null $REST.set_result($contact)>
+      <else>
+        <raise ('404|' + $REST.get_path_info())>
+      </if>
+
+    <!-- /first-letter/([:letter:]) ... another URI --->
+    <elsif $REST.get_path_info() --re '^/first_letter/(?<letter>[:lower:])\/?'>
+       ...blah blah blah
+    </if>
+
+  <!-- another REST method -->  
+  <elsif $REST.get_method() --eq 'POST'>
+    ...blah blah blah
+  </if>
+   
+  <catch 'invalid session'>
+    <null:result $REST.raise(status, 401, error, $@)>
+  
+  <catch "^(?<status\>40[0-4])(\\|?(?<message\>[^\\|]*))$">
+    <null:result $REST.raise(status, $status, error, $@)>
+ 
+  <catch>
+    <null $REST.raise(status, 500, error, $@)>
+  </try></sink><var $REST.print_result(1)>
+
+=head1 DESCRIPTION
+
+Plugin that support creating REST APIs in Bedrock. 
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 get_method
+
+Essentially returns C<$ENV{HTTP_METHOD}>.
+
+=head2 get_path_info
+
+Essentially returns C<$ENV{PATH_INFO}>.
+
+=head2 print_result
+
+ print_result(pretty)
+
+Prints the JSON representation of your result object. Set C<pretty> to
+1 for pretty-printing the JSON string.
+
+=head2 set_result
+
+Sets the result object that will be returned in the payload. Set the
+result prior to invoking C<print_result()>,
+
+=head2 raise
+
+ raise(args)
+
+Populates the return payload with error information and sets the HTTP
+C<Status> header. The return payload will populated as show below.
+
+ {
+    "msg" : error message
+    "status" : "error",
+    "status_text" : HTTP status text
+    "code" : HTTP status code
+ }
+
+C<args> is a hash of arguments described below:
+
+=over 5
+
+=item status
+
+HTTP status code.
+
+=item error
+
+Error string that will be used for the C<msg> element. If the error
+string is pipe delimited was a result of your page throwing an
+exception of the form "HTTP-STATUS|message" then the error string will
+be C<msg> element of the returned hash will be the message portion of
+the string.
+
+    <raise ("403|invalid login")>
+  ....
+  <catch "^(?<status\>40[0-4])(\\|?(?<message\>[^\\|]*))$">
+    <null:result $REST.raise(status, $status, error, $@)>
+
+=back
+
+=head1 CONFIGURATION
+
+Add this to your site's configuration directory.
+
+ <object> 
+   <scalar name="binding">REST</scalar> 
+   <scalar name="module">BLM::Startup::REST</scalar> 
+     <object name="config">
+       <scalar name="env">no</scalar>
+       <scalar name="loglevel">debug</scalar>
+     </object>
+ </object> 
+
+Set the C<env> value in the config object to C<yes> if you want errors
+to return the environment.  The default is C<no>.
+
+Set the C<loglevel> value to debug for verbose output in the error log.
+
+=head1 SUB-CLASSING
+
+This method is suitable for sub-classing to create more robust REST APIs.
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer6@comcast.net
+
+=head1 SEE OTHER
+
+=cut
+
+
+=cut
