@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 
@@ -46,27 +48,48 @@ subtest 'new' => sub {
     or BAIL_OUT($EVAL_ERROR);
 };
 
-########################################################################
-subtest 'curtime' => sub {
-########################################################################
-  my $curtime = eval { $ith->curtime(); };
+my $table_definition;
 
-  ok( $curtime, 'curtime()' );
-  like( $curtime, qr/\d{2}:\d{2}/xsm, 'looks like a time' );
+########################################################################
+subtest 'get_table_dir' => sub {
+########################################################################
+
+  $table_definition = $ith->get_table_dir();
+
+  isa_ok( $table_definition, 'HASH' )
+    or diag( Dumper( [$table_definition] ) );
 };
 
 ########################################################################
-subtest 'now' => sub {
+subtest 'get_enum_values' => sub {
 ########################################################################
-  my $now = eval { $ith->now() };
+  my ($field) = grep { $table_definition->{$_}->{Type} =~ /^enum/xsm }
+    keys %{$table_definition};
 
-  ok( $now, 'now' );
+  if ( !$field ) {
+    diag( Dumper( [$table_definition] ) );
+  }
 
-  like(
-    $now,
-    qr/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/xsm,
-    'looks like data'
-  ) or diag($now);
+  SKIP: {
+    skip 'no enum field', 1 if !$field;
+
+    my $enum_values = eval { $ith->get_enum_values($field); };
+
+    isa_ok( $enum_values, 'ARRAY' )
+      or diag( Dumper( [ $field, $enum_values, $EVAL_ERROR ] ) );
+
+    my $enum_def = $table_definition->{$field}->{Type};
+
+    my @values;
+
+    if ( $enum_def =~ /\Aenum(.*)\z/xsm ) {
+      @values = sort eval $1;
+    }
+
+    is_deeply( [ sort @{$enum_values} ], \@values, 'enum set matches' )
+      or diag( Dumper( [ $enum_def, $enum_values, \@values ] ) );
+  }
+
 };
 
 END {

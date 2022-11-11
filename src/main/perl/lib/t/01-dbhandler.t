@@ -181,6 +181,11 @@ subtest 'select_list' => sub {
 
   $dbh->set_return_bedrock_refs($FALSE);
 
+  my $sth = $dbh->dbi->prepare('describe foo');
+  $sth->execute;
+
+  my @fields = keys %{ $sth->fetchall_hashref('Field') };
+
   $result = $dbh->select_list('select * from foo');
 
   ok( ref $result ne 'Bedrock::Array',     'returns a Perl array' );
@@ -188,7 +193,7 @@ subtest 'select_list' => sub {
 
   is_deeply(
     [ sort keys %{ $result->[0] } ],
-    [ sort qw{ id name foo bar_phone} ],
+    [ sort @fields ],
     'returns all columns'
   );
 };

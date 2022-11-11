@@ -34,9 +34,9 @@ sub connect_db {
 
   if ( !@argv ) {
     %connect_options = (
-      host         => $ENV{DBI_HOST},
-      database     => $ENV{DBI_DB} || q{},
-      user         => $ENV{DBI_USER},
+      host         => $ENV{DBI_HOST} || 'localhost',
+      database     => $ENV{DBI_DB}   || q{},
+      user         => $ENV{DBI_USER} || 'root',
       password     => $ENV{DBI_PASS},
       mysql_socket => $ENV{DBI_SOCKET} || q{},
     );
@@ -86,22 +86,29 @@ sub connect_db {
 ########################################################################
 sub create_db {
 ########################################################################
-  my ($dbi) = shift;
+  my ( $dbi, $no_table ) = @_;
 
   $dbi->do('create database foo');
 
-  my $create_table = <<'SQL';
-create table foo (
- id int auto_increment primary key,
- name varchar(100) not null default '',
- foo  varchar(100) not null,
- bar_phone varchar(10) not null default ''
-)
-SQL
-
   $dbi->do('use foo');
 
-  return $dbi->do($create_table);
+  return
+    if $no_table;
+
+  my $table = <<'END_OF_SQL';
+create table foo (
+ id             int auto_increment primary key,
+ name           varchar(100) not null default '',
+ foo            varchar(100) not null,
+ bar_phone      varchar(10) not null default '',
+ colors         enum('red', 'green', 'blue'),
+ expires_time   timestamp,
+ expires_date   date,
+ active         boolean
+)
+END_OF_SQL
+
+  return $dbi->do($table);
 }
 
 1;

@@ -25,6 +25,7 @@ perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Seriali
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
 
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
+perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
 perl5bedrocktexttagxtaglibdir  		  = $(perl5libdir)/Bedrock/Text/TagX/TAG
@@ -71,9 +72,13 @@ perl5bedrocklib_DATA = \
     Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
+    Bedrock/Test.pm \
     Bedrock/Template.pm \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm
+
+perl5bedrocktestlib_DATA = \
+    Bedrock/Test/Utils.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
 
@@ -123,6 +128,8 @@ perl5bedrocktextlib_DATA = \
     Bedrock/Text/URLEncode.pm
 
 BEDROCK_TEXT=$(perl5bedrocktextlib_DATA:.pm=.pm.in)
+
+BEDROCK_TEST=$(perl5bedrocktestlib_DATA:.pm=.pm.in)
 
 perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/Error.pm \
@@ -314,6 +321,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_TEMPLATE) \
+    $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \
     $(BEDROCK_TEXT_TAGX_TAG) \
