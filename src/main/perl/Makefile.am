@@ -30,7 +30,8 @@ BEDROCK_SQL_TESTS = \
     t/13-sql.yml
 
 BEDROCK_TEST_HARNESS = \
-    lib/Test/Bedrock.pm.in
+    lib/Bedrock/Test.pm.in \
+    lib/Bedrock/Test/Utils.pm.in
 
 @do_subst_command@
 

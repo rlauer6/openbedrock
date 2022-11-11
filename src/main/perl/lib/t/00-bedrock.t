@@ -5,16 +5,15 @@ use warnings;
 
 use lib qw{.};
 
-use Bedrock::Constants qw{:chars};
 use Bedrock::Hash;
 use Bedrock::Array;
+use Bedrock::Test::Utils qw{:all};
 use Cwd;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Touch qw{touch};
 use File::chdir;
 use Test::More;
-use Test::Utils qw{:all};
 
 our %TESTS = fetch_test_descriptions(*DATA);
 

@@ -5,11 +5,11 @@ use warnings;
 
 use lib qw{.};
 
-use Bedrock::Constants qw{:chars};
+use Bedrock::Test::Utils qw{:all};
+
 use Data::Dumper;
 use English qw{-no_match_vars};
 use Test::More;
-use Test::Utils qw{:all};
 
 our %TESTS = fetch_test_descriptions(*DATA);
 

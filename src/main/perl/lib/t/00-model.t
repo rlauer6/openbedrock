@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 
@@ -9,3 +11,5 @@ use Data::Dumper;
 BEGIN {
   use_ok('Bedrock::Model::Handler');
 }
+
+1;

@@ -5,13 +5,13 @@ use lib qw{ . };
 
 use Bedrock qw{create_temp_dir};
 use Bedrock::Constants qw{:defaults};
+use Bedrock::Test::Utils qw{:all};
 
 use Cwd qw{abs_path getcwd};
 use Data::Dumper;
 use English qw{-no_match_vars};
 
 use Test::More;
-use Test::Utils qw{:all};
 
 our %TESTS = fetch_test_descriptions(*DATA);
 

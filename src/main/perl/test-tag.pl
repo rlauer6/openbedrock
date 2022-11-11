@@ -6,7 +6,7 @@ use warnings;
 use File::Basename;
 use English qw{-no_match_vars};
 
-use Test::Bedrock qw{run config};
+use Bedrock::Test qw{run config};
 
 ########################################################################
 my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
