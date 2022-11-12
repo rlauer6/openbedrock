@@ -19,6 +19,10 @@
 
 package Apache::BedrockDocs;
 
+# TODO:
+# [ ] option to disable traversing all sub-directories
+# [ ] collapsible directories
+
 use strict;
 use warnings;
 
@@ -215,6 +219,8 @@ sub get_all_modules {
     my @modules = get_modules( $dir, $no_blms );
 
     foreach my $file (@modules) {
+      next if !has_pod($file);
+
       my $module = $file;
 
       $module =~ s/$dir\///xsm;
@@ -238,6 +244,16 @@ sub get_all_modules {
   }
 
   return \%module_map;
+}
+
+########################################################################
+sub has_pod {
+########################################################################
+  my ($file) = @_;
+
+  my $text = slurp_file $file;
+
+  return $text =~ /^[=]pod\s*$/xsm;
 }
 
 ########################################################################
@@ -511,7 +527,7 @@ sub pod_docs {
 
   my $module_listing;
 
-  my $pod_paths = $bedrock_handler->config->{POD_PATHS};
+  my $pod_paths = get_pod_paths( $bedrock_handler->config );
 
   if ( $pod_paths && @{$pod_paths} ) {
     $module_listing = get_all_modules( $pod_paths, 0 );
@@ -539,7 +555,7 @@ END_OF_HTML
     return $OK;
   }
 
-  my $anchor_tag = '<a href="%s/pod/%s/%s">%s</a>';
+  my $anchor_tag = '<a href="%s/pod/%s">%s</a>';
 
   my @pod_listing;
 
@@ -756,6 +772,28 @@ sub listing_head {
 
 }
 
+########################################################################
+sub get_pod_paths {
+########################################################################
+  my ($config) = @_;
+
+  my @pod_paths = split /:/xsm, $ENV{POD_PATHS} // $EMPTY;
+
+  if ( $config->{POD_PATHS} ) {
+    if ( !ref $config->{POD_PATHS} ) {
+      push @pod_paths, split /:/xsm, $config->{POD_PATHS};
+    }
+    elsif ( is_array( $config->{POD_PATHS} ) ) {
+      push @pod_paths, @{ $config->{POD_PATHS} };
+    }
+  }
+
+  # only valid paths...
+  @pod_paths = grep { -d $_ && -r $_ } @pod_paths;
+
+  return \@pod_paths;
+}
+
 # +------------------------------+
 # | mod_perl HANDLER STARTS HERE |
 # +------------------------------+
@@ -872,8 +910,10 @@ END_OF_HTML
 
     my $modules;
 
-    if ( $conf->{POD_PATHS} && @{ $conf->{POD_PATHS} } ) {
-      $vars{modules}
+    my $pod_paths = get_pod_paths( $bedrock_handler->config );
+
+    if ($pod_paths) {
+      $vars{user_docs}
         = ul_links( $bedrock_admin_dir, pod => 'Module Listing' );
     }
 
@@ -898,6 +938,8 @@ END_OF_HTML
 
     return $OK;
   }
+
+  return $OK;
 }
 
 1;
@@ -910,7 +952,7 @@ __END__
 
 =head1 NAME
 
-Bedrock::Apache::BedrockDocs - Provide Bedrock documentation as HTML
+Bedrock::Apache::BedrockDocs - Provides Bedrock and user documentation as HTML
 
 =head1 SYNOPSIS
 
@@ -938,10 +980,14 @@ Bedrock::Apache::BedrockDocs - Provide Bedrock documentation as HTML
 
 =head1 DESCRIPTION
 
-Displays documentation (pod) embedded in Bedrock's Perl modules as
-HTML. Bedrock documentation availability is controlled by the
-configuration variable C<ALLOW_BEDROCK_INFO> in F<tagx.xml>.  Set the
-configuration variable to one of the values described below.
+Displays documentation (L<POD|https://perldoc.perl.org/perlpod>)
+embedded in Bedrock's Perl modules as HTML. User documenation
+contained in the form of POD within Perl modules can also be displayed
+(See L</USER DOCUMENTATION>).
+
+Bedrock documentation availability is controlled by the configuration
+variable C<ALLOW_BEDROCK_INFO> in F<tagx.xml>.  Set the configuration
+variable to one of the values described below.
 
 =over 5
 
@@ -960,9 +1006,35 @@ Allow documentation only.
 =back
 
 To allow configuration information to be displayed set
-C<ALLOW_BEDROCK_CONFIG_INFO To allow environment information to
+C<ALLOW_BEDROCK_CONFIG_INFO> To allow environment information to
 be displayed set C<ALLOW_BEDROCK_ENV_INFO> to C<yes>. The default
 value for these variables is C<no>.
+
+=head1 USER DOCUMENTATION
+
+Bedrock can also display documentation you have embedded in your Perl
+modules by telling Bedrock where they are located.
+
+Set the configuration variable C<POD_PATHS> to either a colon
+separated string of absolute paths to your Perl modules or an array of
+paths. You can also set the C<POD_PATHS> environment variable in your
+Apache configuration.
+
+ <scalar name="POD_PATHS">/home/fred/git/acmem-pebbles/lib</scalar>
+
+or
+
+ <array name="POD_PATHS">
+   <scalar>/home/fred/git/acme-dino</scalar>
+   <scalar>/home/fred/git/acme-quarry/lib</scalar>
+ </array>
+
+or in your Apache's configuration:
+
+ SetEnv POD_PATHS /home/fred/git/acme-quarry/lib
+
+Bedrock's documentation facility will recurse sub-directories and list
+ all modules that end with C<.pm>.
 
 =head1 AUTHOR
 
