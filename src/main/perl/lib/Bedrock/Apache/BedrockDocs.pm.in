@@ -32,10 +32,9 @@ use Bedrock::BedrockConfig;
 use Bedrock::Constants qw{:regexp :chars :booleans :defaults};
 use Bedrock::Dump;
 use Bedrock::Handler;
-use Bedrock::VERSION qw{version};
 use Bedrock::Template;
-
-use Text::TagX;
+use Bedrock::VERSION qw{version};
+use bedrock_handler_common;
 
 use Carp;
 use Data::Dumper;
@@ -43,29 +42,196 @@ use English qw{-no_match_vars};
 use File::Basename;
 use File::Temp;
 use File::Find;
+use Markdown::Render;
 use Pod::Html;
-use Time::HiRes qw{ gettimeofday };
 use Scalar::Util qw{ reftype blessed};
 use List::Util qw{ any pairs none};
+use Text::URLEncode;
 
-use bedrock_handler_common;
 use Readonly;
 
 Readonly our $DEFAULT_IMAGE_URL => '/bedrock/img';
 Readonly our $POD_MIN_SIZE      => 600;
 
+our @TAG_LIST;
+
+if ( $OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
+  @TAG_LIST = sort split /[|]/xsm, $1;
+  @TAG_LIST = grep { !/[#]|else|else[?]if|blm|[?]/xsm } @TAG_LIST;
+}
+
+########################################################################
+sub handler {
+########################################################################
+  my ($r) = @_;
+
+  my $bedrock_handler = eval { return init_bedrock_handler($r); };
+
+  if ( $EVAL_ERROR || !$bedrock_handler ) {
+    $r->log->error(qq{Could not initialize Bedrock's handler\n$EVAL_ERROR});
+
+    return $SERVER_ERROR;
+  }
+
+  my $config = $bedrock_handler->config();
+
+  my $bedrock_info = $config->{ALLOW_BEDROCK_INFO} // $EMPTY;
+
+  if ( none { lc $bedrock_info eq $_ } qw{ on 1 yes docs} ) {
+    $r->log->error(
+      sprintf
+        'Bedrock admin directory denied by configuration (ALLOW_BEDROCK_INFO): [%s]',
+      $bedrock_info
+    );
+
+    return $FORBIDDEN;
+  }
+
+  $config->{BEDROCK_IMAGE_URL} //= $DEFAULT_IMAGE_URL;
+  $config->{BEDROCK_ADMIN_DIR} //= '/bedrock';
+
+  # used by .inc files that include other files (--file=~/bedrock-docs-header)
+  $ENV{DOCUMENT_ROOT} = $config->{BEDROCK_INCLUDE_DIR};
+
+  ####################################################################
+  # router
+  ####################################################################
+  my $uri = $r->uri;
+  $uri =~ s/^$config->{BEDROCK_ADMIN_DIR}//xsm;
+
+  for ($uri) {
+    /plugins\/?(.*?)$/xsm && do {
+      return plugin_docs( $bedrock_handler, $1 );
+    };
+
+    /system\/?(.*?)\/?$/xsm && do {
+      return system_docs( $bedrock_handler, $1 );
+    };
+
+    /pod\/?(.*?)\/?$/xsm && do {
+      return pod_docs( $bedrock_handler, $1 );
+    };
+
+    /markdown\/?(.*?)\/?$/xsm && do {
+      return markdown_docs( $bedrock_handler, $1 );
+    };
+
+    /tag\/?(.*?)\/?$/xsm && do {
+      return tag_docs( $bedrock_handler, lc $1 );
+    };
+
+    /^\/env\/?$/xsm && do {
+      return env_docs($bedrock_handler);
+    };
+
+    /^\/config\/?$/xsm && do {
+      return config_docs($bedrock_handler);
+    };
+  }
+
+  ####################################################################
+  # documentation home page
+  ####################################################################
+
+  my $template = fetch_template( $config, 'bedrock-docs-index' );
+
+  my %parameters;
+
+  $parameters{head}
+    = listing_head( $bedrock_handler, 'Bedrock Reference Guide' );
+
+  ####################################################################
+  # head
+  ####################################################################
+  $parameters{tags} = ul_links(
+    $config,
+    tag     => 'Bedrock Tags',
+    plugins => 'Bedrock Plugins',
+  );
+
+  ####################################################################
+  # system modules
+  ####################################################################
+
+  $parameters{system_docs} = ul_links( $config, system => 'System Modules' );
+
+  ####################################################################
+  # user modules
+  ####################################################################
+  my $pod_paths = get_pod_paths( $bedrock_handler->config );
+
+  if ($pod_paths) {
+    $parameters{user_docs} = ul_links( $config, pod => 'Module Listing' );
+  }
+
+  ####################################################################
+  # markdown
+  ####################################################################
+  my $markdown_paths = get_markdown_paths( $bedrock_handler->config );
+
+  if ($markdown_paths) {
+    $parameters{markdown_docs}
+      = ul_links( $config, markdown => 'Documentation Listing' );
+  }
+
+  ####################################################################
+  # config & environment
+  ####################################################################
+  if ( $config->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
+
+    my $allow_config = $config->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
+    $allow_config = $allow_config =~ /^y|1|on/xsmi;
+
+    my $allow_env = $config->{ALLOW_BEDROCK_ENV_INFO} // $EMPTY;
+    $allow_env = $allow_env =~ /^y|1|on/xsmi;
+
+    $parameters{bedrock_env} = ul_links(
+      $config,
+      config => $allow_config ? 'Bedrock Configuration' : '(disabled)',
+      env    => $allow_env    ? 'Bedrock Environment'   : '(disabled)',
+    );
+  }
+
+  ####################################################################
+  # finalize and output
+  ####################################################################
+  output( $r, template( $config, $template, %parameters ) );
+
+  return $OK;
+}
+
+########################################################################
+sub header {
+########################################################################
+  my ( $config, %parameters ) = @_;
+
+  my $template = fetch_template( $config, 'bedrock-docs-header' );
+
+  return template( $config, $template, %parameters );
+}
+
+########################################################################
+sub fetch_template {
+########################################################################
+  my ( $config, $template ) = @_;
+
+  my $file = sprintf '%s/%s.inc', $config->{BEDROCK_INCLUDE_DIR}, $template;
+
+  return slurp_file($file);
+}
+
 ########################################################################
 sub show_pod {
 ########################################################################
-  my ( $bedrock_handler, $file, $return_url ) = @_;
+  my ( $bedrock_handler, $file, $back_url ) = @_;
 
-  my $html = _show_pod( $file, $bedrock_handler->config );
+  my $html = _show_pod( $bedrock_handler->config, $file, $back_url );
 
   if ( !$html ) {
     my $url = sprintf 'http://%s/%s/%s',
       $ENV{HTTP_HOST},
       $bedrock_handler->get_bedrock_admin_dir,
-      $return_url;
+      $back_url;
 
     $bedrock_handler->request_handler->header_out( 'Location', $url );
 
@@ -78,90 +244,90 @@ sub show_pod {
 }
 
 ########################################################################
-sub _logo_url {
+sub create_pod_file {
 ########################################################################
-  my ($conf) = @_;
-
-  my $image_url = $conf->{BEDROCK_IMAGE_URL} || $DEFAULT_IMAGE_URL;
-
-  return sprintf '%s/%s', $image_url, $conf->{BEDROCK_LOGO};
-}
-
-# show_pod(file, config-object);
-########################################################################
-sub _show_pod {
-########################################################################
-  my ( $file, $conf ) = @_;
-
-  my $bedrock_admin_dir = $conf->{BEDROCK_ADMIN_DIR} || '/bedrock';
+  my ( $file, $css_url ) = @_;
 
   my $pod = tmpnam;
-
-  my $pod_css_url = $conf->{BEDROCK_POD_CSS_URL};
 
   my %options = (
     '--infile'   => $file,
     '--outfile'  => $pod,
     '--cachedir' => File::Spec->tmpdir(),
+    $css_url ? ( '--css' => $css_url ) : (),
   );
 
-  if ($pod_css_url) {
-    $options{'--css'} = $pod_css_url;
+  my $html = eval {
+    pod2html( '--backlink', map { "$_=" . $options{$_} } keys %options );
+
+    return slurp_file $pod;
+  };
+
+  if ( -e $pod ) {
+    unlink $pod;
   }
 
-  pod2html( '--backlink', map { "$_=" . $options{$_} } keys %options );
+  return $html;
+}
 
-  my $bedrock_logo = _logo_url($conf);
+########################################################################
+sub _show_pod {
+########################################################################
+  my ( $config, $file, $back_url ) = @_;
 
-  my $top_section = <<'END_OF_HTML';
-<table width="100%">
+  my $html = create_pod_file( $file, $config->{BEDROCK_POD_CSS_URL} );
 
-<tr>
-  <td align="left">
-    <a href="<var $back>"><img src="<var $logo>" border="0"></a>
-  </td>
-  <td align="right" valign="bottom" width="9999">
-    <i>Bedrock Version: <var $version></i>
-  </td>
-</tr>
+  $back_url = sprintf '%s/%s', $config->{BEDROCK_ADMIN_DIR}, $back_url;
 
-<tr>
-  <td colspan="2"><hr></td>
-</tr>
-</table>
-END_OF_HTML
+  if ( length $html < $POD_MIN_SIZE ) {
+    my $message = q{No documentation found for this module.};
 
-  $top_section = template(
-    $top_section,
-    back    => $bedrock_admin_dir,
-    logo    => $bedrock_logo,
-    version => version('full')
-  );
-
-  my $data = eval { return slurp_file $pod; };
-
-  unlink $pod;
-
-  if ( length $data < $POD_MIN_SIZE ) {
-    $data = <<'END_OF_HTML';
-<html>
-  <body>
-    <p>No documentation found for this module.</p>
-  </body>
-</html>
-END_OF_HTML
-
+    return create_error_page(
+      $config,
+      back_url => $back_url,
+      error    => $message
+    );
   }
 
-  $data =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
+  my $top_section = header( $config, back_url => $back_url );
 
-  return $data;
+  $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
+
+  return $html;
 }
 
 ########################################################################
 sub get_modules {
 ########################################################################
-  my ( $dir, $no_blms ) = @_;
+  my ( $dir, $exclude_blms ) = @_;
+
+  return find_files(
+    dir          => $dir,
+    exclude_blms => $exclude_blms,
+    ext          => 'pm'
+  );
+}
+
+########################################################################
+sub find_markdown_files {
+########################################################################
+  my ($dir) = @_;
+
+  return find_files(
+    dir          => $dir,
+    exclude_blms => $TRUE,
+    ext          => 'md'
+  );
+}
+
+########################################################################
+sub find_files {
+########################################################################
+  my (%args) = @_;
+
+  my ( $dir, $no_blms, $ext ) = @args{qw(dir exclude_blms ext)};
+
+  $ext //= 'pm';
 
   return ()
     if !-d $dir;
@@ -179,10 +345,15 @@ sub get_modules {
     next if $no_blms && $file =~ /^BLM/xsm;  #  && any {/$dir/xsm} @INC;
 
     if ( -d "$dir/$file" ) {
-      push @listing, get_modules("$dir/$file");
+      push @listing,
+        find_files(
+        dir          => "$dir/$file",
+        exclude_blms => $no_blms,
+        ext          => $ext
+        );
     }
     else {
-      if ( $file =~ /^([^.]+)[.]pm$/xsm ) {
+      if ( $file =~ /^([^.]+)[.]$ext$/xsm ) {
         push @listing, "$dir/$1";
       }
     }
@@ -199,6 +370,7 @@ sub get_all_modules {
   my ( $paths, $public_only, $no_blms ) = @_;
 
   my @module_listing;
+
   my %module_map;
 
   foreach my $path ( @{$paths} ) {
@@ -219,7 +391,7 @@ sub get_all_modules {
     my @modules = get_modules( $dir, $no_blms );
 
     foreach my $file (@modules) {
-      next if !has_pod($file);
+      next if !has_pod("$file.pm");
 
       my $module = $file;
 
@@ -285,61 +457,33 @@ sub get_all_blms {
 # return the standard documentation header
 
 ########################################################################
-sub head {
+sub listing_index {
 ########################################################################
-  my (%attributes) = @_;
+  my ( $config, %parameters ) = @_;
 
-  $attributes{version} = version('full');
+  my $template = fetch_template( $config, 'bedrock-docs-listing-index' );
 
-  my $html = <<'END_OF_HTML';
-<html>
-  <head>
-    <title><var $attributes.title></title>
-    <link rel="stylesheet" href="<var $attributes.stylesheet>" type="text/css" />
-    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
-  </head>
-
-  <body>
-    <table width="100%">
-      <tr>
-        <td align="left"><a href="<var $attributes.home>"><img src="<var $attributes.image>" border="0"></a></td>
-        <td align="right" valign="bottom" width="9999"><i>Bedrock Version: <var $attributes.version></i></td>
-      </tr>
-      <tr>
-        <td colspan="2"><hr></td>
-      </tr>
-    </table>
-
-    <h1><var $attributes.title></h1>
-END_OF_HTML
-
-  return template( $html, attributes => \%attributes );
+  return template( $config, $template, %parameters );
 }
 
 ########################################################################
 sub ul_links {
 ########################################################################
-  my ( $url, %links ) = @_;
+  my ( $config, %options ) = @_;
 
-  my $html = <<'END_OF_HTML';
-<ul>
- <foreach $links>
- <if $value --re '/disabled/' >
-   <li><var $value></li>
- <else>
-   <li><a href="<var $url>/<var $key>"><var $value></a></li>
- </if>
- </foreach>
-</ul>
-END_OF_HTML
+  my $back_url = delete $options{back_url};
 
-  return template( $html, url => $url, links => \%links );
+  $back_url //= $config->{BEDROCK_ADMIN_DIR};
+
+  my $template = fetch_template( $config, 'bedrock-docs-ul' );
+
+  return template( $config, $template, url => $back_url, links => \%options );
 }
 
 ########################################################################
 sub blm_ul {
 ########################################################################
-  my ( $bedrock_admin_dir, $blms, $h2, @args ) = @_;
+  my ( $bedrock_handler, $blms, $h2, @args ) = @_;
 
   return if !@args;
 
@@ -351,37 +495,45 @@ sub blm_ul {
     $blm_listing{$blm} =~ s/^(.*)::(.*)$/$2/xsm;
   }
 
-  my $html = <<'END_OF_HTML';
-<h2><var $heading></h2>
-<ul>
-  <foreach $args>
-  <li><a href="<var $bedrock_admin_dir>/plugins/<var $_>"><var $blm_listing.get($_)></a></li>
-  </foreach>
-</ul>
-END_OF_HTML
+  my $config = $bedrock_handler->config;
 
-  my %vars = (
-    bedrock_admin_dir => $bedrock_admin_dir,
-    args              => \@args,
-    blm_listing       => \%blm_listing,
+  my $template = fetch_template( $config, 'bedrock-docs-blms' );
+
+  my $uri = '%s/plugins/%s';
+
+  my $list = Bedrock::Hash->new(
+    map { $blm_listing{$_} => sprintf $uri, $config->{BEDROCK_ADMIN_DIR}, $_ }
+    sort @args
   );
 
-  return template( $html, %vars );
+  my %vars = (
+    heading => $h2,
+    list    => $list,
+  );
 
-  return $html;
+  return template( $config, $template, %vars );
 }
 
 ########################################################################
 sub template {
 ########################################################################
-  my ( $template, %vars ) = @_;
+  my ( $config, $template, %parameters ) = @_;
 
-  if ( !exists $vars{env} ) {
-    $vars{env} = \%ENV;
-  }
+  my $logo_url = sprintf '%s/%s',
+    @{$config}{qw(BEDROCK_IMAGE_URL BEDROCK_LOGO)};
+
+  %parameters = (
+    env        => \%ENV,
+    back_url   => $config->{BEDROCK_ADMIN_DIR},
+    config     => $config,
+    version    => version('full'),
+    logo       => $logo_url,
+    stylesheet => $config->{BEDROCK_POD_CSS_URL},
+    %parameters,
+  );
 
   my $text
-    = eval { return Bedrock::Template->new( $template, %vars )->parse; };
+    = eval { return Bedrock::Template->new( $template, %parameters )->parse; };
 
   die sprintf "error processing template: %s\n%s\n", $template, $EVAL_ERROR
     if !$text || $EVAL_ERROR;
@@ -393,6 +545,8 @@ sub template {
 sub output {
 ########################################################################
   my ( $r, $content ) = @_;
+
+  $r->content_type('text/html');
 
   $r->send_http_header;
 
@@ -441,18 +595,9 @@ sub plugin_docs {
     }
   }
 
-  my $html = <<'END_OF_HTML';
-<var $head>
-<var $plugins.[0]>
-    <hr/>
-<var $plugins.[1]>
-    <hr/>
-<var $plugins.[2]>
-  </body>
-</html>
-END_OF_HTML
+  my $config = $bedrock_handler->config;
 
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
+  my $template = fetch_template( $config, 'bedrock-docs-plugins' );
 
   my @blm_names = keys %{$blms};
 
@@ -462,13 +607,20 @@ END_OF_HTML
     Filters               => [ grep {/^Filter/xsm} @blm_names ],
   );
 
+  my @headings = sort keys %sections;
+
   my @plugins
-    = map { blm_ul( $bedrock_admin_dir, $blms, $_, @{ $sections{$_} } ) }
-    sort keys %sections;
+    = map { blm_ul( $bedrock_handler, $blms, $_, @{ $sections{$_} } ) }
+    @headings;
 
   my $head = listing_head( $bedrock_handler, 'Bedrock Plugins' );
 
-  $html = template( $html, head => $head, plugins => \@plugins );
+  my $html = template(
+    $config, $template,
+    headings => \@headings,
+    head     => $head,
+    plugins  => \@plugins
+  );
 
   output( $bedrock_handler->request_handler, $html );
 
@@ -512,8 +664,147 @@ sub system_docs {
     push @system_listing, sprintf $anchor_tag, $url_prefix, $path, $module;
   }
 
-  my $html = listing( $bedrock_handler, 'System Documention Listing',
+  my $html = listing( $bedrock_handler, 'System Documentation Listing',
     @system_listing );
+
+  output( $bedrock_handler->request_handler, $html );
+
+  return $OK;
+}
+
+########################################################################
+sub _show_markdown {
+########################################################################
+  my ( $config, $markdown ) = @_;
+
+  my $top_section = header($config);
+
+  my $html = eval {
+    my $md = Markdown::Render->new(
+      infile => $markdown,
+      engine => 'text_markdown',
+      body   => $FALSE
+    );
+
+    $md->render_markdown;
+
+    return $md->get_html;
+  };
+
+  if ( $EVAL_ERROR || !length $html ) {
+    my $message = "No documentation found for $markdown.";
+
+    $html = create_error_page(
+      $config,
+      error => $message,
+      title => $markdown
+    );
+  }
+  else {
+    my $template = fetch_template( $config, 'bedrock-docs-listing-index' );
+
+    my $back_url = sprintf '/%s/markdown', $config->{BEDROCK_ADMIN_DIR};
+
+    $html = template(
+      $config,
+      $template,
+      content  => $html,
+      back_url => $back_url,
+      title    => $markdown,
+    );
+
+  }
+
+  return $html;
+}
+
+########################################################################
+sub create_error_page {
+########################################################################
+  my ( $config, %parameters ) = @_;
+
+  my $template = fetch_template( $config, 'bedrock-docs-error' );
+
+  $parameters{error} //= $EVAL_ERROR;
+
+  return template( $config, $template, %parameters, );
+}
+
+########################################################################
+sub show_markdown {
+########################################################################
+  my ( $bedrock_handler, $markdown, $back_url ) = @_;
+
+  my $html = _show_markdown( $bedrock_handler->config, $markdown );
+
+  if ( !$html ) {
+    my $url = sprintf 'http://%s/%s/%s',
+      $ENV{HTTP_HOST},
+      $bedrock_handler->get_bedrock_admin_dir,
+      $back_url;
+
+    $bedrock_handler->request_handler->header_out( 'Location', $url );
+
+    return $REDIRECT;
+  }
+
+  output( $bedrock_handler->request_handler, $html );
+
+  return $OK;
+
+}
+
+########################################################################
+sub markdown_docs {
+########################################################################
+  my ( $bedrock_handler, $markdown ) = @_;
+
+  my @markdown_listing;
+
+  my $config = $bedrock_handler->config;
+
+  my $markdown_paths = get_markdown_paths($config);
+
+  if ($markdown_paths) {
+    for ( @{$markdown_paths} ) {
+      push @markdown_listing, find_markdown_files($_);
+    }
+  }
+
+  if ($markdown) {
+    my $path = "$markdown.md";
+
+    return show_markdown( $bedrock_handler, $path, 'tag' );
+  }
+
+  my $title = 'Documentation Listing';
+
+  if ( !@markdown_listing ) {
+    my $message
+      = !@{$markdown_paths}
+      ? 'No markdown paths defined in configuraion.'
+      : 'No additional documentation found';
+
+    my $html
+      = create_error_page( $config, title => $title, error => $message );
+
+    output( $bedrock_handler->request_handler, $html );
+
+    return $OK;
+  }
+
+  my $anchor_tag = '<a href="%s/markdown/%s">%s</a>';
+
+  my @listing;
+
+  foreach my $file ( sort @markdown_listing ) {
+    my $uri = Text::URLEncode::Encode $file;
+
+    push @listing, sprintf $anchor_tag,
+      $bedrock_handler->get_bedrock_admin_dir, $uri, $file;
+  }
+
+  my $html = listing( $bedrock_handler, $title, @listing );
 
   output( $bedrock_handler->request_handler, $html );
 
@@ -525,9 +816,11 @@ sub pod_docs {
 ########################################################################
   my ( $bedrock_handler, $module ) = @_;
 
-  my $module_listing;
+  my $config = $bedrock_handler->config;
 
-  my $pod_paths = get_pod_paths( $bedrock_handler->config );
+  my $pod_paths = get_pod_paths($config);
+
+  my $module_listing;
 
   if ( $pod_paths && @{$pod_paths} ) {
     $module_listing = get_all_modules( $pod_paths, 0 );
@@ -537,19 +830,16 @@ sub pod_docs {
     $module =~ s/\//\:\:/xsmg;
     my $path = $module_listing->{$module} . '.pm';
 
-    return show_pod( $bedrock_handler, $path, 'tag' );
+    return show_pod( $bedrock_handler, $path );
   }
 
   my $title = 'User Documentation Listing';
 
   if ( !$module_listing || !keys %{$module_listing} ) {
-    my $html = <<'END_OF_HTML';
-%s
- No user documentation found.
-  </body>
-</html>
-END_OF_HTML
-    $html = sprintf listing_head( $bedrock_handler, $title );
+    my $message = 'No user documentation found.';
+
+    my $html = create_error_page( $config, error => $message );
+
     output( $bedrock_handler->request_handler, $html );
 
     return $OK;
@@ -612,23 +902,9 @@ sub hash_docs {
 ########################################################################
   my ( $bedrock_handler, $title, $hash ) = @_;
 
-  my $html = <<'END_OF_HTML';
-<var $head>
-    <table cellpadding="0" cellspacing="0" border="0">
-    <foreach $hash>
-      <tr>
-        <th valign="middle" align="right"><code><var $key></code>&nbsp;</th>
-        <if --ref $value>
-        <td valign="bottom"><pre style="margin:0;padding:0;" class="configref"><var $value.compact()></pre></td>
-        <else>
-        <td valign="bottom"><pre style="margin:0;padding:0;" class="configvar"><var $value></pre></td>
-        </if>
-      </tr>
-    </foreach>
-    </table>
-  </body>
-</html>
-END_OF_HTML
+  my $config = $bedrock_handler->config;
+
+  my $template = fetch_template( $config, 'bedrock-docs-hash-dump' );
 
   # make sure that all refs can('compact')
   foreach ( %{$hash} ) {
@@ -639,7 +915,7 @@ END_OF_HTML
 
   my $head = listing_head( $bedrock_handler, 'Bedrock ' . $title );
 
-  $html = template( $html, head => $head, hash => $hash );
+  my $html = template( $config, $template, head => $head, hash => $hash );
 
   output( $bedrock_handler->request_handler, $html );
 
@@ -675,8 +951,6 @@ sub find_tag_file {
       my ($name) = split /[.]/xsm, $_;
       return if !$name;
 
-      print {*STDERR} "name: $name\n";
-
       if ( !$tag_file && $tag eq lc $name ) {
         $tag_file = $File::Find::name;
       }
@@ -709,8 +983,6 @@ sub tag_docs {
 ########################################################################
   my ( $bedrock_handler, $tag ) = @_;
 
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
-
   if ($tag) {
     my $tag_file = find_tag_file($tag);
 
@@ -722,9 +994,12 @@ sub tag_docs {
     }
   }
 
+  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
+
+  my $tag_link = q{<a href="%s/tag/%s">%s</a>};
+
   my @tag_listing
-    = map { sprintf q{<a href="%s/tag/%s">%s</a>}, $bedrock_admin_dir, $_, $_ }
-    tag_list();
+    = map { sprintf $tag_link, $bedrock_admin_dir, $_, $_ } @TAG_LIST;
 
   my $html = listing( $bedrock_handler, 'Bedrock Tag Listing', @tag_listing );
 
@@ -738,21 +1013,15 @@ sub listing {
 ########################################################################
   my ( $bedrock_handler, $title, @listing ) = @_;
 
-  my $html = <<'END_OF_HTML';
-<var $head>
-    <ul>
-    <foreach $listing>
-      <li><var $_></li>
-    </foreach>
-    </ul>
-  </body>
-</html>
-END_OF_HTML
+  my $config = $bedrock_handler->config;
+
+  my $template = fetch_template( $config, 'bedrock-docs-listing' );
 
   my $head = listing_head( $bedrock_handler, $title );
 
   return template(
-    $html,
+    $config,
+    $template,
     head    => $head,
     listing => \@listing
   );
@@ -763,184 +1032,43 @@ sub listing_head {
 ########################################################################
   my ( $bedrock_handler, $title ) = @_;
 
-  return head(
-    title      => $title,
-    stylesheet => $bedrock_handler->config->{BEDROCK_POD_CSS_URL},
-    home       => $bedrock_handler->get_bedrock_admin_dir,
-    image      => _logo_url( $bedrock_handler->config ),
-  );
+  my $config = $bedrock_handler->config;
 
+  return listing_index( $config, title => $title, );
 }
 
 ########################################################################
-sub get_pod_paths {
+sub validate_paths {
 ########################################################################
-  my ($config) = @_;
-
-  my @pod_paths = split /:/xsm, $ENV{POD_PATHS} // $EMPTY;
-
-  if ( $config->{POD_PATHS} ) {
-    if ( !ref $config->{POD_PATHS} ) {
-      push @pod_paths, split /:/xsm, $config->{POD_PATHS};
-    }
-    elsif ( is_array( $config->{POD_PATHS} ) ) {
-      push @pod_paths, @{ $config->{POD_PATHS} };
-    }
-  }
+  my (@paths) = @_;
 
   # only valid paths...
-  @pod_paths = grep { -d $_ && -r $_ } @pod_paths;
-
-  return \@pod_paths;
+  return [ grep { -d $_ && -r $_ } @paths ];
 }
 
-# +------------------------------+
-# | mod_perl HANDLER STARTS HERE |
-# +------------------------------+
-
 ########################################################################
-sub handler {
+sub get_doc_paths {
 ########################################################################
-  my ($r) = @_;
+  my ( $config, $type ) = @_;
 
-  # start HiRes timer
-  my ( $start_seconds, $start_microseconds );
+  $type = uc "${type}_PATHS";
 
-  if ( get_loglevel($r) eq 'debug' ) {
-    ( $start_seconds, $start_microseconds ) = gettimeofday();
+  my $path_list = $config->{$type} // $EMPTY;
+
+  if ( !is_array($path_list) ) {
+    $path_list = [ split /:/xsm, $path_list // $EMPTY ];
   }
 
-  my $bedrock_handler = init_bedrock_handler($r);
-
-  if ( !$bedrock_handler ) {
-    $r->log->error(q{Could not initialize Bedrock's handler});
-
-    return $SERVER_ERROR;
-  }
-
-  my $conf = $bedrock_handler->config();
-
-  my $bedrock_info = lc( $conf->{ALLOW_BEDROCK_INFO} // $EMPTY );
-
-  if ( none { $bedrock_info eq $_ } qw{ yes docs} ) {
-    $r->log->error(
-      sprintf
-        'Bedrock admin directory request denied by configuration (ALLOW_BEDROCK_INFO): [%s]',
-      $bedrock_info
-    );
-
-    return $FORBIDDEN;
-  }
-
-  $r->content_type('text/html');
-
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
-
-  my $uri = $r->uri;
-  $uri =~ s/^$bedrock_admin_dir//xsm;
-
-  my $html;
-
-  my $bedrock_logo_url = _logo_url($conf);
-
-  for ($uri) {
-    /plugins\/?(.*?)$/xsm && do {
-      return plugin_docs( $bedrock_handler, $1 );
-    };
-
-    /system\/?(.*?)\/?$/xsm && do {
-      return system_docs( $bedrock_handler, $1 );
-    };
-
-    /pod\/?(.*?)\/?$/xsm && do {
-      return pod_docs( $bedrock_handler, $1 );
-    };
-
-    /tag\/?(.*?)\/?$/xsm && do {
-      return tag_docs( $bedrock_handler, lc $1 );
-    };
-
-    /^\/env\/?$/xsm && do {
-      return env_docs($bedrock_handler);
-    };
-
-    /^\/config\/?$/xsm && do {
-      return config_docs($bedrock_handler);
-    };
-
-    my $html = <<'END_OF_HTML';
-<var $head>
-  <hr/>
-  <var $tags>
-  <hr/>
-
-  <h1>System Documentation</h1>
-  <var $system_docs>
-
-  <hr/>
-  <h1>User Documentation</h1>
-  <var $user_docs>
-
-  <hr/>
-  <h1>Bedrock Environment</h1>
-  <var $bedrock_env>
-
-  <hr/>
-  <h1>Bedrock Log Configuration</h1>
-
-  <ul>
-    <li><var $config.LOG4PERL></li>
-  </ul>
-  </body>
-</html>
-END_OF_HTML
-
-    my %vars = ( config => $bedrock_handler->config );
-
-    $vars{head} = listing_head( $bedrock_handler, 'Bedrock Reference Guide' );
-
-    $vars{tags} = ul_links(
-      $bedrock_admin_dir,
-      tag     => 'Bedrock Tags',
-      plugins => 'Bedrock Plugins',
-    );
-
-    $vars{system_docs}
-      = ul_links( $bedrock_admin_dir, system => 'System Modules' );
-
-    my $modules;
-
-    my $pod_paths = get_pod_paths( $bedrock_handler->config );
-
-    if ($pod_paths) {
-      $vars{user_docs}
-        = ul_links( $bedrock_admin_dir, pod => 'Module Listing' );
-    }
-
-    if ( $conf->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
-
-      my $allow_config = $conf->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
-      $allow_config
-        = $allow_config =~ /^y/xsmi ? 'Bedrock Configuration' : '(disabled)';
-
-      my $allow_env = $conf->{ALLOW_BEDROCK_ENV_INFO} // $EMPTY;
-      $allow_env
-        = $allow_env =~ /^y/xsmi ? 'Bedrock Environment' : '(disabled)';
-
-      $vars{bedrock_env} = ul_links(
-        $bedrock_admin_dir,
-        config => $allow_config,
-        env    => $allow_env,
-      );
-    }
-
-    output( $r, template( $html, %vars ) );
-
-    return $OK;
-  }
-
-  return $OK;
+  return validate_paths( @{$path_list} );
 }
+
+########################################################################
+{
+  ## no critic (RequireArgUnpacking)
+  sub get_markdown_paths { push @_, 'markdown'; goto &get_doc_paths; }
+  sub get_pod_paths      { push @_, 'pod';      goto &get_doc_paths; }
+}
+########################################################################
 
 1;
 
@@ -955,6 +1083,8 @@ __END__
 Bedrock::Apache::BedrockDocs - Provides Bedrock and user documentation as HTML
 
 =head1 SYNOPSIS
+
+ AllowEncodedSlashes On
 
  <Directory /var/www/html/bedrock/>
    AcceptPathInfo On
@@ -974,6 +1104,7 @@ Bedrock::Apache::BedrockDocs - Provides Bedrock and user documentation as HTML
    AuthName Bedrock
    AuthBasicProvider file
    AuthUserFile /usr/lib/bedrock/config/bedrock.users
+
    require valid-user
  
  </Directory>
@@ -981,9 +1112,11 @@ Bedrock::Apache::BedrockDocs - Provides Bedrock and user documentation as HTML
 =head1 DESCRIPTION
 
 Displays documentation (L<POD|https://perldoc.perl.org/perlpod>)
-embedded in Bedrock's Perl modules as HTML. User documenation
-contained in the form of POD within Perl modules can also be displayed
-(See L</USER DOCUMENTATION>).
+embedded in Bedrock's Perl modules as HTML.
+
+User documenation contained in the form of POD within Perl modules or
+markdown within specified paths can also be displayed (See L</USER
+DOCUMENTATION>).
 
 Bedrock documentation availability is controlled by the configuration
 variable C<ALLOW_BEDROCK_INFO> in F<tagx.xml>.  Set the configuration
@@ -991,11 +1124,11 @@ variable to one of the values described below.
 
 =over 5
 
-=item yes
+=item yes/on/1
 
 Allow documentation and possibly other information (configuration, environment).
 
-=item no
+=item no/off/0
 
 Do not allow documentation.
 
@@ -1012,8 +1145,10 @@ value for these variables is C<no>.
 
 =head1 USER DOCUMENTATION
 
-Bedrock can also display documentation you have embedded in your Perl
-modules by telling Bedrock where they are located.
+Bedrock can also display documentation you have embedded in your own Perl
+modules or markdown.
+
+=head2 Pod
 
 Set the configuration variable C<POD_PATHS> to either a colon
 separated string of absolute paths to your Perl modules or an array of
@@ -1035,6 +1170,17 @@ or in your Apache's configuration:
 
 Bedrock's documentation facility will recurse sub-directories and list
  all modules that end with C<.pm>.
+
+=head2 Markdown
+
+Set the scalar configuration variable C<MARKDOWN_PATHS> to either a colon
+separated string of absolute paths to your Perl modules or an array of
+paths. You can also set the C<MARKDOWN_PATHS> environment variable in your
+Apache configuration.
+
+  <array name="MARKDOWN_PATHS">
+    <scalar>/usr/local/share/my-app/docs</scalar>
+  </array>
 
 =head1 AUTHOR
 

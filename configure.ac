@@ -257,6 +257,9 @@ AC_SUBST([pebblesdir], ["\${datadir}/\${PACKAGE}/pebbles"])
 imgdir=${datadir}/${PACKAGE}/img
 AC_SUBST([imgdir], ["\${datadir}/\${PACKAGE}/img"])
 
+bedrock_includedir=${datadir}/${PACKAGE}/include
+AC_SUBST([bedrock_includedir], ["\${datadir}/\${PACKAGE}/include"])
+
 cssdir=${datadir}/${PACKAGE}/css
 AC_SUBST([cssdir], ["\${datadir}/\${PACKAGE}/css"])
 
@@ -330,6 +333,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]htdocsdir[@],$(htdocsdir),g'"'"' \
   -e '"'"'s,[@]pebblesdir[@],$(pebblesdir),g'"'"' \
   -e '"'"'s,[@]imgdir[@],$(imgdir),g'"'"' \
+  -e '"'"'s,[@]includedir[@],$(includedir),g'"'"' \
   -e '"'"'s,[@]cssdir[@],$(cssdir),g'"'"' \
   -e '"'"'s,[@]configdir[@],$(configdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
@@ -414,6 +418,7 @@ AC_CONFIG_FILES(
         [src/main/Makefile]
         [src/main/bedrock/Makefile]
         [src/main/bedrock/pebbles/Makefile]
+        [src/main/bedrock/include/Makefile]
         [src/main/bedrock/img/Makefile]
         [src/main/bedrock/htdocs/Makefile]
         [src/main/bedrock/css/Makefile]
