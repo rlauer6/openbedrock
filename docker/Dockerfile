@@ -18,6 +18,8 @@ COPY mysql-session.xml /var/www/config.d/startup/mysql-session.xml
 COPY data-sources.xml /var/www/config/data-sources.xml
 COPY httpd.conf /etc/httpd/conf/httpd.conf
 COPY tagx.xml /var/www/config/tagx.xml
+COPY pod_paths.xml /var/www/config/pod_paths.xml
+COPY markdown_path.xml /var/www/config/markdown_paths.xml
 
 RUN rm /usr/lib/bedrock/config.d/startup/mysql-session.xml
 RUN rm /usr/lib/bedrock/config/mysql-session.xml
