@@ -13,6 +13,8 @@ CONFIG = \
     perl_bedrock.conf22.in \
     perl_bedrock.conf24.in \
     rest.xml.in \
+    pod_paths.xml.in \
+    markdown_paths.xml.in \
     startup.pl.in \
     tagx.xml.in \
     tagx_apps.xml.in

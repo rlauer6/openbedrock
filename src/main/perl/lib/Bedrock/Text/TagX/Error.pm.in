@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -26,14 +24,15 @@ use strict;
 use warnings;
 
 use Carp;
+use Bedrock::Constants qw{ :regexp :booleans :chars};
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
 use parent qw{Exporter};
 
-use Bedrock::Constants qw{ :regexp };
-
-our $VERSION = '@PACKAGE_VERSION@';
-
+########################################################################
 sub new {
+########################################################################
   my ( $class, @args ) = @_;
 
   my $self = bless [], $class;
@@ -47,9 +46,9 @@ sub new {
   return $self;
 }
 
-use Carp;
-
+########################################################################
 sub newLevel {
+########################################################################
   my ( $self, @args ) = @_;
 
   unshift @{$self}, {};
@@ -61,95 +60,124 @@ sub newLevel {
   return $self;
 }
 
+########################################################################
 sub endLevel {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
+
   shift @{$self};
+
   return $self;
 }
 
+########################################################################
 sub file {
-  my $self = shift;
+########################################################################
+  my ( $self, @args ) = @_;
 
-  $self->[0]->{'file'} = shift if @_ > 0;
+  if (@args) {
+    $self->[0]->{'file'} = shift @args;
+  }
 
   return $self->[0]->{'file'};
 }
 
+########################################################################
 sub line {
-  my $self = shift;
-  $self->[0]->{'line'} = shift if @_ > 0;
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->[0]->{'line'} = shift @args;
+  }
 
   return $self->[0]->{'line'};
 }
 
+########################################################################
 sub mesg {
-  my $self = shift;
-  $self->[0]->{'mesg'} = "@_" if @_ > 0;
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if (@args) {
+    $self->[0]->{'mesg'} = "@args";
+  }
 
   return $self->[0]->{'mesg'};
 }
 
 sub as_string { goto &mesg; }
 
+########################################################################
 sub location {
-  my $self = shift;
-  my ( $file, $line ) = @_;
+########################################################################
+  my ( $self, $file, $line ) = @_;
 
-  $self->[0]->{'file'} = $file if defined($file);
-  $self->[0]->{'line'} = $line if defined($line);
+  if ( defined $file ) {
+    $self->[0]->{'file'} = $file;
+  }
 
+  if ( defined $line ) {
+    $self->[0]->{'line'} = $line;
+  }
+
+  return;
 }
 
+########################################################################
 sub view_source {
-  my $self  = shift;
-  my $index = shift;
+########################################################################
+  my ( $self, $index, @args ) = @_;
 
-  $index = 0 unless defined($index);
+  $index //= 0;
 
   my $file = $self->[$index]->{'file'};
 
-  local (*FILE);
-  open( FILE, $file ) or return '';
+  open my $fh, '<', $file  ## no critic (RequireBriefOpen)
+    or return $EMPTY;
 
-  my $newscan      = 1;
-  my $optstring    = '';
+  my $newscan      = $TRUE;
+  my $optstring    = $EMPTY;
   my $options_expr = '^(\s*([^>\\\\]|\\\\.)*)>';
 
   # implements a skeleton parser to create an HTML encoded source file
   my $output;
 
   INPUT:
-  while (<FILE>) {
+
+  while (<$fh>) {
+
     MAIN: {
 
       #
       # Check whether we are into a new scan or collecting options
       # for a matched tag
       #
-      unless ($newscan) {
+      if ( !$newscan ) {
 
         # Collecting options for a matched tag -- Look for tag end which is
         # an un-escaped '>'
-        if (s/$options_expr//o) {
+        if (s/$options_expr//xsmo) {
 
           # Found an un-escaped '>', which terminates the current tag and its options
           # $optstring contains the options collected so far
           $optstring .= $1;
 
           # Remove escapes from the option string
-          $optstring =~ s/\\([^\\])/$1/g;
-          $optstring =~ s/\\\\/\\/g;
+          $optstring =~ s/\\([^\\])/$1/xsmg;
+          $optstring =~ s/\\\\/\\/xsmg;
 
           # And set the current object options
           for ($optstring) {
-            s/\&/\&amp;/g;
-            s/</\&lt;/g;
-            s/>/\&gt;/g;
+            s/\&/\&amp;/xsmg;
+            s/</\&lt;/xsmg;
+            s/>/\&gt;/xsmg;
           }
-          $output .= $optstring . "&gt;</span>";
+
+          $output .= $optstring . '&gt;</span>';
 
           # Start a new scan after this
-          $newscan = 1;
+          $newscan = $TRUE;
 
           # Handle possible left over stuff after the '>'
           redo MAIN;
@@ -164,13 +192,16 @@ sub view_source {
 
       # New scan from here -- scan afresh for tags.
       # if no '<' found in line, skip line
-      unless (s/^(.*?)<//oi) {
+      if ( !s/^(?:.*?)<//xsmoi ) {
+
         if (length) {
+
           for ($_) {
-            s/\&/\&amp;/g;
-            s/</\&lt;/g;
-            s/>/\&gt;/g;
+            s/\&/\&amp;/xsmg;
+            s/</\&lt;/xsmg;
+            s/>/\&gt;/xsmg;
           }
+
           $output .= $_;
         }
         next INPUT;
@@ -178,26 +209,28 @@ sub view_source {
 
       # We did find a '<' -- could be we have a possible supported tag next
       # The text before the '<' needs to be processed.
-      if ( length($1) ) {
+      if ( length $1 ) {
         my $text = $1;
+
         for ($text) {
-          s/\&/\&amp;/g;
-          s/</\&lt;/g;
-          s/>/\&gt;/g;
+          s/\&/\&amp;/xsmg;
+          s/</\&lt;/xsmg;
+          s/>/\&gt;/xsmg;
         }
+
         $output .= $text;
       }
 
       # Check if we have a supported tag
-      if (s/$OPENTAG_EXPR//oi) {
+      if (s/$OPENTAG_EXPR//oixsm) {
 
         # Yes we do
         my $tag = $1;
-        $output .= qq(<span class="$tag">&lt;$tag);
+        $output .= sprintf q{<span class="%s">&lt;%s}, $tag, $tag;
 
         # After creating object of suitable type depending on the tag, check
         # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-        if (s/$options_expr//oi) {
+        if (s/$options_expr//xsmoi) {
 
           # The tag definition ended on same line -- all options specified on one line
           my $options = $1;
@@ -208,11 +241,11 @@ sub view_source {
 
           # And set the current object options
           for ($options) {
-            s/\&/\&amp;/g;
-            s/</\&lt;/g;
-            s/>/\&gt;/g;
+            s/\&/\&amp;/gxsm;
+            s/</\&lt;/gxsm;
+            s/>/\&gt;/gxsm;
           }
-          $output .= $options . "&gt;</span>";
+          $output .= $options . '&gt;</span>';
 
           # And rescan the string for more tags -- Note that $newscan is unchanged
           # from its value of 1, so we don't need to set it here
@@ -222,21 +255,24 @@ sub view_source {
 
           # Tag definition did not end on one line -- Further input is consumed for
           # looking for the tag ending
-          $newscan = 0;
+          $newscan = $FALSE;
 
           # Start collection of the options string
           $optstring = $_;
         }
 
       }
-      elsif (s/$CLOSETAG_EXPR//oi) {
+      elsif (s/$CLOSETAG_EXPR//xsmoi) {
 
         # Check whether we have hit a tag-body-ending tag
         # and if so, end the current object
-        my $tag   = $1;
+        my $tag = $1;
+
         my $class = $tag;
-        $class =~ s/\W//g;
-        $output .= qq(<span class="$class">&lt;$tag&gt;</span>);
+        $class =~ s/\W//xsmg;
+
+        $output .= sprintf q{<span class="%s">&lt;%s&gt;</span>}, $class,
+          $tag;
 
         # And rescan string for more tags
         redo MAIN;
@@ -251,53 +287,76 @@ sub view_source {
     }
   }
 
-  close FILE;
+  close $fh;
 
-  my %args    = @_;
+  my %args    = @args;
   my $compact = $args{'compact'};
 
   my $context_lines = $args{'context'};
-  $context_lines = 2 unless defined($context_lines);
+
+  $context_lines //= 2;
 
   my $fd = IO::Scalar->new( \$output );
 
   my $errline = $self->[$index]->{'line'};
-  my $lower   = $errline - $context_lines;
-  $lower = 1 if $lower <= 0;
-  my $upper = $errline + $context_lines;
+
+  # = max( 1, $errline - $context_lines);
+  my $lower;
+  my $upper;
+
+  if ( defined $errline ) {
+    $lower = $errline - $context_lines;
+
+    if ( $lower <= 0 ) {
+      $lower = 1;
+    }
+
+    $upper = $errline + $context_lines;
+  }
 
   my $string;
+
   my $line = 0;
 
   while ( $_ = $fd->getline ) {
     $line++;
-    if ( $line == $errline ) {
-      $string
-        .= sprintf(
-        "<span class='lineno'><span class='context'><span class='error'>%4s|</span></span></span>%s",
-        $line, $_ );
+
+    # if we have an error....
+    if ( defined $errline ) {
+
+      if ( $line == $errline ) {  # error is on this line...
+        $string .= sprintf
+          q{<span class='lineno'><span class='context'><span class='error'>%4s|</span></span></span>%s},
+          $line, $_;
+      }
+      elsif ( $line == $lower ) {  # ...start of error context
+
+        $string
+          .= sprintf
+          q{<a name='error_%s'></a><span class='lineno'><span class='context'>%4s|</span></span>%s},
+          $index, $line, $_;
+      }
+      elsif ( $line >= $lower and $line <= $upper ) {  # ...end of error context
+
+        $string .= sprintf
+          q{<span class='lineno'><span class='context'>%4s|</span></span>%s},
+          $line, $_;
+      }
     }
-    elsif ( $line == $lower ) {
-      $string
-        .= sprintf(
-        "<a name='error_$index'></a><span class='lineno'><span class='context'>%4s|</span></span>%s",
-        $line, $_ );
-    }
-    elsif ( $line >= $lower and $line <= $upper ) {
-      $string
-        .= sprintf(
-        "<span class='lineno'><span class='context'>%4s|</span></span>%s",
-        $line, $_ );
-    }
-    else {
-      $string .= sprintf( "<span class='lineno'>%4s|</span>%s", $line, $_ )
-        unless $compact;
+    else {  # ...normal line
+      if ( !$compact ) {
+        $string .= sprintf q{<span class='lineno'>%4s|</span>%s}, $line, $_;
+      }
     }
   }
+
   $fd->close;
 
-  $string = "<div class='source'>" . $string . "</div>";
-  $string;
+  $string = sprintf q{<div class='source'>%s</div>}, $string;
+
+  return $string;
 }
 
 1;
+
+__END__

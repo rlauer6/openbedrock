@@ -22,6 +22,7 @@ package TagX::TAG::NoBody::Include;
 use strict;
 use warnings;
 
+use Bedrock;
 use Bedrock::Constants qw{:chars :booleans};
 use Cwd;
 use English qw{-no_match-vars};
@@ -57,6 +58,12 @@ sub finalize {
 
   my $dir_prefix = delete $options{'dir-prefix'};
 
+  if ($dir_prefix) {
+    $self->get_logger->warn(
+      '--dir-prefix is a deprecated feature, set the INCLUDE_DIR in the configuration.'
+    );
+  }
+
   my $file = delete $options{'file'};
 
   if ( !$file && @argv ) {
@@ -64,38 +71,33 @@ sub finalize {
     $file = $tag_opts->{name} || "@argv";
   }
 
-  if ( !$file ) {
-    die "Must specify file as argument to <include>.\n";
-  }
+  die "no file specified to include\n"
+    if !$file;
 
   die "invalid filename\n"
-    if $file =~ /[.][.]/xsm;
+    if $file =~ /[.][.]?/xsm;
+
+  die "invalid path for file\n"  # paths must be relative or use --dir-prefix
+    if $file =~ /^\//xsm;
+
+  if ( $file !~ /[.].+$/xsm ) {
+    $file .= '.inc';
+  }
 
   my @file_paths;
 
   # -- if a prefix exists, we assume an absolute path (might want to
   # reconsider this 'feature')
   if ($dir_prefix) {
-    $self->get_logger->warn('POSSIBLE SECURITY ISSUE USING ABSOLUTE PATHS!');
-
     push @file_paths, sprintf '%s/%s', $dir_prefix, $file;
-
-    if ( $file !~ /[.].+$/xsm ) {
-      push @file_paths, sprintf '%s/%s.inc', $dir_prefix, $file;
-    }
   }
   else {
 
-    # what they asked for
-    push @file_paths, $file;
-
-    # in case they forgot the inc
-    if ( $file !~ /[.].+$/xsm ) {
-      push @file_paths, $file . '.inc';
-    }
-
     # relative to DOCUMENT_ROOT
     if ( $file =~ /^\~(.*)$/xsm ) {
+
+      $self->get_logger->debug( 'DOCUMENT_ROOT: ' . $ENV{DOCUMENT_ROOT} );
+
       if ( $ENV{DOCUMENT_ROOT} ) {
         $file =~ s/^\~/$ENV{DOCUMENT_ROOT}/xsm;
       }
@@ -105,14 +107,22 @@ sub finalize {
 
       push @file_paths, $file;
     }
+    elsif ( my $include_dir = $tx->getoption('INCLUDE_DIR') ) {
+      push @file_paths, cwd();
 
-    if ( $tx->getoption('INCLUDE_DIR') ) {
-      push @file_paths, sprintf '%s/%s', $tx->getoption('INCLUDE_DIR'), $file;
+      ## no critic (RequireInterpolationOfMetachars)
+
+      my @include_paths = split /:/xsm, $include_dir;
+
+      # do not allow invalid paths or paths that are owned by root
+      @include_paths = grep { -d $_ && ( stat $_ )[4] } @include_paths;
+
+      # ...except for Bedrock's
+      push @include_paths, '@libdir@/bedrock/include';
+
+      push @file_paths, map { sprintf '%s/%s', $_ } @include_paths;
     }
-    elsif ( $file =~ /^\//xsm ) {
-      $self->get_logger->warn(
-        'ATTEMPT TO INCLUDE A FILE USING AN ABSOLUTE PATH!');
-    }
+
   }
 
   my $include_file;
@@ -120,42 +130,28 @@ sub finalize {
 
   $self->get_logger->debug(
     sub {
-      sprintf 'search list: %s', join "\n", @file_paths;
+      sprintf 'include search list:\n %s', join "\n", @file_paths;
     }
   );
 
-  foreach my $f (@file_paths) {
+  foreach my $inc_file (@file_paths) {
 
-    if ( -d $f ) {
-      $self->get_logger->warn("skipping [$f] since it is a directory name");
+    if ( -d $inc_file ) {
+      $self->get_logger->warn( sprintf 'skipping [%s] not a file',
+        $inc_file );
       next;
     }
 
-    @status_info = stat $f;
-
-    # try again w/.inc if they forgot .inc?
-    if ( !@status_info && $f !~ /[.].+$/xsm ) {
-      $self->get_logger->debug(
-        sub {
-          sprintf 'looking for %s.inc file', $f;
-        }
-      );
-
-      $f = $f . '.inc';
-
-      @status_info = stat $f;
+    if ( !-r $inc_file ) {
+      $self->get_logger->warn( sprintf 'skipping [%s] not readable',
+        $inc_file );
+      next;
     }
 
-    if (@status_info) {
-      push @status_info, $f;
-      last;
-    }
+    next if !-e $inc_file;
 
-    $self->get_logger->debug(
-      sub {
-        "include: $f not found on search path";
-      }
-    );
+    @status_info = $inc_file, stat $inc_file;
+    last;
   }
 
   if (@status_info) {
@@ -194,8 +190,7 @@ sub finalize {
     }
   }
   elsif ( !$options{'optional'} ) {
-    die sprintf "Unable to open [%s] for input: No such file or directory\n",
-      $file;
+    die "file not found\n";
   }
 
   return;

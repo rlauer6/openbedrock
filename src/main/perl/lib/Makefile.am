@@ -19,6 +19,7 @@ perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
+perl5bedrockpodlibdir      		  = $(perl5libdir)/Bedrock/Pod
 
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
@@ -46,6 +47,9 @@ perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 
 perl5bedrockloglib_DATA = \
    Bedrock/Log/Spooler.pm
+
+perl5bedrockpodlib_DATA = \
+   Bedrock/Pod/Html.pm
 
 perl5lib_DATA = \
     Bedrock.pm \
@@ -88,6 +92,8 @@ perl5bedrocktemplatelib_DATA = \
 BEDROCK_TEMPLATE=$(perl5bedrocktemplatelib_DATA:.pm=.pm.in)
 
 BEDROCK_LOG=$(perl5bedrockloglib_DATA:.pm=.pm.in)
+
+BEDROCK_POD=$(perl5bedrockpodlib_DATA:.pm=.pm.in)
 
 perl5bedrockapplicationlib_DATA = \
     Bedrock/Application/Plugin.pm
@@ -283,6 +289,7 @@ perl5blmlib_DATA = \
     BLM/FTP.pm \
     BLM/SMTP.pm \
     BLM/Session.pm \
+    BLM/Source.pm \
     BLM/Stat.pm \
     BLM/Timenow.pm
 
@@ -320,6 +327,7 @@ PERL_PM = \
     $(BEDROCK_MODEL) \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
+    $(BEDROCK_POD) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \
