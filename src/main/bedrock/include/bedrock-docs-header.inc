@@ -12,3 +12,7 @@
     <td colspan="2"><hr></td>
   </tr>
 </table>
+
+<if $module>
+<h2><var $module></h2>
+</if>

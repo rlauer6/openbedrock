@@ -34,10 +34,10 @@ our $MODEL = Bedrock::Hash->new(
   )
 );
 
+use Test::More;
+
 use strict;
 use warnings;
-
-use Test::More;
 
 use DBI;
 use Data::Dumper;
@@ -68,14 +68,19 @@ if ($EVAL_ERROR) {
 ########################################################################
 
 MyApp::Users->_create_model($dbi);
-my $rows = $dbi->do("describe users");
-is( $rows, 4, "create table users" )
-  or BAIL_OUT("could not create table 'users'");
+
+my $rows = $dbi->do('describe users');
+
+is( $rows, 4, 'create table users' )
+  or BAIL_OUT(q{could not create table 'users'});
 
 my $users = MyApp::Users->new($dbi);
-$users->set( email => 'someuser@example.com' );
-$users->set( fname => 'fred' );
-$users->set( lname => 'flintstone' );
+
+$users->set(
+  email => 'someuser@example.com',
+  fname => 'fred',
+  lname => 'flintstone',
+);
 
 my $id = $users->save();
 
@@ -87,9 +92,14 @@ subtest 'read record' => sub {
 ########################################################################
   my $new_user = $users->new( $dbi, $id );
 
-  is( $new_user->get('email'), 'someuser@example.com' );
-  is( $new_user->get('fname'), 'fred' );
-  is( $new_user->get('lname'), 'flintstone' );
+  is( $new_user->get('email'), 'someuser@example.com' )
+    or diag( Dumper( [$new_user] ) );
+
+  is( $new_user->get('fname'), 'fred' )
+    or diag( Dumper( [$new_user] ) );
+
+  is( $new_user->get('lname'), 'flintstone' )
+    or diag( Dumper( [$new_user] ) );
 };
 
 END {

@@ -28,13 +28,13 @@ use strict;
 use warnings;
 
 use Bedrock qw(:booleans slurp_file);
+use Bedrock::PodWriter qw(pod2html);
 use Bedrock::Apache::Constants qw(:http);
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:regexp :chars :booleans :defaults);
 use Bedrock::Context qw(init_log4perl_logger);
 use Bedrock::Dump;
 use Bedrock::Handler qw(%BEDROCK_CONFIG_CACHE);
-use Bedrock::Pod::Html;
 use Bedrock::Template;
 use Bedrock::VERSION qw(version);
 use bedrock_handler_common;
@@ -149,6 +149,8 @@ sub handler {
     ####################################################################
     my $uri = $r->uri;
     $uri =~ s/^$config->{BEDROCK_ADMIN_DIR}//xsm;
+
+    $LOGGER->debug("handling: $uri");
 
     for ($uri) {
       /plugins\/?(.*?)$/xsm && do {
@@ -288,11 +290,7 @@ sub is_available_on_metacpan {
 
   my $url = q{https://metacpan.org/pod/} . $module;
 
-  $LOGGER->debug("looking for $url");
-
   my $req = $ua->head($url);
-
-  $LOGGER->debug( Dumper($req) );
 
   return $req->code eq '200' ? $url : $EMPTY;
 }
@@ -308,7 +306,7 @@ sub show_pod {
 
   my $cgi = CGI->new;
 
-  if ( $cgi->param('external') eq '1' ) {
+  if ( $cgi->param('external') && $cgi->param('external') eq '1' ) {
     my $admin_dir = $bedrock_handler->config->{BEDROCK_ADMIN_DIR};
 
     my $referer = $headers{Referer};
@@ -392,18 +390,10 @@ sub _show_pod {
   }
 
   return
-    if !$html || length $html < $POD_MIN_SIZE;
-  #
-  #    my $message = "No documentation found for $file. $EVAL_ERROR";
-  #
-  #    return create_error_page(
-  #      $config,
-  #      back_url => $back_url,
-  #      error    => $message
-  #    );
-  #  }
+    if !$html || length($html) < $POD_MIN_SIZE;
 
-  my $top_section = header( $config, back_url => $back_url );
+  my $top_section
+    = header( $config, back_url => $back_url, module => $module );
 
   $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
 
@@ -429,6 +419,10 @@ sub create_pod_file {
 
     return slurp_file $pod;
   };
+
+  if ($EVAL_ERROR) {
+    $LOGGER->error("pod2html error: $EVAL_ERROR");
+  }
 
   if ( -e $pod ) {
     unlink $pod;
@@ -531,8 +525,6 @@ sub get_all_modules {
 
     my @modules = get_modules( $dir, $no_blms );
 
-    $LOGGER->debug( 'filtering on ' . ( $filter || 'nothing' ) );
-
     foreach my $file (@modules) {
       next if !has_pod("$file.pm");
 
@@ -576,7 +568,7 @@ sub get_module_name {
 
   ($file) = fileparse($file);
 
-  $LOGGER->debug("no package name for $file.pm");
+  $LOGGER->warn("no package name for $file.pm");
 
   return "$file";
 }
@@ -804,13 +796,13 @@ sub system_docs {
   my $module_listing = $BEDROCK_CONFIG_CACHE{SYSTEM_POD_LISTING};
 
   if ( !$module_listing ) {
-    $LOGGER->debug('no system listing in cache');
+    $LOGGER->trace('no system listing in cache');
 
     $module_listing = get_all_modules( $pod_paths, $FALSE );
     $BEDROCK_CONFIG_CACHE{SYSTEM_POD_LISTING} = $module_listing;
   }
   else {
-    $LOGGER->debug('retrieving system pod listing from cache');
+    $LOGGER->trace('retrieving system pod listing from cache');
   }
 
   return $NOT_FOUND
@@ -943,7 +935,7 @@ sub markdown_docs {
   my $markdown_listing = $BEDROCK_CONFIG_CACHE{MARKDOWN_LISTING};
 
   if ($markdown_listing) {
-    $LOGGER->debug('retrieving listing from cache');
+    $LOGGER->trace('retrieving listing from cache');
   }
 
   my $config         = $bedrock_handler->config;
@@ -1007,7 +999,7 @@ sub pod_docs {
   my $module_listing = $BEDROCK_CONFIG_CACHE{POD_LISTING};
 
   if ( !$module_listing ) {
-    $LOGGER->debug('no listing in cache');
+    $LOGGER->trace('no listing in cache');
 
     if ( $pod_paths && @{$pod_paths} ) {
       $module_listing = get_all_modules( $pod_paths, 0 );
@@ -1016,7 +1008,7 @@ sub pod_docs {
     }
   }
   else {
-    $LOGGER->debug('retrieved pod listing from cache');
+    $LOGGER->trace('retrieved pod listing from cache');
   }
 
   if ( $module && $module_listing && keys %{$module_listing} ) {
@@ -1238,12 +1230,8 @@ sub validate_paths {
 ########################################################################
   my (@paths) = @_;
 
-  $LOGGER->debug( 'validating: ', Dumper( \@paths ) );
-
   # only valid paths...
   my %valid_paths = map { $_ => -d $_ && -r $_ } @paths;
-
-  $LOGGER->debug( 'valid paths: ', Dumper( \%valid_paths ) );
 
   if ( any { !$_ } values %valid_paths ) {
     $LOGGER->warn( 'found invalid valid paths: ',
@@ -1263,7 +1251,7 @@ sub get_doc_paths {
   $type = uc "${type}_PATHS";
 
   if ( exists $BEDROCK_CONFIG_CACHE{$type} ) {
-    $LOGGER->debug('reading from cache!');
+    $LOGGER->trace('reading from cache!');
 
     return $BEDROCK_CONFIG_CACHE{$type};
   }
@@ -1271,7 +1259,7 @@ sub get_doc_paths {
     $LOGGER->trace( Dumper \%BEDROCK_CONFIG_CACHE );
   }
 
-  $LOGGER->debug('nothing in cache!');
+  $LOGGER->trace('nothing in cache!');
 
   my $path_list = $config->{$type} // $EMPTY;
 

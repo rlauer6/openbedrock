@@ -16,31 +16,42 @@ BEGIN {
   }
 }
 
-use CGI qw/:cgi/;
+use CGI qw(:cgi);
 
 # 8<------------------- start of fix ---------------------------------
 #  fix for POSTs that are somewhat big, some servers will terminate
 #  the connection if the server does not respond quickly enough,
-#  mistakely belieiving it may be a DoS attack.
+#  mistakely believing it may be a DoS attack.
 param;
 # 8<------------------- end of fix -----------------------------------
 
-use Bedrock;
-use Apache::Bedrock;
-use Apache::BedrockDocs;
-use Apache::BedrockSessionFiles;
+use Bedrock;  # placing this first, also "fixes" @INC
+
 use Apache::Request_cgi;
+use Bedrock::Apache::Constants qw(:http);
+use Bedrock::Constants qw(:chars);
 use Carp;
 use English qw{-no_match_vars};
 
-use Readonly;
+########################################################################
+sub get_handler {
+########################################################################
+  my ($name) = @_;
 
-Readonly our $NOT_FOUND    => 404;
-Readonly our $FORBIDDEN    => 403;
-Readonly our $SERVER_ERROR => 500;
+  $name //= $PROGRAM_NAME;
+
+  my $class = $EMPTY;
+
+  ## no critic (ProhibitUnusedCapture)
+  if ( $name =~ /(bedrock)\-?(?<suffix>.*?)?[.]cgi$/xsm ) {
+    $class = join q{}, map {ucfirst} split /\-/xsm, $LAST_PAREN_MATCH{suffix};
+  }
+
+  return 'Apache::Bedrock' . $class;
+}
 
 ########################################################################
-sub error {
+sub http_error {
 ########################################################################
   my ( $status, $status_name, $message ) = @_;
 
@@ -65,134 +76,83 @@ END_OF_HTML
   exit 1;
 }
 
-$SIG{TERM} = \&confess;
+# +------------------------+
+# | MAIN SCRIPT START HERE |
+# +------------------------+
 
-# In order to determine Bedrock's log level, we look in the
-# environment for `BedrockLogLevel`.  The default level is `info`.
-# We do this so that we are logging at the correct level upon entry to
-# this script.  Reading the log level from the Bedrock configuration
-# is too late if we want to log information regarding the process of
-# interpretting the configuration file (and we do).  Ideally we would
-# use Apache's log level, however that is not directly exposed to us
-# in a CGI Perl script.
-#
-# Apache's httpd.conf configuration file can define (and does) define
-# a log level.
-#
-#   LogLevel warn
-#
-# We recommend that you simply clone the value of LogLevel using the
-# environment variable `BedrockLoglevel`.
-#
-#   LogLevel warn
-#   SetEnv BedrockLogLevel warn
-#
-# It's possible to use Apache::ConfigFile to parse Apache's
-# configuration file, however we would have to know where the virtual
-# host and server configuration files reside in order to munge for
-# `LogLevel`.
+local $SIG{TERM} = \&confess;
 
 my $log_level = $ENV{BedrockLogLevel} // $ENV{LogLevel};
 
 my $r = Apache::Request_cgi->new( log_level => $log_level );
 
-my $code;
+my $class = get_handler $PROGRAM_NAME;
 
-$r && $r->info("---- Bedrock CGI script [$PROGRAM_NAME] started ----");
+$r->info("Bedrock CGI started with handler: [$class]");
 
-for ("$PROGRAM_NAME") {
-  /bedrock[.]cgi/xsm && do {
-    $code = Apache::Bedrock::handler($r);
-    last;
-  };
+my $code = eval {
+  my $file = $class;
+  $file =~ s/::/\//gxsm;
 
-  /bedrock\-docs[.]cgi/xsm && do {
-    $code = Apache::BedrockDocs::handler($r);
-    last;
-  };
+  require "$file.pm";
 
-  /bedrock\-session\-files[.]cgi/xsm && do {
-    $code = Apache::BedrockSessionFiles::handler($r);
-    last;
-  };
+  my $handler = "${class}::handler";
 
-  # custom bedrock handler
-  /bedrock\-(.*?)[.]cgi$/xsm && do {
-    my $cgi_suffix = $1;
-    my $class;
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
 
-    map { $class .= ucfirst $_; } split /\-/xsm, $cgi_suffix;
+  return &{$handler}($r);
+};
 
-    $class = 'Apache::Bedrock' . $class;
-
-    $r && $r->debug("Custom handler detected: [$class]");
-
-    eval "require $class";  ## no critic (ProhibitStringyEval)
-
-    if ( !$EVAL_ERROR ) {
-      eval q{$code = &} . $class . q{::handler( $r );};  ## no critic (ProhibitStringyEval)
-
-      if ($EVAL_ERROR) {
-        error( 500, "could not invoke handler\n" . $EVAL_ERROR );
-      }
-    }
-    else {
-      error( 500, "could not load $class " . $EVAL_ERROR );
-    }
-
-    last;
-  };
+if ($EVAL_ERROR) {
+  http_error( 500, "could not invoke handler\n" . $EVAL_ERROR );
 }
 
-# This CGI tries to do something intelligent with handler return codes
-# understanding that the return code from this script itself is pretty
-# irrelevant.  Apache more or less ignores that, so we try to use the
-# return code from the handler as a way to figure out what we should
-# present to the user, however a better approach may be to simply do
-# nothing.
-#
-# Custom handlers can always detect whether they are running as
-# mod_perl or through this CGI version of Bedrock ($ENV{MOD_PERL}) and
-# handle any HTTP status returns by itself. That is what the default
-# Bedrock handler sort of does and always return an OK status code
-# (0).
-#
-# If you are using this harness to run your own customized mod_perl
-# handler, take note of the information above.
+if ( $r->content_type =~ /json/xsm ) {
+  exit $code;
+}
 
-( $code == $NOT_FOUND ) && do {
-  error(
-    $NOT_FOUND,
-    'Not Found',
-    "The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server."
+$r->log->debug( "return code from handler: " . $code );
+
+my %error_handlers = (
+  $REDIRECT => sub {
+    $r->send_http_header;
+    return $REDIRECT;
+  },
+  $NOT_FOUND => sub {
+    http_error(
+      $NOT_FOUND,
+      'Not Found',
+      "The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server."
+    );
+    return $NOT_FOUND;
+  },
+  $FORBIDDEN => sub {
+    http_error( $FORBIDDEN, 'Forbidden',
+      q{You don\'t have permission to access the requested object. It is either read-protected or not readable by the server.}
+    );
+
+    return $FORBIDDEN;
+  },
+);
+
+if ( $error_handlers{$code} ) {
+  exit $error_handlers{$code}->();
+}
+else {
+  http_error(
+    $code,
+    'Internal Server Error',
+    "Unknown Bedrock error: [$code]"
   );
 
-  exit $NOT_FOUND;
-};
-
-( $code == $FORBIDDEN ) && do {
-  error( $FORBIDDEN, 'Forbidden',
-    q{You don\'t have permission to access the requested object. It is either read-protected or not readable by the server.}
-  );
-
-  exit $FORBIDDEN;
-};
-
-# no code missing, just a stub in the event we decide that we need to
-# do something special
-( $r->content_type =~ /json/xsm ) && do {
   exit $code;
-};
-
-($code) && do {
-  error( $code, 'Internal Server Error', "Unknown Bedrock error: [$code]" );
-  exit $code;
-};
+}
 
 exit 0;
 
 1;
 
+__END__
 ## no critic (RequirePodSections)
 
 __END__
@@ -220,6 +180,15 @@ session directory (C<Apache::BedrockSessionFiles>).
 When C<bedrock.cgi> is invoked, it determines which handler to use by
 examing the script name.
 
+This CGI can invoke any request handler whose name conforms to a
+certain pattern. The name of the request handler to invoke is
+derived from the suffix (portion after "bedrock-") of CGI's name
+without the extension.
+
+ bedrock /(bedrock)\-?(?<suffix>.*?)?[.]cgi$/
+
+Thus you can use this harness to invoke the handlers included in this project:
+
 =over 5
 
 =item C<Apache::Bedrock>
@@ -245,14 +214,30 @@ the file using the template shown below:
  bedrock-CLASSNAME.cgi
 
 Dashes in your CLASSNAME are removed and the first letter of each word
-is upper cased. Using the model above you can see that the session
-file handler is named C<Apache::BedrockSessionFiles> and the CGI is
-named C<bedrock-session-files>.
+is assumed to be upper cased. Using the model above you can see that
+the session file handler is named C<Apache::BedrockSessionFiles> and
+the CGI is named C<bedrock-session-files>.
 
 If the name of your Bedrock CGI script is C<bedrock-foo-bar>, then the
-class should be named C<Apache::BedrockFooBar>.
+class should be named C<Apache::BedrockFooBar> and should be installed
+either alongside the other handlers (@libdir@/perl5/Bedrock) or
+somewhere along C<perl>'s C<@INC> paths.
 
 =back
+
+=head2 ERROR HANDLING
+
+This CGI tries to do something intelligent with handler return codes
+understanding that the return code from this script which is run under
+C<mod_cgi> itself is pretty irrelevant.  C<mod_cgi> more or less
+ignores the return code, however this script expects to use the return
+code from the handler as a way to figure out what we should present to
+the user. Your handlers should be capable of running under either
+C<mod_cgi> or C<mod_perl> and should return an error code in the same
+way that C<mod_perl> handlers return error codes.
+
+You handler can detect whether they it is running under C<mod_perl> or
+C<mod_cgi> by examining the environment variable C<MOD_PERL>.
 
 =head1 LOGGING
 
@@ -260,14 +245,15 @@ As of Bedrock 3.2.x, logging is done using L<Log::Log4perl> via the
 C<Bedrock::Logger> role. When the C<get_logger()> method of the
 request object (L<Apache::Bedrock::Request_cgi> is called the first
 time to log a message, the C<Bedrock::Logger> will provision the
-default appender that writes to STDERR. This implies that all log
-messages prior to C<Apache::Bedrock::handler()> being called will be
-written to the log file defined in Apache's configuration file.
+default appender that writes to STDERR. 
 
-Once C<Apache::Bedrock::handler()> is invoked, the Bedrock::Context
+I<Note that that all log messages prior to your handler being called being called will be
+written to the log file defined in Apache's configuration file at the level defined by the environment variable C<LogLevel> or C<BedrockLogLevel> (See L</LOG LEVELS>).>
+
+Once your handler method is invoked, the L<Bedrock::Context>
 constructor will attempt to find a F<log4perl.conf> file somewhere in
-Bedrocks's configuration paths (C<BEDROCK_CONFIG_PATH,
-CONFIG_PATH>). If a configuration file is found it will passed to
+Bedrocks's configuration paths (C<BEDROCK_CONFIG_PATH>,
+C<CONFIG_PATH>). If a configuration file is found it will passed to
 L<Log::Log4perl> for processing.
 
 =head1 LOG LEVELS
@@ -278,8 +264,8 @@ You can set that in your Apache configuration file as shown below.
 
  SetEnv BedrockLogLevel warn
 
-Note that the log levels set here are a subset of the log level values
-used by Apache.
+Note that the log levels set here should be one of a subset of the log
+level values used by Apache.
 
  error
  warn
@@ -295,15 +281,61 @@ I<LogLevel> using the environment variable I<BedrockLoglevel>.
  SetEnv BedrockLogLevel warn
 
 Messages logged in the Bedrock handler itself using the Apache request
-object are logged to the virtual host or main Apache error log.
+object are logged to whatever has been configured in the virtual host
+configuration or the main Apache configuration file if no virtual
+hosts have been defined.
 
- $r && $r->debug("this is a debug message");
+ $r->debug("this is a debug message");
+
+=head2 Determining Apache's Log Level
+
+In order to determine Bedrock's log level, we look in the
+environment for `BedrockLogLevel`.  The default level is `info`.
+We do this so that we are logging at the correct level upon entry to
+this script.  Reading the log level from the Bedrock configuration
+is too late if we want to log information regarding the process of
+interpretting the configuration file (and we do).  Ideally we would
+use Apache's log level, however that is not directly exposed to us
+in a CGI Perl script.
+
+Apache's F<httpd.conf> configuration file can define (and does) define
+a log level.
+
+ LogLevel warn
+
+It's possible to use L<Apache::ConfigFile> to parse Apache's
+configuration file, however we would have to know where the virtual
+host and server configuration files reside in order to munge for
+C<LogLevel>.
+
+=head2 Finer Grained Control of Logging
+
+As noted above, after the request handler invokes your C<handler()>
+method, logging is done by L<Log::Log4perl> and configured using the
+F<log4perl.conf> file found by the L<Bedrock::Context> class during
+initialization. Within the context of Bedrock processing, modules use
+the C<Bedrock::Logger> role and the C<get_logger()> method to retrieve
+the L<Log::Log4perl> logger. To debug any of your modules (including
+Bedrock itself) you can set the debug level of categories in the
+F<log4perl.conf> file.
+
+When processing tags Bedrock will set the debug level to C<$DEBUG> or
+C<$TRACE> when the one or more C<--verbose> options are defined in the
+tag.
+
+Log at the C<$DEBUG> level...
+
+ <var --versbose $foo.bar()>    
+
+Log at the C<$TRACE> level...
+
+ <var --verbose --verbose $foo.bar()>
 
 =head1 CONFIGURING APACHE
 
 C<bedrock.cgi> is invoked by Apache as the parser for Bedrock
-content. The handler is configured in the normal manner in which
-Apache handlers are configured.
+content. This Apache handler is configured in the normal manner in
+which Apache handlers are configured.
 
   Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
 
@@ -333,7 +365,7 @@ handler.
     SetHandler bedrock-cgi
   </IfModule>
 
-This method works with any of the handlers describe above.
+This method works with any of the handlers described above.
 
 =head1 DIAGNOSTICS
 

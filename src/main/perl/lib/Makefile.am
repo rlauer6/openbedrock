@@ -19,7 +19,6 @@ perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
-perl5bedrockpodlibdir      		  = $(perl5libdir)/Bedrock/Pod
 
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
@@ -48,9 +47,6 @@ perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 perl5bedrockloglib_DATA = \
    Bedrock/Log/Spooler.pm
 
-perl5bedrockpodlib_DATA = \
-   Bedrock/Pod/Html.pm
-
 perl5lib_DATA = \
     Bedrock.pm \
     bedrock_handler_common.pm
@@ -73,6 +69,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \
+    Bedrock/PodWriter.pm \
     Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
@@ -101,9 +98,7 @@ perl5bedrockapplicationlib_DATA = \
 BEDROCK_APPLICATION=$(perl5bedrockapplicationlib_DATA:.pm=.pm.in)
 
 perl5bedrockapachelib_DATA = \
-    $(BEDROCK_APACHE:.pm.in=.pm) \
-    Bedrock/Apache/bedrock.pl \
-    Bedrock/Apache/bedrock_sh.pl
+    $(BEDROCK_APACHE:.pm.in=.pm)
 
 BEDROCK_APACHE = \
     Bedrock/Apache/Bedrock.pm.in \
@@ -345,13 +340,8 @@ PERL_PM = \
     $(BLM) \
     $(BLM_STARTUP)
 
-PERL_PL = \
-    Bedrock/Apache/bedrock.pl \
-    Bedrock/Apache/bedrock_sh.pl
-
 dist_noinst_DATA = \
-    $(PERL_PM) \
-    $(PERL_PL)
+    $(PERL_PM)
 
 @do_subst_command@
 
@@ -363,9 +353,7 @@ SUFFIXES = .tdy .in .pm .pm.in .pl
 
 TIDY_PM = $(PERL_PM:.pm.in=.pm.in.tdy)
 
-TIDY_PL = $(PERL_PL:.pl=.pl.tdy)
-
-tidy: $(TIDY_PM) $(TIDY_PL)
+tidy: $(TIDY_PM)
 
 %.in.tdy: %
 	test -e $<.in && perltidy -vt=2 -pt=1 -dws -i=2 -lp -ci=0 -cti=1 $<.in || true

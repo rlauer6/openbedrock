@@ -1,6 +1,3 @@
-#!@PERL@ -w
-
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -24,82 +21,99 @@
 package BLM::Startup::Input;
 
 use strict;
+use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
-use Bedrock::Hash;
+use Bedrock qw{:booleans};
+use Bedrock::Constants qw(:chars);
 use Data::Dumper;
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw(reftype);
 
-@ISA = qw(Bedrock::Hash);
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
+use parent qw(Bedrock::Hash);
+
+########################################################################
 sub TIEHASH {
+########################################################################
   my ( $class, $ctx, $config ) = @_;
 
-  my $self = bless {},  $class;
+  my $self = bless {}, $class;
 
   $self->{'config'}  = $config;
   $self->{'verbose'} = $config->{'verbose'};
   $self->{'vars'}    = {};
   $self->{'_ctx'}    = $ctx;
 
-  $config->{scrubber} && do {
-    require HTML::Scrubber;
-    my $cfg = $config->{scrubber};
+  if ( $config->{scrubber} ) {
+    eval {
+      require HTML::Scrubber;
 
-    $self->{'_html_scrubber'} = new HTML::Scrubber;
+      my $cfg = $config->{scrubber};
 
-    $self->scrubber->allow( split ' ', $cfg->{allow} )
-      if exists $cfg->{allow};
-    
-    $self->scrubber->deny( split ' ', $cfg->{deny} )
-      if exists $cfg->{deny};
-  };
+      $self->{'_html_scrubber'} = HTML::Scrubber->new;
+
+      if ( exists $cfg->{allow} ) {
+        $self->scrubber->allow( split $SPACE, $cfg->{allow} );
+      }
+
+      if ( exists $cfg->{deny} ) {
+        $self->scrubber->deny( split $SPACE, $cfg->{deny} );
+      }
+    };
+  }
 
   my @params = $ctx->getInputValue;
-  
+
   for my $key (@params) {
     my $value = $ctx->getInputValue($key);
-    if ( ref($value) && reftype($value) eq 'ARRAY') {
-      $value = [ map { $self->scrub($_) } @$value ];
+
+    if ( is_array($value) ) {
+      $value = [ map { $self->scrub($_) } @{$value} ];
     }
     else {
       $value = $self->scrub($value);
     }
-    
+
     $self->{'vars'}->{$key} = $value;
   }
 
-  $self;
+  return $self;
 }
 
+########################################################################
 sub scrub {
-  return ( $_[0]->{'_html_scrubber'} )
-  ? $_[0]->{'_html_scrubber'}->scrub( $_[1] )
-  : $_[1];
+########################################################################
+  my ( $self, $value ) = @_;
+
+  return $self->scrubber ? $self->scrubber->scrub($value) : $value;
 }
 
+########################################################################
 sub scrubber {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
-  $self->{'_html_scrubber'};
+  return $self->{'_html_scrubber'};
 }
 
+########################################################################
 sub upload_file {
-  my $self     = shift;
-  my $form_var = shift;
+########################################################################
+  my ( $self, $form_var, @args ) = @_;
 
-  my $result = $self->{'_ctx'}->upload_file( $form_var, @_ );
+  my $result = $self->{'_ctx'}->upload_file( $form_var, @args );
+
   my $file = $self->{$form_var};
+
   $self->{$form_var} = "$file";
 
-  $result;
+  return $result;
 }
 
+########################################################################
 sub FETCH {
+########################################################################
   my ( $self, $key ) = @_;
   my $ref = $self->{'vars'}->{$key};
 
@@ -111,43 +125,70 @@ sub FETCH {
     $self->{'vars'}->{$key} = $ref;
   }
 
-  $self->{'vars'}->{$key};
+  return $self->{'vars'}->{$key};
 }
 
+########################################################################
 sub STORE {
-  $_[0]->{'vars'}->{ $_[1] } = $_[2];
+########################################################################
+  my ( $self, $key, $value ) = @_;
+
+  return $self->{'vars'}->{$key} = $value;
 }
 
+########################################################################
 sub FIRSTKEY {
-  my $self = shift;
-  my $a    = scalar keys %{ $self->{'vars'} };
-  each %{ $self->{'vars'} };
+########################################################################
+  my ($self) = @_;
+
+  my $a = scalar keys %{ $self->{'vars'} };
+
+  return each %{ $self->{'vars'} };
 }
 
+########################################################################
 sub NEXTKEY {
-  each %{ shift->{'vars'} };
+########################################################################
+  my ($self) = @_;
+
+  return each %{ $self->{'vars'} };
 }
 
+########################################################################
 sub EXISTS {
-  exists $_[0]->{'vars'}->{ $_[1] };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return exists $self->{'vars'}->{$key};
 }
 
+########################################################################
 sub CLEAR {
-  %{ shift->{'vars'} } = ();
+########################################################################
+  my ($self) = @_;
+
+  return %{ $self->{'vars'} } = ();
 }
 
+########################################################################
 sub DELETE {
-  delete $_[0]->{'vars'}->{ $_[1] };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return delete $self->{'vars'}->{$key};
 }
 
 1;
 
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
 =head1 PUBLIC
 
-C<BLM::Startup::Input> - provides access to HTML form variables and more!
+BLM::Startup::Input - provides access to HTML form variables and more!
 
 =head1 SYNOPSIS
 
@@ -430,116 +471,10 @@ if the mime type of the file is not one of the types you specify.
 
 J. Sridhar
 
-Rob Lauer - rlauer@signatureinfo.com
+Rob Lauer - rlauer6@comcast.net
+
+=head1 SEE ALSO
+
+L<CGI>
 
 =cut
-
-#
-# Revision 1.30  2012/12/11 20:37:28  rlauer
-# - pod for upload_file(), create path if does not exist
-#
-# Revision 1.29  2012/12/07 23:02:57  rlauer
-# - typo in pod
-#
-# Revision 1.28  2012/07/29 16:23:08  lauerrc
-# - had my $self twice in TIEHASH
-#
-# Revision 1.27  2012/04/13 21:22:11  eutl420
-# - pod typo
-#
-# Revision 1.26  2012/02/24 19:11:28  eutl420
-# -pod enhancements for file encryption
-#
-# Revision 1.25  2012/02/20 19:23:50  eutl420
-# - pod editing
-#
-# Revision 1.24  2012/02/20 17:05:16  eutl420
-# - tweak pod for upload_file() method
-#
-# Revision 1.23  2012/02/15 20:03:27  eutl420
-# - updated documentation for upload_file()
-#
-# Revision 1.22  2011/09/15 16:05:31  eutl420
-# - perl tidy
-#
-# Revision 1.21  2011/09/14 18:49:09  eutl420
-# - prevent the form variable of type 'file' from being returned as file handle
-# - use ref, not UNIVERSAL in FETCH, partly anal, partly more correct
-#
-# Revision 1.20  2011/08/22 23:37:27  eutl420
-# - enable scrubbing of HTML input for malicsious javascript injection
-#
-# Revision 1.19  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.18  2011/07/12 19:10:35  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.17  2011/07/04 13:40:32  eutl420
-# - fix typo in pod E<sol>
-#
-# Revision 1.16  2010/11/29 15:57:51  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.15  2010/11/20 04:10:12  rlauer
-# - add note about filehandle nature of the upload_file parameter
-#
-# Revision 1.14  2010/11/19 19:14:21  rlauer
-# - documentation edits
-#
-# Revision 1.13  2010/11/15 02:21:15  rlauer
-# - minor documentation tweaks
-#
-# Revision 1.12  2010/11/14 21:01:59  rlauer
-# - minor documentation fixes
-#
-# Revision 1.11  2009/12/30 12:40:51  rlauer
-# added documentation
-#
-# Revision 1.10  2009/12/28 20:32:33  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.9  2009/12/23 12:31:07  rlauer
-# - Input.pm is an implementation of a hash, thus any vars set that are supposed to be class private vars need to be handled a little differently
-#   when you are accessing them...i.e. $self->{foo} will invoke the default FETCH which is definitely not what you want if you are trying to
-#   store some sort of class private variable...i.e. ctx!  Probably can do this better by using CORE::FETCH or SUPER?
-#
-# Revision 1.8  2009/12/23 00:45:12  rlauer
-# save context object
-#
-# Revision 1.7  2008/12/03 14:01:19  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.6  2002/02/13 18:00:20  rlauer
-# Force an array CGI var to be a SIS::Array
-#
-# Revision 1.5  2001/02/14 15:35:46  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.4  2000/11/16 16:24:46  sridhar
-# Overriding all Tie::Hash methods to do things right.
-#
-# Revision 1.3  2000/11/14 14:20:35  sridhar
-# 1. Kicked out "*ctx*". Overrode FIRSTKEY and NEXTKEY to achieve this.
-# 2. Config gets passed as the last arg to constructor. We pick up
-# `verbose' from the config.
-# 3. More log messages
-#
-# Revision 1.2  2000/10/16 13:55:56  sridhar
-# Streamlining to accomodate Bedrock shell:
-# 1. Module doesn't do anything about input until asked for.
-# 2. Stores the context object as a private value for later unpacking of
-# the CGI vars
-#
-# Revision 1.1  2000/06/06 20:42:08  sridhar
-# Bedrock loadable modules for startup
-#
-#
