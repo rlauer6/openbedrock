@@ -185,7 +185,7 @@ For more information regarding how to construct test descriptions, see
 
 # Adding a New Test
 
-As noted above, tests are specified in the `Makefile.am` file, s don't
+As noted above, tests are specified in the `Makefile.am` file, so don't
 expect that if you place more _test_ files in the project they will be
 automatically executed when you invoke `make test`! Follow the recipe
 below to add a new test to the project.
@@ -221,24 +221,24 @@ below to add a new test to the project.
        t/14-flush.yml \
        t/15-include.yml
    ```
-1. Run the test
+1. Run the test to ensure it does what you expect
    ```
    make test TESTS=include
    ```
-1. Add the test to the git repository
+1. Add the test to the git repository, update the ChangeLog, etc, etc
    ```
    git add t/15-include.yml
    ```
    
 # Overriding Environment and Configuration Variables
 
-Bedrock provides objects (`$env`, `$config`) that provide access to
-environment variables and Bedrock's configuration.  While your test
-snippet is running you also have access to the `$env` and `$config`
-objects.  These are simply hashes that provide access to that
-information.
+Bedrock provides objects (`$env`, `$config`) that give applications
+access to environment variables and Bedrock's configuration.  While
+your test snippet is running you also have access to the `$env` and
+`$config` objects.  These are simply hashes that provide access to
+that information.
 
-Using environment variables allows you to alter the way your snippet
+Using environment variables, you can alter the way your test snippet
 behaves.
 
 ```
@@ -255,23 +255,24 @@ behaves.
 ```
 $ make test FOO=bar
 ```
-You can do the same thing by setting values in your configuration file
-`<tagx.xml>`.
+
+You can also set value in your configuration file
+(`<tagx.xml>`) that allow you to access values or alter the behavior
+of tags that expect values in the configuration file.
 
 You can point the tests to your custom Bedrock configuration file by
 settting the `BEDROCK_CONFIG_PATH` environment variable.
 
     $ BEDROCK_CONFIG_PATH=/tmp make test
 
-The test script will look for a `tagx.xml` file in that directory,
-otherwise it will look in the source tree (`src/main/bedrock/config`)
-for this project.
+By default The test script will look for a `tagx.xml` file in the
+`src/main/perl/t`.
 
 ## Specifying Environment and Configuration Values in Test Descriptions
 
 You can also override the environment and configuration values in
-`tagx.xml` temporarily for one test by setting the values in the test
-description.
+`tagx.xml` __temporarily__ for one test by setting the environment and
+configuration values in the test description.
 
 ```
  name: <sqlconnect> dsn, but no user
