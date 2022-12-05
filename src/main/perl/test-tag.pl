@@ -93,6 +93,24 @@ An arbitrary comment to help you remember what the test does.
 
 Th Bedrock snippet that defines the test.
 
+=item * include
+
+Instead of placing the test inside this YAML file, you can also
+specify the name of a file that contains the test snippet. The default
+extension should be F<.roc>. This is useful, for example for testing
+your snippet using Bedrock CLI first, then simply using that F<.roc>
+file as your test snippet.
+
+To use F<boo.roc> in the current directory:
+
+Example:
+
+ include: boo
+
+To use F<boo.roc> from the tests directory:
+
+ include: t/boo
+
 =item * result
 
 The expected result
