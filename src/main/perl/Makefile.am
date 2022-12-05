@@ -23,11 +23,13 @@ BEDROCK_TESTS = \
     t/16-case.yml \
     t/17-array.yml \
     t/18-hash.yml \
-    t/19-pebble.yml
+    t/19-pebble.yml \
+    t/20-benchmark.yml
 
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \
-    t/13-sql.yml
+    t/13-sql.yml \
+    t/21-sqlselect.yml
 
 BEDROCK_TEST_HARNESS = \
     lib/Bedrock/Test.pm.in \
@@ -73,6 +75,20 @@ test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	  TESTS="$(BEDROCK_SQL_TESTS)"; \
 	else \
 	  echo "TESTS: $$TESTS"; \
+	  if ! test -e "$TESTS"; then \
+	    set -x; \
+	    TEST_LIST=$$TESTS; \
+	    TESTS=""; \
+	    for a in $$TEST_LIST; do \
+	      echo "a = $$a"; \
+	      T=$$(find t/ -name "*$${a}.yml" -print -quit 2>/dev/null); \
+	      test -n "$$T" && TESTS="$$TESTS $$T"; \
+	    done; \
+	    if test -z "$$TESTS"; then \
+	      >&2 echo "no such test"; \
+	      exit 1; \
+	    fi; \
+	  fi; \
 	fi; \
 	test_dir=$$(mktemp -d); \
 	mkdir $$test_dir/t; \

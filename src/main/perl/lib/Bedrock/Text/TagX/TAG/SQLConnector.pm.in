@@ -20,6 +20,9 @@
 
 package TagX::TAG::SQLConnector;
 
+# TODO: investigate turning this into a 'role' instead of subclassing
+# this for <sql>, <sqlselect> tags
+
 use strict;
 use warnings;
 
@@ -47,25 +50,27 @@ sub fetch_dsn {
 ########################################################################
   my ( $self, $dsn_source ) = @_;
 
-  my ( $dsn, $user, $pass, $host );
+  my ( $dsn, $user, $pass, $host, $socket );
 
   if ( ref($dsn_source) && reftype($dsn_source) eq 'HASH' ) {
-    ( $dsn, $user, $pass, $host )
+    ( $dsn, $user, $pass, $host, $socket )
       = map { $_ // $EMPTY }
-      @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/};
+      @{$dsn_source}{qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST DBI_SOCKET/};
   }
 
   my $logger = $self->get_logger( ref $self );
 
   $logger->debug(
     sub {
-      return sprintf 'source: [%s] dsn:[%s] user: [%s] pass: [%s] host:[%s]',
+      return
+        sprintf
+        'source: [%s] dsn:[%s] user: [%s] pass: [%s] host:[%s] socket:[%s]',
         $dsn_source, $dsn, $user,
-        ( $ASTERISK x length $pass ), $host;
+        ( $ASTERISK x length $pass ), $host, $socket;
     }
   );
 
-  return ( $dsn, $user, $pass, $host );
+  return ( $dsn, $user, $pass, $host, $socket );
 }
 
 # returns (dsn, username, password)
@@ -76,7 +81,7 @@ sub get_dsn_from_config {
 
   my %dsn_spec;
 
-  foreach my $var (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST/) {
+  foreach my $var (qw/DBI_DSN DBI_USER DBI_PASS DBI_HOST DBI_SOCKET/) {
     $dsn_spec{$var} = $tx->config->get($var);
   }
 
@@ -137,7 +142,7 @@ sub get_dsn {
     'config'       => \&get_dsn_from_config,
   );
 
-  my ( $dsn, $user, $pass, $host );
+  my ( $dsn, $user, $pass, $host, $socket );
 
   foreach my $src (qw{ environment options data-sources config }) {
     my @connection = $source{$src}->( $self, $tx, %options );
@@ -148,13 +153,15 @@ sub get_dsn {
     # a. short circuits potential succesful connection strings
     # b. partially configured connection options might trip us up
 
-    $dsn  ||= $connection[0];
-    $user ||= $connection[1];
-    $pass ||= $connection[2];
-    $host ||= $connection[3];
+    $dsn    ||= $connection[0];
+    $user   ||= $connection[1];
+    $pass   ||= $connection[2];
+    $host   ||= $connection[3];
+    $socket ||= $connection[4];
 
     if ( $dsn && $user ) {
-      $logger->debug( Dumper( [ 'got user and dsn', [ $user, $dsn ] ] ) );
+      $logger->debug(
+        Dumper( [ 'got user and dsn from ', [ $src, \@connection ] ] ) );
       $tx->{DB_DSN_SOURCE} = $src;
       last;
     }
@@ -171,7 +178,7 @@ sub get_dsn {
     $host = $EMPTY;
   }
 
-  return ( $dsn, $user, $pass, $host );
+  return ( $dsn, $user, $pass, $host, $socket );
 }
 
 1;
@@ -182,17 +189,28 @@ __END__
 
 =pod
 
-=begin
+=head1 PUBLIC
 
-In order to connect to a database we need:
+TagX::TAG::SQLConnector - class that provides methods for connecting to databases
+
+=head1 SYNOPSIS
+
+ use parent qw(TagX::TAG::SQLConnector);
+
+=head1 DESCRIPTION
+
+Class that provides methods for connecting to databases using
+credentials and configuration sourced from various places.
+
+In order to connect to a database we (usually) need:
 
  data source name (e.g. dbi:mysql:database)
  username
  password
  host
 
-Note that a data source name (DSN) can include the database name.  If
-the host parameter is set it will be appended to the DSN.
+Note that a data source name (DSN) can include the database name and a
+host.  If the host parameter is set it will be appended to the DSN.
 
 All of this can be sourced from several places:
 
@@ -212,13 +230,13 @@ All of this can be sourced from several places:
  --password
  --hostname
 
-You can set the DSN as an argument in the tag, e.g.:
+You can set the DSN as an argument to the tag, e.g.:
 
  <sqlconnect --username=fred --password=flintstone dbi:mysql:bedrock:localhost>
 
 =item * Data Sources
 
-Retrieve the connection parameters from F<data-sources.xml>.
+From F<data-sources.xml>.
 
  <sqlconnect --dsn=bedrock>
 
@@ -237,6 +255,20 @@ Retrieve the connection parameters from F<data-sources.xml>.
  <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
  <scalar name="DBI_HOST">localhost</scalar>
 
-=end
+=head1 METHODS AND SUBROUTINES
+
+=head2 get_dsn
+
+Returns the four connection parameters as a list.
+
+ my $self = $self->get_dsn( $dsn, $user, $pass, $host );
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer@treasurersbriefcase.com
+
+=head1 SEE ALSO
+
+L<TagX::TAG::SQLHandler>
 
 =cut

@@ -9,9 +9,9 @@ The intent of these particular tests is to specific Perl modules that
 are used by Bedrock. Tag testing is done with the test framework found
 in `src/main/perl`.
 
-The majority of tests currently created are primarly designed to test
-the Perl modules involved in database access. There are three groups
-of tests used to exercise these modules:
+The majority of the tests currently created are primarly designed to
+test the Perl modules involved in database access. There are three
+groups of tests used to exercise these modules:
 
 | Module | Test Group |
 | ------ | ----- |

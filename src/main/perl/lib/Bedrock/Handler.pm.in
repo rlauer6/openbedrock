@@ -25,6 +25,12 @@ use warnings;
 
 our @EXPORT_OK = qw{ %BEDROCK_CONFIG_CACHE };
 
+BEGIN {
+  use Bedrock::BedrockJSON;
+
+  Bedrock::JSON->import('evolve');
+}
+
 use parent qw{ Exporter };
 
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
@@ -54,6 +60,7 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
 };
 
 use Bedrock::BedrockConfig;
+
 use Carp;
 use Cwd qw/realpath fastcwd/;
 use Data::Dumper;
@@ -66,6 +73,7 @@ use Bedrock::Constants qw{:chars :defaults :booleans};
 # see pod for notes on caching...
 
 our %BEDROCK_CONFIG_CACHE;
+our $BEDROCK_CACHE_ENABLED = $ENV{BEDROCK_CACHE_ENABLED};
 
 if ( cache_enabled() ) {
   print {*STDERR} "cacheing enabled, attempting to use cache\n";
@@ -93,6 +101,8 @@ if ( cache_enabled() ) {
 
   if ($EVAL_ERROR) {
     print {*STDERR} "cacheing not successful: \n$EVAL_ERROR\n";
+
+    $BEDROCK_CACHE_ENABLED = $FALSE;
   }
   else {
     print {*STDERR} "successfully initialized cacheing\n";
@@ -102,9 +112,7 @@ if ( cache_enabled() ) {
 ########################################################################
 sub cache_enabled {
 ########################################################################
-  my $cache_config = $ENV{BEDROCK_CACHE_CONFIG};
-
-  return $cache_config && $cache_config =~ /^yes|y|on$/ixsm;
+  return $BEDROCK_CACHE_ENABLED && $BEDROCK_CACHE_ENABLED =~ /^yes|y|on$/ixsm;
 }
 
 ########################################################################
@@ -299,22 +307,24 @@ sub load_config_from_cache {
 
   my $key = $ENV{SERVER_NAME} // $PROGRAM_NAME;
 
-  my $config = $BEDROCK_CONFIG_CACHE{$key};
-
   my $r = $self->request_handler;
 
-  if ($config) {
-    $r->log->debug('loading configuration from cache');
+  my $config = eval {
 
-    bless $config, 'Bedrock::Config';
-  }
-  else {
-    $config = $self->get_bedrock_config;
+    my $cached_config = $BEDROCK_CONFIG_CACHE{$key};
 
-    $config->{BEDROCK_CACHE_LOADED} = scalar localtime;
+    if ($cached_config) {
+      $r->log->debug('loading configuration from cache');
+      return $cached_config;
+    }
+    else {
+      return $self->get_bedrock_config;
+    }
+  };
 
-    $BEDROCK_CONFIG_CACHE{$key} = $config->devolve;
-  }
+  $config->{BEDROCK_CACHE_LOADED} //= scalar localtime;
+
+  $BEDROCK_CONFIG_CACHE{$key} //= $config;
 
   return $config;
 }
