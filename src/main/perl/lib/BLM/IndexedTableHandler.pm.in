@@ -52,7 +52,8 @@ with 'Bedrock::Logger';
 __PACKAGE__->create_accessors(
   qw{
     _search_fields
-    attributes labels
+    attributes
+    labels
     config
     field_list
     list
@@ -163,6 +164,10 @@ END_OF_SQL
 
   return $self;
 }
+
+########################################################################
+sub get_count { unshift @_, 1; goto &_find_or_count; }  ## no critic (RequireArgUnpacking)
+########################################################################
 
 ########################################################################
 sub dbi {
@@ -2142,17 +2147,15 @@ sub _format_fields_for_insert {
 }
 
 ########################################################################
-sub _find {
+sub _find_or_count {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $count_only, $self, @args ) = @_;
 
-  my $query = <<'END_OF_SQL';
- select id from %s
-END_OF_SQL
+  my $select = $count_only ? 'select count(id) as count' : 'select id';
 
   my $table_name = $self->get_table_name;
 
-  $query = sprintf $query, $table_name;
+  my $query = "$select from $table_name";
 
   my $limit = $EMPTY;
 
@@ -2161,7 +2164,7 @@ END_OF_SQL
   }
 
   if (@args) {
-    $query .= 'where ';
+    $query .= ' where ';
   }
 
   my @where_clause;
@@ -2206,6 +2209,9 @@ END_OF_SQL
   die "Could not execute query:\n$query\n$EVAL_ERROR"
     if $EVAL_ERROR;
 
+  return $result->[0]->{count}
+    if $count_only;
+
   my @records;
 
   if ( @{$result} ) {
@@ -2227,6 +2233,8 @@ END_OF_SQL
 
   return BLM::IndexedTableHandler::RecordSet->new(@records);
 }
+
+sub _find { unshift @_, undef; goto &_find_or_count }  ## no critic (RequireArgUnpacking)
 
 ########################################################################
 sub _set_get {
@@ -2650,7 +2658,7 @@ __END__
 
 =head1 PUBLIC
 
-BLM::IndexedTableHandler - Base class for a MySQL table handler
+BLM::IndexedTableHandler - Base class for a MySQL ORM
 
 =head1 SYNOPSIS
 
@@ -3136,86 +3144,77 @@ with class and id attributes that correspond to your table name.>
 
 =head1 METHODS AND SUBROUTINES
 
-=head2 new
+=head2 asref
 
- new( dbi, id, config, table-name )
- new( dbi, id, table-name )
- new( dbi, { id => id, table_name => table-name, config => config, lock => 0 |1  })
+ asref()
+ asref( key, key, ... )
 
-Polymorphism run amok, but pick your poison...these are unambiquous
-signatures. My preference in Bedrock is...
+Returns a hash object containing just the values of the columns of the
+table.  This is not a particular useful object as it is not endowed
+with the magic of the C<BLM::IndexedTableHandler> class, however some
+may find it more satisfying than seeing all of the internal guts of
+the classE<039> object hierarchy.
 
-  <plugin:IndexedTableHandler $dbi 'table-name'>
+If the C<key> argument is provided, the returned hash will contain
+only the keys specified.  C<key> can be a scalar or an array
+reference.
 
-=over 5
+ <null:record $ith.asref( $ith.get_field_list(), 'my_extra_key') >
 
-=item dbi
-
-An instance of a C<DBI> object representing an open connection to a
-MySQL database.
-
-=item id
-
-The C<id> field which uniquely identifies a record in the MySQL table.
-
-=item config
-
-Configuration object containing an object named C<tables> that
-contains options for handling MySQL tables.
-
-=item table-name
-
-The name of the MySQL table.
-
-=item lock
-
-The lock mode.
-
- 0 => no locking
- 1 => FOR UPDATE
- 2 => LOCK IN SHARE MODE
+=head2 autocomplete
 
 =over 5
 
-=item LOCK IN SHARE MODE
+=item query
 
-I<SELECT ... LOCK IN SHARE MODE sets a shared mode lock on any rows that
-are read. Other sessions can read the rows, but cannot modify them
-until your transaction commits. If any of these rows were changed by
-another transaction that has not yet committed, your query waits until
-that transaction ends and then uses the latest values.> - from http://dev.mysql.com
+Just the 'where' clause part...without the where
 
-=item FOR UPDATE
+=item columns
 
-I<SELECT ... FOR UPDATE locks the rows and any associated index entries,
-the same as if you issued an UPDATE statement for those rows. Other
-transactions are blocked from updating those rows, from doing SELECT
-... LOCK IN SHARE MODE, or from reading the data in certain
-transaction isolation levels. Consistent reads ignore any locks set on
-the records that exist in the read view. (Old versions of a record
-cannot be locked; they are reconstructed by applying undo logs on an
-in-memory copy of the record.)> - from http://dev.mysql.com
+Array reference
+
+=item uc (optional)
+
+=item ucfirst (optional)
+
+=item args
+
+Array reference
 
 =back
 
-B<Note that row level locking in MySQL is only available with the InnoDB
-engine.  The row is locked immediately when the object is instatiated
-for the give C<id>.  You should commit the record to release the lock.>
+=head2 curdate
 
-=item max_rows
+Return the current date in YYYY-MM-DD format.
 
-Indicates the maximum number of rows that should be returned for
-select methods (C<find()>, C<select()>, C<select_list()>).  The
-default is 0 which indicates "no limit".
+ <var $customer.curdate()>
 
-=back
+=head2 curtime
 
-=head2 lock
+Return the current time in HH24:MI:SS format.
 
- lock(true | false)
+ <var $customer.curtime()>
 
-Set lock mode for a select query.  If lock mode is set, then a select
-query will include the 'for update' clause.
+
+=head2 date_format
+
+ date_format( date, format-string )
+
+ date_format( field-name, format-string) 
+
+Returns the result of the MySQL DATE_FORMAT function.
+
+ <var $obj.date_format('2011-01-01', '%a')>
+
+ <var $obj.date_format('date_filed', '%a')>
+
+ Sat
+
+=head2 decrypt
+
+Decrypt a column value using C<secret> and the MySQL C<aes_decrypt()> method.
+
+ decrypt( column-name, secret )
 
 =head2 delete
 
@@ -3251,220 +3250,6 @@ updated, thus restoring that column to the object.>
 
 =back
 
-=head2 null
-
- null( column, ... )
- null( array-ref )
-
-Sets the specified column (or columns) to NULL (undef).  Pass a list
-of column names or an array reference of column names.
-
-
-=head2 is_null
-
- is_null( field-name )
-
-Returns true if the field is NULL, false if it is not NULL.  Not that
-the empty string is NOT a NULL value.
-
-Example:
-
-  <if $contact.is_null('username')>
-    ...
-  </if>
-
-=head2 is_field
-
- is_field( name )
-
-Returns true if C<name> is a column in the table.  Returns false if it is not.
-
-=head2 reset
-
- reset( [delete] )
-
-Clears (sets columns to NULL) all of the columns in the object or if
-the C<delete> flag is set, will remove the column from the set of
-columns with data to save or insert.
-
-In some cases, you may not want a value of NULL in your column and
-want an insert or update to only update the columns that have been
-explicitly set.  In that case, use C<insert()> instead of C<save()> as
-C<insert()> will only insert columns that have explicitly been set
-with a value (unlike C<save()> which will insert NULL for columns not
-explicitly set).
-
-So, when using C<reset()> you may want to reset the object to a state
-where no columns have been explicitly set.
-
- $ith->reset(1);
-
-An example of this may be when your columns have
-default values and also have constraints.  Consider the column
-definition below:
-
- first_name varchar(32) not null default '';
-
- my $ith = new BLM::IndexedTableHandler($dbi, 0);
-
- $ith->set('last_name', 'Smith');
- $ith->save();
-
-The above example will cause a NOT NULL constraint exception. Now consider:
-
- my $ith = new BLM::IndexedTableHandler($dbi, 0);
-
- $ith->set('last_name', 'Smith');
- $ith->insert();
-
- $ith->reset();
- $ith->set('last_name', 'Jones');
-
-In the example above, the first record is written and the second causes and exception. And then consider...
-
- my $ith = new BLM::IndexedTableHandler($dbi, 0);
-
- $ith->set('last_name', 'Smith');
- $ith->insert();
-
- $ith->reset(1);
- $ith->set('last_name', 'Jones');
-
-...and both records are now written.
-
-=head2 handler
-
-  handler($input)
-
-Method that invokes various methods of your table handler object
-depending upon the value of the C<action> CGI variable.
-
-The values of the C<action> CGI variable support are:
-
-=over 5
-
-=item save
-
-Saves the field values in the C<$input> object to the MySQL table.
-Supports both updates and inserts depending on whether the C<id> field
-is set to 0 (insert) or a non-zero (update) value.
-
-Returns the table handler object.
-
-=item delete
-
-Deletes the row in the MySQL table indicated by the value of C<id>.
-
-Return the table handler object.
-
-=item new
-
-Creates a new table handler object.
-
-Returns a new table handler object.
-
-=item find
-
-Performs a query against the MySQL table depending upon the fields
-(CGI variables) that are set in the C<$input> object.
-
-If 1 or more rows found after executing the query, the method will
-returns either C<BLM::IndexedTableHandler::RecordSet> object.
-
-If no rows are found after executing the query, the method will return
-a table handler object.
-
-=back
-
-
-=head2 encrypt
-
- encrypt( column-name, secret )
-
-Encrypts (updates) a column with C<secret> using the MySQL
-C<aes_encrypt()> function.
-
-
-=head2 decrypt
-
-Decrypt a column value using C<secret> and the MySQL C<aes_decrypt()> method.
-
- decrypt( column-name, secret )
-
-=head2 get
-
- get(field)
- get(field, field, ...)
-
-Returns the value of a field specified or a returns a Bedrock array of
-the set of fields requested.  This behavior is consistent with the how
-a Bedrock hash returns values.
-
-=head2 set
-
-  set(field name, value, ...)
-
-Sets the field name(s) to the specified value(s).
-
-  set($input)
-
-Calling C<set> with the C<$input> object as the parameter (or in
-general a hash) will result in the field names for your table being
-set from the hash.  That is to say...
-
-  <null $player.set($input)>
-
-is equivalent too...
-
-   <foreach keys $input>
-     <null $player.set($_, $input.get($_))>
-   </foreach>
-
-or more correctly...
-
-  <foreach $player.fields()>
-     <if $input --exists $_>
-       <null $player.set($_, $input.get($_))>
-     </if>
-  </foreach>
-
-You should be aware that the C<save()> method will not update fields
-that are not in your object.  So to prevent updating all fields, you
-could delete elements of the object thusly.
-
-  <null $customer.delete('name')>
-
-I<Note: HTML checkboxes that are NOT checked, will not manifest
-themselves as elements in your C<$input> object.  This is a limitation
-of the way the browser encodes these fields.  This could be
-problematic since this method now does not know if you want to set the
-field to null or if you want to skip updating that field.>
-
-I<In this case, the C<set()> method has chosen to assume you want to
-update the field and arbritrarily decides to assume that if the
-checkbox field is missing from the hash reference, it is because it
-was B<unchecked>.  If should explicitly carry along a value then for
-checkbox fields.>
-
-Additionally, the C<set()> method will do some basic manipulation of
-input data in order to support MySQL date types.  If your input looks
-like this:
-
-  mm/dd/yyyy
-
-...the method will convert the date to this:
-
-  yyyy-mm-dd
-
-...before attempting to save the data to a MySQL table.
-
-=head2 get_field_type
-
- get_field_type(field)
-
-Returns the fully articulated type of the field (int, varchar, enum,
-set, etc) as manifested in a C<describe table> command.
-
 =head2 dumper
 
  dumper()
@@ -3476,202 +3261,20 @@ class.  Typically used for debugging.
  [1] => Bedrock hash of private key/value pairs
 
 
-=head2 save
+=head2 encrypt
 
- save( [$input] )
+ encrypt( column-name, secret )
 
-This method will C<update> a record or C<insert> a new record into the
-database.  If the C<id> field is null or "0" it will assume a new
-record is to be added to the table, otherwise the record with the
-corresponding C<id> will be updated.
+Encrypts (updates) a column with C<secret> using the MySQL
+C<aes_encrypt()> function.
 
-The return value of the method is the value of the C<id> field.
+=head2 fields
 
-You can optionally pass a hash which contains the key/value pairs for
-columns of the record to set.  Only keys that correspond to valid
-columns will be set.
+ fields()
+ columns()
 
-  <null --define-var="foo" $factory.foo($input.id)>
-
-  <if $input.action --eq "save">
-    <null $foo.save($input)>
-  </if>
-
-I<Note that only the fields corresponding to the columns that exist in
-the object are updated if the record exists. For new records, all
-columns are inserted regardless of whether or not you have explicitly
-provided a value for that column!  In other words, for UPDATES ONLY,
-if you want to avoid updating a column, delete the member from the
-object.>
-
-  <null $foo.delete('bar')>
-
-I<If you want to only insert those columns that you have explicitly
-set and therefore let your table defaults take care of the rest of the
-columns, set 'upsert' mode first.>
-
- <null $foo.set_upsert_mode(1)>
- <null $foo.save()>
-
-=head2 set_upsert_mode
-
-=head2 get_upsert_mode
-
-Sets the mode for inserts.  If I<upsert_mode> is set to 0, then the
-C<save()> method attempts to save all columns (columns that are not
-set are assumed to be null).  If I<upsert_mode> is set to 1, then
-C<save()> on new columns acts like an update, only inserting columns
-that have been explicitly set.  They can be set to null and will be
-updated if set to undef.
-
-Assuming a table named 'foo' has columns 'biz', 'baz', 'buz';
-
- create table foo (
-   id  int          auto_increment primary key,
-   biz varchar(10)  not null,
-   baz varchar(10)  null,
-   buz varchar(10)  not null default 'buzzzz'
- )
-
-Example: Insert a new record, setting only the 'biz' column.
-
- my $record = new MyApp::Foo($dbi);
- $record->set_upsert_mode(1);
- $record->set('biz');
- $record->save();
-
-Note that colum 'buz' is defined as 'not null' but has a default.  In
-this case since we only insert column 'biz', the column will look this
-after insertion.
-
-Example: Insert a new record, setting all columns ('baz', 'buz', will be set to null)
-
- my $record = new MyApp::Foo($dbi);
- $record->set('biz');
- $record->save();
-
-Note this will produce a NOT NULL exception on column 'buz' since we
-attempt to insert all column and no value is given for 'buz'.
-
-
-=head2 set_field
-
- set_field( field-name, value )
-
-Formats a field before storing it to the database.  This method is
-only called if I<format mode> is selected for the given field.
-
- <null $customer.set_format_mode('date_entered', 1)>
-
- <null $customer.save()>
-
-C<BLM::IndexedTableHandler> has built-in formatters for field whose
-names contain the words date, time or phone and whose types are
-date/datetime, timestamp, char or varchar.
-
-If the field type is B<date>, B<datetime>, B<timestamp> and the column
-name contains the words date or time, AND format mode is selected,
-then the field is formatted appropriately before being inserted into
-the database.
-
-If the field type is B<char> or B<varchar> and the column name
-contains the word B<phone> the field is formatted as a phone number
-(Either xxx-yyyy or (zzz) xxx-yyyy).
-
-If you donE<039>t like this behavior or wish to apply other transformations
-of the data prior to the data being written to the database, you can
-override this method.
-
-=head2 max_id
-
- max_id()
-
-Returns the highest value for the id column in the table.
-
-=head2 select
-
- select([query, args]);
-
-Returns an array of hashes containing the query results.
-
- select()
-
-Returns a C<BLM::IndexedTableHandler::RecordSet> containing all
-records in the table.
-
-See also C<BLM::DBHandler>
-
-=head2 search
-
-  search($input, [exact-flag]) 
-
-This is essentially the same as C<find> except it attempts to
-intelligently figure out what you want to search by looking at the
-fields in the object you pass and matching these up with the potential
-indexes in the table.
-
-Suppose you have a form that represents the table and each field in
-the form corresponds to a field in the database. Potentially you could
-search by any of the fields in the database using the C<find> method.
-
-For example:
-
-  <if $input.lname>
-    <null --define-var="foo_list" $foo.find('lname', $input.lname)>
-  <elsif $input.fname>
-    <null --define-var="foo_list" $foo.find('fname', $input.fname)>
-  <elsif $input.email>
-    <null --define-var ="foo" $foo.find_unique('email', $input.email)>   
-  </if>
-
-This begs the question of what to do when multiple fields are
-populated and what order should the search be done in?
-
-C<search> tries to guess all of this for you by looking at the indexes
-you have created for the table and the order you have defined the
-fields.
-
-The search will proceed by looking at C<UNIQUE> index fields first
-then fields indexed as C<MUL> (i.e. the index allows duplicate keys).
-Within each index it will use the order in which the fields have been
-defined in the table to see if the field is defined in the form.  If
-it is, then it will use that field as the search key, otherwise it
-will go to the next index field.  If there are no index fields it will
-simply follow the order of the fields as defined in the table.
-
-Give the table F<foo> defined below:
-
- +-----------+-------------------------------------+------+-----+---------+----------------+
- | Field     | Type                                | Null | Key | Default | Extra          |
- +-----------+-------------------------------------+------+-----+---------+----------------+
- | id        | int(11)                             | NO   | PRI | NULL    | auto_increment |
- | lname     | varchar(32)                         | YES  | MUL | NULL    |                |
- | fname     | varchar(32)                         | YES  |     | NULL    |                |
- | email     | varchar(64)                         | YES  | UNI | NULL    |                |
- | comments  | text                                | YES  |     | NULL    |                |
- | hat_size  | char(1)                             | YES  |     | NULL    |                |
- | pant_size | enum('S','M','L','XL','XXL','XXXL') | YES  |     | NULL    |                |
- | active    | tinyint(1)                          | YES  |     | NULL    |                |
- +-----------+-------------------------------------+------+-----+---------+----------------+
-
-
-The statement:
-
- <null --define-var="foo_list" $foo.search($input)>
-
-...would look to see if C<$input.email> had a value first, if so it
-would conduct a search equivalent to:
-
- <null --define-var="foo_list" $foo.find('email', $input.email)>
-
-if C<$input.email> was not defined, it would then look at
-C<$inpt.lname> and if that were defined would conduct a search
-equivalent to:
-
- <null --define-var="foo_list" $foo.find('lname', $input.lname)>
-
-C<search> would then proceed similarly through the non-indexed fields
-(C<fname>, C<comments>, C<hat_size>, C<pant_size>, and C<active>).
+Returns a Bedrock array containg the column names. C<fields()> and
+C<columns()> are synonymous.
 
 =head2 find
 
@@ -3764,51 +3367,43 @@ Returns C<undef> if no rows match this criteria.
 
   <null --define-var="pujols" $player.find_unique('lname', 'Pujols')>
 
-=head2 fields
+=head2 get
 
- fields()
- columns()
+ get(field)
+ get(field, field, ...)
 
-Returns a Bedrock array containg the column names. C<fields()> and
-C<columns()> are synonymous.
+Returns the value of a field specified or a returns a Bedrock array of
+the set of fields requested.  This behavior is consistent with the how
+a Bedrock hash returns values.
+
+=head2 get_count
+
+ get_count()
+ get_count(match-flag, field => value, ... ) 
+
+Returns the number of rows in the database. You can also send a
+tuple consisting of a flag, field name and a value, to restrict the
+count based on the the field values passed. The tuple is the same
+as that sent to the L</find> method.
+
+=head2 get_date_field
+
+ get_date_field( field-name )
+
+Returns a MM/DD/YYYY or MM/DD/YYYYY HH:MI:SS formatted date or
+datetime value from a MySQL YYYY-MM-DD date.
+
+Example:
+
+ <input type="text" name="birthday" value="<var $player.get_date_field('birthday')>">
 
 
+=head2 get_display_only
 
-=head2 get_fields
+ get_display_only( field-name )
 
-Returns a list (not a reference) of field (column) names.  If you want
-an array reference, call the poorly named C<get_field_list()>.
-
-I<Note when invoked from a Bedrock page, Bedrock will always promotes
-lists to L<Bedrock::Array> objects.>
-
- <null:fields $obj.get_fields()>
-
- my @list = $obj->get_fields();
- my $list = $obj->get_field_list();
-
-=head2 asref
-
- asref()
- asref( key, key, ... )
-
-Returns a hash object containing just the values of the columns of the
-table.  This is not a particular useful object as it is not endowed
-with the magic of the C<BLM::IndexedTableHandler> class, however some
-may find it more satisfying than seeing all of the internal guts of
-the classE<039> object hierarchy.
-
-If the C<key> argument is provided, the returned hash will contain
-only the keys specified.  C<key> can be a scalar or an array
-reference.
-
- <null:record $ith.asref( $ith.get_field_list(), 'my_extra_key') >
-
-=head2 get_field_length
-
- get_field_length(field-name)
-
-Returns the length of a field.
+Returns true or false depending on whether the field is set to be a
+display-only field
 
 =head2 get_enum_values
 
@@ -3836,10 +3431,142 @@ Given a table with an enum column 'doc_type':
   ]
 
 
-=head2 html_form_header
+=head2 get_field_length
 
- html_form_header(attributes)
+ get_field_length(field-name)
 
+Returns the length of a field.
+
+=head2 get_field_type
+
+ get_field_type(field)
+
+Returns the fully articulated type of the field (int, varchar, enum,
+set, etc) as manifested in a C<describe table> command.
+
+=head2 get_fields
+
+Returns a list (not a reference) of field (column) names.  If you want
+an array reference, call the poorly named C<get_field_list()>.
+
+I<Note when invoked from a Bedrock page, Bedrock will always promotes
+lists to L<Bedrock::Array> objects.>
+
+ <null:fields $obj.get_fields()>
+
+ my @list = $obj->get_fields();
+ my $list = $obj->get_field_list();
+
+=head2 get_format_mode( field-name )
+
+Returns a boolean value that determines if a field should be formatted
+when it is show in a form field.
+
+
+=head2 get_phone_field
+
+ get_phone_field( field-name )
+
+Returns a formatted phone number.  If the phone number length is 7 digits:
+
+ 555-1212
+
+If the phone number legnth is 10 digits:
+
+ (888) 555-1212 
+
+Example:
+
+ <var $customer.get_phone_field('work_phone')>
+
+=head2 get_upsert_mode
+
+Sets the mode for inserts.  If I<upsert_mode> is set to 0, then the
+C<save()> method attempts to save all columns (columns that are not
+set are assumed to be null).  If I<upsert_mode> is set to 1, then
+C<save()> on new columns acts like an update, only inserting columns
+that have been explicitly set.  They can be set to null and will be
+updated if set to undef.
+
+Assuming a table named 'foo' has columns 'biz', 'baz', 'buz';
+
+ create table foo (
+   id  int          auto_increment primary key,
+   biz varchar(10)  not null,
+   baz varchar(10)  null,
+   buz varchar(10)  not null default 'buzzzz'
+ )
+
+Example: Insert a new record, setting only the 'biz' column.
+
+ my $record = new MyApp::Foo($dbi);
+ $record->set_upsert_mode(1);
+ $record->set('biz');
+ $record->save();
+
+Note that colum 'buz' is defined as 'not null' but has a default.  In
+this case since we only insert column 'biz', the column will look this
+after insertion.
+
+Example: Insert a new record, setting all columns ('baz', 'buz', will be set to null)
+
+ my $record = new MyApp::Foo($dbi);
+ $record->set('biz');
+ $record->save();
+
+Note this will produce a NOT NULL exception on column 'buz' since we
+attempt to insert all column and no value is given for 'buz'.
+
+
+=head2 handler
+
+  handler($input)
+
+Method that invokes various methods of your table handler object
+depending upon the value of the C<action> CGI variable.
+
+The values of the C<action> CGI variable support are:
+
+=over 5
+
+=item save
+
+Saves the field values in the C<$input> object to the MySQL table.
+Supports both updates and inserts depending on whether the C<id> field
+is set to 0 (insert) or a non-zero (update) value.
+
+Returns the table handler object.
+
+=item delete
+
+Deletes the row in the MySQL table indicated by the value of C<id>.
+
+Return the table handler object.
+
+=item new
+
+Creates a new table handler object.
+
+Returns a new table handler object.
+
+=item find
+
+Performs a query against the MySQL table depending upon the fields
+(CGI variables) that are set in the C<$input> object.
+
+If 1 or more rows found after executing the query, the method will
+returns either C<BLM::IndexedTableHandler::RecordSet> object.
+
+If no rows are found after executing the query, the method will return
+a table handler object.
+
+=back
+
+
+=head2 html_form_body
+
+ html_form_body(attributes, labels, lists, exclude-fields)
+ html_form_body_with_class(attributes, labels, lists, exclude-fields)
 
 =head2 html_form_footer
 
@@ -3848,17 +3575,380 @@ Given a table with an enum column 'doc_type':
 Creates a row of buttons (I<save>, I<delete>, I<find>, I<new>) that
 submit the form and set the C<action> hidden element.
 
-=head2 html_form_body
+=head2 html_form_header
 
- html_form_body(attributes, labels, lists, exclude-fields)
- html_form_body_with_class(attributes, labels, lists, exclude-fields)
+ html_form_header(attributes)
 
-=head2 get_display_only
 
- get_display_only( field-name )
+=head2 is_field
 
-Returns true or false depending on whether the field is set to be a
-display-only field
+ is_field( name )
+
+Returns true if C<name> is a column in the table.  Returns false if it is not.
+
+=head2 is_null
+
+ is_null( field-name )
+
+Returns true if the field is NULL, false if it is not NULL.  Not that
+the empty string is NOT a NULL value.
+
+Example:
+
+  <if $contact.is_null('username')>
+    ...
+  </if>
+
+=head2 lock
+
+ lock(true | false)
+
+Set lock mode for a select query.  If lock mode is set, then a select
+query will include the 'for update' clause.
+
+=head2 max_id
+
+ max_id()
+
+Returns the highest value for the id column in the table.
+
+=head2 new
+
+ new( dbi, id, config, table-name )
+ new( dbi, id, table-name )
+ new( dbi, { id => id, table_name => table-name, config => config, lock => 0 |1  })
+
+Polymorphism run amok, but pick your poison...these are unambiquous
+signatures. My preference in Bedrock is...
+
+  <plugin:IndexedTableHandler $dbi 'table-name'>
+
+=over 5
+
+=item dbi
+
+An instance of a C<DBI> object representing an open connection to a
+MySQL database.
+
+=item id
+
+The C<id> field which uniquely identifies a record in the MySQL table.
+
+=item config
+
+Configuration object containing an object named C<tables> that
+contains options for handling MySQL tables.
+
+=item table-name
+
+The name of the MySQL table.
+
+=item lock
+
+The lock mode.
+
+ 0 => no locking
+ 1 => FOR UPDATE
+ 2 => LOCK IN SHARE MODE
+
+=over 5
+
+=item LOCK IN SHARE MODE
+
+I<SELECT ... LOCK IN SHARE MODE sets a shared mode lock on any rows that
+are read. Other sessions can read the rows, but cannot modify them
+until your transaction commits. If any of these rows were changed by
+another transaction that has not yet committed, your query waits until
+that transaction ends and then uses the latest values.> - from http://dev.mysql.com
+
+=item FOR UPDATE
+
+I<SELECT ... FOR UPDATE locks the rows and any associated index entries,
+the same as if you issued an UPDATE statement for those rows. Other
+transactions are blocked from updating those rows, from doing SELECT
+... LOCK IN SHARE MODE, or from reading the data in certain
+transaction isolation levels. Consistent reads ignore any locks set on
+the records that exist in the read view. (Old versions of a record
+cannot be locked; they are reconstructed by applying undo logs on an
+in-memory copy of the record.)> - from http://dev.mysql.com
+
+=back
+
+B<Note that row level locking in MySQL is only available with the InnoDB
+engine.  The row is locked immediately when the object is instatiated
+for the give C<id>.  You should commit the record to release the lock.>
+
+=item max_rows
+
+Indicates the maximum number of rows that should be returned for
+select methods (C<find()>, C<select()>, C<select_list()>).  The
+default is 0 which indicates "no limit".
+
+=back
+
+=head2 now
+
+Return the current date and time YYYY-MM-DD HH24:MI:SS format.
+
+ <var $customer.now()>
+
+=head2 null
+
+ null( column, ... )
+ null( array-ref )
+
+Sets the specified column (or columns) to NULL (undef).  Pass a list
+of column names or an array reference of column names.
+
+
+=head2 reset
+
+ reset( [delete] )
+
+Clears (sets columns to NULL) all of the columns in the object or if
+the C<delete> flag is set, will remove the column from the set of
+columns with data to save or insert.
+
+In some cases, you may not want a value of NULL in your column and
+want an insert or update to only update the columns that have been
+explicitly set.  In that case, use C<insert()> instead of C<save()> as
+C<insert()> will only insert columns that have explicitly been set
+with a value (unlike C<save()> which will insert NULL for columns not
+explicitly set).
+
+So, when using C<reset()> you may want to reset the object to a state
+where no columns have been explicitly set.
+
+ $ith->reset(1);
+
+An example of this may be when your columns have
+default values and also have constraints.  Consider the column
+definition below:
+
+ first_name varchar(32) not null default '';
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->save();
+
+The above example will cause a NOT NULL constraint exception. Now consider:
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->insert();
+
+ $ith->reset();
+ $ith->set('last_name', 'Jones');
+
+In the example above, the first record is written and the second causes and exception. And then consider...
+
+ my $ith = new BLM::IndexedTableHandler($dbi, 0);
+
+ $ith->set('last_name', 'Smith');
+ $ith->insert();
+
+ $ith->reset(1);
+ $ith->set('last_name', 'Jones');
+
+...and both records are now written.
+
+=head2 save
+
+ save( [$input] )
+
+This method will C<update> a record or C<insert> a new record into the
+database.  If the C<id> field is null or "0" it will assume a new
+record is to be added to the table, otherwise the record with the
+corresponding C<id> will be updated.
+
+The return value of the method is the value of the C<id> field.
+
+You can optionally pass a hash which contains the key/value pairs for
+columns of the record to set.  Only keys that correspond to valid
+columns will be set.
+
+  <null --define-var="foo" $factory.foo($input.id)>
+
+  <if $input.action --eq "save">
+    <null $foo.save($input)>
+  </if>
+
+I<Note that only the fields corresponding to the columns that exist in
+the object are updated if the record exists. For new records, all
+columns are inserted regardless of whether or not you have explicitly
+provided a value for that column!  In other words, for UPDATES ONLY,
+if you want to avoid updating a column, delete the member from the
+object.>
+
+  <null $foo.delete('bar')>
+
+I<If you want to only insert those columns that you have explicitly
+set and therefore let your table defaults take care of the rest of the
+columns, set 'upsert' mode first.>
+
+ <null $foo.set_upsert_mode(1)>
+ <null $foo.save()>
+
+=head2 search
+
+  search($input, [exact-flag]) 
+
+This is essentially the same as C<find> except it attempts to
+intelligently figure out what you want to search by looking at the
+fields in the object you pass and matching these up with the potential
+indexes in the table.
+
+Suppose you have a form that represents the table and each field in
+the form corresponds to a field in the database. Potentially you could
+search by any of the fields in the database using the C<find> method.
+
+For example:
+
+  <if $input.lname>
+    <null --define-var="foo_list" $foo.find('lname', $input.lname)>
+  <elsif $input.fname>
+    <null --define-var="foo_list" $foo.find('fname', $input.fname)>
+  <elsif $input.email>
+    <null --define-var ="foo" $foo.find_unique('email', $input.email)>   
+  </if>
+
+This begs the question of what to do when multiple fields are
+populated and what order should the search be done in?
+
+C<search> tries to guess all of this for you by looking at the indexes
+you have created for the table and the order you have defined the
+fields.
+
+The search will proceed by looking at C<UNIQUE> index fields first
+then fields indexed as C<MUL> (i.e. the index allows duplicate keys).
+Within each index it will use the order in which the fields have been
+defined in the table to see if the field is defined in the form.  If
+it is, then it will use that field as the search key, otherwise it
+will go to the next index field.  If there are no index fields it will
+simply follow the order of the fields as defined in the table.
+
+Give the table F<foo> defined below:
+
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+ | Field     | Type                                | Null | Key | Default | Extra          |
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+ | id        | int(11)                             | NO   | PRI | NULL    | auto_increment |
+ | lname     | varchar(32)                         | YES  | MUL | NULL    |                |
+ | fname     | varchar(32)                         | YES  |     | NULL    |                |
+ | email     | varchar(64)                         | YES  | UNI | NULL    |                |
+ | comments  | text                                | YES  |     | NULL    |                |
+ | hat_size  | char(1)                             | YES  |     | NULL    |                |
+ | pant_size | enum('S','M','L','XL','XXL','XXXL') | YES  |     | NULL    |                |
+ | active    | tinyint(1)                          | YES  |     | NULL    |                |
+ +-----------+-------------------------------------+------+-----+---------+----------------+
+
+
+The statement:
+
+ <null --define-var="foo_list" $foo.search($input)>
+
+...would look to see if C<$input.email> had a value first, if so it
+would conduct a search equivalent to:
+
+ <null --define-var="foo_list" $foo.find('email', $input.email)>
+
+if C<$input.email> was not defined, it would then look at
+C<$inpt.lname> and if that were defined would conduct a search
+equivalent to:
+
+ <null --define-var="foo_list" $foo.find('lname', $input.lname)>
+
+C<search> would then proceed similarly through the non-indexed fields
+(C<fname>, C<comments>, C<hat_size>, C<pant_size>, and C<active>).
+
+=head2 select
+
+ select([query, args]);
+
+Returns an array of hashes containing the query results.
+
+ select()
+
+Returns a C<BLM::IndexedTableHandler::RecordSet> containing all
+records in the table.
+
+See also C<BLM::DBHandler>
+
+=head2 set
+
+  set(field name, value, ...)
+
+Sets the field name(s) to the specified value(s).
+
+  set($input)
+
+Calling C<set> with the C<$input> object as the parameter (or in
+general a hash) will result in the field names for your table being
+set from the hash.  That is to say...
+
+  <null $player.set($input)>
+
+is equivalent too...
+
+   <foreach keys $input>
+     <null $player.set($_, $input.get($_))>
+   </foreach>
+
+or more correctly...
+
+  <foreach $player.fields()>
+     <if $input --exists $_>
+       <null $player.set($_, $input.get($_))>
+     </if>
+  </foreach>
+
+You should be aware that the C<save()> method will not update fields
+that are not in your object.  So to prevent updating all fields, you
+could delete elements of the object thusly.
+
+  <null $customer.delete('name')>
+
+I<Note: HTML checkboxes that are NOT checked, will not manifest
+themselves as elements in your C<$input> object.  This is a limitation
+of the way the browser encodes these fields.  This could be
+problematic since this method now does not know if you want to set the
+field to null or if you want to skip updating that field.>
+
+I<In this case, the C<set()> method has chosen to assume you want to
+update the field and arbritrarily decides to assume that if the
+checkbox field is missing from the hash reference, it is because it
+was B<unchecked>.  If should explicitly carry along a value then for
+checkbox fields.>
+
+Additionally, the C<set()> method will do some basic manipulation of
+input data in order to support MySQL date types.  If your input looks
+like this:
+
+  mm/dd/yyyy
+
+...the method will convert the date to this:
+
+  yyyy-mm-dd
+
+...before attempting to save the data to a MySQL table.
+
+=head2 set_date_field
+
+ set_date_field( field-name, value )
+ set_date_field( value )
+
+Use this method to set the value of a date field.  The idea being, you
+may have a user enter a date in either YYYY-MM-DD format or
+MM/DD/YY[YY] formats and this method will format the date properly for
+insertion into a MySQL date field.
+
+Passing only the C<value> argument will return the formatted value.
+
+Example:
+
+  <null $player.set_date_field('birthday', $input.birthday)>
 
 =head2 set_display_only
 
@@ -3866,11 +3956,49 @@ display-only field
 
 Set the field to be display only.  This prevents user input to this field.
 
-=head2 get_format_mode( field-name )
+=head2 set_email_field
 
-Returns a boolean value that determines if a field should be formatted
-when it is show in a form field.
+ set_email_field(field, value)
 
+Validates and returns and/or sets the column valued to an email
+address. If the email is valid, then the column is set to the value,
+otherwise it is set to undef.
+
+If only the column value is passed and not the column name, then
+nothing is set, the email address is just returned to the caller if valid.
+
+Example:
+
+  <null $customer.set_phone_number('work_phone', $input.work_phone)>
+  <var $customer.set_phone_number($input.work_phone)>
+
+=head2 set_field
+
+ set_field( field-name, value )
+
+Formats a field before storing it to the database.  This method is
+only called if I<format mode> is selected for the given field.
+
+ <null $customer.set_format_mode('date_entered', 1)>
+
+ <null $customer.save()>
+
+C<BLM::IndexedTableHandler> has built-in formatters for field whose
+names contain the words date, time or phone and whose types are
+date/datetime, timestamp, char or varchar.
+
+If the field type is B<date>, B<datetime>, B<timestamp> and the column
+name contains the words date or time, AND format mode is selected,
+then the field is formatted appropriately before being inserted into
+the database.
+
+If the field type is B<char> or B<varchar> and the column name
+contains the word B<phone> the field is formatted as a phone number
+(Either xxx-yyyy or (zzz) xxx-yyyy).
+
+If you donE<039>t like this behavior or wish to apply other transformations
+of the data prior to the data being written to the database, you can
+override this method.
 
 =head2 set_format_mode
 
@@ -3935,98 +4063,13 @@ Example:
   <null $customer.set_phone_number('work_phone', $input.work_phone)>
   <var $customer.set_phone_number($input.work_phone)>
 
-=head2 get_phone_field
+=head2 set_upsert_mode
 
- get_phone_field( field-name )
+Sets I<upsert> mode. See L</get_upsert_mode>
 
-Returns a formatted phone number.  If the phone number length is 7 digits:
+=head2 table_name
 
- 555-1212
-
-If the phone number legnth is 10 digits:
-
- (888) 555-1212 
-
-Example:
-
- <var $customer.get_phone_field('work_phone')>
-
-=head2 set_date_field
-
- set_date_field( field-name, value )
- set_date_field( value )
-
-Use this method to set the value of a date field.  The idea being, you
-may have a user enter a date in either YYYY-MM-DD format or
-MM/DD/YY[YY] formats and this method will format the date properly for
-insertion into a MySQL date field.
-
-Passing only the C<value> argument will return the formatted value.
-
-Example:
-
-  <null $player.set_date_field('birthday', $input.birthday)>
-
-=head2 now
-
-Return the current date and time YYYY-MM-DD HH24:MI:SS format.
-
- <var $customer.now()>
-
-=head2 curdate
-
-Return the current date in YYYY-MM-DD format.
-
- <var $customer.curdate()>
-
-=head2 curtime
-
-Return the current time in HH24:MI:SS format.
-
- <var $customer.curtime()>
-
-
-=head2 date_format
-
- date_format( date, format-string )
-
- date_format( field-name, format-string) 
-
-Returns the result of the MySQL DATE_FORMAT function.
-
- <var $obj.date_format('2011-01-01', '%a')>
-
- <var $obj.date_format('date_filed', '%a')>
-
- Sat
-
-=head2 get_date_field
-
- get_date_field( field-name )
-
-Returns a MM/DD/YYYY or MM/DD/YYYYY HH:MI:SS formatted date or
-datetime value from a MySQL YYYY-MM-DD date.
-
-Example:
-
- <input type="text" name="birthday" value="<var $player.get_date_field('birthday')>">
-
-
-=head2 set_email_field
-
- set_email_field(field, value)
-
-Validates and returns and/or sets the column valued to an email
-address. If the email is valid, then the column is set to the value,
-otherwise it is set to undef.
-
-If only the column value is passed and not the column name, then
-nothing is set, the email address is just returned to the caller if valid.
-
-Example:
-
-  <null $customer.set_phone_number('work_phone', $input.work_phone)>
-  <var $customer.set_phone_number($input.work_phone)>
+Returns the name of the table.
 
 =head2 validate_email
 
@@ -4036,27 +4079,6 @@ Returns true or false depending on validity of email address.  This
 doesnE<039>t mean this address is associated with a real email account,
 just that it might. ;-)
 
-=head2 autocomplete
-
-=over 5
-
-=item query
-
-Just the 'where' clause part...without the where
-
-=item columns
-
-Array reference
-
-=item uc (optional)
-
-=item ucfirst (optional)
-
-=item args
-
-Array reference
-
-=back
 
 =head1 CAVEATS
 
