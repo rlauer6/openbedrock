@@ -22,75 +22,105 @@ package Apache::Bedrock;
 use strict;
 use warnings;
 
-use Bedrock qw{slurp_file};
-
 use Bedrock::Apache::Constants qw{:http};
+use Bedrock::Constants qw{:chars :defaults :booleans};
+
+use Bedrock qw(slurp_file);
+
 use Bedrock::BedrockConfig;
-use Bedrock::Constants qw{:chars :defaults};
 use Bedrock::Context;
 use Bedrock::Dump;
 use Bedrock::Handler;
-use Bedrock::Hash;
-use Bedrock::Log;
-use Bedrock::VERSION;
-use bedrock_handler_common;
 
 use Text::TagX;
-use Text::URLEncode;
 
-use Benchmark qw/:all/;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Basename;
-use File::Spec;
-use File::Temp;
-use IO::File;
-use IO::Scalar;
-use List::Util qw{ any uniq };
+
+use List::Util qw( any uniq );
+use Scalar::Util qw(blessed);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
 use Symbol;
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+## no critic (RequireInterpolationOfMetachars)
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+if ($Bedrock::Handler::BEDROCK_BENCHMARK) {
+  require Benchmark;
+  require Time::HiRes;
+
+  Benchmark->import(qw(:all :hireswallclock));
+}
+
+our @ISA = qw(Exporter);  ## no critic (ProhibitExplicitISA)
+
+our @EXPORT_OK = qw(
+  load_startup_modules
+  bind_module
+  pre_bind_module
+  require_module
+);
+
+our %EXPORT_TAGS = (
+  bind => [
+    qw( load_startup_modules
+      bind_module
+      pre_bind_module
+    )
+  ]
+);
 
 ########################################################################
 sub handler {
 ########################################################################
   my ($r) = @_;
 
-  my $t0 = Benchmark->new;
+  my $benchmarks
+    = $Bedrock::Handler::BEDROCK_BENCHMARK ? [ Benchmark->new ] : [];
 
-  my $bedrock_handler = init_bedrock_handler($r);
+  my $bedrock_handler = eval { return Bedrock::Handler->new($r); };
 
-  # errors are handled in the init_bedrock_handler() subroutine
-  return $OK if !$bedrock_handler;
+  if ( !$bedrock_handler ) {
+    display_init_error( $r, "could not initialize handler\n$EVAL_ERROR" );
+
+    return $OK;
+  }
+
+  # --- benchmark
+  $benchmarks
+    = report_time( $r, 'Bedrock::Handler->new() complete', @{$benchmarks} );
 
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
 
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;  # typically /bedrock
 
-  my $file = $bedrock_handler->{file};
+  my $file         = $bedrock_handler->{file};
+  my $content_type = $r->content_type;
 
   if ($file) {
 
     # check mime-type
-    if ( $r->content_type !~ /text\/html|application\/json|text\/plain/xsm ) {
+    if ( !any { $content_type eq $_ }
+      qw(text/html application/json text/plain ) ) {
       $r->log->error( sprintf 'content type: [%s] not supported',
-        $r->content_type );
+        $content_type );
 
       return $UNSUPPORTED;
     }
 
-    if ( !-e $r->filename ) {
+    if ( !-e $file ) {
       $r->log->error( sprintf 'file does not exist: [%s]', $file );
 
       return $NOT_FOUND;
     }
 
-    if ( !-r $r->filename ) {
+    if ( !-r $file ) {
       $r->log->error( sprintf 'file permissions deny access: [%s]', $file );
 
       return $FORBIDDEN;
@@ -101,9 +131,6 @@ sub handler {
 
     return $FORBIDDEN;
   }
-
-  local $SIG{__DIE__}  = undef;
-  local $SIG{__WARN__} = undef;
 
   # Shove the URI params in environment.
   local $ENV{'BEDROCK_URI'}     = $r->uri;
@@ -126,6 +153,16 @@ sub handler {
   local ( $ENV{'BEDROCK_SESSION_DIR'} )
     = $ENV{BEDROCK_SESSION_DIR} || $conf->{SESSION_DIR};
 
+  my $error_page = $conf->{ERROR_LOCATION};
+  if ($error_page) {
+    $error_page = $ENV{DOCUMENT_ROOT} . $error_page;
+  }
+  else {
+    $error_page = $conf->{BEDROCK_ERROR_LOCATION};
+  }
+
+  local ( $ENV{BEDROCK_ERROR_PAGE} ) = $error_page;
+
   local ( $ENV{'BEDROCK_CONFIG_PATH'} )
     = $ENV{BEDROCK_CONFIG_PATH}
     || $conf->{BEDROCK_CONFIG_PATH}
@@ -138,6 +175,20 @@ sub handler {
   local ( $ENV{'BEDROCK_IMAGE_URL'} )
     = $ENV{BEDROCK_IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};
 
+  $r->log->info( sprintf 'INCLUDE_DIR.........[%s]',
+    $conf->{INCLUDE_DIR} // $EMPTY );
+
+  $r->log->info( sprintf 'PEBBLE_DIR..........[%s]',
+    $conf->{PEBBLE_DIR} // $EMPTY );
+
+  $r->log->info(
+    sprintf 'ALLOW_SNIPPET_TAG...[%s]',
+    $conf->{ALLOW_SNIPPET_TAG} // $EMPTY
+  );
+
+  $r->log->info( sprintf 'BEDROCK_ERROR_PAGE.[%s]',
+    $ENV{BEDROCK_ERROR_PAGE} // $EMPTY );
+
   my $app_dir = $bedrock_handler->{path};
 
   if ( !chdir $app_dir ) {
@@ -145,343 +196,112 @@ sub handler {
       $app_dir, $OS_ERROR );
   }
 
+  # --- benchmark
+  $benchmarks
+    = report_time( $r, 'environment setup complete', @{$benchmarks} );
+
   my $ctx = Bedrock::Context->new(
     REQUEST_HANDLER => $r,
     CONFIG          => $conf
   );
 
+  # --- benchmark
+  $benchmarks = report_time( $r, 'context object created', @{$benchmarks} );
+
   my $tx = Text::TagX->new( $file, $ctx );
 
   $tx->options(
-    BEDROCK_PEBBLE_DIR => $ENV{BEDROCK_PEBBLE_DIR},
-    INCLUDE_DIR        => get_include_dir($conf),
-    PEBBLE_DIR         => $ENV{BEDROCK_PEBBLE_DIR},
-    ALLOW_SNIPPET_TAG  => $conf->{ALLOW_SNIPPET_TAG},
-    CONFIG             => $conf,
+    INCLUDE_DIR       => $conf->get_include_dir(),
+    ALLOW_SNIPPET_TAG => $conf->{ALLOW_SNIPPET_TAG},
+    CONFIG            => $conf,
   );
 
-  $r->log->info( sprintf 'INCLUDE_DIR.......[%s]',
-    $conf->{INCLUDE_DIR} // $EMPTY );
-  $r->log->info( sprintf 'PEBBLE_DIR........[%s]',
-    $conf->{PEBBLE_DIR} // $EMPTY );
-  $r->log->info(
-    sprintf 'ALLOW_SNIPPET_TAG.[%s]',
-    $conf->{ALLOW_SNIPPET_TAG} // $EMPTY
-  );
+  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );
+
+  # --- benchmark
+  $benchmarks
+    = report_time( $r, 'TagX object creation complete', @{$benchmarks} );
+
+  # this needs to be done before load_startup_modules()
+  $conf->init_plugin_path();
 
   # load generic startup BLMs
   my $modules = $conf->get_module_config();
 
   if ( !$modules ) {
-    return $r->log->error('error in config file: MODULES is not defined.');
+    display_init_error( $r, 'error in config file: MODULES is not defined.' );
+
+    return $OK;
   }
 
-  # custom plugins
-  if ( exists $conf->{PLUGIN_PATH} && defined $conf->{PLUGIN_PATH} ) {
-    my @plugin_inc = split /:/xsm, $conf->{PLUGIN_PATH};
+  # load startup modules
+  my $pre_bound = eval { return load_startup_modules( $modules, $ctx, $tx ) };
 
-    foreach my $path (@plugin_inc) {
-      if ( !any {/$path/xsm} @INC ) {
-        push @INC, $path;
-      }
-    }
-  }
+  if ( !$pre_bound || $EVAL_ERROR ) {
+    display_init_error( $r, $EVAL_ERROR );
 
-  # this simply allows us to record if we have encountered a HEADER or
-  # SESSION module yet in order to avoid loading duplicate copies of
-  # these
-  my %pre_bound = ( HEADER => undef, SESSION => undef );
-
-  my @startup = @{$modules};
-
-  foreach my $idx ( 0 .. $#startup ) {
-    my $modconf = $startup[$idx];
-
-    my ( $config, $binding, $module, $header, $session, $type,
-      $abort_if_error )
-      = @{$modconf}
-      {qw/config binding module header session type abort_if_error/};
-
-    $type = $type || 'hash';
-
-    if ( !$binding ) {
-      return $r->log->error( sprintf q{'binding' not defined for module (%s)},
-        $idx );
-    }
-
-    if ( !any {/$type/xsm} qw{ hash array handle object} ) {
-      return $r->log->error( sprintf 'invalid type (%s) in module (%s)',
-        $type, $idx );
-    }
-
-    # BLM specific configuration
-    # <scalar name="header"></scalar>
-    if ( $header || $session ) {
-
-      # must be either header or session
-      my $pre_bound_module = $header ? 'HEADER' : 'SESSION';
-
-      # Croak if more than one module tries to become pre-bound with same name
-      if ( $pre_bound{$pre_bound_module} ) {
-        my $errstr = "multiple modules defined for $pre_bound_module module";
-
-        if ( is_bedrock_shell($r) ) {
-          print {*STDERR} $errstr;
-          exit -1;
-        }
-        else {
-          return $r->log->error($errstr);
-        }
-      }
-
-      # Bind the module
-      $pre_bound{$pre_bound_module} = $pre_bound_module;
-
-      my $obj = eval {
-        bind_module(
-          module  => $module,
-          type    => $type,
-          context => $ctx,
-          config  => $config
-        );
-      };
-
-      my $bind_error = $EVAL_ERROR;
-      my $errstr;
-
-      if ($bind_error) {
-
-        $errstr = sprintf q{could not bind module (%s) as '%s'}, $module,
-          $binding;
-
-        $r->log->error($errstr);
-        $r->log->error($bind_error);
-
-        if ($abort_if_error) {
-
-          if ( is_bedrock_shell($r) ) {
-            print {*STDERR} $errstr;
-
-            exit -1;
-          }
-          else {
-            send_init_error( $r, $errstr, $bind_error );
-
-            return $OK;
-          }
-        }
-      }
-
-      if ($obj) {
-
-        # add the object to Bedrock' top frame (symbol table)
-        $tx->param( $binding => $obj );
-
-        # tagX wants to know who the header and session object are
-        $tx->options( $pre_bound_module => $obj );
-
-        # ...so does the context object which can be used by Bedrock::CGI
-        $ctx->{$pre_bound_module} = $obj;
-      }
-      else {
-        $tx->param( 'error' => $bind_error );
-      }
-    }
-    else {
-      $tx->param(
-        $binding,
-        sub {
-          require_module($module);
-
-          return bind_module(
-            type    => $type,
-            module  => $module,
-            context => $ctx,
-            config  => $config
-          );
-
-        }
-      );
-    }
+    return $OK;
   }
 
   # Croak if no header module
-  if ( !$pre_bound{HEADER} ) {
-    return $r->log->error( sprintf 'error in config file: No header module' );
+  if ( !$pre_bound->{HEADER} ) {
+    display_init_error( $r,
+      sprintf 'error in config file: No header module' );
+
+    return $OK;
   }
 
-  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );  ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
-
-  # benchmark
-  my $t97 = Benchmark->new;
-
-  $r->log->info(
-    sprintf 'initialization complete: %s',
-    timestr( timediff( $t97, $t0 ), 'all' )
-  );
+  # --- benchmark
+  $benchmarks = report_time( $r, 'module binding complete', @{$benchmarks} );
 
   # this is where Bedrock starts parsing the template
   eval { $tx->output };
 
   my $err = $EVAL_ERROR;
 
-  # benchmark
-  my $t98 = Benchmark->new;
+  # --- benchmark
+  $benchmarks
+    = report_time( $r, 'Bedrock tag processing complete', @{$benchmarks} );
 
-  $r->log->info(
-    sprintf 'bedrock processing complete: %s',
-    timestr( timediff( $t98, $t97 ), 'all' )
-  );
-
-  # benchmark
-  my $t99 = Benchmark->new;
-
-  $r->log->info(
-    sprintf 'request complete: %s %s',
-    timestr( timediff( $t99, $t0 ), 'all' ),
-    $err ? 'with error' : 'no errors'
-  );
-
-  if ($err) {
-    if ( is_bedrock_shell($r) ) {
-
-      # output error to STDERR
-      my $line = $tx->{'error'}->line;
-      my $file = $tx->{'error'}->file;
-      my $source;
-
-      if ( ref $file ) {
-        $source = tied *{$file};
-        $line--;
-        $file = $tx->pebble($file);
-      }
-
-      $source = slurp_file $file;
-
-      my @lines;
-
-      {
-        require IO::Scalar;
-
-        my $fd = IO::Scalar->new( \$source );
-
-        while ( defined( $_ = $fd->getline ) ) {
-          chomp;
-          push @lines, $_;
-        }
-
-        $fd->close;
-      }
-
-      if ( $err !~ /\Asnippet/xsm ) {
-
-        print {*STDERR} sprintf 'Error on line [%d] (%s) - %s',
-          $line, $file, $err;
-
-        # print the lines surrounding error
-        if ( $line > 1 ) {
-          print {*STDERR} sprintf "  [%3d] %s\n",
-            $line - 1, $lines[ $line - 2 ];
-        }
-
-        print {*STDERR} sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ];
-
-        if ( $line != @lines ) {
-          print {*STDERR} sprintf "  [%3d] %s\n", $line + 1, $lines[$line];
-        }
-      }
-      else {
-        print {*STDERR} "$err";
-      }
-    }
-    else {
-      $r->log->error(
-        sprintf
-          'script [%s] with mime-type [%s] encountered the following error:',
-        $bedrock_handler->{file}, $r->content_type
-      );
-
-      $r->log->error("$err");
-
-      my $error_location
-        = $conf->{BEDROCK_ERROR_LOCATION}
-        ? $conf->{BEDROCK_ERROR_LOCATION}
-        : $ENV{DOCUMENT_ROOT} . $conf->{ERROR_LOCATION};
-
-      # if we are serving up JSON content, then we need to return a
-      # proper error code, not 200
-      if ( $r->content_type =~ /json/xsm ) {
-        $bedrock_handler->restore_dir;
-
-        if ( is_mod_perl() ) {
-          $r->status($SERVER_ERROR);
-        }
-        else {
-          $r->content_type('application/json');
-          $r->cgi_header_out( 'Status', '500' );
-          $r->send_http_header;
-        }
-
-        chomp $err;
-
-        print <<"EOM";
-{ error : "$err" }
-EOM
-        return $OK;
-      }
-      else {
-        $tx->show_error($error_location);
-      }
-    }
-  }
+  # --- benchmark
+  $benchmarks = report_time( $r, 'request complete', $benchmarks->[0] );
 
   $bedrock_handler->restore_dir;
+
+  if ($err) {
+    $r->log->error(
+      sprintf 'file:[%s] mime-type:[%s] error: [%s]',
+      $bedrock_handler->{file},
+      $r->content_type, $err
+    );
+
+    display_error( $r, $err, $tx );
+
+    return $OK;
+  }
 
   # unfortunately since Bedrock error handling is finished now, if
   # errors occur now you will only see them in the error log
   $tx->close;
 
+  return $OK
+    if is_bedrock_shell($r) || !is_mod_perl();
+
   # Apache 2 hack for redirection...let's not send unnecessary content
   # to the browser if a redirect header has been set.
-  if ( !is_bedrock_shell($r) ) {
+  my $headers = $r->err_headers_out;
 
-    if ( is_mod_perl() ) {
+  if ( $headers->{Location} || $headers->{location} ) {
+    $r->status(Apache2::Const::REDIRECT);
+  }
 
-      if ( exists ${ $r->err_headers_out }{Location}
-        || exists ${ $r->err_headers_out }{location} ) {
-        $r->status(Apache2::Const::REDIRECT);
-      }
+  my $status = $headers->{Status} || $headers->{status};
 
-      if ( exists ${ $r->err_headers_out }{Status}
-        || exists ${ $r->err_headers_out }{status} ) {
-
-        my $status = ${ $r->err_headers_out }{status}
-          || ${ $r->err_headers_out }{Status};
-
-        if ( $status =~ /\A\s*(\d+)/xsm ) {
-          $r->status($1);
-        }
-      }
-    }
+  if ( defined $status && $status =~ /\A\s*(\d+)/xsm ) {
+    $r->status($1);
   }
 
   return $OK;
-}
-
-########################################################################
-sub get_include_dir {
-########################################################################
-  my ($conf) = @_;
-
-  my @include_dir = @{$conf}{qw(INCLUDE_DIR BEDROCK_INCLUDE_DIR)};
-
-  push @include_dir, @ENV{qw(INCLUDE_DIR BEDROCK_INCLUDE_DIR)};
-
-  push @include_dir, $DEFAULT_BEDROCK_INCLUDE_DIR;
-
-  @include_dir = uniq grep {defined} @include_dir;
-
-  return join $COLON, @include_dir;
 }
 
 ########################################################################
@@ -499,42 +319,162 @@ sub require_module {
 }
 
 ########################################################################
+sub load_startup_modules {
+########################################################################
+  my ( $modules, $context, $tx ) = @_;
+
+  my %pre_bound_modules;
+
+  foreach my $idx ( 0 .. $#{$modules} ) {
+    my $module = $modules->[$idx];
+
+    $module->{type} //= 'hash';
+
+    my $class = $module->{module};
+
+    die sprintf q{'binding' not defined for module (%s)}, $idx
+      if !$module->{binding};
+
+    die sprintf 'invalid type (%s) in module (%s)', $module->{type}, $idx
+      if !any { lc $module->{type} eq $_ } qw( hash array handle object);
+
+    if ( any { exists $module->{$_} && $module->{$_} =~ /^y/ixsm }
+      qw( header session ) ) {
+
+      my $type = exists $module->{header} ? 'HEADER' : 'SESSION';
+
+      die "multiple modules defined for $type module"
+        if exists $pre_bound_modules{$type};
+
+      $pre_bound_modules{$type} = $type;
+
+      pre_bind_module(
+        module         => $module,
+        context        => $context,
+        tagx           => $tx,
+        pre_bound_type => $type,
+      );
+    }
+    else {
+      $tx->param(
+        $module->{binding},
+        sub {
+          require_module($class);
+
+          return bind_module(
+            type    => $module->{type},
+            module  => $class,
+            context => $context,
+            config  => $module->{config},
+          );
+
+        }
+      );
+    }
+  }
+
+  return \%pre_bound_modules;
+}
+
+########################################################################
 sub bind_module {
 ########################################################################
   my (%args) = @_;
 
-  require_module $args{module};
+  my ( $module, $context, $config ) = @args{qw(module context config)};
+
+  my $type = $args{type} eq 'object' ? 'hash' : $args{type};
+
+  require_module $module;
 
   my $obj;
 
-  ## no critic (Miscellanea::ProhibitTies)
-  if ( $args{type} eq 'hash' or $args{type} eq 'object' ) {
-    $obj = bless {}, $args{module};
-    tie %{$obj}, $args{module}, $args{context}, $args{config};
-  }
-  elsif ( $args{type} eq 'array' ) {
-    $obj = bless [], $args{module};
-    tie @{$obj}, $args{module}, $args{context}, $args{config};
-  }
-  elsif ( $args{type} eq 'handle' ) {
-    $obj = bless gensym, $args{module};
-    tie *{$obj}, $args{module}, $args{context}, $args{config};
-  }
+  ## no critic (ProhibitTies)
+  my %tie_subs = (
+    hash => sub {
+      $obj = bless {}, $module;
+      return tie %{$obj}, $module, $context, $config;
+    },
+    array => sub {
+      $obj = bless [], $module;
+      return tie @{$obj}, $module, $context, $config;
+    },
+    handle => sub {
+      $obj = bless gensym, $module;
+      return tie *{$obj}, $module, $context, $config;
+    },
+  );
 
-  my $func = tied %{$obj};
+  my $func = $tie_subs{$type}->();
 
-  $func->can('init_plugin')
-    && $func->init_plugin( $args{context}, $args{config} );
+  #my $func = tied %{$obj};
+
+  if ( $func->can('init_plugin') ) {
+    $func->init_plugin( $args{context}, $args{config} );
+  }
 
   return $obj;
 }
 
 ########################################################################
+sub pre_bind_module {
+########################################################################
+  my (%args) = @_;
+
+  my $module = $args{module};
+
+  my $class = $module->{module};
+
+  my $pre_bound_type = $args{pre_bound_type};
+
+  # Bind the module
+  my $obj = eval {
+    bind_module(
+      module  => $class,
+      type    => $module->{type} || 'hash',
+      context => $args{context},
+      config  => $module->{config},
+    );
+  };
+
+  die sprintf q{could not bind module (%s) as '%s': %s},
+    $class, $module->{binding}, $EVAL_ERROR
+    if !$obj || $EVAL_ERROR;
+
+  # add the object to Bedrock' top frame (symbol table)
+  $args{tagx}->param( $module->{binding} => $obj );
+
+  # tagX wants to know who the header and session object are
+  $args{tagx}->options( $pre_bound_type => $obj );
+
+  # ...so does the context object which can be used by Bedrock::CGI
+  $args{context}->{$pre_bound_type} = $obj;
+
+  return $TRUE;
+}
+
+########################################################################
+sub report_time {
+########################################################################
+  my ( $r, $message, @benchmarks ) = @_;
+
+  return
+    if !$Bedrock::Handler::BEDROCK_BENCHMARK;
+
+  push @benchmarks, Benchmark->new;
+
+  $r->log->info( sprintf '%s: %s',
+    $message, timestr( timediff( ( reverse @benchmarks )[ 0, 1 ] ), 'all' ) );
+
+  return \@benchmarks;
+}
+
+########################################################################
 sub is_bedrock_shell {
 ########################################################################
-  my ($ref) = @_;
+  my ($r) = @_;
 
-  return Scalar::Util::blessed($ref) eq 'Apache::Request_shell';
+  return blessed($r) eq 'Apache::Request_shell';
 }
 
 ########################################################################
@@ -544,9 +484,26 @@ sub is_mod_perl {
 }
 
 ########################################################################
-sub send_init_error {
+sub display_init_error {
 ########################################################################
-  my ( $r, $errstr, $bind_error ) = @_;
+  my ( $r, $message ) = @_;
+
+  if ( is_bedrock_shell($r) ) {
+    print {*STDERR} $message;
+    exit 1;
+  }
+
+  $r->log->error($message);
+
+  display_html_init_error( $r, $message );
+
+  return;
+}
+
+########################################################################
+sub display_html_init_error {
+########################################################################
+  my ( $r, $message ) = @_;
 
   $r->content_type('text/html');
   $r->send_http_header;
@@ -559,13 +516,80 @@ sub send_init_error {
   <body>
     <div style="color:red;">An error was encountered while trying to initialize Bedrock</div>
     <pre>
-$errstr
-----
-<p>$bind_error</p>
+      <p>$message</p>
     </pre>
   </body>
 </html>
 END_OF_HTML
+
+  return;
+}
+
+########################################################################
+sub display_error {
+########################################################################
+  my ( $r, $err, $tx ) = @_;
+
+  if ( is_bedrock_shell($r) ) {
+    display_shell_error( $err, $tx );
+  }
+  elsif ( $r->content_type =~ /json/xsm ) {
+    if ( is_mod_perl() ) {
+      $r->status($SERVER_ERROR);
+    }
+    else {
+      $r->content_type('application/json');
+      $r->cgi_header_out( 'Status', '500' );
+      $r->send_http_header;
+    }
+
+    chomp $err;
+
+    print q{{ error : "$err" }};
+  }
+  else {
+    $tx->show_error( $ENV{BEDROCK_ERROR_PAGE} );
+  }
+
+  return;
+}
+
+########################################################################
+sub display_shell_error {
+########################################################################
+  my ( $err, $tx ) = @_;
+
+  my ( $line, $file ) = @{ $tx->{error} }{qw(line file)};
+
+  my $source;
+
+  if ( ref $file ) {
+    $source = tied *{$file};
+    $line--;
+    $file = $tx->pebble($file);
+  }
+
+  my @lines = split /\n/xsm, slurp_file $file;
+
+  if ( $err !~ /\Asnippet/xsm ) {
+
+    print {*STDERR} sprintf 'Error on line [%d] (%s) - %s',
+      $line, $file, $err;
+
+    # print the lines surrounding error
+    if ( $line > 1 ) {
+      print {*STDERR} sprintf "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ];
+    }
+
+    print {*STDERR} sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ];
+
+    if ( $line != @lines ) {
+      print {*STDERR} sprintf "  [%3d] %s\n", $line + 1, $lines[$line];
+    }
+  }
+  else {
+    print {*STDERR} $err;
+  }
 
   return;
 }
@@ -628,6 +652,6 @@ Rob Lauer - <rlauer6@comcast.net>
 
 =head1 SEE ALSO
 
-L<Apache2::compat>, L<bedrock_handler_common>, L<Bedrock::Context>, L<Bedrock::Handler>
+L<Apache2::compat>, L<Bedrock::Context>, L<Bedrock::Handler>
 
 =cut

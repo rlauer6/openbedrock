@@ -267,9 +267,10 @@ subtest 'merge' => sub {
   $config->merge_config(
     { MODULES => [
         Bedrock::Hash->new(
-          binding => 'foo',
-          module  => 'Foo::Buz',
-          config  => {}
+          binding   => 'foo',
+          module    => 'Foo::Buz',
+          overwrite => 'yes',
+          config    => {}
         )
       ],
     }

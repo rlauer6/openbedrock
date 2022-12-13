@@ -23,17 +23,13 @@ package BLM::DBHandler;
 use strict;
 use warnings;
 
+use Bedrock::Array;
+use Bedrock::Constants qw{:booleans :chars};
+use Carp;
 use DBI;
 use Data::Dumper;
-
-use Bedrock::Array;
-
-use Bedrock::Constants qw{:booleans :chars};
-
+use Digest::MD5 qw(md5_hex);
 use Scalar::Util qw/reftype/;
-use Carp;
-
-use parent qw/Bedrock::Hash/;
 
 use Readonly;
 
@@ -48,8 +44,11 @@ __PACKAGE__->_create_accessors(
     return_bedrock_refs
     _query
     max_history
+    auto_commit
   }
 );
+
+use parent qw(Bedrock::Hash);
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
@@ -107,9 +106,10 @@ sub set_dbi       { goto &dbi; }
 ########################################################################
 {
   ## no critic (RequireArgUnpacking)
-  sub query     { return shift->_set_get( '_query', @_ ); }
-  sub get_query { return shift->_set_get( '_query', @_ ); }
-  sub set_query { return shift->_set_get( '_query', @_ ); }
+  sub auto_commit { return shift->dbi->{AutoCommit}; }
+  sub query       { return shift->_set_get( '_query', @_ ); }
+  sub get_query   { return shift->_set_get( '_query', @_ ); }
+  sub set_query   { return shift->_set_get( '_query', @_ ); }
 ########################################################################
   sub get_args { return shift->_set_get( '_args', @_ ); }
   sub set_args { return shift->_set_get( '_args', @_ ); }
@@ -221,7 +221,7 @@ sub commit {
 ########################################################################
   my ($self) = @_;
 
-  if ( !$self->get_dbi->{AutoCommit} ) {
+  if ( !$self->dbi->{AutoCommit} ) {
     return $self->dbi->commit;
   }
 
@@ -326,14 +326,26 @@ sub _db_do {
   $self->set_bind_vars(@args);
 
   my $sth = $self->_db_prepare( $dbi, $query );
-  my $rv  = $sth->err();
+
+  my $rv = $sth->err();
+
   $self->set_err( $sth->errstr() );
 
   # make sure we start out with 0
   $self->rows(0);
 
   if ( !$sth->err() ) {
-    $sth->execute(@args);
+    my $auto_commit = $self->get_auto_commit();
+
+    if ( defined $auto_commit ) {
+      local $dbi->{AutoCommit} = $auto_commit;  ## no critic (ProhibitLocalVars)
+
+      $sth->execute(@args);
+    }
+    else {
+      $sth->execute(@args);
+    }
+
     $rv = $sth->err();
 
     $self->rows( $sth->rows() );
@@ -387,13 +399,14 @@ sub _db_select {  ## no critic Capitalization
   my $result = $sth->fetchrow_hashref;
   $sth->finish;
 
-  if ( $result && $self->get_return_bedrock_refs ) {
-    my $self = bless {}, 'Bedrock::Hash';
-    tie %{$self}, 'Bedrock::Hash', %{$result};  ## no critic (ProhibitTies)
-    return $self;
-  }
+  return $result
+    if !$result || !$self->get_return_bedrock_refs;
 
-  return $result;
+  my $obj = bless {}, 'Bedrock::Hash';
+
+  tie %{$obj}, 'Bedrock::Hash', %{$result};  ## no critic (ProhibitTies)
+
+  return $obj;
 }
 
 ########################################################################
@@ -406,36 +419,37 @@ sub _db_select_list {  ## no critic Capitalization
   my $sth = $self->_db_prepare( $dbi, $query );
   $sth->execute(@args);
 
-  my $max_rows = $self->get_max_rows;
+  my $max_rows = $self->get_max_rows // 0;
 
   my $result = [];
 
   my $return_bedrock_refs = $self->get_return_bedrock_refs;
 
+  my $count = 0;
+
   while ( my $row = $sth->fetchrow_hashref ) {
 
     if ($return_bedrock_refs) {
 
-      my $self = bless {}, 'Bedrock::Hash';
-      tie %{$self}, 'Bedrock::Hash', %{$row};  ## no critic (ProhibitTies)
+      my $obj = bless {}, 'Bedrock::Hash';
+      tie %{$obj}, 'Bedrock::Hash', %{$row};  ## no critic (ProhibitTies)
 
-      push @{$result}, $self;
+      push @{$result}, $obj;
     }
     else {
       push @{$result}, $row;
     }
 
-    last if $max_rows && @{$result} >= $max_rows;
+    last if $max_rows && ++$count >= $max_rows;
   }
 
   $sth->finish;
 
   if ($return_bedrock_refs) {
-    return Bedrock::Array::Reference->new($result);
+    $result = Bedrock::Array::Reference->new($result);
   }
-  else {
-    return $result;
-  }
+
+  return $result;
 }
 
 1;
@@ -458,6 +472,8 @@ BLM::DBHandler - Provides support for MySQL database operations
 
  1;
 
+=head1 DESCRIPTION
+
 Use as a base class to create a module you can use to perform CRUD
 operations on your MySQL database.
 
@@ -469,6 +485,9 @@ or use directly...
 
  my $results = $dbhandler->select_list("select * from customer where name acct = ?", $acct);
 
+See L<BLM::IndexedTableHandler> for a more robust implementation of an
+ORM for MySQL tables.
+
 =head1 METHODS AND SUBROUTINES
 
 =head2 CONSTRUCTOR
@@ -477,23 +496,63 @@ or use directly...
 
  new( dbi, [options] )
  
-Create a new C<DBHandler object>.
+Create a new L<DBHandler> object.
 
  my $dbhandler = BLM::DBHandler->new( $dbi, max_rows => 100 );
 
 B<dbi> is a C<DBI> handle to an open MySQL database.
 
-Options described below.
+Options is a list of key/value pairs described below.
 
 =over 5
 
+=item auto_commit
+
+boolean indicating whether a commit should be done after the C<do()>
+method is called. If the value is undefined, then the current state of
+DBI's AutoCommit setting will determine if transactions are
+automatically commited.
+
+If this value is defined, it essentially will override DBI's value for
+the duration of the C<do()> method call.
+
+Potentially useful for temporarily setting the state of AutoCommit
+without effecting operations in other parts of an application.
+
+default: undefined
+
 =item max_rows 
 
-Limit the number of rows returned in a query.  The default is 100.
+Sets the maximum number of rows to return in a C<select_list()>
+call. Set this value to 0 or undef to return all of the rows from a
+query.
+
+default: 100
 
 =back
 
+=head3 return_bedrock_refs
+
+boolean indicating whether methods should return simple Perl objects
+or Bedrock objects for C<select_*> methods.
+
+default: true.
+
+=head3 max_history
+
+The number of versions of a value to keep when setting
+attributes. This can be most useful for dumping the SQL queries and
+bind values used in an application.
+
+default: 5
+
 =head2 SETTER/GETTER METHODS
+
+=head3 auto_commit
+
+Returns the current state of auto commit from the DBI object.  Equivalent to:
+
+ $dbi->{AutoCommit}
 
 =head3 dbi
 
@@ -529,7 +588,6 @@ Return the last query executed. Helpful in debugging.
 Set or retrieve the maximum number of rows to return in a C<SelectList> call.  The default is 100.
 
 =head2 SQL METHODS
-
 
 =head3 commit
 
@@ -660,7 +718,7 @@ of C<Bedrock::Hash> objects.
     printf "%s\n", $rec->{'NAME'};
   }
 
-Returns a 0 length C<Bedrock::Array> object if no records are selected.
+Returns a 0 length L<Bedrock::Array> object if no records are selected.
 
 =over 5
 
@@ -676,20 +734,22 @@ The bind variables to use in the query.
 
 =head2 ATTRIBUTES
 
-Use the C<get_{attribute}> methods to retrieve various attributes described below.
+Use the C<get_{attribute}> methods to retrieve various attributes
+described below.
 
 =head3 err
 
-Last error message returned by an executed statement. Can be retrieved with the C<errstr()> method.
+Last error message returned by an executed statement. Can be retrieved
+with the C<errstr()> method.
 
 =head3 max_rows
 
-Maximum number of rows to return on a C<SelectList> call.  Can be set
+Maximum number of rows to return on a C<select_list()> call.  Can be set
 or retrieved via the C<max_rows()> method.
 
 =head3 mysql_insertid
 
-Updated after a C<Do> just in case you were doing an insert on a table
+Updated after a C<do> just in case you were doing an insert on a table
 with an C<auto_increment> field.
 
 =head3 rows

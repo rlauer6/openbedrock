@@ -1,0 +1,195 @@
+package Bedrock::RedisClient;
+
+use Role::Tiny;
+
+use Bedrock::XML;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Redis;
+
+use Readonly;
+
+Readonly our $DEFAULT_PORT   => 6379;
+Readonly our $DEFAULT_SERVER => 'localhost';
+Readonly our $REDIS_CONFIG   => 'redis-session.xml';
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic RequireInterpolationOfMetachars
+
+our $HANDLE;
+our $CONFIG;
+
+########################################################################
+sub redis_config {
+########################################################################
+  return $CONFIG
+    if $CONFIG;
+
+  my @paths;
+
+  for ( $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
+    push @paths, ( $_, "$_.d", "$_.d/startup" );
+  }
+
+  for (@paths) {
+    my $xml_file = sprintf '%s/%s', $_, $REDIS_CONFIG;
+    next if !-e $xml_file;
+
+    $CONFIG = eval { return Bedrock::XML->new($xml_file); };
+
+    last if $CONFIG;
+  }
+
+  die 'unable to find a valid redis config in: ' . Dumper( join "\n", @paths )
+    if !$CONFIG;
+
+  return $CONFIG;
+}
+
+########################################################################
+sub redis_connect {
+########################################################################
+  my ($config) = @_;
+
+  $config = redis_config()->{config};
+
+  my $port = $config->{port}   || $DEFAULT_PORT;
+  my $host = $config->{server} || $DEFAULT_SERVER;
+  my $sock = $config->{sock};
+
+  my $connect_options = $config->{options} // {};
+
+  $connect_options->{name}
+    = 'bedrock_' . ( $config->{name} || 'session' );
+
+  if ($sock) {
+    $connect_options->{sock} = $sock;
+  }
+  else {
+    $connect_options->{server} = "$host:$port";
+  }
+
+  return eval { return Redis->new( %{$connect_options} ); };
+}
+
+########################################################################
+sub redis_key {
+########################################################################
+  my ($session_id) = @_;
+
+  return 'bedrock:session:' . $session_id;
+}
+
+########################################################################
+sub redis_session {
+########################################################################
+  my ( $session_key, @args ) = @_;
+
+  my $redis = redis_connect;
+
+  my $session;
+
+  if (@args) {
+    my $session_ref = ref $args[0] ? $args[0] : {@args};
+    my $session     = Bedrock::XML::writeXML($session_ref);
+
+    my $config = redis_config->{config};
+
+    $redis->set( $session_key, $session, );
+    $redis->expire( $session_key, $config->{cookie}->{expiry_secs} );
+
+    return $session_ref;
+  }
+
+  return
+    if !$redis->exists($session_key);
+
+  return
+    eval { return Bedrock::XML->newFromString( $redis->get($session_key) ); };
+}
+
+########################################################################
+sub redis_handle {
+########################################################################
+  return $HANDLE
+    if $HANDLE;
+
+  $HANDLE = redis_connect();
+
+  die $EVAL_ERROR
+    if !$HANDLE;
+
+  return $HANDLE;
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::RedisClient - role to provide common methods for connecting to Redis server
+
+=head1 SYNOPSIS
+
+ use Role::Tiny:With;
+ with 'Bedrock::RedisClient';
+
+ my $redis = redis_handle();
+
+=head1 DESCRIPTION
+
+Implements a role used by L<BLM::Startup::RedisSession>,
+L<Bedrock::Apache::RedisSessionHandler> that provides some methods
+used by both of these modules.
+
+A Bedrock session using Redis.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 redis_config
+
+Returns the F<redis.xml> configuration as a hash. The configuration
+file must exist somewhere in one of the standard places Bedrock config files
+are supposed to exist. The method will search for the file in:
+
+ $ENV{CONFIG_PATH}/redis.xml
+ $ENV{CONFIG_PATH}.d/redis.xml
+ $ENV{CONFIG_PATH}.d/startup/redis.xml
+
+or the same directories rooted at Bedrock's configuration path
+$ENV{BEDROCK_CONFIG_PATH}.
+
+The configuration file is a standard Bedrock session configuration
+file with provisions for Redis specific requirements like server name,
+port, etc.  See L<BLM::Startup::RedisSession> for more information
+about the format of the configuration file.
+
+=head2 redis_handle
+
+Returns a handle to a L<Redis> object.
+
+=head2 redis_key
+
+ redis_key(session-id)
+
+Returns a formatted Redis key that can be used to retrieve a session.
+
+=head2 redis_session
+
+ redis_session(session-key)
+
+Returns a reference to a hash that represents a user's session.
+
+=head1 AUTHOR
+
+Rob Lauer - rclauer@gmail.com
+
+=head1 SEE OTHER
+
+L<BLM::Startup::RedisSession>, L<Redis>
+
+=cut

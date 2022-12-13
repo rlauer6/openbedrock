@@ -13,7 +13,8 @@ REPOS = \
 
 XML_FILES = \
    mysql-session.xml.in \
-   data-sources.xml.in
+   data-sources.xml.in \
+   redis-session.xml.in
 
 TAGX = \
   tagx.xml.in

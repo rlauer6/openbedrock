@@ -195,7 +195,7 @@ subtest 'select_list' => sub {
     [ sort keys %{ $result->[0] } ],
     [ sort @fields ],
     'returns all columns'
-  );
+  ) or diag( Dumper( \@fields, [ keys %{ $result->[0] } ] ) );
 };
 
 ########################################################################

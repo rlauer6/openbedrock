@@ -25,12 +25,6 @@ use warnings;
 
 our @EXPORT_OK = qw{ %BEDROCK_CONFIG_CACHE };
 
-BEGIN {
-  use Bedrock::BedrockJSON;
-
-  Bedrock::JSON->import('evolve');
-}
-
 use parent qw{ Exporter };
 
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
@@ -74,9 +68,23 @@ use Bedrock::Constants qw{:chars :defaults :booleans};
 
 our %BEDROCK_CONFIG_CACHE;
 our $BEDROCK_CACHE_ENABLED = $ENV{BEDROCK_CACHE_ENABLED};
+our $BEDROCK_BENCHMARK;
+
+if ( $ENV{BEDROCK_BENCHMARK} && lc $ENV{BEDROCK_BENCHMARK} eq 'on' ) {
+  require Benchmark;
+
+  Benchmark->import(qw(:all :hireswallclock));
+
+  print {*STDERR} sprintf "[%s:%d] Benchmarking enabled...\n",
+    __PACKAGE__, __LINE__;
+
+  $BEDROCK_BENCHMARK = $TRUE;
+}
 
 if ( cache_enabled() ) {
-  print {*STDERR} "cacheing enabled, attempting to use cache\n";
+  print {*STDERR} sprintf
+    "[%s:%d] cacheing enabled, attempting to use cache\n",
+    __PACKAGE__, __LINE__;
 
   eval {
 
@@ -100,12 +108,15 @@ if ( cache_enabled() ) {
   };
 
   if ($EVAL_ERROR) {
-    print {*STDERR} "cacheing not successful: \n$EVAL_ERROR\n";
+    print {*STDERR} sprintf
+      "[%s:%d] cacheing not successful: \n$EVAL_ERROR\n",
+      __PACKAGE__, __LINE__;
 
     $BEDROCK_CACHE_ENABLED = $FALSE;
   }
   else {
-    print {*STDERR} "successfully initialized cacheing\n";
+    print {*STDERR} sprintf "[%s:%d] successfully initialized cacheing\n",
+      __PACKAGE__, __LINE__;
   }
 }
 
@@ -130,11 +141,17 @@ sub new {
 
   $self->init_request;
 
-  eval { $self->load_config };
+  my ( $t0, $t1 );
+
+  if ($BEDROCK_BENCHMARK) {
+    $t0 = Benchmark->new;
+  }
+
+  my $config = eval { return $self->load_config };
 
   # sometimes one or more configuration files are malformed, helpful
   # to know how far we got loading the configuration files
-  if ($EVAL_ERROR) {
+  if ( !$config || $EVAL_ERROR ) {
     my $error = $EVAL_ERROR;
 
     $r->log->error("error loading configuration files: $error");
@@ -142,6 +159,15 @@ sub new {
       $self->config_files_processed );
 
     croak $error;
+  }
+
+  if ($BEDROCK_BENCHMARK) {
+    $t1 = Benchmark->new;
+
+    $r->log->info(
+      sprintf 'config load time: %s',
+      timestr( timediff( $t1, $t0 ), 'all' )
+    );
   }
 
   return $self;
@@ -184,7 +210,8 @@ sub init_request {
     no warnings 'uninitialized';  ## no critic TestingAndDebugging::ProhibitNoWarnings
     $r->log->debug( Dumper( \%ENV ) );
 
-    $r->log->debug( sprintf 'CONTENT TYPE....[%s]', $r->content_type );
+    $r->log->debug( sprintf 'CONTENT TYPE....[%s]',
+      $r->content_type // $EMPTY );
     $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]', $ENV{SCRIPT_NAME} );
     $r->log->debug( sprintf 'CONFIG_PATH.....[%s]', $ENV{CONFIG_PATH} );
     $r->log->debug( sprintf 'BEDROCK_CONFIG_PATH.....[%s]',

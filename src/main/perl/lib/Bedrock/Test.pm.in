@@ -144,7 +144,9 @@ package Bedrock::Test;
 
 use parent qw(Exporter);
 
-use Bedrock qw(slurp_file);
+use Bedrock qw(slurp_file);  # keep this first
+
+use Apache::Bedrock qw(load_startup_modules);
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:chars :booleans :defaults);
 use Bedrock::Handler;
@@ -370,25 +372,28 @@ sub bedrock {
 
   my %param = $options{param} ? %{ $options{param} } : ();
 
+  my $config = $options{config};
+
   require Text::TagX;
 
   my $output = $EMPTY;
 
-  my $ctx = Faux::Context->new( IO::Scalar->new( \$output ),
-    CONFIG => $options{config}, );
+  my $ctx
+    = Faux::Context->new( IO::Scalar->new( \$output ), CONFIG => $config, );
 
   my $tx = Text::TagX->new( IO::Scalar->new( \$text ), $ctx );
 
   $tx->options( ALLOW_SNIPPET_TAG => 'yes' );
 
-  $tx->param( %param, config => $options{config} );
+  $tx->param( %param, config => $config );
 
-  load_startup_modules(
-    $tx,
-    CONFIG          => $options{config},
-    CONTEXT         => $ctx,
-    EXCLUDE_MODULES => [q/BLM::Startup::UserSession/]
-  );
+  my @modules
+    = grep { $_->{module} ne 'BLM::Startup::UserSession' }
+    @{ $config->get_module_config() };
+
+  $config->init_plugin_path;
+
+  load_startup_modules( \@modules, $ctx, $tx );
 
   my $e = eval {
     my %faux_env = %ENV;
@@ -438,162 +443,6 @@ sub check_test {
   }
 
   return $TRUE;
-}
-
-########################################################################
-sub require_module {
-########################################################################
-  my ($modfile) = @_;
-
-  $modfile =~ s/::/\//xsmg;
-
-  if ( $modfile !~ /[.]pm\z/xsm ) {
-    $modfile =~ s/\z/.pm/xsm;
-  }
-
-  return require $modfile;
-}
-
-########################################################################
-sub bind_module {
-########################################################################
-  my %options = @_;
-
-  require_module( $options{module} );
-
-  my $obj;
-
-  ## no critic (ProhibitTies)
-
-  if ( $options{type} eq 'hash' or $options{type} eq 'object' ) {
-    $obj = bless {}, $options{module};
-
-    tie %{$obj}, $options{module}, $options{context}, $options{config};
-  }
-  elsif ( $options{type} eq 'array' ) {
-    $obj = bless [], $options{module};
-    tie @{$obj}, $options{module}, $options{context}, $options{config};
-  }
-  elsif ( $options{type} eq 'handle' ) {
-    $obj = bless gensym, $options{module};
-    tie *{$obj}, $options{module}, $options{context}, $options{config};
-  }
-
-  my $func = tied %{$obj};
-
-  if ( $func->can('init_plugin') ) {
-    $func->init_plugin( $options{context}, $options{config} );
-  }
-
-  return $obj;
-}
-
-# load_startup_modules($tx, CONFIG => $config, CONTEXT => $ctx, EXCLUDE_MODULES => [])
-# loads startup BLMs, excluding those in EXCLUDE_MODULES list
-########################################################################
-sub load_startup_modules {
-########################################################################
-  my ( $tx, %options ) = @_;
-
-  my $config = $options{CONFIG};
-  my $ctx    = $options{CONTEXT};
-
-  my @exclude_modules = @{ $options{EXCLUDE_MODULES} || [] };
-
-  # load generic startup BLMs
-  my $modules = $config->{'MODULES'};
-
-  return
-    if !ref $modules || reftype($modules) ne 'ARRAY';
-
-  # add plugin PATHs
-  if ( $config->{PLUGIN_PATH} ) {
-    my @plugin_inc = split /:/xsm, $config->{PLUGIN_PATH};
-
-    foreach my $path (@plugin_inc) {
-      next if any { $_ eq $path } @INC;
-
-      push @INC, $path;
-    }
-  }
-
-  foreach my $modconf ( @{$modules} ) {
-    my $module = $modconf->{module};
-    next if any { $_ eq $module } @exclude_modules;
-
-    # no binding?
-    next if !defined $modconf->{'binding'};
-
-    my $pre_bound_binding;
-
-    # only for HEADER/SESSION objects
-    if ( exists $modconf->{header} && $modconf->{header} =~ /^y/xsmi ) {
-      $pre_bound_binding = 'HEADER';
-    }
-    elsif ( exists $modconf->{session} && $modconf->{session} =~ /y/xsmi ) {
-      $pre_bound_binding = 'SESSION';
-    }
-
-    if ($pre_bound_binding) {
-
-      # Bind the module
-      my $obj = bind_module(
-        module  => $module,
-        type    => $modconf->{'type'} || 'hash',
-        context => $ctx,
-        config  => $modconf->{'config'}
-      );
-
-      # add the object to Bedrock' top frame (symbol table)
-      $tx->param( $modconf->{'binding'} => $obj );
-
-      # tagX wants to know who the header and session object are
-      $tx->options( $pre_bound_binding => $obj );
-
-      # ...so does the context object which can be used by Bedrock::CGI
-      $ctx->{$pre_bound_binding} = $obj;
-    }
-    else {
-      # bind a subroutine to the binding name so the constructor gets
-      # invoked ONLY if the variable is accessed from the script.
-      $tx->param(
-        $modconf->{'binding'},
-        sub {
-          my $obj;
-
-          my $modfile = $modconf->{'module'};
-
-          $modfile =~ s/::/\//gxsm;
-
-          if ( $modfile !~ /[.]pm$/xsm ) {
-            $modfile =~ s/\z$/.pm/xsm;
-          }
-
-          require $modfile;
-
-          my $type = $modconf->{'type'} || 'hash';
-
-          ## no critic (ProhibitTies)
-          if ( $type eq 'hash' or $type eq 'object' ) {
-            $obj = bless {}, $modconf->{'module'};
-            tie %{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-          }
-          elsif ( $type eq 'array' ) {
-            $obj = bless [], $modconf->{'module'};
-            tie @{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-          }
-          elsif ( $type eq 'handle' ) {
-            $obj = bless gensym, $modconf->{'module'};
-            tie *{$obj}, $modconf->{'module'}, $ctx, $modconf->{'config'};
-          }
-
-          $obj;
-        }
-      );
-    }
-  }
-
-  return;
 }
 
 1;

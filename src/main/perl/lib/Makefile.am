@@ -70,6 +70,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \
     Bedrock/PodWriter.pm \
+    Bedrock/RedisClient.pm \
     Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
@@ -110,7 +111,8 @@ BEDROCK_APACHE = \
     Bedrock/Apache/BedrockDocs.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in \
     Bedrock/Apache/Constants.pm.in \
-    Bedrock/Apache/HandlerUtils.pm.in
+    Bedrock/Apache/HandlerUtils.pm.in \
+    Bedrock/Apache/RedisSessionHandler.pm.in
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
@@ -382,7 +384,7 @@ test: Bedrock/Test.pm Bedrock/Test/Utils.pm
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
 	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $$TEST
 
-prove.sh: Test/Bedrock.pm
+prove.sh: Bedrock/Test.pm
 	echo "BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
 	chmod 755 prove.sh
 
