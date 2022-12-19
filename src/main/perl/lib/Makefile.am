@@ -369,12 +369,19 @@ clean-local:
 	find . -name '*.pm' -exec rm {} \;
 	rm -rf *.tdy
 
+# test all :  TEST=
+# test one :  TEST=01-indexedtablehandler
+# test group: TEST=indexedtablehandler 
+#
 test: Bedrock/Test.pm Bedrock/Test/Utils.pm
 	echo "$$TEST"; \
 	if test -z "$$TEST"; then \
 	  TEST="t"; \
 	else \
-	  TEST="t/*-$$TEST.t"; \
+	  TEST="t/$$TEST.t"; \
+	fi; \
+	if test -n "$$GROUP"; then \
+	  TEST="t/*-$$GROUP.t"; \
 	fi; \
 	if test -e /tmp/mysqld/mysqld.sock; then \
 	  DBI_SOCKET=/tmp/mysqld/mysqld.sock; \

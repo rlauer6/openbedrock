@@ -23,12 +23,12 @@ package BLM::IndexedTableHandler;
 use strict;
 use warnings;
 
-use parent qw{ BLM::DBHandler };
+use parent qw( BLM::DBHandler );
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
 use Bedrock::Array;
-use Bedrock::Constants qw{ :chars :booleans :find_flags };
+use Bedrock::Constants qw( :chars :booleans :find_flags );
 
 use Bedrock::HTML::Helper qw(
   create_html_element
@@ -40,9 +40,9 @@ use Bedrock::HTML::Helper qw(
 
 use BLM::IndexedTableHandler::RecordSet;
 use Data::Dumper;
-use English qw{-no_match_vars};
-use List::Util qw{ pairs any none};
-use Scalar::Util qw{ reftype };
+use English qw(-no_match_vars);
+use List::Util qw( pairs any none);
+use Scalar::Util qw( reftype );
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -50,63 +50,57 @@ with 'Bedrock::Logger';
 ## no critic (ErrorHandling::RequireCarping, ProhibitManyArgs)
 
 __PACKAGE__->create_accessors(
-  qw{
+  qw(
     _search_fields
     attributes
     labels
     config
     field_list
+    insert_query
     list
     lock
+    reload_query
     table_dir
     table_name
     upsert_mode
-  }
+    __query
+    __args
+    __arg_list
+    __benchmarks
+  )
 );
+
+########################################################################
+sub _new {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  die "usage: BLM::IndexedTableHandler->new(...)\n"
+    if !ref $args[0];
+
+  return $self->_new_with_query(@args)
+    if ref( $args[0] ) !~ /DBI::db/xsm;
+
+  $self->dbi( shift @args );
+
+  return $self->_new_with_id(@args)
+    if !ref $args[0] || reftype( $args[0] ) ne 'HASH';
+
+  return $self->_new_with_options(@args);
+}
 
 ########################################################################
 sub new {
 ########################################################################
   my ( $this, @args ) = @_;
+
   my $class = ref $this || $this;
 
   my $self = bless {}, $class;
 
-  my $id;
+  $self->track_all();
 
-  if ( ref $args[0] && ( ref( $args[0] ) !~ /DBI::db/xsm ) ) {
-    $id = $self->_new_with_query(@args);
-  }
-  # new( dbi, hash-ref )
-  elsif ( ref $args[0] && ( ref( $args[0] ) =~ /DBI::db/xsm ) ) {
-
-    $self->dbi( shift @args );
-
-    if ( ref $args[0] && reftype( $args[0] ) eq 'HASH' ) {
-      $id = $self->_new_with_options(@args);
-    }
-    else {
-      $id = $self->_new_with_id(@args);
-    }
-  }
-  else {
-    die "usage: BLM::IndexedTableHandler->new(...)\n";
-  }
-
-  if ( ref $this ) {
-    $self->set_table_name( $this->get_table_name() );
-  }
-  elsif ( !$self->get_table_name ) {
-    $self->set_table_name( $self->_table_name );
-  }
-
-  die 'Unable to determine table name'
-    if !$self->get_table_name;
-
-  # validate config object
-  if ( !ref $self->get_config || !$self->get_config->{tables} ) {
-    $self->set_config( {} );
-  }
+  my $id = $self->_new(@args);
 
   # - avoid redundant creation of data structure for each row in a list
   #   i.e. if this object is being constructed thusly:
@@ -116,53 +110,113 @@ sub new {
   #   which is done from find() for example, then we really don't want to
   #   create multiple arrays that hold the table directory, one will do nicely thanks
   #
+
   if ( ref $this && $this->can('get_field_list') ) {
-    # grab all the same hidden values from the reference class instance
-    @{$self}{ keys %{$this} } = values %{$this};
 
-    # ...but the values of the columns in the table
-    foreach ( $self->get_fields() ) {
-      $self->{$_} = undef;
+    # grab all the same hidden values from the reference class instance except the history vars
+    for my $key ( keys %{$this} ) {
+      next if $self->is_field($key);
+
+      next if any { $key eq $_ } qw(__query __args __arg_list __benchmarks);
+
+      $self->{$key} = $this->{$key};
     }
   }
-
-  $self->set_table_dir( $self->_get_table_dir );
-
-  foreach ( $self->get_fields ) {
-    if ( $self->get_field_type($_) eq 'timestamp' ) {
-      $self->set_display_only($_);
+  else {
+    if ( !$self->get_table_name ) {
+      $self->set_table_name( $self->_table_name );
     }
+
+    die 'Unable to determine table name'
+      if !$self->get_table_name;
+
+    # validate config object
+    if ( !ref $self->get_config || !$self->get_config->{tables} ) {
+      $self->set_config( {} );
+    }
+
+    $self->set_table_dir( $self->_get_table_dir );
+
+    foreach ( $self->get_fields ) {
+      if ( $self->get_field_type($_) eq 'timestamp' ) {
+        $self->set_display_only($_);
+      }
+    }
+
+    $self->set_insert_query( $self->create_insert_query );
+
+    $self->set_reload_query( $self->create_reload_query );
+
+    $self->set_upsert_mode($FALSE);  # default legacy behavior
+
+    $self->set_return_bedrock_refs($TRUE);
   }
 
-  if ($id) {
-    die "invalid id\n"
-      if !is_id($id);
+  return $self->_init_record($id);
+}
 
-    my $query = <<'END_OF_SQL';
+########################################################################
+sub create_reload_query {
+########################################################################
+  my ($self) = @_;
+
+  my $reload_query = <<'END_OF_SQL';
  select *
    from %s
-   where id = ? %s
+   where id = ?
 END_OF_SQL
 
-    my $lock_mode = {
-      0 => $EMPTY,
-      1 => 'for update',
-      2 => 'lock in share mode'
-    }->{ $self->get_lock || 0 };
+  return sprintf $reload_query, $self->get_table_name;
+}
 
-    $query = sprintf $query, $self->get_table_name, $lock_mode;
+########################################################################
+sub _init_record {
+########################################################################
+  my ( $self, $id ) = @_;
 
-    my $ref = $self->select( $query, $id );
+  return $self
+    if !$id;
 
-    foreach ( keys %{$ref} ) {
-      $self->{$_} = $ref->{$_};
-    }
+  die "invalid id\n"
+    if !is_id($id);
+
+  my $lock_mode = {
+    0 => $EMPTY,
+    1 => 'for update',
+    2 => 'lock in share mode'
+  }->{ $self->get_lock || 0 };
+
+  my $query = $self->get_reload_query;
+
+  my $ref = $self->select( "$query $lock_mode", $id );
+
+  foreach ( keys %{$ref} ) {
+    $self->{$_} = $ref->{$_};
   }
 
-  $self->set_upsert_mode($FALSE);  # default legacy behavior
-  $self->set_return_bedrock_refs($TRUE);
-
   return $self;
+}
+
+########################################################################
+sub create_insert_query {
+########################################################################
+  my ( $self, @fields ) = @_;
+
+  my $query = <<'END_OF_SQL';
+insert into %s (%s) values (%s)
+END_OF_SQL
+
+  if ( !@fields ) {
+    @fields = $self->get_fields();
+  }
+
+  my $field_names = join $COMMA, @fields;
+  my $table_name  = $self->get_table_name;
+
+  my $bind_vars = join $COMMA, split $EMPTY,
+    ($QUESTION_MARK) x scalar @fields;
+
+  return sprintf $query, $table_name, $field_names, $bind_vars;
 }
 
 ########################################################################
@@ -538,14 +592,25 @@ sub dumper {
 ########################################################################
 sub save {
 ########################################################################
-  my ( $self, $input ) = @_;
+  my ( $self, @args ) = @_;
 
-  if ( ref $input && reftype($input) eq 'HASH' ) {
-    foreach my $field ( $self->get_fields ) {
-      next if !exists $input->{$field};
+  my $reload = $TRUE;
 
-      $self->set( $field, $input->{$field} );
+  if (@args) {
+
+    if ( is_hash( $args[0] ) ) {
+      my $row = shift @args;
+
+      foreach my $field ( $self->get_fields ) {
+        next if !exists $row->{$field};
+
+        $self->set( $field, $row->{$field} );
+      }
     }
+  }
+
+  if (@args) {
+    $reload = $args[0];
   }
 
   my $id = $self->{id} // 0;
@@ -553,19 +618,16 @@ sub save {
   if ($id) {
     $self->_update;
   }
+  elsif ( $self->get_upsert_mode ) {
+    $self->_insert_some;
+  }
   else {
-
-    if ( $self->get_upsert_mode ) {
-      $self->_insert_some;
-    }
-    else {
-      $self->_insert_all;
-    }
-
-    $id = $self->{id};
+    $self->_insert_all;
   }
 
-  $self->reload;
+  if ($reload) {
+    $self->reload;
+  }
 
   return $self->{id};
 }
@@ -577,17 +639,13 @@ sub reload {
 
   $id //= $self->{id};
 
-  my $table_name = $self->get_table_name;
+  # note we bypass benchmarking by not using $self->select();
 
-  # update our object from the database (default fields)
-  my $query = <<'END_OF_SQL';
-select * from %s
-  where id = ?
-END_OF_SQL
+  my $sth = $self->dbi->prepare( $self->get_reload_query );
 
-  $query = sprintf $query, $table_name;
+  $sth->execute($id);
 
-  my $ref = $self->select( $query, $id );
+  my $ref = $sth->fetchrow_hashref;
 
   foreach my $field ( CORE::keys %{$ref} ) {
     $self->set( $field, $ref->{$field} );
@@ -2237,18 +2295,6 @@ sub _find_or_count {
 sub _find { unshift @_, undef; goto &_find_or_count }  ## no critic (RequireArgUnpacking)
 
 ########################################################################
-sub _set_get {
-########################################################################
-  my ( $self, @args ) = @_;
-
-  if ( @args == 2 ) {
-    $self->{ $args[0] } = $args[1];
-  }
-
-  return $self->{ $args[0] };
-}
-
-########################################################################
 
 {
   ## no critic (RequireArgUnpacking)
@@ -2263,11 +2309,9 @@ sub _insert {
 
   $self->_format_fields_for_insert;
 
-  my $query = <<'END_OF_SQL';
-insert into %s (%s) values (%s)
-END_OF_SQL
-
   $self->{id} = 0;
+
+  my $query;
 
   my @fields;
 
@@ -2277,19 +2321,12 @@ END_OF_SQL
         exists_only => $TRUE
       }
     );
+
+    $query = $self->create_insert_query(@fields);
   }
   else {
-    @fields = $self->get_fields( { backticks => $TRUE } );
+    $query = $self->get_insert_query;
   }
-
-  my $table_name = $self->get_table_name;
-
-  my $field_names = join $COMMA, @fields;
-
-  my $bind_vars = join $COMMA, split $EMPTY,
-    ($QUESTION_MARK) x scalar @fields;
-
-  $query = sprintf $query, $table_name, $field_names, $bind_vars;
 
   my @bind_vals = $self->_get_values(@fields);
 
@@ -2297,9 +2334,7 @@ END_OF_SQL
 
   $self->{id} = $self->dbi->{mysql_insertid};
 
-  my $id = $self->{id};
-
-  return $id;
+  return $self->{id};
 }
 
 ########################################################################
@@ -2342,7 +2377,7 @@ END_OF_SQL
   $query = sprintf $query, $self->get_table_name, join $COMMA,
     map {"$_ = ?"} @fields;
 
-  $self->do( $query, $self->_get_values(@fields), $self->{'id'} );
+  $self->do( $query, $self->_get_values(@fields), $self->{id} );
 
   return $self->{rows};
 }
@@ -2460,6 +2495,31 @@ sub _table_name {
 }
 
 ########################################################################
+sub build_condition {
+########################################################################
+  my ( $column, $value, $bind_vars ) = @_;
+
+  # '!foo' => 1      (foo <> 1)
+  # '!foo' => undef  (is not null)
+
+  my $not = $column =~ /^\s*[!]/xsm;
+  $column =~ s/[!]//xsm;
+
+  my $condition;
+
+  if ( defined $value ) {
+    push @{$bind_vars}, $value;
+
+    $condition = sprintf '%s %s ?', $column, $not ? '<>' : $EQUALS_SIGN;
+  }
+  else {
+    $condition = sprintf '%s is %s null', $column, $not ? 'not' : $EMPTY;
+  }
+
+  return $condition;
+}
+
+########################################################################
 sub _new_with_query {
 ########################################################################
   my ( $self, $args ) = @_;
@@ -2482,37 +2542,44 @@ sub _new_with_query {
     if !$self->get_table_name;
 
   my @bind_vars;
-  my @query;
+
+  my @columns = %args;
 
   die "no columns to query\n"
-    if !CORE::keys %args;
+    if !@columns;
 
-  foreach my $key ( CORE::keys %args ) {
-    my $column = $key;
+  my @or;
+  my @conditions;
 
-    # '!foo' => 1, e.g.
-    # '!foo' => undef  (is not null)
-    my $isnt;
-    $isnt = $column =~ /^\s*!/xsm;
-    $column =~ s/\!//xsm;
+  foreach my $p ( pairs %args ) {
+    my ( $column, $value ) = @{$p};
 
-    if ( defined $args{$key} ) {
-      push @bind_vars, $args{$key};
-      push @query, sprintf '%s %s ?', $column, $isnt ? '<>' : $EQUALS_SIGN,
-        $args{$key};
+    if ( is_array($value) ) {
+      for ( pairs( @{$value} ) ) {
+        push @or, build_condition( @{$_}, \@bind_vars );
+      }
+
+      push @conditions, sprintf '( %s )', join ' or ', @or;
     }
     else {
-      push @query, sprintf '%s is %s null', $column, $isnt ? 'not' : $EMPTY;
+      push @conditions, build_condition( $column,, $value, \@bind_vars );
     }
   }
 
   my $filter = sprintf 'select id from %s where %s', $self->get_table_name,
-    join ' and ', @query;
+    join ' and ', @conditions;
 
-  my $sth = $self->dbi->prepare($filter);
+  my $ref = $self->select( $filter, @bind_vars );
 
-  $sth->execute(@bind_vars);
-  my $ref = $sth->fetchrow_hashref;
+  #  $self->set_query($filter);
+  #
+  #  $self->set_bind_vars( \@bind_vars );
+  #
+  #  my $sth = $self->dbi->prepare($filter);
+  #
+  #  $sth->execute(@bind_vars);
+  #
+  #  my $ref = $sth->fetchrow_hashref;
 
   return $ref->{id} ? $ref->{id} : 0;
 }
@@ -2523,7 +2590,7 @@ sub _new_with_options {
   my ( $self, $options ) = @_;
 
   my ( $id, $config, $table_name, $max_rows )
-    = @{$options}{qw{ id config table_name max_rows }};
+    = @{$options}{qw( id config table_name max_rows )};
 
   $self->set_config($config);
   $self->set_table_name($table_name);
@@ -2546,14 +2613,17 @@ sub _new_with_id {
 
   my $id;
 
+  # new(dbi, id, config)
   if ( @args == 2 && ref $args[1] ) {
     $id = shift @args;
     $self->set_config(@args);
   }
+  # new(dbi, id, table-name)
   elsif ( @args == 2 ) {
     $id = shift @args;
     $self->set_table_name(@args);
   }
+  # new(dbi, id, config, table-name)
   else {
     $id = shift @args;
     $self->set_config( shift @args );
@@ -3531,11 +3601,18 @@ The values of the C<action> CGI variable support are:
 
 =item save
 
-Saves the field values in the C<$input> object to the MySQL table.
-Supports both updates and inserts depending on whether the C<id> field
-is set to 0 (insert) or a non-zero (update) value.
+ save([object],[reload-flag])
+ save([reload-flag])
 
-Returns the table handler object.
+Saves the values in the object itself or the passed object to the MySQL table.
+
+Supports both updates and inserts depending on whether the C<id> field
+is set. To save a subset of the table's columns, set the C<upsert>
+flag (see L</upsert>).
+
+By default, the C<save()> method will read the record back and update the fields in the object. This is done to support the cases where the database may provide default values (timestamps) or otherwise populate a field when inserting or updating the row.
+
+Returns the id value of the row inserted or updated.
 
 =item delete
 
@@ -3617,6 +3694,7 @@ Returns the highest value for the id column in the table.
  new( dbi, id, config, table-name )
  new( dbi, id, table-name )
  new( dbi, { id => id, table_name => table-name, config => config, lock => 0 |1  })
+ new( { dbi => dbi, ... })
 
 Polymorphism run amok, but pick your poison...these are unambiquous
 signatures. My preference in Bedrock is...
@@ -3670,13 +3748,13 @@ transactions are blocked from updating those rows, from doing SELECT
 transaction isolation levels. Consistent reads ignore any locks set on
 the records that exist in the read view. (Old versions of a record
 cannot be locked; they are reconstructed by applying undo logs on an
-in-memory copy of the record.)> - from http://dev.mysql.com
+in-memory copy of the record.) - L<http://dev.mysql.com>>
 
 =back
 
 B<Note that row level locking in MySQL is only available with the InnoDB
 engine.  The row is locked immediately when the object is instatiated
-for the give C<id>.  You should commit the record to release the lock.>
+for the given C<id>.  You should commit the record to release the lock.>
 
 =item max_rows
 

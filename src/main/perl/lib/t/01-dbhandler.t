@@ -383,7 +383,8 @@ subtest 'commit/rollback' => sub {
 ########################################################################
   my $dbh = BLM::DBHandler->new($dbi);
 
-  local $dbi->{AutoCommit} = $FALSE;
+  local $dbi->{AutoCommit};
+  $dbh->auto_commit($FALSE);
 
   my $result = $dbh->select('select count(*) foo_count from foo');
   ok( $result->{foo_count} > 0, 'foo has records' );

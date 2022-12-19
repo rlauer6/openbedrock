@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -23,84 +21,149 @@
 package BLM::SMTP;
 
 use strict;
+use warnings;
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-}
-
+use Bedrock::Constants qw(:booleans :chars);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use List::Util qw(pairs);
 use Net::SMTP;
-use Bedrock::Handle;
-use Scalar::Util qw/reftype/;
+use Scalar::Util qw(reftype);
 
-use parent qw/Bedrock::Handle/;
+use parent qw(Bedrock::Handle);
 
-sub can {
- my $self = shift;
+########################################################################
+sub can {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
 
- return $_[0] eq 'new' ? undef : $self->SUPER::can($_[0]);
+  return $args[0] eq 'new' ? undef : $self->SUPER::can( $args[0] );
 }
 
+########################################################################
 sub TIEHANDLE {
-  my $class = shift;
+########################################################################
+  my ( $class, @args ) = @_;
 
   die "Usage: $class->new( SMTP_Server, Sender_Addr [, To_Addr1 .. ] )\n"
-    unless @_ > 1;
+    if !@args;
 
-  my $server = shift;
-  my $sender = shift;
-  my $self   = bless {}, $class;
+  my $self = bless {}, $class;
 
-  $self->{'sender'} = $sender;
-  $self->{'server'} = Net::SMTP->new( $server );
+  my $host;
 
-  die "$class->new(): unable to connect to $server.\n" 
-    unless $self->{'server'};
+  my %options;
 
-  $self->{'server'}->mail($sender);
-  $self->{'to'} = [@_] if @_ > 0;
-  $self;
+  if ( ref $args[0] ) {
+    %options = %{ $args[0] };
+
+    $self->{from} = delete $options{From};
+
+    $self->{subject} = delete $options{Subject};
+
+    if ( $options{To} ) {
+      $self->{to} = [ delete $options{To} ];
+    }
+
+    if ( $options{CC} ) {
+      $self->{cc} = [ delete $options{CC} ];
+    }
+
+    $host //= delete $options{Host};
+  }
+  else {
+    $host = shift @args;
+
+    my ( $sender, $to, $cc, $subject ) = @args;
+
+    print {*STDERR} Dumper( [ $sender, $to, \@args ] );
+
+    $self->{from} = $sender;
+
+    $self->{subject} = $subject;
+
+    if ($to) {
+      $self->{to} = [$to];
+    }
+
+    if ($cc) {
+      $self->{cc} = [$cc];
+    }
+  }
+
+  my $user = delete $options{AuthUser};
+  my $pass = delete $options{AuthPass};
+  my $sasl = delete $options{SASL};
+
+  $host //= 'localhost';
+
+  die "no host specified\n"
+    if !$host;
+
+  my $smtp = Net::SMTP->new( $host, %options );
+  $self->{server} = $smtp;
+
+  die "$class->new(): unable to connect to $host:$EVAL_ERROR\n"
+    if !$self->{server};
+
+  if ( $user && $pass ) {
+    $smtp->auth( $user, $pass );
+  }
+  elsif ($sasl) {
+    $smtp->auth($sasl);
+  }
+
+  $smtp->mail( $self->{from} );
+
+  return $self;
 }
 
+########################################################################
 sub WRITE {
-  my $self = shift;
-  my ( $buf, $len, $offset ) = @_;
+########################################################################
+  my ( $self, $buf, $len, $offset ) = @_;
 
-  my $server = $self->{'server'};
+  my $server = $self->{server};
 
   # If writing for first time, need to do some things
-  unless ( exists $self->{'start_send'} ) {
+  if ( !exists $self->{start_send} ) {
 
     # croak if some required stuff not specified
     die ref($self), "->WRITE(): `to' address not specified.\n"
-    unless $self->{'to'};
+      if !$self->{to};
 
     # mark to indicate we are sending and no more headers accepted
-    $self->{'start_send'} = 1;
+    $self->{start_send} = $TRUE;
 
     # Set the to address -- this is the only header really required.
-    $server->to( @{ $self->{'to'} } );
+    $server->to( @{ $self->{to} || [] } );
 
     # Start sending the data.
     $server->data;
 
     # Need to write subject and cc headers now
-    $server->datasend( "To: " . join( ",", @{ $self->{to} } ) . "\n" );
-    $server->datasend( "From: " . $self->{sender} . "\n" );
+    $server->datasend( sprintf "To: %s\n", join q{,}, @{ $self->{to} } );
+
+    $server->datasend( sprintf "From: %s\n", $self->{from} );
 
     if ( exists $self->{'subject'} ) {
-      $server->datasend("Subject: $self->{'subject'}\n")
+      $server->datasend("Subject: $self->{'subject'}\n");
     }
 
-    if ( exists $self->{'cc'} ) {
-      local $" = ", ";
-      $server->datasend("CC: @{$self->{'cc'}}\n");
+    my @cc_list = @{ $self->{cc} || [] };
+
+    if (@cc_list) {
+      local $LIST_SEPARATOR = ', ';
+
+      $server->datasend( sprintf "CC: %s\n", @cc_list );
     }
 
     # Write the rest of the headers now
-    if ( exists $self->{'header'} ) {
-      my ( $key, $value );
-      while ( ( $key, $value ) = each %{ $self->{'header'} } ) {
+    if ( exists $self->{header} ) {
+
+      for my $p ( pairs %{ $self->{header} } ) {
+        my ( $key, $value ) = @{$p};
+
         $server->datasend("$key: $value\n");
       }
     }
@@ -109,158 +172,178 @@ sub WRITE {
     $server->datasend("\n");
   }
 
-  $server->datasend($buf);
+  return $server->datasend($buf);
 }
 
 # called if someone does a close();
+########################################################################
 sub CLOSE {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
-  $self->{'server'}->dataend;
-  $self->{'server'} = undef;
+  $self->{server}->dataend;
+  $self->{server} = undef;
+
+  return;
 }
 
+########################################################################
 sub to {
-  my $fd   = shift;
-  my $self = tied( *{$fd} );
+########################################################################
+  my ( $fd, $to ) = @_;
 
-  die ref($fd), "->to(): cannot specify `to' address once message send has been started.\n"
-    if exists $self->{'start_send'};
+  return
+    if !$to;
 
-  $self->{'to'} = [] unless exists $self->{'to'};
-  push @{ $self->{'to'} }, @_;
+  my $self = tied *{$fd};
+
+  die ref($fd),
+    "->to(): cannot specify `to' address once message send has been started.\n"
+    if exists $self->{start_send};
+
+  $self->{to} //= [];
+
+  push @{ $self->{to} }, $to;
+
+  return $self->{to};
 }
 
+########################################################################
+sub from {
+########################################################################
+  my ( $fd, $from ) = @_;
+
+  return if !$from;
+
+  my $self = tied *{$fd};
+
+  die ref($fd),
+    "->to(): cannot specify `from' address once message send has been started.\n"
+    if exists $self->{start_send};
+
+  $self->{from} = $from;
+
+  return $self->{from};
+}
+
+########################################################################
 sub recipient {
-  $_[0]->to(@_);
+########################################################################
+  my ( $self, $recipient ) = @_;
+
+  return if !$recipient;
+
+  return $self->to($recipient);
 }
 
+########################################################################
 sub cc {
-  my $fd   = shift;
-  my $self = tied( *{$fd} );
+########################################################################
+  my ( $fd, $cc ) = @_;
 
-  die ref($fd), "->cc(): cannot specify `CC' address once message send has been started.\n"
-    if exists $self->{'start_send'};
+  return if !$cc;
 
-  $self->{'cc'} = [] unless exists $self->{'cc'};
-  push @{ $self->{'cc'} }, @_;
+  my $self = tied *{$fd};
+
+  die ref($fd),
+    "->cc(): cannot specify `CC' address once message send has been started.\n"
+    if exists $self->{start_send};
+
+  $self->{cc} //= [];
+
+  push @{ $self->{cc} }, $cc;
+
+  return $self->{cc};
 }
 
+########################################################################
 sub subject {
-  my $fd   = shift;
-  my $self = tied( *{$fd} );
+########################################################################
+  my ( $fd, @subject ) = @_;
 
-  die ref($fd), "->subject(): cannot specify `Subject' once message send has been started.\n"
-    if exists $self->{'start_send'};
+  return if !@subject;
 
-  $self->{'subject'} = "@_";
+  my $self = tied *{$fd};
+
+  die ref($fd),
+    "->subject(): cannot specify `Subject' once message send has been started.\n"
+    if exists $self->{start_send};
+
+  $self->{subject} = "@subject";
+
+  return $self->{subject};
 }
 
+########################################################################
 sub header {
-  my $fd   = shift;
-  my $self = tied( *{$fd} );
+########################################################################
+  my ( $fd, @args ) = @_;
 
-  die ref($fd), "->header(): cannot specify any header(s) once message send has been started.\n"
-    if exists $self->{'start_send'};
+  return if !@args;
 
-  my %args = @_;
-  my ( $key, $value );
-  $self->{'header'} = {} unless exists $self->{'header'};
+  my $self = tied *{$fd};
 
-  while ( ( $key, $value ) = each %args ) {
-    next if $key =~ /^(cc|to|from|subject)$/i;
-    $self->{'header'}->{ ucfirst($key) } = $value;
+  die ref($fd),
+    "->header(): cannot specify any header(s) once message send has been started.\n"
+    if exists $self->{start_send};
+
+  my %args = @args;
+
+  $self->{header} //= {};
+
+  for my $p ( pairs @args ) {
+    my ( $key, $value ) = @{$p};
+
+    next if any { $key eq $_ } qw( cc to from subject );
+
+    $self->{header}->{ ucfirst $key } = $value;
   }
+
+  return;
 }
 
+########################################################################
 sub DESTROY {
+########################################################################
   my $self = shift;
 
   if ( ref($self) && reftype($self) eq 'HASH' ) {
-    $self->{'server'}->dataend 
-      if $self->{'server'};
 
-    $self->{'server'} = undef;
+    if ( $self->{server} ) {
+      $self->{server}->dataend;
+    }
+
+    $self->{server} = undef;
   }
+
+  return;
 }
 
 1;
 
-#
-# Revision 1.15  2013/01/02 23:07:51  rlauer
-# - override can() so we can force Bedrock to use this as a tied handle
-#
-# Revision 1.14  2012/03/19 14:03:08  eutl420
-# - pod typos
-#
-# Revision 1.13  2011/09/15 16:05:31  eutl420
-# - perl tidy
-#
-# Revision 1.12  2011/09/10 19:14:36  eutl420
-# - added DESTROY method to make sure ->dataend() method called
-#
-# Revision 1.11  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.10  2011/07/12 19:10:35  eutl420
-# set VERSION from cvs Revision keyword
-#
-# Revision 1.9  2010/11/29 15:57:51  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.8  2010/11/20 18:47:29  rlauer
-# - cleanup pod
-#
-# Revision 1.7  2010/11/15 02:27:56  rlauer
-# - make PUBLIC, minor documentation tweaks
-#
-# Revision 1.6  2009/12/30 00:23:31  rlauer
-# update docs for Bedrock II
-#
-# Revision 1.5  2009/12/28 20:32:33  rlauer
-# move SIS:: up to Bedrock::
-#
-# Revision 1.4  2008/12/03 14:01:19  alans
-# We now use a hard-coded value for module $VERSION rather than a munged
-# version of the expansion of the CVS 'Revision' keyword; the module API
-# version number is orthogonal to the identifyer in the source control
-# system.
-#
-# This change makes it safe to import the Bedrock codebase into another
-# source repository (even CVS!) without breaking the code. We hit this
-# issue when we first released the libbedrock-perl .deb package, for which
-# we imported the release tarball sources into the 'bedrock-deb' CVS project.
-#
-# Revision 1.3  2008/11/25 19:04:13  rlauer
-# changes based on Bedrock 2.0 migration plan
-#
-# Revision 1.2  2001/02/14 15:35:44  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.1  2000/10/19 20:51:20  sridhar
-# Module SMTP implements a handle to talk with an SMTP server.
-#
-#
+## no critic (RequirePodSections)
+
+__END__
 
 =pod
 
 =head1 PUBLIC
 
-C<BLM::SMTP> - Bedrock interface to an SMTP server via C<Net::SMTP>.
+BLM::SMTP - Bedrock interface to an SMTP server via L<Net::SMTP>.
 
 =head1 SYNOPSIS
 
-  <plugin:SMTP localhost fred@openbedrock.net barney@openbedrock.net>
+ <plugin:SMTP localhost fred@openbedrock.net barney@openbedrock.net>
 
-  <null $SMTP.subject("Bowling tonight!")>
+ <null $SMTP.subject("Bowling tonight!")>
 
-  <sink $SMTP>
-  Grab your ball and let's go to the alley buddy!
-  </sink>
+ <sink $SMTP>
+ Grab your ball and let's go to the alley buddy!
+ </sink>
 
 =head1 DESCRIPTION
 
-Enables Bedrock to interact directly with an SMTP server.
+Plugin for sending mail using L<Net::SMTP>.
 
 =head1 NOTES
 
@@ -269,11 +352,72 @@ handle which can be used with the C<sink> tag.
 
 =head2 Usage
 
-  <plugin:SMTP server from to cc ...>
+ <plugin:SMTP server from to cc subject.>
+
+ <plugin:SMTP server options>
+
+C<options> should be a hash reference to a list of options to send to
+L<Net::SMTP> new constructor.
+
+=over 5
+
+=item Host (required)
+
+Host name to connect to.
+
+default: none
+
+=item Port
+
+Port to connect to.
+
+default: 25
+
+=item SSL
+
+SSL parameter (see L<Net::SMTP> for a complete explanation). 
+
+I<SSL - If the connection should be done from start with SSL, contrary
+        to later upgrade with "starttls". You can use SSL arguments as
+        documented in IO::Socket::SSL, but it will usually use the right
+        arguments already.>
+
+=item To
+
+Recipient. You can later use the C<to()> method to add recipients.
+
+=item From (required)
+
+Sender. You must supply the sender if you use the options interface.
+
+=item CC
+
+CC list. You can later use the C<cc()> method to add recipients.
+
+=item AuthUser
+
+Username if authentication is used. Both AuthUser and AuthPass must be specified.
+
+=item AutPass
+
+Password if authentication is used. Both AuthUser and AuthPass must be specifed.
+
+=item SASL
+
+L<Authen::SASL> object if authentication is used and you have not
+specified the AuthUser and AuthPass values.
+
+=back
+
+ <hash:options Host $host Port 465 SSL 1 AuthUser $user AuthPass $pass
+               From fred@openbedrock.net To barney@openbedrock.net>
 
 Use the object methods B<before> using the handle for sending data.
 
-=head1 METHODS
+If you pass an C<options> object it most include at last the C<Host>
+and C<From> parameters.
+
+=head1 METHODS AND SUBROUTINES
 
 =head2 to( address, address, ... )
 
@@ -294,7 +438,7 @@ outgoing message. These headers are not parsed.
 
 For example, use the following to specify that message body contains HTML
 
-  <null $SMTP.header( "Content-type", "text/html")>
+ <null $SMTP.header( "Content-type", "text/html")>
 
 =head1 EXAMPLE
 
@@ -302,11 +446,11 @@ Use the object returned when you invoke the C<plugin> tag as the
 argument to the C<sink> tag. The body of the C<sink> tag becomes the
 body of the message.
 
-  <plugin:SMTP localhost fred@openbedrock.net barney@openbedrock.net>
+ <plugin:SMTP localhost fred@openbedrock.net barney@openbedrock.net>
 
-  <sink $SMTP>
-    message body here
-  </sink>
+ <sink $SMTP>
+   message body here
+ </sink>
 
 I<Note that the C<E<lt>sinkE<gt>> tag accepts a tied handle as an
 argument, so all output is written to that handle.  In this case, the
@@ -319,6 +463,6 @@ J. Sridhar
 
 =head1 SEE ALSO
 
-C<BLM::Mail>
+L<BLM::Mail
 
 =cut

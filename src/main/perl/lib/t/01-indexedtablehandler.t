@@ -4,9 +4,15 @@ use warnings;
 use Test::More;
 
 use DBI;
+use Benchmark qw(:hireswallclock :all);
+
+use BLM::DBHandler;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use List::Util qw{none};
+
+use Text::ASCIITable;
+
 use Readonly;
 
 Readonly my $TRUE  => 1;
@@ -21,10 +27,11 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 12;
+  plan tests => 14;
 }
 
-use_ok('BLM::IndexedTableHandler');
+use_ok('BLM::IndexedTableHandler')
+  or BAIL_OUT(@EVAL_ERROR);
 
 eval {
   $dbi->do('create database foo');
@@ -143,17 +150,69 @@ subtest 'new - id' => sub {
 };
 
 ########################################################################
-subtest 'new - query' => sub {
+subtest 'new - { id => ... }' => sub {
 ########################################################################
   my $id = $dbi->last_insert_id();
 
-  my $ith = ITH::Foo->new( $dbi, { id => $id, foo => 'bar' } );
+  my $ith = ITH::Foo->new( $dbi, { id => $id } );
 
   foreach my $field ( $ith->get_fields ) {
     next if $field eq 'id';
 
     ok( $ith->get($field) eq $TEST_RECORD{$field}, 'get ' . $field );
   }
+};
+
+########################################################################
+subtest 'new - query' => sub {
+########################################################################
+  my $ith = ITH::Foo->new( { dbi => $dbi, foo => 'bar' } );
+
+  isa_ok( $ith, 'ITH::Foo' )
+    or do {
+    diag($EVAL_ERROR);
+    bail_out('could not create BLM::IndexedTableHandler instance');
+    };
+
+  is( $ith->{foo}, 'bar', 'read record from query' );
+
+  for (qw(biz buz baz)) {
+    $ith->set( id => 0, foo => $_ );
+
+    if ( $_ eq 'baz' ) {
+      $ith->set( bar_phone => '9999999999' );
+    }
+
+    $ith->save();
+  }
+
+  $ith = $ith->new(
+    { dbi       => $dbi,
+      bar_phone => '9999999999',
+      or        => [ foo => 'biz', foo => 'baz' ]
+    }
+  );
+
+  is( $ith->{foo}, 'baz', 'and, or' );
+
+};
+
+########################################################################
+subtest 'new - query (or)' => sub {
+########################################################################
+  my $ith
+    = ITH::Foo->new(
+    { dbi => $dbi, _or_ => [ foo => 'bar', name => 'test' ] } );
+
+  isa_ok( $ith, 'ITH::Foo' )
+    or do {
+    diag($EVAL_ERROR);
+    bail_out('could not create BLM::IndexedTableHandler instance');
+    };
+
+  is( $ith->{foo}, 'bar', 'read record from query' );
+
+  $ith->select_list('select * from foo');
 };
 
 ########################################################################
