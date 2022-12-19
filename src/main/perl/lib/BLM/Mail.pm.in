@@ -24,7 +24,10 @@ use strict;
 use warnings;
 
 use Bedrock::Constants qw(:booleans);
-use Bedrock::Hash;
+
+use Data::Dumper;
+use English qw(-no_match_vars);
+
 use List::Util qw(pairs);
 use Net::SMTP;
 
@@ -40,7 +43,7 @@ Readonly our $DEFAULT_TRANSFER_ENCODING => '7bit';
 ########################################################################
 sub TIEHASH {
 ########################################################################
-  my ( $class, $server, $timeout ) = @_;
+  my ( $class, $server, $timeout, $debug ) = @_;
 
   my $self = bless {}, $class;
 
@@ -56,17 +59,22 @@ sub TIEHASH {
 
   $self->timeout($timeout);
 
+  $self->debug($debug);
+
   return $self;
 }
 
 {
   ## no critic (RequireArgUnpacking)
 
+  sub debug        { unshift @_, 'debug';        goto &_set_get; }
   sub to           { unshift @_, 'to';           goto &_set_get; }
   sub cc           { unshift @_, 'cc';           goto &_set_get; }
   sub from         { unshift @_, 'from';         goto &_set_get; }
   sub subject      { unshift @_, 'subject';      goto &_set_get; }
   sub message      { unshift @_, 'message';      goto &_set_get; }
+  sub port         { unshift @_, 'port';         goto &_set_get; }
+  sub ssl          { unshift @_, 'ssl';          goto &_set_get; }
   sub timeout      { unshift @_, 'timeout';      goto &_set_get; }
   sub content_type { unshift @_, 'content-type'; goto &_set_get; }
   sub smtp_server  { unshift @_, 'smtp-server';  goto &_set_get; }
@@ -76,6 +84,14 @@ sub TIEHASH {
     unshift @_, 'content-transfer-encoding';
     goto &_set_get;
   }
+}
+
+########################################################################
+sub auth {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->{auth} = \@args;
 }
 
 ########################################################################
@@ -108,10 +124,24 @@ sub sendmail {
   die "FROM ERROR\n"
     if !$self->from;
 
-  my $smtp = Net::SMTP->new( $self->smtp_server, Timeout => $self->timeout );
+  my %options = (
+    Timeout => $self->timeout,
+    Port    => $self->port // '25',
+    Debug   => $self->debug,
+  );
 
-  die "SMTP CONNECT ERROR\n"
+  if ( $self->ssl ) {
+    $options{SSL} = $self->ssl;
+  }
+
+  my $smtp = Net::SMTP->new( $self->smtp_server, %options );
+
+  die "SMTP CONNECT ERROR: $EVAL_ERROR\n"
     if !$smtp;
+
+  if ( $self->{auth} ) {
+    $smtp->auth( @{ $self->{auth} } );
+  }
 
   $smtp->mail( $self->from );
 
@@ -122,6 +152,8 @@ sub sendmail {
   }
 
   foreach my $to (@email) {
+    print {*STDERR} sprintf "to: %s %s\n", $to, $smtp->to($to);
+
     if ( !$smtp->to($to) ) {
       die "SEND ERROR\n";
     }
@@ -194,50 +226,32 @@ Provides a mail sending capabilty for Bedrock via L<Net::SMTP>.
 
 =head1 OVERVIEW
 
-C<BLM::Mail> allows Bedrock pages to send mail messages through an
+L<BLM::Mail> allows Bedrock pages to send mail messages through an
 SMTP server.  Messages of arbritrary content may be sent using this
 facility.  You can send plain text or HTML by altering the
 content header sent with the message.
 
 =head1 CONSTRUCTOR
 
- <plugin:Mail host [timeout]>
+ <plugin:Mail host [timeout, debug]>
 
 If C<timeout> is not provided, the C<timeout> value will default to 60
 seconds. C<host> defaults to C<localhost>.
 
-=head1 METHODS
+=head1 METHODS AND SUBROUTINES
 
-=head2 to( recipient )
+=head2 auth
 
-Set the 'To' address for the mail message.
+ auth(username, password)
+ auth(SASL)
 
-=head2 from( address )
-
-Set the 'From' address for the mail message.
+If authentication is used, you can the username and password for the
+server or pass an L<Authen::SASL> object. (See L</Net::SMTP>)
 
 =head2 cc( address )
 
-Set the 'CC' address.  This can be a ';' delimited list of email addresses.
-
-=head2 subject( subject )
-
-Set the 'Subject' field of the mail header.
-
-=head2 sendmail( [message] )
-
-Send the mail message.  The message can be passed as an argument or
-the Plugin will look to the C<message> property. The Plugin will
-connect to the SMTP server and deliver the message if possible.  Note
-that the connection to the server is made when you invokde this
-method.  All of the properties ('to', 'from', etc.)  of the message
-are reset after the send is complete.
-
-=head2 encoding( encoding )
-
-Sets the 'Content-Transfer-Encoding' field of the mail
-header. Normally you don't need to worry about this.  The default is
-'7bit'.
+Set the 'CC' address.  This can be a ';' delimited list of email
+addresses.
 
 =head2 content_type( type )
 
@@ -260,24 +274,66 @@ Example:
 
   <null $Mail.sendmail($message)>
 
+=head2 encoding( encoding )
+
+Sets the 'Content-Transfer-Encoding' field of the mail
+header. Normally you don't need to worry about this.  The default is
+'7bit'.
+
+=head2 from( address )
+
+Set the 'From' address for the mail message.
+
+=head2 message ( message )
+
+Sets the message content.
+=head2 subject( subject )
+
+Set the 'Subject' field of the mail header.
+
+=head2 port( port )
+
+Port to connect to.
+
+default: 25
+
+=head2 sendmail( [message] )
+
+Send the mail message.  The message can be passed as an argument or
+the Plugin will look to the C<message> property. The Plugin will
+connect to the SMTP server and deliver the message if possible.  Note
+that the connection to the server is made when you invokde this
+method.  All of the properties ('to', 'from', etc.)  of the message
+are reset after the send is complete.
+
+=head2 ssl( option ) 
+
+SSL options (see L<Net::SMTP>).
+
 =head2 timeout ( timeout) 
 
 Sets the timeout value (in seconds) for connecting to the SMTP server.
 The default is 60 seconds.  The Plugin will throw an exception if a
 timeout occurs.
 
-=head2 message ( message )
+=head2 to( recipient )
 
-Sets the message content.
+Set the 'To' address for the mail message.
+
+=head1 HINT
+
+If you're having issues with this module, try setting the debug option.
+
+ <plugin:Mail localhost 60 1>
 
 =head1 AUTHOR
 
-Just a wrapper on C<Net::SMTP>.
-
 Rob Lauer - rlauer6@comcast.net
+
+Just a wrapper on L<Net::SMTP>.
 
 =head1 SEE ALSO
 
-C<Net::SMTP>
+L<Net::SMTP>, L<BLM::SMTP>
 
 =cut
