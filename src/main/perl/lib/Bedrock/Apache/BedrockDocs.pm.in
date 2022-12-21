@@ -37,6 +37,7 @@ use Bedrock::Dump;
 use Bedrock::Handler qw(%BEDROCK_CONFIG_CACHE);
 use Bedrock::Template;
 use Bedrock::VERSION qw(version);
+use BLM::Startup::UserSession;
 
 use Carp;
 use CGI;
@@ -68,6 +69,7 @@ if ( $OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
 }
 
 our $LOGGER;
+our $SESSION;
 
 ########################################################################
 sub handler {
@@ -87,6 +89,12 @@ sub handler {
   }
 
   $LOGGER = get_logger(__PACKAGE__);
+
+  $SESSION = get_session($bedrock_handler);
+
+  my %headers = %{ $r->headers_in };
+
+  $SESSION->set( 'Referer', $headers{Referer} );
 
   my $status = eval {
 
@@ -225,6 +233,8 @@ sub handler {
     return $OK;
   };
 
+  $SESSION->closeBLM();
+
   return $EVAL_ERROR ? internal_server_error( $r, $EVAL_ERROR ) : $status;
 }
 
@@ -273,20 +283,7 @@ sub show_pod {
 
   my $cgi = CGI->new;
 
-  if ( $cgi->param('external') && $cgi->param('external') eq '1' ) {
-    my $admin_dir = $bedrock_handler->config->{BEDROCK_ADMIN_DIR};
-
-    my $referer = $headers{Referer};
-
-    if ( $referer !~ /external/xsm ) {
-      if ( $referer =~ /($admin_dir\/)(pod\/.*)$/xsm ) {
-        $back_url = $2;
-      }
-    }
-
-  }
-
-  my $html = _show_pod( $bedrock_handler, $file, $back_url, $module );
+  my $html = _show_pod( $bedrock_handler, $file, '/bedrock', $module );
 
   # most of the time the module we are looking for is in our path or
   # inside the webserver hosting this application...occassionally
@@ -987,7 +984,7 @@ sub pod_docs {
 
     return show_pod( $bedrock_handler, $path, 'pod', $module );
   }
-  else {
+  elsif ($module) {
     return show_pod( $bedrock_handler, $EMPTY, 'pod', $module );
   }
 
@@ -1007,7 +1004,7 @@ sub pod_docs {
 
   my @pod_listing;
 
-  foreach my $module ( sort keys %{$module_listing} ) {
+  foreach my $module ( sort lc keys %{$module_listing} ) {
     my $path = $module;
     $path =~ s/\:\:/\//xsmg;
 
@@ -1288,6 +1285,24 @@ END_OF_HTML
   print $html;
 
   return $OK;
+}
+
+########################################################################
+sub get_session {
+########################################################################
+  my ($bedrock_handler) = @_;
+
+  my $r = $bedrock_handler->apache_handler;
+
+  my $ctx = Bedrock::Context->new(
+    REQUEST_HANDLER => $r,
+    CONFIG          => $bedrock_handler->get_config
+  );
+
+  my $module_config
+    = $bedrock_handler->get_config->get_module_config('UserSession');
+
+  return BLM::Startup::UserSession->new( $ctx, $module_config );
 }
 
 1;
