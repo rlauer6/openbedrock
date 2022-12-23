@@ -53,7 +53,10 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
   DEFAULT_CACHE_BLOCKS => 256,
 };
 
-use Bedrock::BedrockConfig;
+BEGIN {
+  use Bedrock::BedrockConfig;
+  Bedrock::Config->import(qw(validate_config_paths));
+}
 
 use Carp;
 use Cwd qw/realpath fastcwd/;
@@ -535,45 +538,41 @@ sub get_bedrock_config {
     }
   }
 
-  my @paths = grep {defined} ( $bedrock_config_path, @config_paths );
+  #my @paths = grep {defined} ( $bedrock_config_path, @config_paths );
+  my @paths = validate_config_paths( $bedrock_config_path, @config_paths );
 
-  $r->log->debug( sprintf "paths: %s\n",
-    Dumper( [ $bedrock_config_path, @config_paths ] ) );
+  $r->log->debug( sprintf "paths: %s\n", Dumper( \@paths ) );
 
   # it's probably okay, not to find this...
   my $config = $self->read_config( $bedrock_config_path, 'tagx' );
 
-  # Basically we want to allow users these options:
-  #
-  # 1. use Bedrock's configuration
-  # 2. use their own configuration instead of Bedrock's (default)
-  # 3. override some of Bedrock's configuration
-
-  # there is no Bedrock configuration, so we need to look for
-  # application's config (option #1)
+  # RULE: tagx.xml must exist in root of the configuration path
+  # RULE: the default tagx.xml should always have REPLACE_CONFIG eq 'yes'
+  # RULE: if there is no default (Bedrock) tagx.xml, then take the first one found
+  # RULE: if there is a default tagx.xml AND REPLACE_CONFIG eq 'yes', take last one found?
+  # RULE: if there is a default tagx.xml AND REPLACE_CONFIG ne 'yes', merge configs
   if ( !$config ) {
     foreach (@config_paths) {
+      next if !-e "$_/tagx.xml" || /[.]d$/xsm;
+
       $config = $self->read_config( $_, 'tagx' );
       last if $config;
     }
   }
   elsif ( $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
-    # note that if there are more than one tagx.xml in the application
-    # path then the last one wins
     foreach (@config_paths) {
-      next if !-e "$_/tagx.xml";
+      next if !-e "$_/tagx.xml" || /[.]d$/xsm;
 
       $config = $self->read_config( $_, 'tagx' );
     }
   }
   else {
-
     # this doesn't necessarily make sense...but we'll merge all
     # tagx.xml files but last one always wins
-    foreach my $path (@config_paths) {
-      next if !-e "$path/tagx.xml";
+    foreach (@config_paths) {
+      next if !-e "$_/tagx.xml" || /[.]d$/xsm;
 
-      $config->merge_config( $self->read_config( $path, 'tagx' ) );
+      $config->merge_config( $self->read_config( $_, 'tagx' ) );
     }
   }
 
@@ -592,20 +591,20 @@ END_OF_MESSAGE
   $config->dbnames($dbnames);
 
   # look for more config files to merge
-  my @config_d_paths = map { $_ . '.d' } @paths;
+  #  my @config_d_paths = map { $_ . '.d' } @paths;
 
-  $r->log->debug(
-    sprintf "additional paths to search: %s",
-    Dumper( [ \@config_d_paths, \@config_paths ] )
-  );
+  #  $r->log->debug(
+  #    sprintf "additional paths to search: %s",
+  #    Dumper( [ \@config_d_paths, \@config_paths ] )
+  #  );
 
-  foreach my $path ( @config_d_paths, @config_paths ) {
-    next if !$path || !-d $path;
-
+  #  foreach my $path ( @config_d_paths, @config_paths ) {
+  foreach my $path (@paths) {
     $r->log->debug( sprintf 'Searching [%s] for config files', $path );
 
-    foreach
-      my $file ( _list_xml_files( $path, 'tagx.xml', 'tagx_apps.xml' ) ) {
+    my @xml_files = _list_xml_files( $path, 'tagx.xml', 'tagx_apps.xml' );
+
+    foreach my $file (@xml_files) {
       $r->log->debug( sprintf 'Found a configuration file: [%s]', $file );
 
       my $rv = eval { $config->merge($file); };
@@ -627,12 +626,10 @@ END_OF_MESSAGE
 
   foreach my $p (@paths) {
 
-    foreach my $dir (qw/startup plugin/) {
-      my $path = sprintf '%s.d/%s', $p, $dir;
+    foreach my $dir (qw(startup plugin)) {
+      next if $p !~ /[.]d$/xsm || !-d "$p/$dir";
 
-      if ( -d $path ) {
-        push @module_paths, $path;
-      }
+      push @module_paths, "$p/$dir";
     }
   }
 
@@ -644,8 +641,16 @@ END_OF_MESSAGE
 
       $r->log->debug( sprintf 'Merging [%s]', $file );
 
-      my $module_config = Bedrock::Config->new($file);
-      $config->merge_modules( { MODULES => [$module_config] } );
+      $config = eval {
+        my $module_config = Bedrock::Config->new($file);
+
+        $config->merge_modules( { MODULES => [$module_config] } );
+
+        return $config;
+      };
+
+      die "error processing $file\n$EVAL_ERROR\n"
+        if !$config || $EVAL_ERROR;
     }
   }
 

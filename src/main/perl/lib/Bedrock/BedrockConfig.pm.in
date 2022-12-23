@@ -49,6 +49,8 @@ use YAML qw{ LoadFile Dump };
 
 use parent qw{ Exporter Bedrock::Hash };
 
+our @EXPORT_OK = qw(validate_config_paths);
+
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
 ########################################################################
@@ -132,21 +134,18 @@ sub merge_config {
 ########################################################################
   my ( $self, $config ) = @_;
 
-  return $self
+  return
     if !$config;
 
-  if ($config) {
+  # merge source-config with master
+  foreach my $key ( keys %{$config} ) {
+    next if $key eq 'MODULES';
 
-    # merge source-config with master
-    foreach my $key ( keys %{$config} ) {
-      next if $key eq 'MODULES';
-
-      $self->{$key} = $config->{$key};
-    }
-
-    # merge modules separately
-    $self->merge_modules($config);
+    $self->{$key} = $config->{$key};
   }
+
+  # merge modules separately
+  $self->merge_modules($config);
 
   return $self;
 }
@@ -200,30 +199,40 @@ sub merge_modules {
   my ( $self, $config ) = @_;
 
   my $config_modules = $config->{MODULES};
-  my $modules        = $self->{MODULES};
 
-  if ( is_array($config_modules) && @{$config_modules} ) {
+  my $modules = $self->{MODULES};
 
-    if ( is_array($modules) && @{$modules} ) {
-      # use the binding names to create a merged hash of modules
-      my %merged_modules = map { ( $_->{binding}, $_ ); } @{$modules};
+  return $self
+    if !is_array($config_modules) || !@{$config_modules};
 
-      foreach my $m ( @{$config_modules} ) {
+  if ( !is_array($modules) || !@{$modules} ) {
+    $self->{MODULES} = $config_modules;
 
-        if ( exists $merged_modules{ $m->{binding} } ) {
-          die sprintf 'duplicate binding name for modules (%s)', $m->{binding}
-            if !$m->{overwrite} || $m->{overwrite} !~ /^y/ixsm;
-        }
-
-        $merged_modules{ $m->{binding} } = $m;
-      }
-
-      $self->{MODULES} = [ values %merged_modules ];
-    }
-    else {
-      $self->{MODULES} = $config_modules;
-    }
+    return $self;
   }
+
+  # use the binding names to create a merged hash of modules
+  my %merged_modules = map { ( $_->{binding}, $_ ); } @{$modules};
+
+  MODULE:
+  foreach my $m ( @{$config_modules} ) {
+
+    if ( exists $merged_modules{ $m->{binding} } ) {
+      my $overwrite = $merged_modules{ $m->{binding} }->{overwrite};
+
+      # if no overwrite in first binding found, then assume it
+      # should be the bound module UNLESS this other module's overwrite is
+      # yes
+      next MODULE if $overwrite && $overwrite =~ /^y/xsmi;
+
+      die sprintf 'duplicate binding name for modules (%s)', $m->{binding}
+        if !$m->{overwrite} || $m->{overwrite} !~ /^y/ixsm;
+    }
+
+    $merged_modules{ $m->{binding} } = $m;
+  }
+
+  $self->{MODULES} = [ values %merged_modules ];
 
   return $self;
 }
@@ -412,6 +421,32 @@ sub _set_get {
 }
 
 ########################################################################
+sub validate_config_paths {
+########################################################################
+  my (@paths) = @_;
+
+  return grep {-d} uniq( map { defined $_ ? ( $_, $_ . '.d' ) : () } @paths );
+}
+
+# _locate_file will return the path to a file or throw an exception if
+# the file cannot be found or cannot be read.
+
+# file can be an absolute path (start with /) or just the name of a
+# file.
+
+# if the file is not an absolute path, the function will attempt to
+# find the file in either a configuration path (BEDROCK_CONFIG_PATH
+# or CONFIG_PATH).
+#
+# if BEDROCK_CONFIG_PATH is set but not defined or empty, then the
+# BEDROCK_CONFIG_PATH will not be used in the search
+#
+# if BEDROCK_CONFIG_PATH is not set at all, the the default Bedrock
+# site configuration path will be used (typically /usr/lib/bedrock/config)
+
+# the function will use the CONFIG_PATH then BEDROCK_CONFIG_PATH
+#
+########################################################################
 sub _locate_file {
 ########################################################################
   my ( $self, $file ) = @_;
@@ -423,29 +458,22 @@ sub _locate_file {
 
   my $path;
 
-  # search for config files unless absolute file
   if ( $file && $file =~ m{^/}xsm ) {
     $path = $file;
   }
   elsif ( $file && !-e $file ) {
 
-    # search for config file in path
-    my @search_paths = (
-      $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH},
-      $DEFAULT_BEDROCK_CONFIG_PATH,
-    );
+    $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
-    # remove undefined and ''
-    @search_paths = map { $_ ? $_ : () } @search_paths;
-
-    # add corresponding config.d sub-directories to search
-    push @search_paths, map { /config$/xsm ? "$_.d" : () } @search_paths;
+    my @search_paths
+      = validate_config_paths( @ENV{qw(CONFIG_PATH BEDROCK_CONFIG_PATH)} );
 
     for my $dir (@search_paths) {
-      if ( -d "$dir" && -e "$dir/$file" ) {
-        $path = "$dir/$file";
-        last;
-      }
+      next if !-e "$dir/$file";
+
+      $path = "$dir/$file";
+
+      last;
     }
   }
 
@@ -491,29 +519,51 @@ returns a L<Bedrock::Config> object.
 
 =head2 dbnames
 
-=head2 locate_file
+Return the C<dbnames> object from the configuration object.
 
 =head2 merge
 
+See L</merge_config>
+
 =head2 merge_config
+
+ merge_config(hash)
+
+Merges the passed hash into the current configuration overwriting any
+keys that might have existed in the current configuration. The
+C<MODULES> key will be skipped since merging module configurations can
+be configured to avoid overwriting previously defined modules.
 
 =head2 merge_modules
 
+ merge_modules(array)
+
+Merges the array of modules passed into the C<MODULES> element of the
+configuration object. The module can set a key C<overwrite> to 'yes'
+to indicate that this module should overwrite any other module with
+the same binding name.
+
 =head2 newFromString
 
-=head2 newFromXML
+See L<Bedrock::XML>
 
 =head2 to_json
 
  to_json(object)
 
+Serializes the current configuation object as a JSON string.
+
 =head2 to_xml
 
  to_xml(object)
 
+Serializes the current configuration object as a Bedrock XML string.
+
 =head2 to_yaml
 
  to_yaml(object)
+
+Serializes the current configuration object as a YAML string.
 
 =head2 get_module_config
 
@@ -558,20 +608,22 @@ parameter indicates either the XMLin or XMLout configuration.
  locate_file( file )
  $self->locate_file( file )
 
-Searches the Bedrock config path hierarchy looking for the specified
-configuration file. If any of the directories specfied ends with
-"config" then C<locate_file> will also look in the
-C<config.d> sub-directory.
+Searches for a file in Bedrock's configuration path and returns the
+path or throws an exception if the file cannot be found or cannot be
+read.
 
-=over 5
+C<file> can be an absolute path (starts with /) or just the name of a
+file.
 
-=item 1. $ENV{CONFIG_PATH}
+If the file is not an absolute path, the function will attempt to find
+the file in either the paths pointed to by the environement variables
+C<CONFIG_PATH> and C<BEDROCK_CONFIG_PATH> (in that order).
 
-=item 2. $ENV{BEDROCK_CONFIG_PATH}
+If C<BEDROCK_CONFIG_PATH> is set but I<not defined> or I<empty>, then only C<CONFIG_PATH> 
+will be used in the search.
 
-=item 3. $ENV{@libdir@/bedrock/config}
-
-=back
+If C<BEDROCK_CONFIG_PATH> does not exists in C<%ENV>, the the default Bedrock
+site configuration path will be included in the search.
 
 =head1 AUTHOR
 
