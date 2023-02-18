@@ -200,6 +200,16 @@ EOF
 
 REPO_BUCKET=repo.openbedrock.net
 
+CREATEREPO=$(command -v create_repo)
+
+if test -z "$CREATEREPO"; then
+    CREATEREPO=$(command -v createrepo_c)
+fi
+
+if test -z "$CREATEREPO"; then
+    >&2 echo "no createrepo found...you won't be able to create a yum repo"
+fi
+
 SIGN='--sign'
 
 # -a => allow short optins (-), -o {options} -l {long options}
@@ -305,10 +315,15 @@ case "$1" in
 	./configure --prefix=/usr $RPM_MODE
 	make && make dist
 	tarball=$(ls -1rt *.tar.gz | tail -1)
-	[ -e "$tarball" ] && rpmbuild -tb $tarball $SIGN
+	[ -e "$tarball" ] && rpmbuild -tb $tarball
 	;;
 
     createrepo | deploy)
+        if test -z "$CREATEREPO"; then
+            >&2 echo "told ya' no createrepo found!"
+            exit 1;
+        fi
+
 	repo=$(mktemp -d)
 	mkdir ${repo}/noarch
 	
@@ -321,12 +336,15 @@ case "$1" in
 	bedrock_version=$(echo $bedrock_rpm | perl -np -e 's/.*?\-(\d+\..*)\.noarch.rpm/$1/;') 
 	    
 	for a in ${topdir}/RPMS/noarch/*$bedrock_version*rpm; do
-	    ~/bin/rpm-sign OpenBedrock OpenBedrock $a
+	    test -n "$SIGN" && ~/bin/rpm-sign OpenBedrock OpenBedrock $a
 	    cp $a ${repo}/noarch
 	done
 	
-	createrepo $repo
-	
+        if ! $CREATEREPO $repo; then
+	  echo "could not create repo"
+	  exit;
+	fi
+
 	create_website_files $repo
 
 	test -d $basedir/yum-repo || mkdir $basedir/yum-repo
