@@ -33,11 +33,45 @@ refactored or bugs are found.
 
 The intent of these particular tests is to exercise tag features and
 behavior. _A successful run of these tests does not necessarily mean
-Bedrock is working in as a web framework. More tests that exercise
+Bedrock is working in as web framework. More tests that exercise
 Bedrock in that context are required._
 
 Additional tests of specific Bedrock Perl modules can be found in the
 `src/main/perl/lib` directory.
+
+# Docker
+
+A Docker image can be built that will not only help with testing
+Bedrock by providing a MySQL database but serves as a documentation
+server.
+
+A `docker-compose` file (`docker-compose-local.yml`) is located in the
+`docker` directory. It will create a:
+
+* Redis server
+* MySQL server
+* Apache server running Bedrock
+* A instance of LocalStack
+
+```
+export DBI_HOST=$(docker inspect docker_web_1 | \
+  jq -r '.[]|.NetworkSettings.Networks.docker_default.IPAddress')
+export DBI_DSN=dbi:mysql:bedrock
+export DBI_USER=root
+export DBI_PASS=bedrock
+```
+
+If the `bedrock` database does not exist try:
+
+```
+cat /usr/share/bedrock/create-session.sql | \
+  mysql -u root --password=bedrock -h $DBI_HOST
+```
+
+```
+cd src/main/perl
+TESTS=all make test
+```
 
 # Where are the Tests?
 

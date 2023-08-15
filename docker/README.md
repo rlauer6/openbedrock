@@ -51,19 +51,23 @@ make docker-image
 
 A `docker-compose.yml` file will bring up the web server listening on
 port 80. It will also bring up a MySQL server running on
-port 3306. Disable the servie and update `mysql-session.xml` and
+port 3306. Disable the service and update `mysql-session.xml` and
 `data-sources.xml` to use a different database server.
 
 ```
 BEDROCK=~/git/openbedrock docker-compose up
 ```
 
+# Connecting to the MySQL Server
+
+## Connecting to localhost`
+
 To connect to the MySQL server running in the container without using
 TCP you need to expose the socket to your host.  The
 `docker-compose.yml` file will export mount
 `/tmp/mysqld` locally to `/var/run/mysqld` on the container. This will
 allow you to connect to the container's MySQL instance on `localhost`.
-You must however provide the path to socket file when connecting.
+You must however provide the path to the socket file when connecting.
 
 ```
 mysql -u root -p -h localhost -S /tmp/mysqld/mysqld.sock
@@ -87,6 +91,17 @@ use DBI;
 
 ```
 
+## Connecting via TCP
+
+Find the IP address of the MySQL server running in the container:
+
+```
+export DBI_HOST=$(docker inspect docker_db_1 | \
+ jq -r '.[]|.NetworkSettings.Networks.docker_default.IPAddress')
+ 
+mysql -u root --password=bedrock -h $DBI_HOST
+```
+
 # Local Bedrock Development with Docker
 
 ## Using a Remote Host
@@ -106,10 +121,10 @@ My EC2 development server is behind a firewall accessible only from
 the bastion host in the same subnet.  The bastion host is accessible
 __only__ from my home's IP address. 
 
-The goal is run a docker container on my development EC2 instance
+The goal is to run a Docker container _on my development EC2 instance_
 exposing port 80 to my bastion host while using an ssh tunnel through
-the bastion host wheneve my local browser on my Chromebook accesses
-port 8080.  Looks something like this...
+the bastion host whenever my local browser on my Chromebook accesses
+port 8080.  The setup Looks something like this...
 
 ```
    +--------------+    +--------------+    +--------------+
@@ -127,6 +142,10 @@ port 8080.  Looks something like this...
 
 ```
 
+Typically all ports are blocked to my EC2 except 22. In this scenario
+we open port 80 of my EC2 to the bastion host as well as port 22. Keep
+in mind you still want to restrict port 22 on your bastion host to
+your local IP address __only__.
 To accomplish this I use the command below in Linux running on my Chromebook.
 
 ```
@@ -145,8 +164,16 @@ ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_
 * $REMOTE_USER - remote user used to access bastion host
 * $REMOTE_BASTION - public IP of the bastion host
 
-Typically all ports are blocked to my EC2 except 22. In this scenario
-we open port 80 of my EC2 to the bastion host as well as port 22. Keep
-in mind you still want to restrict port 22 on your bastion host to
-your local IP address __only__.
+```
+#!/bin/bash
 
+BASTION=50.17.129.75
+REMOTE_IP=10.1.4.191
+USER=ec2-user
+REMOTE_PORT=80
+LOCAL_PORT=8080
+
+ssh -i ~/.ssh/id_rsa -f -N -L $LOCAL_PORT:$REMOTE_IP:$REMOTE_PORT $USER@$BASTION -v
+```
+
+_or use the `web-tunnel` script in this directory._

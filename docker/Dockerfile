@@ -14,8 +14,8 @@ RUN yum install -y httpd mod_perl
 RUN yum install -y openbedrock bedrock-mysql-session bedrock-redis-session \
     bedrock-utils mariadb 'perl(IPC::Shareable)'
 
-RUN rm /usr/lib/bedrock/config.d/startup/mysql-session.xml
-RUN rm /usr/lib/bedrock/config/mysql-session.xml
+RUN rm -f /usr/lib/bedrock/config.d/startup/mysql-session.xml
+RUN rm -f /usr/lib/bedrock/config/mysql-session.xml
 
 # cpanm
 RUN curl -L https://cpanmin.us | perl - App::cpanminus

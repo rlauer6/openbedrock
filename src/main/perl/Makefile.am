@@ -24,7 +24,8 @@ BEDROCK_TESTS = \
     t/17-array.yml \
     t/18-hash.yml \
     t/19-pebble.yml \
-    t/20-benchmark.yml
+    t/20-benchmark.yml \
+    t/22-include.yml
 
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \
