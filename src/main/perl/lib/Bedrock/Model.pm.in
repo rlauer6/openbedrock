@@ -26,14 +26,15 @@ use warnings;
 use parent qw/Class::Accessor::Fast/;
 
 use Bedrock::Model::Migration;
+use Bedrock::Constants qw(:booleans);
+
 use Carp;
 use Data::Dumper;
 use English qw{-no_match_vars};
 use Scalar::Util qw/reftype blessed/;
 
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(
-  qw/dbi table model dry_run serializer engine verbose debug/);
+__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine verbose debug/);
 
 ########################################################################
 sub new {
@@ -48,8 +49,7 @@ sub new {
 
   my $self = $class->SUPER::new($args);
 
-  my $serializer
-    = _init_serializer( $self->get_dbi, $self->get_table, $self->get_engine );
+  my $serializer = _init_serializer( $self->get_dbi, $self->get_table, $self->get_engine );
 
   $self->set_serializer($serializer);
 
@@ -176,17 +176,15 @@ sub create {
   my ($result) = $sth->fetchrow_array;
 
   if ( $result && lc $result eq lc $table ) {
-    warn "table $table already exists!\n";
+    carp "table $table already exists!\n";
     my $migration = $class->verify_model( $dbi, %args );
 
     if ($migration) {
-      print {*STDERR} 'WARNING: Model is out of sync with database';
+      carp 'WARNING: Model is out of sync with database';
     }
   }
   else {
-    my $stmnt = eval {
-      $self->create_table( dbi => $dbi, table => $table, model => $model );
-    };
+    my $stmnt = eval { $self->create_table( dbi => $dbi, table => $table, model => $model ); };
 
     croak "error creating table: $table\n$EVAL_ERROR"
       if $EVAL_ERROR;
@@ -207,13 +205,8 @@ sub _create_table {
   }
 
   foreach my $k ( keys %{$model} ) {
-
-    if (!ref( $model->{$k} )
-      || ref( $model->{$k} ) ne 'Bedrock::Model::Field' ) {
-
-      croak "$k is not a Bedrock::Model::Field object:\n"
-        . Dumper( $model->{$k} );
-    }
+    croak "$k is not a Bedrock::Model::Field object:\n" . Dumper( $model->{$k} )
+      if !ref $model->{$k} || ref $model->{$k} ne 'Bedrock::Model::Field';
   }
 
   my @column_defs = map { $_->as_string } values %{ $args{model} };
@@ -224,8 +217,7 @@ create table if not exists %s (
 )
 END_OF_SQL
 
-  my $create_statement = sprintf $query, $args{table}, join ",\n    ",
-    @column_defs;
+  my $create_statement = sprintf $query, $args{table}, join ",\n    ", @column_defs;
 
   if ( !$args{dry_run} ) {
     eval { $args{dbi}->do($create_statement); };
@@ -246,7 +238,11 @@ sub verify_model {
   my $self = ref($class) ? $class : $class->new( { dbi => $dbi } );
 
   return Bedrock::Model::Migration->new(
-    { model => $self, dry_run => 1, %args } );
+    { model   => $self,
+      dry_run => $TRUE,
+      %args,
+    }
+  );
 }
 
 ########################################################################
@@ -274,8 +270,7 @@ sub rename_field {
 
   $self->check_dbi;
 
-  Bedrock::Model::Migration->new( { model => $self } )->rename_field(@args)
-    ->execute();
+  Bedrock::Model::Migration->new( { model => $self } )->rename_field(@args)->execute();
 
   return $self;
 }
@@ -350,13 +345,17 @@ Bedrock::Model - An ORM for Bedrock
 
 =head1 SYNOPSIS
                   
- my $model = new Bedrock::Model(
-   { dbi => $dbi, table => $table, model => $model_specs } );
+ my $model = Bedrock::Model->new(
+   { dbi   => $dbi,
+     table => $table,
+     model => $model_specs
+   }
+ );
 
  $model->create_table();
 
- # migrate table (apply changes)
- my $changes = $model->migrate(dry_run => 1);
+ # see if we need to update schema
+ my $migration = $model->migrate_model(dry_run => 1);
 
 ...or as an ORM...
 
@@ -366,7 +365,7 @@ Bedrock::Model - An ORM for Bedrock
 
  our $MODEL = {
      
-     id => new Bedrock::Model::Field(
+     id => Bedrock::Model::Field->new(
          {
              field => 'id',
              type  => 'int(11)',
@@ -375,7 +374,14 @@ Bedrock::Model - An ORM for Bedrock
              key   => 'pri'
          }
      ),
-     email => new Bedrock::Model::Field(
+     username => Bedrock::Model::Field->new(
+         {
+             field => 'username,
+             type  => 'varchar(100)',
+             null  => 'no'
+         }
+     ),
+     email => Bedrock::Model::Field->new(
          {
              field => 'email',
              type  => 'varchar(100)',
@@ -391,8 +397,8 @@ Bedrock::Model - An ORM for Bedrock
 
  MyApp::Users->create($dbi);
 
- my $users = new MyApp::Users($dbi);
- $user->set('email', 'someuser@example.com');
+ my $users = MyApp::Users->($dbi);
+ $user->set(email => 'someuser@example.com');
  $user->save();
                           
 =head1 DESCRIPTION
@@ -454,7 +460,7 @@ determine if a migration is required, but not suitable for execution.
 
 =head2 migrate_model
 
-Creates a C<Bedrock::Model::Migration> object suitable for querying to
+Creates a L<Bedrock::Model::Migration> object suitable for querying to
 determine if a migration is required and suitable for execution.
 
  my $migration = $model->migrate_model();
@@ -473,8 +479,8 @@ and C<Bedrock::Model::Field> objects as values.
 
  rename_field(old-field, new-field)
 
-Renames a column.  I<Note that this method will alter the database and the model.>
-
+Renames a column.  I<Note that this method will alter the database and
+the model.>
 
 =head2 add_field
 
@@ -484,13 +490,12 @@ Renames a column.  I<Note that this method will alter the database and the model
    [ extra => extra-options, default => default, key => ]
  );
 
-
 =head1 AUTHOR
 
 Rob Lauer - rlauer6@comcast.net
 
 =head1 SEE ALSO
 
-C<Bedrock::Model::Field>, C<BLM::IndexedTableHandler>, C<Bedrock::Model::Handler>
+L<Bedrock::Model::Field>, L<BLM::IndexedTableHandler>, L<Bedrock::Model::Handler>
 
 =cut
