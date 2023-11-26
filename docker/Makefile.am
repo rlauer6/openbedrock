@@ -135,6 +135,6 @@ clean-local:
 .PHONY: realclean
 
 realclean: clean
-	if test -n "$$(docker image list | head -n +2 | grep '^bedrock')"; then \
+	if test -n "$$(docker image list | awk '{print $$1}' | grep '^bedrock$$')"; then \
 	  docker rmi bedrock; \
 	fi

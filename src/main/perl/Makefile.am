@@ -27,6 +27,9 @@ BEDROCK_TESTS = \
     t/20-benchmark.yml \
     t/22-include.yml
 
+BEDROCK_MAIL_TESTS = \
+    t/23-mail.yml
+
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \
     t/13-sql.yml \
@@ -71,7 +74,9 @@ test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	if test -z "$$TESTS"; then \
 	  TESTS="$(BEDROCK_TESTS)"; \
 	elif [ "$$TESTS" = "all" ]; then \
-	  TESTS="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS)"; \
+	  TESTS="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS) $(BEDROCK_MAIL_TESTS)"; \
+	elif [ "$$TESTS" = "mail" ]; then \
+	  TESTS="$(BEDROCK_MAIL_TESTS)"; \
 	elif [ "$$TESTS" = "sql" ]; then \
 	  TESTS="$(BEDROCK_SQL_TESTS)"; \
 	else \

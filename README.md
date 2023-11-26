@@ -4,6 +4,11 @@ This is the README file for the `bedrock` project.
 Bedrock framework.
 * See the NEWS file changes and updates.
 
+# Build and Test Status
+![build badge](https://github.com/rlauer6/openbedrock/actions/workflows/build.yml/badge.svg)
+
+# RPM Build Status
+
 ![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
 # Overview
@@ -134,24 +139,11 @@ Programs...
 * apache2
 * make
 
-Perl modules...
-
-* libapache2-mod-perl2-dev
-* libperl-AppConfig
-* libappconfig-perl
-* libcrypt-cbc-perl
-* libcrypt-des-perl
-* libcgi-pm-perl
-* libdbi-perl
-* libdate-calc-perl
-* libio-stringy-perl
-* libipc-shareable-perl
-* libjson-perl
-* libspreadsheet-parseexcel-perl
-* libtext-csv-xs-perl
-* libtie-ixhash-perl
-* libxml-simple-perl
-* librole-tiny-perl
+Perl module dependencies are listed in the `configure.ac` file. Some
+are marked as optional although you may need to have them installed to
+build the distribution. While you may be able to load these modules
+from Debian repositories, using `cpanm` [https://metacpan.org/pod/App::cpanminus](`App::cpanminus`) is
+preferable as it will get you the latest version of these modules.
 
 After satisfying dependencies, build and install Bedrock in the
 standard Unix way:
@@ -166,7 +158,7 @@ standard Unix way:
 
 * Bedrock running as a CGI should work with no compatibility issues
 under Apache 1.x/2.x+
-* For increased performance use `mod_perl` with Apache 2.2.
+* For increased performance use `mod_perl` with Apache 2.2/2.4.
 
 # Creating a persistent Session Database
 

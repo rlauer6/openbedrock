@@ -11,8 +11,8 @@ Bedrock repo to an Amazon Linux 2 image.
 > Bedrock and create the rpms? If you've forgotten how to do that 
 > try running `./build -h`  in the project root directory.
 
-The image implements an Apache based web sever enviroment you can use
-for development.
+The image implements an Apache based web server environment you can
+use for development.
 
 Before you build the image take a look at these files as they have
 been customized for the Docker environment:
@@ -177,3 +177,14 @@ ssh -i ~/.ssh/id_rsa -f -N -L $LOCAL_PORT:$REMOTE_IP:$REMOTE_PORT $USER@$BASTION
 ```
 
 _or use the `web-tunnel` script in this directory._
+
+```
+./web-tunnel -u ec2-user -i 10.1.4.191 -b 50.17.129.75 -p 80 -l 8080 up
+```
+
+..to stop port forwarding
+
+```
+./web-tunnel -O cancel -u ec2-user -i 10.1.4.191 -b 50.17.129.75 -p 80 -l 8080 up
+```
+

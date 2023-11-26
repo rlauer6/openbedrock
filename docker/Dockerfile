@@ -18,6 +18,7 @@ RUN rm -f /usr/lib/bedrock/config.d/startup/mysql-session.xml
 RUN rm -f /usr/lib/bedrock/config/mysql-session.xml
 
 # cpanm
+RUN yum install -y make
 RUN curl -L https://cpanmin.us | perl - App::cpanminus
 
 # cleanup 
