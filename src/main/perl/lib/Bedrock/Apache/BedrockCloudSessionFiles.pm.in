@@ -1,8 +1,7 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
-#    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC
+#    Copyright (C) 2023, TBC Development Group, LLC
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -24,102 +23,140 @@ package Apache::BedrockCloudSessionFiles;
 use strict;
 use warnings;
 
-BEGIN {
-  require Apache2::compat if $ENV{MOD_PERL};
-}
+use English qw(-no_match_var);
 
-use parent qw/Apache::BedrockSessionFiles/;
+use Role::Tiny::With;
+with 'Bedrock::Apache::BedrockS3Handler';
+with 'Bedrock::Apache::HandlerUtils';
 
-use aws_lib qw/:aws :s3 :aws_vars/;
+use Readonly;
 
-use Apache2::Const -compile => qw( HTTP_UNAUTHORIZED NOT_FOUND OK SERVER_ERROR FORBIDDEN DECLINED REDIRECT :log);
-use Data::Dumper;
-use File::Basename;
+Readonly::Scalar our $TRUE  => 1;
+Readonly::Scalar our $FALSE => 0;
 
-use constant NOT_FOUND    => Apache2::Const::NOT_FOUND;
-use constant OK           => Apache2::Const::OK;
-
-# +------------------------------+
-# | mod_perl HANDLER STARTS HERE |
-# +------------------------------+
-
+########################################################################
 sub handler {
-  my $r = shift;
+########################################################################
+  my ($r) = @_;
 
-  # because we leverage BedrockSessionFiles we may find it
-  # cached...see below where we deliberately do not remove the file
-  # after serving it up
-  my $retcode = $r->SUPER::handler;
+  my $s3_config = get_s3_config();
 
-  return $retcode unless $retcode == NOT_FOUND;
+  my $s3          = $s3_config->get_s3();
+  my $bucket      = $s3_config->get_bucket();
+  my $bucket_name = $s3_config->get_bucket_name();
 
-  # get the session cookie so we know where to look for the file
-  my $session = Apache::BedrockSessionFiles::get_session_cookie($r);
-
-  unless ( $session ) {
-    $r->log->error("ERROR: No session found.");
-    return NOT_FOUND;
+  if ( $s3 && $bucket ) {
+    $r->log->debug( 'S3 session files active. BUCKET=' . $bucket_name );
   }
 
-  my $conf = $Apache::BedrockSessionFiles::BEDROCK_CONFIG;
+  # note that get_file_info() validates session
+  my $file_info = eval { return get_file_info( $r, $FALSE ); };
 
-  # filename (however actual file will exist under user's session directory)
-  my ($name, $path, $ext) = fileparse( ($r->filename || 'index.html'), qr/\.([^.]*)$/ );
-  my $filename = sprintf("%s/%s/%s%s", $conf->{SESSION_DIR}, $session, $name, $ext);
+  return set_error_status( $r, $EVAL_ERROR )
+    if !$file_info || $EVAL_ERROR;
 
-  if ( exists $conf->{cloud_session} ) {
+  my $filename = $file_info->{filename};
 
-    get_aws_config('/etc/amazon');
+  my $status = eval {
+    if ( -e $filename ) {
+      $r->log->debug( sprintf 'attempting to read file [%s]', $filename );
 
-    $r->log->info(sprintf("[%s]: cloud_session.........[%s] ",(caller(0))[3], Dumper [ $session, $AWS_ACCESS_KEY_ID, $AWS_SECRET_ACCESS_KEY, $conf->{cloud_session}]));
+      return send_file($filename);
+    }
 
-    my $bucket = $conf->{cloud_session}->{bucket};
-    my $session_dir = $conf->{cloud_session}->{session_dir};
-    my $prefix = sprintf("%s/%s", $session_dir, $session);
-    
-    my $result = cp_from_s3(bucket => $bucket, key => "$name$ext", prefix => $prefix, filename => $filename );
-    $r->log->info( sprintf( "[%s]: result.........[%s] " , (caller(0))[3], Dumper [ $result ] ) );
+    die "not found\n"
+      if !$s3 || !$bucket;
 
-    return NOT_FOUND unless $result && -e $filename;
+    $r->log->debug( sprintf 'attempting to read key [%s] from S3', $filename );
 
-    my $fh = IO::File->new("<$filename");
-    send_file($r, $fh);
+    return send_s3_file($filename);
+  };
+
+  if ( !$status || $EVAL_ERROR ) {
+    if ( $EVAL_ERROR =~ /not\sfound/xsm ) {
+      $status = set_error_status( $r, 'not found' );
+    }
+    else {
+      $status = set_error_status( $r, 'server error' );
+    }
   }
-  else {
-    return NOT_FOUND;
-  }
 
-  return OK;
+  return $status;
 }
 
+1;
 
-sub send_file {
-  my $r = shift;
-  my $fh = shift;
+## no critic (RequirePodSections)
 
-  $r->send_http_header;
-  
-  my $buffer;
-
-  while (read($fh, $buffer, 4096) ) {
-    print $buffer;
-  }
-
-  close $fh;
-}
-
+__END__
 
 =pod
 
+=head1 NAME
+
+Apache::BedrockCloudSessionFiles - serve files from local or S3 session directories
+
+=head1 DESCRIPTION
+
+Implements an Apache handler that serves files from a local session
+directory or an S3 session directory.  This is typically used when a
+web application wishes to serve a private file to a user, or make a
+file available for only a short period of time to a specfic user
+session.  A typical URI for this type of asset might look like:
+
+  /session/foo.html
+
+In other words, the asset would be protected since the same URL would
+not access the asset for anyone other than the requestor since it is
+specific to their session.
+
+=head1 NOTES
+
+Use in conjunction with L<BLM::Startup::S3> for best results ;-)
+
+ <null:pdf $s3.get_key('/private/private.pdf')>
+ <null:session_file '%s/private.pdf'>
+
+ <null $s3.add_key($session_file.sprintf($session.session), $pdf>
+ <null $header.see_other('/session/private.pdf')>
+
+=head2 Setting Up the Apache Handler
+
+Setup the handler in your Apache configuration file as shown below:
+
+  Action bedrock-cloudsession-files /cgi-bin/bedrock-session-files.cgi virtual
+
+  Alias /session /var/www/vhosts/mysite/session
+
+  <Directory /var/www/vhosts/mysite/session>
+    AcceptPathInfo On
+    Options -Indexes
+  
+    <IfModule mod_perl.c>
+      SetHandler perl-script
+      PerlHandler Apache::BedrockCloudSessionFiles
+      PerlSetEnv AWS_BUCKET mybucket
+      PerlSetEmv S3_HOST localstack_main:4566
+    </IfModule>
+  
+    <IfModule !mod_perl.c>
+      SetHandler bedrock-session-files
+    </IfModule>
+  
+  </Directory>
+
+If you want to use the CGI version instead of the C<mod_perl> version
+of the handler, copy the CGI handler to your F</cgi-bin>
+directory. F<bedrock-session-files.cgi> is distributed as part of
+Bedrock and can be found at
+F<@libdir@/bedrock/cgi-bin/bedrock-session-files.cgi>.
+
 =head1 SEE OTHER
 
-C<Bedrock::Handler>, C<Bedrock::Apache::Request_cgi>
+L<Bedrock::Handler>, L<Bedrock::Apache::Request_cgi>
 
 =head1 AUTHOR
 
 Rob Lauer - <rlauer6@comcast.net>
 
 =cut
-
-1;
-

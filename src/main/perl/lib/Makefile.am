@@ -107,6 +107,7 @@ BEDROCK_APACHE = \
     Bedrock/Apache/Request_shell.pm.in \
     Bedrock/Apache/BedrockAutocomplete.pm.in \
     Bedrock/Apache/BedrockSessionFiles.pm.in \
+    Bedrock/Apache/BedrockS3Handler.pm.in \
     Bedrock/Apache/BedrockCloudSessionFiles.pm.in \
     Bedrock/Apache/BedrockDocs.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in \
@@ -304,6 +305,7 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/PostgreSQLSession.pm \
     BLM/Startup/RedisSession.pm \
     BLM/Startup/REST.pm \
+    BLM/Startup/S3.pm \
     BLM/Startup/SQLiteSession.pm \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \

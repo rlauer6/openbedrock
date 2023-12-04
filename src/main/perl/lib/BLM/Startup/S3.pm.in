@@ -1,0 +1,242 @@
+package BLM::Startup::S3;
+
+# Application Plugin for interacting with AWS S3
+
+use warnings;
+use strict;
+
+use Amazon::S3;
+use Amazon::Credentials;
+use Bedrock qw(:booleans);
+use Bedrock::Constants qw(:booleans :chars);
+use Bedrock::Hash;
+use Data::Dumper;
+use English qw{-no_match_vars};
+
+use parent qw(Bedrock::Application::Plugin Class::Accessor::Fast);
+
+__PACKAGE__->follow_best_practice;
+
+__PACKAGE__->mk_accessors(
+  qw(
+    bucket
+    bucket_name
+    s3
+  )
+);
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ($self) = @_;
+
+  $self->SUPER::init_plugin();
+
+  my $config = $self->config;
+
+  my $aws_access_key_id = $config->{aws_access_key_id}
+    // $ENV{AWS_ACCESS_KEY_ID};
+
+  my $aws_secret_access_key = $config->{aws_secret_access_key}
+    // $ENV{AWS_SECRET_ACCESS_KEY};
+
+  my $token = $ENV{AWS_SESSION_TOKEN};
+
+  my $credentials = Amazon::Credentials->new(
+    aws_access_key_id     => $aws_access_key_id,
+    aws_secret_access_key => $aws_secret_access_key,
+    token                 => $token,
+  );
+
+  my $bucket_name = $ENV{AWS_BUCKET} // $config->{bucket};
+
+  my $s3 = Amazon::S3->new(
+    credentials      => $credentials,
+    region           => $config->{region} // 'us-east-1',
+    host             => $config->{host},
+    dns_bucket_names => to_boolean( $config->{dns_bucket_names} ),
+    secure           => to_boolean( $config->{secure} ),
+  );
+
+  $self->set_s3($s3);
+
+  if ($bucket_name) {
+    $self->set_bucket_name($bucket_name);
+    $self->bucket;
+  }
+  else {
+    warn "no bucket\n"
+      if !$bucket_name;
+  }
+
+  return $TRUE;
+}
+
+#######################################################################
+sub add_key {
+#######################################################################
+  my ( $self, $key, $value, $bucket ) = @_;
+
+  $bucket //= $self->get_bucket;
+
+  return $bucket->add_key( $key, $value );
+}
+
+#######################################################################
+sub get_key {
+#######################################################################
+  my ( $self, $key, $bucket ) = @_;
+
+  $bucket //= $self->get_bucket;
+
+  return $bucket->get_key($key);
+}
+
+#######################################################################
+sub list_bucket {
+#######################################################################
+  my ( $self, %args ) = @_;
+
+  my $max_keys = delete $args{max_keys};
+
+  if ($max_keys) {
+    $args{'max-keys'} = $max_keys;
+  }
+
+  my $bucket = delete $args{bucket};
+  $bucket //= $self->get_bucket;
+
+  return $bucket->list_v2(%args)
+    if $args{'max-keys'};
+
+  return $bucket->list_all_v2( \%args );
+}
+
+#######################################################################
+sub bucket {
+########################################################################
+  my ( $self, $bucket_name ) = @_;
+
+  $bucket_name //= $self->get_bucket_name;
+
+  my $bucket = $self->get_s3->bucket($bucket_name);
+  $self->set_bucket($bucket);
+
+  return $bucket;
+}
+
+########################################################################
+sub to_boolean {
+########################################################################
+  my ($val) = @_;
+
+  # undefined may trigger defaults, so return
+  return
+    if !defined $val;
+
+  $val =~ s/^\s+|\s+$//xsmg;
+
+  $val = lc $val;
+
+  my %booleans = (
+    true  => 1,
+    false => 0,
+    yes   => 1,
+    no    => 0,
+    on    => 1,
+    off   => 0,
+    '0'   => 0,
+    '1'   => 1,
+  );
+
+  return $booleans{$val};
+}
+
+1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
+
+=head1 NAME
+
+BLM::Startup::S3 - Interface to S3
+
+=head1 SYNOPSIS
+
+Create a F<s3.xml> configuration file and drop it in the usual places
+Bedrock looks for config files.
+
+ <object> 
+   <scalar name="binding">s3</scalar> 
+   <scalar name="module">BLM::Startup::S3</scalar> 
+     <object name="config">
+       <scalar name="bucket">treasurersbriefcase-development</scalar>
+     </object>
+ </object>
+
+ <null:list $s3.list_bucket('delimiter', '/') >
+
+=head1 DESCRIPTION
+
+Provides a rudimentary interface to L<Amazon::S3>.
+
+=head1 CONFIGURATION
+
+A typical configuration file might look like this:
+
+ <object> 
+   <scalar name="binding">s3</scalar> 
+   <scalar name="module">BLM::Startup::S3</scalar> 
+   <object name="config">
+     <scalar name="bucket">treasurersbriefcase-development</scalar>
+     <scalar name="aws_access_key_id">****************</scalar>
+     <scalar name="aws_secret_access_key">****************</scalar>
+     <scalar name="region">us-east-1</scalar>
+     <scalar name="host">localhost:4566</scalar>
+     <scalar name="secure">false</scalar>
+   </object>
+ </object>
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 list_bucket
+
+ list_bucket(args)
+
+C<args> is a list of key/value pairs.  See L<Amazon::S3> for details
+on arguments.
+
+Example:
+
+ <null:list $s3.list_bucket('delimiter', '/', 'max-keys', 100)>
+
+=head2 bucket
+
+ bucket(bucket-name)
+
+Overrides the bucket defined in the configuration file.
+
+=head2 add_key
+
+ add_key(key, value, [ bucket ])
+
+=head2 get_key
+
+ get_key(key, [ bucket ])
+
+=head2 set_bucket_name
+
+ set_bucket_name(bucket-name)
+
+=head1 SEE ALSO
+
+L<Amazon::S3>, L<Amazon::S3::Bucket>, L<Bedrock::Application::Plugin>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut
