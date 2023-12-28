@@ -14,7 +14,7 @@ my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
 
 my $test_file = sprintf 't/%s.yml', $name;
 
-my $config = config( getcwd . '/config/t' );
+my $config = config( getcwd . '/t/config' );
 
 $config->{LogLevel} = $ENV{LogLevel};
 

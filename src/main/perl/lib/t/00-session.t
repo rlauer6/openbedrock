@@ -102,7 +102,8 @@ my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
 diag( 'db_available ' . $db_available );
 
 SKIP: {
-  skip 'no database available', 9 if !$db_available;
+  skip 'no database available', 9
+    if !$db_available;
 
 ########################################################################
   subtest 'TIEHASH' => sub {
@@ -121,8 +122,7 @@ SKIP: {
 ########################################################################
     ok( $session->{session}, 'session id exists' );
 
-    like( $session->{session}, qr/^[\da-f]{32}$/xsm,
-      'session is a md5 hash' );
+    like( $session->{session}, qr/^[\da-f]{32}$/xsm, 'session is a md5 hash' );
   };
 
 ########################################################################
@@ -189,11 +189,7 @@ SKIP: {
   subtest 'register' => sub {
 ########################################################################
     my $rc = eval {
-      return $session->register(
-        'fflintstone', 'W1lma',
-        'Fred',        'Flintstone',
-        'fflintstone@openbedrock.net'
-      );
+      return $session->register( 'fflintstone', 'W1lma', 'Fred', 'Flintstone', 'fflintstone@openbedrock.net' );
     };
 
     if ( !$rc || $EVAL_ERROR ) {

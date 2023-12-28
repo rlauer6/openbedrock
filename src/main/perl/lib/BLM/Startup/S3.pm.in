@@ -1,3 +1,23 @@
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 package BLM::Startup::S3;
 
 # Application Plugin for interacting with AWS S3
@@ -11,7 +31,8 @@ use Bedrock qw(:booleans);
 use Bedrock::Constants qw(:booleans :chars);
 use Bedrock::Hash;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
+use File::Basename qw(basename fileparse);
 
 use parent qw(Bedrock::Application::Plugin Class::Accessor::Fast);
 
@@ -34,11 +55,9 @@ sub init_plugin {
 
   my $config = $self->config;
 
-  my $aws_access_key_id = $config->{aws_access_key_id}
-    // $ENV{AWS_ACCESS_KEY_ID};
+  my $aws_access_key_id = $config->{aws_access_key_id} // $ENV{AWS_ACCESS_KEY_ID};
 
-  my $aws_secret_access_key = $config->{aws_secret_access_key}
-    // $ENV{AWS_SECRET_ACCESS_KEY};
+  my $aws_secret_access_key = $config->{aws_secret_access_key} // $ENV{AWS_SECRET_ACCESS_KEY};
 
   my $token = $ENV{AWS_SESSION_TOKEN};
 
@@ -83,6 +102,18 @@ sub add_key {
 }
 
 #######################################################################
+sub delete_keys {
+#######################################################################
+  my ( $self, $key, $bucket ) = @_;
+
+  my $keylist = ref $key ? $key : [$key];
+
+  $bucket //= $self->get_bucket;
+
+  return $bucket->delete_keys( @{$keylist} );
+}
+
+#######################################################################
 sub get_key {
 #######################################################################
   my ( $self, $key, $bucket ) = @_;
@@ -90,6 +121,16 @@ sub get_key {
   $bucket //= $self->get_bucket;
 
   return $bucket->get_key($key);
+}
+
+#######################################################################
+sub list_bucket_keys {
+#######################################################################
+  my ( $self, %args ) = @_;
+
+  my $keys = $self->list_bucket;
+
+  return Bedrock::Array->new( map { $_->{key} } @{ $keys->{keys} } );
 }
 
 #######################################################################
@@ -106,10 +147,25 @@ sub list_bucket {
   my $bucket = delete $args{bucket};
   $bucket //= $self->get_bucket;
 
-  return $bucket->list_v2(%args)
+  return $bucket->list_v2( \%args )
     if $args{'max-keys'};
 
   return $bucket->list_all_v2( \%args );
+}
+
+#######################################################################
+sub parse_key {
+#######################################################################
+  my ( $self, $key ) = @_;
+
+  my ( $name, $path, $ext ) = fileparse( $key, qr/[.][^.]+$/xsm );
+
+  return Bedrock::Hash->new(
+    name     => $name,
+    path     => $path,
+    ext      => $ext,
+    filename => "$name$ext",
+  );
 }
 
 #######################################################################
@@ -191,12 +247,13 @@ A typical configuration file might look like this:
    <scalar name="binding">s3</scalar> 
    <scalar name="module">BLM::Startup::S3</scalar> 
    <object name="config">
-     <scalar name="bucket">treasurersbriefcase-development</scalar>
+     <scalar name="bucket">test-bucket</scalar>
      <scalar name="aws_access_key_id">****************</scalar>
      <scalar name="aws_secret_access_key">****************</scalar>
      <scalar name="region">us-east-1</scalar>
-     <scalar name="host">localhost:4566</scalar>
+     <scalar name="host">localstack_main:4566</scalar>
      <scalar name="secure">false</scalar>
+     <scalar name="dns_bucket_names">0</scalar>
    </object>
  </object>
 
@@ -211,7 +268,80 @@ on arguments.
 
 Example:
 
- <null:list $s3.list_bucket('delimiter', '/', 'max-keys', 100)>
+ <null:list $s3.list_bucket('delimiter', '/', 'prefix', $session.session, 'max-keys', 100)>
+
+Returns a hash similar to the one shown below..
+
+ {
+   keys => [
+     [0] .. {
+       etag => (13b3e8c3656ede58ed2ff4db6b7601c9)
+       owner_displayname => *** Undefined ***
+       storage_class => (STANDARD)
+       last_modified => (2023-12-08T15:12:40.000Z)
+       owner_id => *** Undefined ***
+       size => (843243)
+       key => (ChangeLog)
+       }
+     ]
+   marker => ()
+   max_keys => (1000)
+   is_truncated => (0)
+   next_marker => ()
+   bucket => (test-bucket)
+   prefix => ()
+   }
+
+=over 5
+
+=item keys
+
+Array containing the metadata for each key.
+
+=item marker
+
+Current marker that started the result list.
+
+=item max_keys
+
+Maximum number of keys that will be returned.
+
+=item is_truncated
+
+Boolean that indicates if the results have been truncated.
+
+=item next_marker
+
+If populated us this on the next call to page through results.
+
+=item bucket
+
+Bucket name
+
+=item prefix
+
+Prefix if sent in original call
+ 
+=back
+
+
+=head2 list_bucket_keys
+
+This a convenience method that does the same things as C<list_bucket>
+but returns just an array of key names.
+
+Essentially this just does:
+
+  my $list = map [ $_->{key} ] @{$self->list_bucket->{keys}};
+
+In Bedrock...
+
+ <null:list $s3.list_bucket()>
+ <array:keys>
+
+ <foreach $s3.list_bucket()>
+   <null $keys.push($_.key) >
+ </foreach>
 
 =head2 bucket
 
@@ -223,9 +353,59 @@ Overrides the bucket defined in the configuration file.
 
  add_key(key, value, [ bucket ])
 
+=head2 delete_keys
+
+ delete_keys(key, [bucket])
+
+C<key> can be a single key or an array of multiple keys to delete.
+
+Example: Delete all the session files.
+
+ <null:keylist $s3.list_bucket('delimiter', '/', 'prefix', $session.session)>
+ 
+ <null $s3.delete_keys($keylist.keys)>
+
 =head2 get_key
 
  get_key(key, [ bucket ])
+
+=head2 parse_key
+
+ parse_key(key)
+
+Parses as if it were a fully qualified path to a file.  Similar to what C<File::Basename::fileparse> might return.
+
+Returns a hash with key parts show below:
+
+Example:
+
+ <null:parts $s3.parse_key('foo/bar/baz.jpg')>
+
+ path:     <var $parts.path>
+ filename: <var $parts.filename>
+ name:     <var $parts.name>
+ ext:      <var $parts.ext>
+
+...would result in
+
+ path:     foo/bar/
+ filename: baz.jpg
+ name:     baz
+ ext       .jpg
+
+=over
+
+=item name
+
+name portion of the key
+
+=item path
+
+=item ext
+
+=item filename
+
+=back
 
 =head2 set_bucket_name
 
@@ -233,7 +413,7 @@ Overrides the bucket defined in the configuration file.
 
 =head1 SEE ALSO
 
-L<Amazon::S3>, L<Amazon::S3::Bucket>, L<Bedrock::Application::Plugin>
+L<Amazon::S3>, L<Amazon::S3::Bucket>, L<Bedrock::Application::Plugin>, L<Bedrock::Apache::BedrockCloudSessionFiles>
 
 =head1 AUTHOR
 

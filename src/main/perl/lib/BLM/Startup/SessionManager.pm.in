@@ -2,6 +2,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -25,7 +26,7 @@ use warnings;
 
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
-use Bedrock qw{:booleans};
+use Bedrock qw(:booleans);
 use Bedrock::Array;
 use Bedrock::Constants qw(:all);
 use Bedrock::XML;
@@ -39,9 +40,10 @@ use File::Copy;
 use File::Path;
 use File::Temp qw(tempfile);
 use IO::Handle;
+use List::Util qw(none any);
 use Log::Log4perl::Level;
 use POSIX qw(strftime);
-use Scalar::Util qw{blessed};
+use Scalar::Util qw(blessed);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -706,7 +708,7 @@ sub create_session_dir {
 
   }
   else {
-    $self->get_logger->trace('session directory already exists');
+    $self->get_logger->debug('session directory already exists');
   }
 
   return $session_dir;
@@ -1056,8 +1058,6 @@ sub init_session {
 ########################################################################
   my ( $self, $aref ) = @_;
 
-  my $verbose = $self->{verbose};
-
   if ($aref) {
     my ( $username, $firstname, $lastname, $email, $prefs )
       = map { defined $_ ? $_ : $EMPTY } @{$aref};
@@ -1078,7 +1078,7 @@ END_OF_MESSAGE
       }
     );
 
-    $self->get_logger->trace( sub { return sprintf "Session prefs are\n%s", $prefs } );
+    $self->get_logger->trace( sub { return sprintf 'prefs => [%s]', $prefs // $EMPTY } );
 
     my $data = {};
 
@@ -1088,14 +1088,12 @@ END_OF_MESSAGE
       $data->{prefs} = Bedrock::XML->newFromString($prefs);
     }
 
-    if ( !$data->{prefs} ) {
-      $data->{prefs} = {};
-    }
+    $data->{prefs} //= {};
 
     $self->{data} = $data;
   }
   else {
-    $self->get_logger->debug('Initializing new session');
+    $self->get_logger->trace('initializing new session');
 
     $self->newSession;
   }
@@ -1170,7 +1168,7 @@ sub newLoginSession {  ## no critic (Capitalization)
 
   my $data = {};
 
-  $self->get_logger->debug(
+  $self->get_logger->trace(
     sub {
       my $message = <<'EOT';
 Found login session [%s]
@@ -1225,6 +1223,40 @@ EOT
 }
 
 ########################################################################
+sub set_log_level {
+########################################################################
+  my ( $self, $level ) = @_;
+
+  $level = uc $level;
+
+  if ( none { $level eq $_ } qw(0 1 2 3 4 error warn info debug trace) ) {
+    $level = 'info';
+  }
+
+  my %levels = (
+    error => 0,
+    warn  => 1,
+    info  => 2,
+    debug => 3,
+    trace => 4,
+  );
+
+  if ( $level !~ /^\d$/xsm ) {
+    $level = $levels{$level};
+  }
+
+  $self->{verbose} = $level;
+
+  $self->{log_level} = { reverse %levels }->{$level};
+
+  my $log4perl_level = ( $ERROR, $WARN, $INFO, $DEBUG, $TRACE )[$level];
+
+  $self->get_logger->level($log4perl_level);
+
+  return $self->{log_level};
+}
+
+########################################################################
 sub TIEHASH {
 ########################################################################
   my ( $class, $ctx, $config ) = @_;
@@ -1241,26 +1273,14 @@ sub TIEHASH {
   $self->{name}   = $name;
   $self->{config} = $config;
 
-  my $verbose = $config->{verbose};
-  $self->{verbose} = $verbose;
+  # verbosity level can be set in config with 'verbose' or 'log_level'
+  # log_level -> error, warn, info, debug, trace
+  # verbose   -> 0, 1, 2, 3, 4
+  my $verbosity_level = exists $config->{verbose} ? $config->{verbose} : $config->{log_level};
 
-  my $logger = $self->get_logger;
+  my $log_level = $self->set_log_level($verbosity_level);
 
-  # Bedrock XML treats empty elements as q{}
-  if ( exists $config->{verbose} ) {
-    $verbose = $verbose eq q{} ? 3 : $verbose + 0;
-
-    my $level = ( $INFO, $DEBUG, $TRACE, $ERROR )[$verbose];
-
-    if ($level) {
-      $logger->level($level);
-    }
-    else {
-      $logger->error( sprintf "verbose (%s) should be empty, 0,1, or 2\n", $config->{verbose} );
-    }
-
-    $logger->debug( sprintf 'verbosity level: %d', $verbose );
-  }
+  $self->get_logger->info( sprintf 'log level: [%s]', $log_level );
 
   # Initialize session
   $self->startSession($config);
@@ -1383,17 +1403,19 @@ sub STORE {
 }
 
 # Invoked to loop over the properties of the session
+########################################################################
 sub FIRSTKEY {
+########################################################################
   my ($self) = @_;
 
   delete $self->{keys};
 
   my $k = {
-    'session'   => $self->{session},
-    'username'  => $self->{data}->{username},
-    'firstname' => $self->{data}->{firstname},
-    'lastname'  => $self->{data}->{lastname},
-    'email'     => $self->{data}->{email},
+    session   => $self->{session},
+    username  => $self->{data}->{username},
+    firstname => $self->{data}->{firstname},
+    lastname  => $self->{data}->{lastname},
+    email     => $self->{data}->{email},
   };
 
   my %keys;
@@ -1412,13 +1434,17 @@ sub FIRSTKEY {
   return each %{ $self->{keys} };
 }
 
+########################################################################
 sub NEXTKEY {
+########################################################################
   my ($self) = @_;
 
   return each %{ $self->{keys} };
 }
 
+########################################################################
 sub EXISTS {
+########################################################################
   my ( $self, $key ) = @_;
 
   if ( $key eq 'session' ) {
@@ -1435,10 +1461,12 @@ sub EXISTS {
   }
 }
 
+########################################################################
 sub DELETE {
+########################################################################
   my ( $self, $key ) = @_;
 
-  if ( $key =~ /^(session|username|firstname|lastname|email|password)$/xsm ) {
+  if ( any { $key eq $_ } qw(session username firstname lastname email password) ) {
     die "Cannot delete `$key': illegal operation.\n";
   }
   else {
@@ -1446,7 +1474,9 @@ sub DELETE {
   }
 }
 
+########################################################################
 sub CLEAR {
+########################################################################
   my ($self) = @_;
 
   return %{ $self->{data}->{prefs} } = ();

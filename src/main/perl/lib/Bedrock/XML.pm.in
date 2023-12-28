@@ -2,6 +2,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -30,30 +31,30 @@ use Bedrock::XML::Container::Object;
 use Bedrock::XML::Container::Array;
 
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use FileHandle;
 use IO::Scalar;
-use Scalar::Util qw{reftype};
+use Scalar::Util qw(reftype openhandle);
 use Symbol;
-
-## no critic (RequireCarping)
 
 ########################################################################
 sub start_handler {
 ########################################################################
   my ( $self, $p, $e, @args ) = @_;
 
-  my $obj = $self->{'obj'};
+  my $obj = $self->{obj};
 
-  if ( lc $e eq 'object' ) {
+  $e = lc $e;
+
+  if ( $e eq 'object' ) {
     my $new_obj = Bedrock::XML::Container::Object->new( $p, @args );
     $obj = $obj ? $obj->new_object( $p, $e, $new_obj ) : $new_obj;
   }
-  elsif ( lc $e eq 'array' ) {
+  elsif ( $e eq 'array' ) {
     my $new_array = Bedrock::XML::Container::Array->new( $p, @args );
     $obj = $obj ? $obj->new_array( $p, $e, $new_array ) : $new_array;
   }
-  elsif ( lc $e eq 'scalar' ) {
+  elsif ( $e eq 'scalar' ) {
     if ( !$obj ) {
       $p->xpcroak('<scalar> must be contained in <object> or <array>');
     }
@@ -65,7 +66,7 @@ sub start_handler {
     $p->xpcroak("unsupported tag <$e> encountered");
   }
 
-  return $self->{'obj'} = $obj;
+  return $self->{obj} = $obj;
 }
 
 ########################################################################
@@ -73,12 +74,12 @@ sub end_handler {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my $obj = $self->{'obj'};
+  my $obj = $self->{obj};
 
   my $parent = $obj->end_body(@args);
 
   if ( defined $parent ) {
-    $self->{'obj'} = $parent;
+    $self->{obj} = $parent;
   }
 
   return $self->{obj};
@@ -89,7 +90,7 @@ sub char_handler {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{'obj'}->text(@args);
+  return $self->{obj}->text(@args);
 }
 
 ########################################################################
@@ -97,7 +98,7 @@ sub final_handler {
 ########################################################################
   my ($self) = @_;
 
-  return $self->{'obj'}->finalize;
+  return $self->{obj}->finalize;
 }
 
 ########################################################################
@@ -137,7 +138,8 @@ sub split_opts {
 ########################################################################
   my ($str) = @_;
 
-  return if !length $str;
+  return
+    if !length $str;
 
   local $_ = $str;
 
@@ -171,7 +173,7 @@ sub parse {
 
   my $newscan = $TRUE;
 
-  my $input = $self->{'input'};
+  my $input = $self->{input};
 
   my $optstring = $EMPTY;
   my $text      = $EMPTY;
@@ -296,23 +298,27 @@ sub new {
 ########################################################################
   my ( $class, $file ) = @_;
 
-  my $self = bless {}, $class;
+  my $fh = openhandle($file);
 
-  if ( ref($file) && ( -r $file || $file->can('getline') ) ) {
-    $self->{'input'} = $file;
-  }
-  else {
-    open my $fh, '<', $file  ## no critic (RequireBriefOpen)
+  if ( !$fh ) {
+    open $fh, '<', $file  ## no critic (RequireBriefOpen)
       or die "Unable to open $file: $OS_ERROR\n";
-
-    $self->{'input'} = $fh;
   }
 
-  my $ref = $self->parse;
+  my $xml = eval {
+    local $RS = undef;
+    return <$fh>;
+  };
 
-  $self->{'input'}->close;
+  die "unable to read XML file\n$EVAL_ERROR"
+    if $EVAL_ERROR;
 
-  return $ref;
+  close $fh;
+
+  return
+    if !$xml;
+
+  return $class->newFromString($xml);
 }
 
 ########################################################################
@@ -324,10 +330,13 @@ sub newFromString {  ## no critic (Capitalization)
     if !$string;
 
   my $self = bless {}, $class;
-  my $fd   = gensym;
+
+  my $fd = gensym;
+
+  $string =~ s/\A\s+//gxsm;
 
   tie *{$fd}, 'IO::Scalar', \$string;  ## no critic (ProhibitTies)
-  $self->{'input'} = $fd;
+  $self->{input} = $fd;
 
   return $self->parse;
 }
@@ -443,9 +452,7 @@ __END__
 
 =head1 NAME
 
-C<Bedrock::XML> - perl module for creating an XML version of perl data
-structures.  Primarily used for serializing data in Bedrock
-applications.
+Bedrock::XML - encode/decode Bedrock XML
 
 =head1 SYNOPSIS
 
@@ -460,20 +467,20 @@ applications.
 =head1 DESCRIPTION
 
 Class that implements Bedrock's XML serialization and deserialization
-of perl objects.  Yes, looking in the rear view mirror this may be a
+of Perl objects.  Yes, looking in the rear view mirror this may be a
 case of reinventing wheel.  In 1999 it was apparently necessary to
 create a method to serialize data in an XMLish fashion.  Some
-benchmarks have shown that this is no slower than other perl XML
+benchmarks have shown that this is no slower than other Perl XML
 implementations thus there is no great motivation to change how
 Bedrock serializes data.
 
-A Bedrock XML object is the serialized (text) representation of a perl
+A Bedrock XML object is the serialized (text) representation of a Perl
 hash.  The hash may be an arbitrarily complex collection of the basic
-perl data types (I<scalar>, I<array>, I<hash>).  Bedrock XML presents hashes as
+Perl data types (I<scalar>, I<array>, I<hash>).  Bedrock XML presents hashes as
 C<E<lt>objectE<gt>> elements, arrays as C<E<lt>arrayE<gt>> elements,
 and scalars as C<E<lt>scalarE<gt>> elements.  
 
-For example, give the perl hash:
+For example, given the Perl hash:
 
  { 
    foo => [ 1, 2, 3],
@@ -501,13 +508,13 @@ For example, give the perl hash:
 
  new( file | fd )
 
-Reads a Bedrock XML file and returns a perl hash reference.
+Reads a Bedrock XML file and returns a Perl hash reference.
 
 =over 5
 
 =item * file
 
-File name name of a Bedrock XML file.
+File name of a Bedrock XML file.
 
 =item * fd
 
@@ -520,9 +527,15 @@ Open file descriptor of a Bedrock XML file.
  newFromString( string )
 
 Returns a hash reference to the parsed Bedrock XML string. Returns
-undef if error parsing string or string is empty.
+undef if there is error parsing the string or the string is empty.
 
- my $ref =  Bedrock::XML->newFromString( '<object><scalar name="foo">test</scalar>' );
+ my $xml <<='END_OF_XML';
+ <object>
+   <scalar name="foo">test</scalar>
+ </object>
+ END_OF_XML
+
+ my $ref =  Bedrock::XML->newFromString( $xml );
 
 =head2 writeXML
 
@@ -536,7 +549,7 @@ Returns or writes the serialized Bedrock XML version of an object.
 
 =item * ref
 
-Hash reference representing a perl object to be serialized.
+Hash reference representing a Perl object to be serialized.
 
 =item * fd
 
@@ -549,15 +562,14 @@ Name of a file to which the serialized output will be written.
 
 =back
 
-If no file descriptor or file name is given, the serialized string is returned.
-
+If no file descriptor or file name is given, the serialized string is
+returned.
 
 =head2 writeXMLString
 
  writeXMLString( ref )
 
 Returns the serialized Bedrock XML version of an object.
-
 
 =head1 AUTHOR
 

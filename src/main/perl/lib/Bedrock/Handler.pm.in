@@ -1,9 +1,8 @@
-package Bedrock::Handler;
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,6 +19,8 @@ package Bedrock::Handler;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+package Bedrock::Handler;
+
 use strict;
 use warnings;
 
@@ -29,7 +30,7 @@ use parent qw{ Exporter };
 
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 use Apache2::Const -compile => qw{
   HTTP_UNAUTHORIZED
@@ -53,11 +54,6 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
   DEFAULT_CACHE_BLOCKS => 256,
 };
 
-BEGIN {
-  use Bedrock::BedrockConfig;
-  Bedrock::Config->import(qw(validate_config_paths));
-}
-
 use Carp;
 use Cwd qw/realpath fastcwd/;
 use Data::Dumper;
@@ -70,64 +66,70 @@ use Bedrock::Constants qw{:chars :defaults :booleans};
 # see pod for notes on caching...
 
 our %BEDROCK_CONFIG_CACHE;
-our $BEDROCK_CACHE_ENABLED = $ENV{BEDROCK_CACHE_ENABLED};
+our $BEDROCK_CACHE_ENABLED;
 our $BEDROCK_BENCHMARK;
 
-if ( $ENV{BEDROCK_BENCHMARK} && lc $ENV{BEDROCK_BENCHMARK} eq 'on' ) {
-  require Benchmark;
+BEGIN {
+  use Bedrock::BedrockConfig;
 
-  Benchmark->import(qw(:all :hireswallclock));
+  Bedrock::Config->import(qw(validate_config_paths));
 
-  print {*STDERR} sprintf "[%s:%d] Benchmarking enabled...\n",
-    __PACKAGE__, __LINE__;
+  $BEDROCK_CACHE_ENABLED = $ENV{BEDROCK_CACHE_ENABLED};
 
-  $BEDROCK_BENCHMARK = $TRUE;
-}
+  if ( $ENV{BEDROCK_BENCHMARK} && lc $ENV{BEDROCK_BENCHMARK} eq 'on' ) {
+    require Benchmark;
 
-if ( cache_enabled() ) {
-  print {*STDERR} sprintf
-    "[%s:%d] caching enabled, attempting to use cache\n",
-    __PACKAGE__, __LINE__;
+    Benchmark->import(qw(:all :hireswallclock));
 
-  eval {
+    print {*STDERR} sprintf "[%s:%d] Benchmarking enabled...\n", __PACKAGE__, __LINE__;
 
-    require IPC::Shareable;
+    $BEDROCK_BENCHMARK = $TRUE;
+  }
 
-    {
-      local $SIG{__WARN__} = sub { };
+  if ( cache_enabled() ) {
+    print {*STDERR} sprintf
+      "[%s:%d] caching enabled, attempting to use cache\n",
+      __PACKAGE__, __LINE__;
 
-      my $cache_blocks
-        = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || DEFAULT_CACHE_BLOCKS;
+    eval {
 
-      my $cache_config = {
-        key    => 'BCFG',
-        create => 0,
-        size   => CACHE_BLOCK_SIZE * $cache_blocks,
-      };
+      require IPC::Shareable;
 
-      ## no critic (ProhibitTies)
-      return tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;
+      {
+        local $SIG{__WARN__} = sub { };
+
+        my $cache_blocks = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || DEFAULT_CACHE_BLOCKS;
+
+        my $cache_config = {
+          key    => 'BCFG',
+          create => 0,
+          size   => CACHE_BLOCK_SIZE * $cache_blocks,
+        };
+
+        ## no critic (ProhibitTies)
+        return tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable', $cache_config;
+      }
+    };
+
+    if ($EVAL_ERROR) {
+      print {*STDERR} sprintf
+        "[%s:%d] caching not successful: \n%s",
+        __PACKAGE__, __LINE__, $EVAL_ERROR;
+
+      $BEDROCK_CACHE_ENABLED = $FALSE;
     }
-  };
-
-  if ($EVAL_ERROR) {
-    print {*STDERR} sprintf
-      "[%s:%d] caching not successful: \n%s",
-      __PACKAGE__, __LINE__, $EVAL_ERROR;
-
-    $BEDROCK_CACHE_ENABLED = $FALSE;
+    else {
+      print {*STDERR} sprintf
+        "[%s:%d] successfully initialized caching for pid: %s\n",
+        __PACKAGE__, __LINE__, $PID;
+    }
   }
-  else {
-    print {*STDERR} sprintf
-      "[%s:%d] successfully initialized caching for pid: %s\n",
-      __PACKAGE__, __LINE__, $PID;
-  }
-}
 
 ########################################################################
-sub cache_enabled {
+  sub cache_enabled {
 ########################################################################
-  return $BEDROCK_CACHE_ENABLED && $BEDROCK_CACHE_ENABLED =~ /^yes|y|on$/ixsm;
+    return $BEDROCK_CACHE_ENABLED && $BEDROCK_CACHE_ENABLED =~ /^yes|y|on$/ixsm;
+  }
 }
 
 ########################################################################
@@ -159,8 +161,7 @@ sub new {
     my $error = $EVAL_ERROR;
 
     $r->log->error("error loading configuration files: $error");
-    $r->log->error( "processed the following files: \n" . join "\n",
-      $self->config_files_processed );
+    $r->log->error( "processed the following files: \n" . join "\n", $self->config_files_processed );
 
     croak $error;
   }
@@ -168,10 +169,7 @@ sub new {
   if ($BEDROCK_BENCHMARK) {
     $t1 = Benchmark->new;
 
-    $r->log->info(
-      sprintf 'config load time: %s',
-      timestr( timediff( $t1, $t0 ), 'all' )
-    );
+    $r->log->info( sprintf 'config load time: %s', timestr( timediff( $t1, $t0 ), 'all' ) );
   }
 
   return $self;
@@ -212,23 +210,24 @@ sub init_request {
 
   {
     no warnings 'uninitialized';  ## no critic TestingAndDebugging::ProhibitNoWarnings
-    $r->log->debug( Dumper( \%ENV ) );
 
-    $r->log->debug( sprintf 'CONTENT TYPE....[%s]',
-      $r->content_type // $EMPTY );
-    $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]', $ENV{SCRIPT_NAME} );
-    $r->log->debug( sprintf 'CONFIG_PATH.....[%s]', $ENV{CONFIG_PATH} );
-    $r->log->debug( sprintf 'BEDROCK_CONFIG_PATH.....[%s]',
-      $ENV{BEDROCK_CONFIG_PATH} );
-    $r->log->debug( sprintf 'PATH_INFO.......[%s]', $ENV{PATH_INFO} );
-    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]', $ENV{PATH_TRANSLATED} );
-    $r->log->debug( sprintf 'mod_perl........[%s]', $ENV{MOD_PERL} );
-    $r->log->debug( sprintf 'request file....[%s]', $self->{file} );
-    $r->log->debug( sprintf 'URI.............[%s]', $r->uri || q{} );
-    $r->log->debug( sprintf 'URI_DIR.........[%s]', $self->{uri_dir} );
-    $r->log->debug( sprintf 'URI_NAME........[%s]', $self->{uri_name} );
-    $r->log->debug( sprintf 'filename........[%s]', $self->{filename} );
-    $r->log->debug( sprintf 'path............[%s]', $self->{path} );
+    foreach ( keys %ENV ) {
+      $r->log->debug( sprintf 'ENV{%s} => %s', $_, $ENV{$_} );
+    }
+
+    $r->log->debug( sprintf 'CONTENT TYPE....[%s]',         $r->content_type // $EMPTY );
+    $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]',         $ENV{SCRIPT_NAME} );
+    $r->log->debug( sprintf 'CONFIG_PATH.....[%s]',         $ENV{CONFIG_PATH} );
+    $r->log->debug( sprintf 'BEDROCK_CONFIG_PATH.....[%s]', $ENV{BEDROCK_CONFIG_PATH} );
+    $r->log->debug( sprintf 'PATH_INFO.......[%s]',         $ENV{PATH_INFO} );
+    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]',         $ENV{PATH_TRANSLATED} );
+    $r->log->debug( sprintf 'mod_perl........[%s]',         $ENV{MOD_PERL} );
+    $r->log->debug( sprintf 'request file....[%s]',         $self->{file} );
+    $r->log->debug( sprintf 'URI.............[%s]',         $r->uri || q{} );
+    $r->log->debug( sprintf 'URI_DIR.........[%s]',         $self->{uri_dir} );
+    $r->log->debug( sprintf 'URI_NAME........[%s]',         $self->{uri_name} );
+    $r->log->debug( sprintf 'filename........[%s]',         $self->{filename} );
+    $r->log->debug( sprintf 'path............[%s]',         $self->{path} );
   }
 
   return $self;
@@ -266,8 +265,7 @@ sub read_config {
   my $config = eval { return Bedrock::Config->new($full_path); };
 
   if ( !$config || $EVAL_ERROR ) {
-    $r->log->debug( sprintf 'could not read %s: [%s] [%s]',
-      $full_path, $EVAL_ERROR, $OS_ERROR );
+    $r->log->debug( sprintf 'could not read %s: [%s] [%s]', $full_path, $EVAL_ERROR, $OS_ERROR );
   }
   else {
     $r->log->debug("successfully read $full_path");
@@ -409,6 +407,8 @@ sub _find_files {
 
   my @files;
 
+  no warnings 'File::Find';  ## no critic
+
   find(
     sub {
       my $name = $_;
@@ -507,15 +507,17 @@ sub get_bedrock_config {
 
   my $r = $self->request_handler;
 
-  my $bedrock_config_path = $ENV{BEDROCK_CONFIG_PATH};
+  my $bedrock_config_path = $ENV{BEDROCK_CONFIG_PATH} // $EMPTY;
 
   if ($bedrock_config_path) {
-    $bedrock_config_path = realpath( $ENV{BEDROCK_CONFIG_PATH} );
+    $bedrock_config_path = realpath($bedrock_config_path) // $EMPTY;
+
+    if ( !$bedrock_config_path ) {
+      $r->log->error( 'invalid BEDROCK_CONFIG_PATH ' . $ENV{BEDROCK_CONFIG_PATH} );
+    }
   }
   else {
-    $r->log->error(
-      'No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.'
-    );
+    $r->log->error('No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.');
   }
 
   my @config_paths;
@@ -523,26 +525,20 @@ sub get_bedrock_config {
   if ( $ENV{CONFIG_PATH} ) {
     @config_paths = split /:/xsm, $ENV{CONFIG_PATH};
 
-    @config_paths = map { realpath($_) } @config_paths;
+    @config_paths = grep { !/$bedrock_config_path/xsm } map { realpath($_) } @config_paths;
+  }
+  elsif ($bedrock_config_path) {
+
+    $r->log->info( sprintf 'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
+      $bedrock_config_path );
   }
   else {
-    if ($bedrock_config_path) {
-
-      $r->log->info(
-        sprintf
-          'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
-        $bedrock_config_path
-      );
-    }
-    else {
-      $r->log->error('No CONFIG_PATH or BEDROCK_CONFIG_PATH');
-    }
+    $r->log->error('No CONFIG_PATH or BEDROCK_CONFIG_PATH. You probably have a misconfigured system.');
   }
 
-  #my @paths = grep {defined} ( $bedrock_config_path, @config_paths );
   my @paths = validate_config_paths( $bedrock_config_path, @config_paths );
 
-  $r->log->debug( sprintf "paths: %s\n", Dumper( \@paths ) );
+  $r->log->debug( sprintf "paths: %s\n", Dumper( [ paths => [@paths] ] ) );
 
   # it's probably okay, not to find this...
   my $config = $self->read_config( $bedrock_config_path, 'tagx' );
@@ -560,7 +556,7 @@ sub get_bedrock_config {
       last if $config;
     }
   }
-  elsif ( $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
+  elsif ( $config->{REPLACE_CONFIG} && $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
     foreach (@config_paths) {
       next if !-e "$_/tagx.xml" || /[.]d$/xsm;
 
@@ -578,14 +574,14 @@ sub get_bedrock_config {
   }
 
   if ( !$config || !keys %{$config} ) {
+
     my $error = <<'END_OF_MESSAGE';
 ERROR: No or empty 'tagx.xml'
   BEDROCK_CONFIG_PATH => [%s]
   CONFIG_PATH         => [%s]
 END_OF_MESSAGE
 
-    croak sprintf $error, ( $bedrock_config_path // $EMPTY ),
-      ( join $SEMICOLON, @config_paths ) // $EMPTY;
+    croak sprintf $error, ( $bedrock_config_path // $EMPTY ), ( join $SEMICOLON, @config_paths ) // $EMPTY;
   }
 
   my $dbnames = $self->read_data_sources(@paths);
@@ -637,8 +633,7 @@ END_OF_MESSAGE
   foreach my $path (@module_paths) {
 
     foreach my $file ( _list_xml_files($path) ) {
-      $r->log->debug(
-        sprintf 'Found a potential module configuration file: [%s]', $file );
+      $r->log->debug( sprintf 'Found a potential module configuration file: [%s]', $file );
 
       $r->log->debug( sprintf 'Merging [%s]', $file );
 
@@ -664,7 +659,7 @@ END_OF_MESSAGE
   # </object>
 
   my $tagx_apps = $config->{'APP_CONFIG'};
-  $r->log->debug( 'APP_CONFIG: ' . $tagx_apps );
+  $r->log->debug( sprintf 'APP_CONFIG: %s', $tagx_apps // $EMPTY );
 
   if ($tagx_apps) {
     my $app_config = $self->read_config( $bedrock_config_path, $tagx_apps );
@@ -745,9 +740,9 @@ sub config_files_processed {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  if (@args) {
-    $self->{_config_files_processed} //= [];
+  $self->{_config_files_processed} //= [];
 
+  if (@args) {
     push @{ $self->{_config_files_processed} }, @args;
   }
 

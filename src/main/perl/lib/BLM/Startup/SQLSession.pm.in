@@ -1,14 +1,33 @@
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 package BLM::Startup::SQLSession;
 
 use strict;
 use warnings;
 
-use BLM::Startup::SessionManager;
 use Bedrock::Constants qw{:magic_numbers :booleans :chars};
 use Bedrock::Dump;
-use Data::Dumper;
-
 use DBI;
+use Data::Dumper;
 use English qw{-no_match_vars};
 use File::Path;
 
@@ -45,14 +64,16 @@ sub startSession {
 
   # we copy the SQL statements over from the subclass which defines
   # them and store them in this class instance...
-  my $sql = {};
+  my %sql;
 
   foreach ( keys %SQL ) {
-    $sql->{$_}->{sql}  = sprintf $SQL{$_}->{sql}, $config->{table_name};
-    $sql->{$_}->{args} = $SQL{$_}->{args};
+    $sql{$_} = {
+      sql  => sprintf( $SQL{$_}->{sql}, $config->{table_name} ),
+      args => $SQL{$_}->{args},
+    };
   }
 
-  $self->{'sql'} = $sql;
+  $self->{sql} = \%sql;
 
   return $self->SUPER::startSession($config);
 }
@@ -62,14 +83,21 @@ sub do_sql {
 ########################################################################
   my ( $self, $what, %options ) = @_;
 
-  my $sql = $self->{'sql'}->{$what}->{sql};
-  return 0 if !$sql;
+  my $sql = $self->{sql}->{$what}->{sql};
 
-  my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
+  return 0
+    if !$sql;
 
-  $self->get_logger->debug(
+  my @args = @options{ @{ $self->{sql}->{$what}->{args} } };
+
+  $self->get_logger->trace(
     sub {
-      "do_sql: $sql bindvars: " . join $COMMA, map { defined $_ || '<undef>' } @args;
+      return Dumper(
+        [ statement => $sql,
+          bindvars  => join $COMMA,
+          defined_or_undef(@args)
+        ]
+      );
     }
   );
 
@@ -80,9 +108,9 @@ sub do_sql {
 sub do_select_set {
 ########################################################################
   my ( $self, $what, %options ) = @_;
-  my $sql = $self->{'sql'}->{$what}->{sql};
+  my $sql = $self->{sql}->{$what}->{sql};
 
-  my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
+  my @args = @options{ @{ $self->{sql}->{$what}->{args} } };
 
   return $self->_do_select_set( $sql, @args );
 }
@@ -92,9 +120,9 @@ sub do_select {
 ########################################################################
   my ( $self, $what, %options ) = @_;
 
-  my $sql = $self->{'sql'}->{$what}->{sql};
+  my $sql = $self->{sql}->{$what}->{sql};
 
-  my @args = @options{ @{ $self->{'sql'}->{$what}->{args} } };
+  my @args = @options{ @{ $self->{sql}->{$what}->{args} } };
 
   return $self->_do_select( $sql, @args );
 }
@@ -128,7 +156,7 @@ sub db_handle {
 
   my $self = tied %{$obj};
 
-  return $self->{'dbh'};
+  return $self->{dbh};
 }
 
 ########################################################################
@@ -163,18 +191,42 @@ sub _bind_args {
 }
 
 ########################################################################
+sub remove_expired_session_dirs {
+########################################################################
+  my ( $self, %options ) = @_;
+
+  my $session_dir = $self->{ctx}->{CONFIG}->{SESSION_DIR};
+
+  return
+    if !$session_dir || !-d $session_dir;
+
+  my $session_ids = $self->FETCH_EXPIRED_SESSIONS(%options);
+
+  foreach my $session ( @{$session_ids} ) {
+    my $id = $session->[0];
+    next if !$id;
+
+    if ( -d "$session_dir/$id" ) {
+      rmtree("$session_dir/$id");
+    }
+  }
+
+  return;
+}
+
+########################################################################
 sub _do_select_set {
 ########################################################################
   my ( $self, $stm, @args ) = @_;
 
-  my $dbh = $self->{'dbh'};
+  my $dbh = $self->{dbh};
 
   my $sth = $dbh->prepare($stm);
 
   die sprintf $BAD_QUERY, $stm, $dbh->errstr
     if !$sth;
 
-  $self->get_logger->debug("statement: $stm\n");
+  $self->get_logger->trace( sub { return Dumper( [ statement => $stm ] ); } );
 
   _bind_args( $sth, @args );
 
@@ -355,7 +407,7 @@ sub UPDATE_LOGIN_SESSION {
   my $rows = $self->do_sql( 'UPDATE_LOGIN_SESSION', %options );
 
   die sprintf $UPDATE_ERROR, $options{username}
-    if !$rows == 1;
+    if $rows != 1;
 
   return $rows;
 }
@@ -372,8 +424,6 @@ sub UPDATE_LOGIN_SESSION {
 # +---------------------------------------------------------------+
 sub FETCH_SESSION {
   my ( $self, %options ) = @_;
-
-  $self->get_logger->debug("fetching session\n");
 
   return $self->do_select( 'FETCH_SESSION', %options );
 }
@@ -392,20 +442,7 @@ sub SESSION_CLEANUP {
   my ( $self, %options ) = @_;
 
   if ( $self->cleanup_session_dir ) {
-    my $session_dir = $self->{'ctx'}->{'CONFIG'}->{'SESSION_DIR'};
-
-    if ( -d "$session_dir" ) {
-      my $session_ids = $self->FETCH_EXPIRED_SESSIONS(%options);
-
-      foreach my $session ( @{$session_ids} ) {
-        my $id = $session->[0];
-        next if !$id;
-
-        if ( -d "$session_dir/$id" ) {
-          rmtree("$session_dir/$id");
-        }
-      }
-    }
+    $self->remove_expired_session_dirs(%options);
   }
 
   # remove data from login sessions
@@ -453,48 +490,55 @@ sub FETCH_EXPIRED_SESSIONS {
 sub STORE_SESSION {
   my ( $self, %options ) = @_;
 
-  $options{expires}
-    = $options{expires}
-    || $options{config}->{'cookie'}->{'expiry_secs'}
-    || $SECONDS_IN_A_DAY;
+  $options{expires} ||= $options{config}->{cookie}->{expiry_secs} || $SECONDS_IN_A_DAY;
 
-  $options{prefs}     = $options{prefs}     || $options{data}->{prefs};
-  $options{firstname} = $options{firstname} || $options{data}->{firstname};
-  $options{lastname}  = $options{lastname}  || $options{data}->{lastname};
-  $options{email}     = $options{email}     || $options{data}->{email};
+  $options{prefs}     //= $options{data}->{prefs};
+  $options{firstname} //= $options{data}->{firstname};
+  $options{lastname}  //= $options{data}->{lastname};
+  $options{email}     //= $options{data}->{email};
 
   if ( $options{new} ) {
     my $rows = $self->do_sql( 'STORE_SESSION_INSERT', %options );
 
-    $self->get_logger->debug(
+    $self->get_logger->trace(
       sub {
-        sprintf 'Inserting session [%s]: rows = [%d]', $options{session}, $rows;
+        return Dumper(
+          [ session => $options{session},
+            rows    => $rows,
+          ]
+        );
+
       }
     );
 
-    if ( $options{'expires'} ) {
+    if ( $options{expires} ) {
       my $rows = $self->do_sql( 'UPDATE_SESSION', %options );
 
-      $self->get_logger->debug(
+      $self->get_logger->trace(
         sub {
-          sprintf 'Updated expiry date for session [%s]: rows = [%d]', $options{session}, $rows;
+          return Dumper(
+            [ session => $options{session},
+              rows    => $rows,
+            ]
+          );
         }
       );
-
     }
   }
   else {
     my $rows = $self->do_sql( 'STORE_SESSION_UPDATE', %options );
 
-    $self->get_logger->debug(
+    $self->get_logger->trace(
       sub {
-        sprintf "Updated session [%s] with\n%s\nBind values are [%s]",
-          $options{session},
-          $self->{'sql'}->{STORE_SESSION_UPDATE}->{sql}, join $COMMA,
-          map { defined $_ || '<undef>' } @options{qw{expires prefs firstname lastname email session}};
+        return Dumper(
+          [ session   => $options{session},
+            statement => $self->{sql}->{STORE_SESSION_UPDATE}->{sql},
+            args      => join $COMMA,
+            defined_or_undef( @options{qw(expires prefs firstname lastname email session)} )
+          ]
+        );
       }
     );
-
   }
 
   return;
@@ -538,9 +582,8 @@ sub REGISTER {
 sub REMOVE_USER {
   my ( $self, %options ) = @_;
 
-  if ( !$self->do_select( 'LOOKUP_USER', %options ) ) {
-    die sprintf $USERNAME_NOT_FOUND;
-  }
+  die sprintf $USERNAME_NOT_FOUND
+    if !$self->do_select( 'LOOKUP_USER', %options );
 
   return $self->do_sql( 'REMOVE_USER', %options );
 }
@@ -633,6 +676,14 @@ sub VERSION {
   my ( $self, %options ) = @_;
 
   return eval { $self->do_select( 'VERSION', %options ); };
+}
+
+########################################################################
+sub defined_or_undef {
+########################################################################
+  my (@args) = @_;
+
+  return map { defined $_ || '<undef>' } @args;
 }
 
 1;

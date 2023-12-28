@@ -4,6 +4,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -23,18 +24,21 @@
 use strict;
 use warnings;
 
-use vars
-  qw/$LIST $CREATE $DELETE $HELP $SIZE %BEDROCK_CONFIG_CACHE $RESET $FILE/;
-
-require IPC::Shareable;
-
-use Getopt::Long;
+use Bedrock qw(slurp_file);
+use Bedrock::Hash;
 use Carp;
 use Data::Dumper;
 use English qw{-no_match_vars};
+use Getopt::Long;
+use IPC::Shareable;
+use JSON::PP;
 
+our %BEDROCK_CONFIG_CACHE;
+
+########################################################################
 sub usage {
-  print <<'EOT';
+########################################################################
+  print {*STDOUT} <<'END_OF_USAGE';
 usage: bedrock-cache.pl options
 
  Options:
@@ -46,38 +50,34 @@ usage: bedrock-cache.pl options
    --help   = this
    --reset  = clear the cache
    --size   = size of the cache in MB (default: 256)
- 
-EOT
+END_OF_USAGE
 
   return;
 }
 
-# +--------------------------+
-# | MAIN PROGRAM STARTS HERE |
-# +--------------------------+
+########################################################################
+sub main {
+########################################################################
 
-GetOptions(
-  'list',   \$LIST, 'create', \$CREATE, 'delete', \$DELETE,
-  'size',   \$SIZE, 'help|?', \$HELP,   'reset',  \$RESET,
-  'file=s', \$FILE,
-);
+  my %options;
 
-if ($HELP) {
-  usage();
+  my @option_specs = qw(
+    list
+    create
+    delete
+    size=s
+    help|?
+    reset
+    file=s
+  );
 
-  exit 0;
-}
+  GetOptions( \%options, @option_specs );
 
-if ( !$SIZE ) {
-  $SIZE = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256;
-}
+  if ( !$options{size} ) {
+    $options{size} //= $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256;
+  }
 
-if ($CREATE) {
-  $CREATE = 1;
-}
-
-# see if we have a cache defined
-eval {
+  # see if we have a cache defined
   {
     local $SIG{__WARN__} = sub { };
 
@@ -85,57 +85,68 @@ eval {
     tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
       {
       key     => 'BCFG',
-      create  => $CREATE,
+      create  => $options{create} ? 1 : 0,
       destroy => 0,
-      size    => 1024 * ($SIZE)
+      size    => 1024 * $options{size}
       };
   }
-};
 
-if ( !$EVAL_ERROR ) {
+  my %commands = (
+    list => sub {
+      my $str
+        = eval { JSON::PP->new->pretty->allow_blessed->convert_blessed->encode( \%BEDROCK_CONFIG_CACHE ); };
 
-  $LIST && do {
-    print Dumper( \%BEDROCK_CONFIG_CACHE );
-    exit 0;
-  };
+      return print {*STDOUT} $str // $EVAL_ERROR;
+    },
 
-  $DELETE && do {
-    ( tied %BEDROCK_CONFIG_CACHE )->remove;
-    exit 0;
-  };
+    delete => sub {
+      ( tied %BEDROCK_CONFIG_CACHE )->remove;
+      return 0;
+    },
 
-  $RESET && do {
-    %BEDROCK_CONFIG_CACHE = ();
-    exit 0;
-  };
+    reset => sub {
+      %BEDROCK_CONFIG_CACHE = ();
+    },
 
-  $FILE && do {
-    croak "file ($FILE) not found or empty\n"
-      if !-e $FILE || !-s $FILE;
+    file => sub {
+      croak sprintf 'file (%s) not found or empty', $options{file}
+        if !-e $options{file} || !-s $options{file};
 
-    $BEDROCK_CONFIG_CACHE{$FILE} = slurp_file $FILE;
+      $BEDROCK_CONFIG_CACHE{ $options{file} } = slurp_file( $options{file} );
 
-    exit 0;
-  };
+      return 0;
+    },
 
-  $CREATE && do {
-    exit 0;
-  };
+    create => sub {
+      return 0;
+    },
 
-  $SIZE && do {
-    print {*STDERR} "error: size only matters with --create\n";
-    exit 0;
-  };
+    help => sub {
+      usage();
 
-  usage();
+      return 0;
+    },
 
-  exit 0;
+    default => sub {
+      usage();
+
+      return 0;
+    },
+  );
+
+  my $command = 'default';
+
+  foreach (qw( list delete reset file help create )) {
+    next if !$options{$_};
+
+    $command = $_;
+    last;
+  }
+
+  return $commands{$command}->();
 }
-else {
-  croak $EVAL_ERROR;
-}
 
-exit 0;
+exit main();
 
 __END__
 
@@ -162,8 +173,8 @@ Delete the cache...
 =head1 DESCRIPTION
 
 The Bedrock I<cache> is currently used to cache the Bedrock
-configuration object created by Bedrock when a Bedrock page is
-accessed on an Apache virtual host.  Cacheing of the configuration is
+configuration objects created by Bedrock when a Bedrock page is
+accessed on an Apache virtual host.  Caching of the configuration is
 optionally done when the Bedrock Apache handler begins to process a
 page.
 
@@ -172,8 +183,8 @@ C<IPC::Shareable> module.
 
 Because the configuration object is created from potentially several
 different XML-based configuration files that are merged together to
-create the final object, startup time for the page may be adversely
-affected.  One way to mitigate that startup time is to cache the
+create the final object startup time for the page can be negatively
+impacted.  One way to mitigate startup time is to cache the
 configuration object since configuration files are unlikely to change
 very often for production applications.
 
@@ -185,9 +196,14 @@ directive.
 
  SetEnv BEDROCK_CACHE_CONFIG On
 
+Prior to starting the Apache server you should initialize the cache.
+
+ bedrock-cache.pl --create
+ apachectl start
+
 =head1 NOTES
 
-For more gory details regarding Bedrock configuration file cacheing,
+For more gory details regarding Bedrock configuration file caching,
 see the I<perldocs> for C<Bedrock::Handler>.
 
 =head1 OPTIONS
@@ -207,7 +223,8 @@ future usage.
 
 =item --list
 
-Dumps the contents of the cache.
+Dumps the contents of the cache in JSON format. Note that the cache
+may include sensitive information.  You have been warned.
 
 =item --help
 
@@ -229,6 +246,6 @@ Rob Lauer - <rlauer6@comcast.net>
 
 =head1 SEE ALSO
 
-C<IPC::Shareable>, C<Bedrock::Handler>
+L<IPC::Shareable>, L<Bedrock::Handler>
 
 =cut

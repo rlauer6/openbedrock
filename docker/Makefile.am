@@ -16,6 +16,9 @@ XML_FILES = \
    data-sources.xml.in \
    redis-session.xml.in
 
+YML_FILES = \
+   docker-compose.yml.in
+
 TAGX = \
   tagx.xml.in
 
@@ -38,26 +41,15 @@ APACHE_CONF = \
 
 GAPACHE_CONF = $(APACHE_CONF:.conf.in=.conf)
 
-$(GAPACHE_CONF): % : %.in
-	if test -n "$(STREAM_LOGS)"; then \
-	  error_log="/dev/fd/1"; \
-	else \
-	  error_log="/var/www/log/error_log"; \
-	fi; \
-	if test -n "$(STREAM_LOGS)"; then \
-	  access_log="/dev/fd/1"; \
-	else \
-	  access_log="/var/www/log/access_log"; \
-	fi; \
-	sed -e 's,@error_log@,'$$error_log',' \
-	    -e 's,@access_log@,'$$access_log',' < $< >$@
-
 BEDROCK_CONF = \
-  perl_bedrock.conf.in
+  bedrock.conf.in \
+  bedrock-info.conf.in \
+  bedrock-session-files.conf.in \
+  bedrock-autocomplete.conf.in
 
 GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
 
-$(GBEDROCK_CONF): $(BEDROCK_CONF)
+%.conf: %.conf.in
 	if test -n "$(STREAM_LOGS)"; then \
 	  error_log="/dev/fd/1"; \
 	else \
@@ -74,11 +66,32 @@ $(GBEDROCK_CONF): $(BEDROCK_CONF)
 
 GXML_FILES = $(XML_FILES:.xml.in=.xml)
 
+GYML_FILES = $(YML_FILES:.yml.in=.yml)
+
 $(GXML_FILES): % : %.in
 	DBI_USER="$(DBI_USER)";\
 	DBI_USER=$${DBI_USER:-fred}; \
 	DBI_PASS="$(DBI_PASS)";\
 	DBI_PASS=$${DBI_PASS:-flintstone}; \
+	DBI_ROOT_PASS="$(DBI_ROOT_PASS)";\
+	DBI_ROOT_PASS=$${DBI_ROOT_PASS:-bedrock}; \
+	DBI_HOST="$(DBI_HOST)"; \
+	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
+	DBI_DB="$(DBI_DB)";\
+	DBI_DB=$${DBI_DB:-bedrock}; \
+	sed -e 's/@dbi_user@/'$$DBI_USER'/' \
+	    -e 's/@dbi_pass@/'$$DBI_PASS'/' \
+	    -e 's/@dbi_db@/'$$DBI_DB'/' \
+	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/' \
+	    -e 's/@dbi_host@/'$$DBI_HOST'/' < $< >$@
+
+$(GYML_FILES): % : %.in
+	DBI_USER="$(DBI_USER)";\
+	DBI_USER=$${DBI_USER:-fred}; \
+	DBI_PASS="$(DBI_PASS)";\
+	DBI_PASS=$${DBI_PASS:-flintstone}; \
+	DBI_ROOT_PASS="$(DBI_ROOT_PASS)";\
+	DBI_ROOT_PASS=$${DBI_ROOT_PASS:-bedrock}; \
 	DBI_HOST="$(DBI_HOST)";\
 	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
 	DBI_DB="$(DBI_DB)";\
@@ -86,20 +99,24 @@ $(GXML_FILES): % : %.in
 	sed -e 's/@dbi_user@/'$$DBI_USER'/' \
 	    -e 's/@dbi_pass@/'$$DBI_PASS'/' \
 	    -e 's/@dbi_db@/'$$DBI_DB'/' \
+	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/' \
 	    -e 's/@dbi_host@/'$$DBI_HOST'/' < $< >$@
 
 CONFIG_FILES = \
     $(GXML_FILES) \
+    $(GYML_FILES) \
     $(GAPACHE_CONF) \
     $(GBEDROCK_CONF) \
     $(GTAGX)
 
 FILES = \
     $(REPOS) \
-    $(XML_FILES)
+    $(XML_FILES) \
+    $(YML_FILES)
 
 CLEANFILES = \
     $(GXML_FILES) \
+    $(GYML_FILES) \
     $(GAPACHE_CONF) \
     $(GBEDROCK_CONF) \
     $(GTAGX) \
@@ -111,8 +128,6 @@ dist_noinst_DATA = \
     $(APACHE_CONF) \
     $(TAGX) \
     $(BEDROCK_CONF)
-
-
 
 .PHONY: config
 config: $(CONFIG_FILES)

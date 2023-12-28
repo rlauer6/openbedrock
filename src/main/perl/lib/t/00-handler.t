@@ -1,7 +1,9 @@
+#!/usr/bin/perl
+
 use strict;
 use warnings;
 
-use lib qw{ . };
+use lib qw( . .. );
 
 use Bedrock qw{create_temp_dir};
 use Bedrock::Constants qw{:defaults};
@@ -10,6 +12,7 @@ use Bedrock::Test::Utils qw{:all};
 use Cwd qw{abs_path getcwd};
 use Data::Dumper;
 use English qw{-no_match_vars};
+use Bedrock::Test::RequestHandler;
 
 use Test::More;
 
@@ -23,14 +26,7 @@ use_ok('Bedrock::Handler');
 
 ########################################################################
 
-# provides /dev/null logging
-require 't/faux-handler.pl';
-
-my $log = q{};
-
-my $request_handler = faux_request_handler( \$log );
-
-my $handler;
+my $request_handler = Bedrock::Test::RequestHandler->new;
 
 # we should be running tests from src/main/perl directory...
 my $cwd = abs_path(getcwd);
@@ -80,7 +76,7 @@ subtest 'full_path' => sub {
 
   is( $full_path, "$config_path/tagx.xml", 'full_path()' )
     or do {
-    diag( Dumper( [$full_path] ) );
+    diag( Dumper( [ full_path => $full_path ] ) );
 
     BAIL_OUT('could not create full_path');
     };
@@ -89,16 +85,18 @@ subtest 'full_path' => sub {
     or BAIL_OUT('no tagx.xml found?');
 };
 
+my $handler;
+
 ########################################################################
 subtest 'new' => sub {
 ########################################################################
-  $ENV{BEDROCK_CONFIG_PATH} = $config_path;
+  local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
   $handler = eval { return Bedrock::Handler->new($request_handler); };
 
   isa_ok( $handler, 'Bedrock::Handler' )
     or do {
-    diag( Dumper( [ $EVAL_ERROR, $log ] ) );
+    diag( Dumper( [ EVAL_ERROR => $EVAL_ERROR, log => $request_handler->log->as_string ] ) );
     BAIL_OUT('could not instantiate a Bedrock::Handler');
     };
 };
@@ -110,7 +108,7 @@ subtest 'config' => sub {
 
   isa_ok( $config, 'Bedrock::Config' )
     or do {
-    diag( Dumper( [ $handler, $log ] ) );
+    diag( Dumper( [ handler => $handler, $request_handler->log->as_string ] ) );
     BAIL_OUT('could not instantiate a Bedrock::Handler');
     };
 };
@@ -136,7 +134,7 @@ subtest 'is_mod_perl' => sub {
 ########################################################################
 subtest 'config - no module found' => sub {
 ########################################################################
-  $ENV{BEDROCK_CONFIG_PATH} = $config_path;
+  local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
   unlink "${config_path}.d/startup/mysql-session.xml";
 
@@ -144,7 +142,7 @@ subtest 'config - no module found' => sub {
 
   isa_ok( $handler, 'Bedrock::Handler' )
     or do {
-    diag( Dumper( [ $EVAL_ERROR, $log ] ) );
+    diag( Dumper( [ EVAL_ERROR => $EVAL_ERROR, log => $request_handler->log->as_string ] ) );
     BAIL_OUT('could not instantiate a Bedrock::Handler');
     };
 
@@ -153,7 +151,7 @@ subtest 'config - no module found' => sub {
   my $session_config = $config->get_module_config('usersession');
 
   ok( !$session_config, 'no BLM::Startup::UserSession module' )
-    or diag( Dumper( [$session_config] ) );
+    or diag( Dumper( [ session_config => $session_config ] ) );
 };
 
 1;

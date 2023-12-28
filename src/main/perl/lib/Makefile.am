@@ -80,7 +80,8 @@ perl5bedrocklib_DATA = \
     Bedrock/XML.pm
 
 perl5bedrocktestlib_DATA = \
-    Bedrock/Test/Utils.pm
+    Bedrock/Test/Utils.pm \
+    Bedrock/Test/RequestHandler.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
 

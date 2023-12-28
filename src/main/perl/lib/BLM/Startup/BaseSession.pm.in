@@ -25,7 +25,7 @@ use parent qw(Bedrock::Hash);
 use strict;
 use warnings;
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 use Carp;
 use Digest::MD5;
@@ -35,6 +35,7 @@ use File::Path;
 use File::Temp qw(tempfile);
 use Data::Dumper;
 use List::Util qw(pairs any);
+use JSON::PP;
 
 use Bedrock::XML;
 
@@ -142,14 +143,15 @@ sub kill_session {
 
   $self->{data} = {};
 
-  if ( !$config->{'cookieless_sessions'} ) {
+  if ( !$config->{cookieless_sessions} ) {
 
     # Delete the cookie
     $self->cookie(
-      $self->{'name'},
-      'value'   => 'killed',
-      'expires' => -864_000,
+      $self->{name},
+      value   => 'killed',
+      expires => -864_000,
     );
+
     $self->send_cookie;
   }
 
@@ -414,23 +416,59 @@ sub init_session {
 ########################################################################
   my ( $self, $aref ) = @_;
 
-  my ($verbose) = @{$self}{qw(verbose)};
-
   return $self->newSession
     if !$aref;
 
-  my $data = {};
+  my ( $username, $firstname, $lastname, $email, $prefs ) = @{$aref};
 
-  @{$data}{qw(username firstname lastname email)}
-    = ( @{$aref}[ 0, 1, 2, 3 ] );
+  my $data = {
+    username  => $username,
+    firstname => $firstname,
+    lastname  => $lastname,
+    email     => $email,
+  };
 
-  if ( length $aref->[4] ) {
-    $data->{'prefs'} = Bedrock::XML->newFromString( $aref->[4] );
-  }
+  $data->{prefs} = $self->deserialize_session($prefs);
 
-  $data->{'prefs'} //= {};
+  return $self->{data} = $data;
+}
 
-  return $self->{'data'} = $data;
+########################################################################
+sub serialize_session {
+########################################################################
+  my ( $self, $data ) = @_;
+
+  # this is one way to serialize data...
+  return Bedrock::XML::writeXMLString($data);
+
+  # here's another
+  return JSON::PP->new->encode($data);
+}
+
+########################################################################
+sub deserialize_session {
+########################################################################
+  my ( $self, $raw_session ) = @_;
+
+  return
+    if !$raw_session;
+
+  my $data = eval { return Bedrock::XML->newFromString($raw_session); };
+
+  return
+    if $data;
+
+  my $errstr = $EVAL_ERROR;
+
+  # maybe this is a JSON string?
+  $data = eval { return JSON::PP->new->decode($raw_session); };
+
+  $errstr .= "\n$EVAL_ERROR";
+
+  die "session data is neither Bedrock XML nor JSON\n$errstr"
+    if !$data;
+
+  return $data;
 }
 
 #
@@ -451,27 +489,28 @@ sub readData {
     session => $id
   );
 
-  return if !$aref;
+  return
+    if !$aref;
 
-  my $secs = $config->{'cookie'}->{'expiry_secs'} || 86_400;
+  my $secs = $config->{cookie}->{expiry_secs} || 86_400;
 
-  if ( !$config->{'cookieless_sessions'} ) {
+  if ( !$config->{cookieless_sessions} ) {
     $self->cookie(
-      $self->{'name'},
-      'value'   => $id,
-      'expires' => $secs
+      $self->{name},
+      value   => $id,
+      expires => $secs
     );
 
     $self->send_cookie;
   }
 
-  $self->{'expires'} = $secs;
+  $self->{expires} = $secs;
 
-  $self->{'session'} = $id;
+  $self->{session} = $id;
 
   $self->init_session($aref);
 
-  return $self->{'session'};
+  return $self->{session};
 }
 
 ########################################################################
@@ -480,25 +519,22 @@ sub TIEHASH {
   my ( $class, $ctx, $config ) = @_;
 
   # What is the name of the session variable being used?
-  my $name = $config->{'param'};
+  my ( $name, $verbose ) = @{$config}{qw(param verbose)};
 
   die "$class->TIEHASH(): `param' not set in config\n"
     if !$name;
 
   # Create session object
   my $self = bless {}, $class;
-  $self->{'ctx'}    = $ctx;
-  $self->{'name'}   = $name;
-  $self->{'config'} = $config;
 
-  my $verbose = $self->{'verbose'} = $config->{'verbose'};
+  @{$self}{qw(ctx name config verbose)} = ( $ctx, $name, $config, $verbose );
 
   # Initialize session
   $self->startSession($config);
 
   # Check for an existing session
   my $id
-    = $config->{'cookieless_sessions'}
+    = $config->{cookieless_sessions}
     ? $ctx->getInputValue($name)
     : $ctx->getCookieValue($name);
 
@@ -506,14 +542,15 @@ sub TIEHASH {
   if ( defined $id ) {
     my $session = $self->readData($id);
 
-    return $self if $session;
+    return $self
+      if $session;
   }
 
   # everything failed -- need to create a new session
   my $session = $self->newSession;
 
-  $self->{'data'}->{'prefs'}->{expiry_secs}
-    = $self->{'config'}->{'cookie'}->{'expiry_secs'};
+  $self->{data}->{prefs}->{expiry_secs}
+    = $self->{config}->{cookie}->{expiry_secs};
 
   # And return the session object
   return $self;
@@ -552,8 +589,7 @@ sub STORE {
     die "Cannot set `password': Use `change_password()' instead.\n";
   }
   elsif ( any { $key eq $_ } qw(firstname lastname email) ) {
-    die
-      "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
+    die "Cannot set `$key' -- no username: use `login()' or `register()' first.\n"
       if !$self->{'data'}->{'username'};
 
     die "Cannot store empty string in `$key'.\n"
@@ -575,39 +611,35 @@ sub FIRSTKEY {
   delete $self->{'keys'};
 
   my $k = {
-    'session'   => $self->{'session'},
-    'username'  => $self->{'data'}->{'username'},
-    'firstname' => $self->{'data'}->{'firstname'},
-    'lastname'  => $self->{'data'}->{'lastname'},
-    'email'     => $self->{'data'}->{'email'}
+    session   => $self->{session},
+    username  => $self->{data}->{username},
+    firstname => $self->{data}->{firstname},
+    lastname  => $self->{data}->{lastname},
+    email     => $self->{data}->{email}
   };
 
   my %keys;
 
-  @keys{
-    keys %{ $self->{'data'}->{'prefs'} },
-    keys %{ $self->{'config'}->{'default_prefs'} }
-    }
-    = ();
+  @keys{ keys %{ $self->{data}->{prefs} }, keys %{ $self->{config}->{default_prefs} } } = ();
 
   for my $key ( keys %keys ) {
-    if ( exists $self->{'data'}->{'prefs'}->{$key} ) {
-      $k->{$key} = $self->{'data'}->{'prefs'}->{$key};
+    if ( exists $self->{data}->{prefs}->{$key} ) {
+      $k->{$key} = $self->{data}->{prefs}->{$key};
     }
     else {
-      $k->{$key} = $self->{'config'}->{'default_prefs'}->{$key};
+      $k->{$key} = $self->{config}->{default_prefs}->{$key};
     }
   }
 
-  $self->{'keys'} = $k;
+  $self->{keys} = $k;
 
-  return each %{ $self->{'keys'} };
+  return each %{ $self->{keys} };
 }
 
 ########################################################################
 sub NEXTKEY {
 ########################################################################
-  return each %{ shift->{'keys'} };
+  return each %{ shift->{keys} };
 }
 
 ########################################################################
@@ -618,15 +650,14 @@ sub EXISTS {
   if ( $key eq 'session' ) {
     return 1;
   }
-  elsif ( any { $key eq $_ } qw(username password firstname lastname email) )
-  {
-    return exists $self->{'data'}->{$key};
+  elsif ( any { $key eq $_ } qw(username password firstname lastname email) ) {
+    return exists $self->{data}->{$key};
   }
-  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) {
+  elsif ( exists $self->{data}->{prefs}->{$key} ) {
     return 1;
   }
   else {
-    return exists $self->{'config'}->{'default_prefs'}->{$key};
+    return exists $self->{config}->{default_prefs}->{$key};
   }
 }
 
@@ -635,12 +666,11 @@ sub DELETE {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  if ( any { $key eq $_ }
-    qw(session username firstname lastname email password) ) {
+  if ( any { $key eq $_ } qw(session username firstname lastname email password) ) {
     die "Cannot delete `$key': illegal operation.\n";
   }
   else {
-    return delete $self->{'data'}->{'prefs'}->{$key};
+    return delete $self->{data}->{prefs}->{$key};
   }
 }
 
@@ -659,8 +689,6 @@ sub closeBLM {
 
   my $self = tied %{$obj};
 
-  my ( $verbose, $session ) = @{$self}{qw(verbose session)};
-
   my $prefs = $self->{data}->{prefs};
 
   # this is a very implementation specific session rule that says, if
@@ -668,16 +696,15 @@ sub closeBLM {
   # session configuration, then map that to the session data...
 
   if ( keys %{$prefs} == 0 ) {
-    $prefs = $self->{config}->{default_prefs};
+    $prefs = $self->{config}->{default_prefs} // {};
   }
-
-  my $xml = Bedrock::XML::writeXMLString($prefs);
 
   # there are certain situations where Bedrock may call closeBLM() more than once
   # if that happens, we don't want to alter the object since the second call will fail
   # because the prefs object was already converted to XML...so we create a clone
   # object that is written to the database
-  my $data = {};
+
+  my $data = { prefs => $self->serialize_session($prefs) };
 
   for ( keys %{ $self->{data} } ) {
     next if $_ eq 'prefs';
@@ -685,11 +712,9 @@ sub closeBLM {
     $data->{$_} = $self->{data}->{$_};
   }
 
-  $data->{prefs} = $xml;
-
   return $self->STORE_SESSION(
-    verbose => $verbose,
-    session => $session,
+    verbose => $self->{verbose},
+    session => $self->{session},
     data    => $data,
     expires => $self->{expires},
     new     => $self->{new_session},

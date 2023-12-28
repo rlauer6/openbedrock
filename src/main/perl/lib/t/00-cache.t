@@ -1,22 +1,26 @@
+#!/usr/bin/perl
+
 use strict;
 use warnings;
 
+use lib qw(. ..);
+
 use Cwd qw{abs_path};
 use Data::Dumper;
-
 use Bedrock::BedrockJSON;
-Bedrock::JSON->import('evolve');
-
+use Bedrock::Test::RequestHandler;
 use IPC::Shareable;
+use Test::More;
+use Test::Output;
 
-use Test::More tests => 5;
-
+########################################################################
 BEGIN {
+########################################################################
   # create the cache
 
-  my %X;
+  my %CACHE;
 
-  tie %X, 'IPC::Shareable',  ## no critic (ProhibitTies)
+  tie %CACHE, 'IPC::Shareable',  ## no critic (ProhibitTies)
     {
     key     => 'BCFG',
     create  => 1,
@@ -29,44 +33,79 @@ BEGIN {
   use_ok('Bedrock::Handler');
 }
 
-require 't/faux-handler.pl';
+########################################################################
+sub main {
+########################################################################
 
-my $log = q{};
+  my $config;
+  my $request_handler;
 
-my $request_handler = faux_request_handler( \$log );
+########################################################################
+  subtest 'read config' => sub {
+########################################################################
+    $request_handler = Bedrock::Test::RequestHandler->new( log_level => 'trace' );
 
-my $config_path = abs_path '../../../main/bedrock/config';
+    my $config_path = abs_path '../../../main/bedrock/config';
 
-local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
+    local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
-my $handler = Bedrock::Handler->new($request_handler);
-my $config  = $handler->config();
+    my $handler;
 
-isa_ok( $handler, 'Bedrock::Handler' );
+    local $ENV{BEDROCK_CACHE_ENABLED} = 'on';
 
-my %FOO;
-tie %FOO, 'IPC::Shareable', { key => 'BCFG', create => 0 };  ## no critic (ProhibitTies)
+    #    stdout_from( sub { $handler = Bedrock::Handler->new($request_handler) } );
+    $handler = Bedrock::Handler->new($request_handler);
 
-diag( Dumper [ keys %FOO ] );
+    $config = $handler->config();
 
-ok( keys %FOO, 'caching' );
+    isa_ok( $handler, 'Bedrock::Handler' );
+  };
 
-is_deeply( $FOO{'t/00-cache.t'}, $config );
+  my %CACHE;
 
-is_deeply( $FOO{'t/00-cache.t'}, $config );
+########################################################################
+  subtest 'read cache' => sub {
+########################################################################
 
-my $foo_config = $FOO{'t/00-cache.t'};
+    tie %CACHE, 'IPC::Shareable', { key => 'BCFG', create => 0 };  ## no critic (ProhibitTies)
 
-for ( keys %{$config} ) {
-  if ( ref $config->{$_} && ref $config->{$_} ne ref $foo_config->{$_} ) {
-    diag( Dumper( [ $config->{$_}, $foo_config->{$_} ] ) );
+    ok( keys %CACHE, 'caching' )
+      or diag( Dumper [ keys => keys %CACHE ] );
 
-    BAIL_OUT("objects $_ not equal");
-  }
-  elsif ( !ref $config->{$_} && $config->{$_} ne $foo_config->{$_} ) {
-    BAIL_OUT("scalars not equal");
-  }
+    is_deeply( $CACHE{'t/00-cache.t'}, $config, 'config and cached config equal' );
+  };
+
+########################################################################
+  subtest 'compare object elements' => sub {
+########################################################################
+    my $cache_config = $CACHE{'t/00-cache.t'};
+
+    for ( keys %{$config} ) {
+      if ( ref $config->{$_} ) {
+        is( ref $cache_config->{$_}, ref $config->{$_}, 'object types are the same' )
+          or do {
+          diag( Dumper( [ $config->{$_}, $cache_config->{$_} ] ) );
+
+          BAIL_OUT("objects $_ not equal");
+          };
+      }
+      else {
+        is( $cache_config->{$_}, $config->{$_}, 'scalars are equal' )
+          or BAIL_OUT("scalars not equal");
+      }
+    }
+  };
+
+  $request_handler->log->close;
+
+  # diag( $request_handler->log->as_string );
+
+  done_testing;
+
+  return 0;
 }
+
+exit main();
 
 1;
 

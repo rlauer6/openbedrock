@@ -2,6 +2,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,7 +21,7 @@
 
 package Bedrock::Config;
 
-# note we do not use Bedrock::Logger here since Bedroc::Config is used
+# note we do not use Bedrock::Logger here since Bedrock::Config is used
 # to gather config files which later are used to initialize
 # logging...use carp, croak;
 
@@ -34,24 +35,24 @@ BEGIN {
   local $SIG{__DIE__} = \&Carp::confess;
 }
 
-use Bedrock qw{:booleans slurp_file};
+use Bedrock qw(:booleans slurp_file);
 use Bedrock::Dump;
-use Bedrock::Serializer qw{ evolve devolve};
+use Bedrock::Serializer qw( evolve devolve);
 use Bedrock::XML;
-use Bedrock::Constants qw{:defaults :chars};
+use Bedrock::Constants qw(:defaults :chars);
 
-use English qw{ -no_match_vars };
+use English qw( -no_match_vars );
 use File::Basename;
-use JSON::PP qw{ decode_json encode_json };
-use List::Util qw{ pairs uniq };
-use Scalar::Util qw{ reftype };
-use YAML qw{ LoadFile Dump };
+use JSON qw( decode_json encode_json );
+use List::Util qw( pairs uniq );
+use Scalar::Util qw( reftype );
+use YAML qw( LoadFile Dump );
 
-use parent qw{ Exporter Bedrock::Hash };
+use parent qw( Exporter Bedrock::Hash );
 
 our @EXPORT_OK = qw(validate_config_paths);
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 ########################################################################
 sub new {
@@ -83,9 +84,20 @@ sub newFromString {  ## no critic (NamingConventions::Capitalization)
 
   $class = ref $class || $class;
 
-  my $self = Bedrock::XML->newFromString(@args);
+  my $obj = eval { Bedrock::XML->newFromString(@args); };
 
-  return bless $self, $class;
+  my $errstr = $EVAL_ERROR;
+
+  if ( !$obj || $errstr ) {
+    $obj = eval { decode_json(@args); };
+  }
+
+  $errstr //= $EVAL_ERROR;
+
+  die "$errstr"
+    if $errstr;
+
+  return bless $obj, $class;
 }
 
 ########################################################################
@@ -93,7 +105,7 @@ sub dbnames {
 ########################################################################
   my (@args) = @_;
 
-  return _set_get( 'dbnames', @args );
+  return _set_get( dbnames => @args );
 }
 
 ########################################################################
@@ -112,7 +124,7 @@ sub get_module_config {
 
   my $modules = $self->{MODULES};
 
-  carp "no MODULES or MODULES is not an arra\n"
+  carp "no MODULES or MODULES is not an array\n"
     if !is_array($modules);
 
   return $modules
@@ -242,7 +254,9 @@ sub to_json {
 ########################################################################
   my ($self) = @_;
 
-  return JSON::PP->new->utf8->pretty->encode( devolve $self);
+  my $obj = devolve $self;
+
+  return JSON->new->ascii->pretty->encode($obj);
 }
 
 ########################################################################
@@ -264,11 +278,10 @@ sub to_xml {
 ########################################################################
 sub XML {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $in_out, @args ) = @_;
 
-  my $in_out = shift @args;
-
-  croak q{Usage: $config.XML('in|out', option, value, ...)}  ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
+  ## no critic (:RequireInterpolationOfMetachars)
+  croak q{Usage: $config.XML('in|out', option, value, ...)}
     if $in_out !~ /^in|out$/xsm;
 
   croak 'XML config object not set in tagx.xml'
@@ -297,19 +310,33 @@ sub XML {
 }
 
 ########################################################################
+sub uniq_list {
+########################################################################
+  my (@list) = @_;
+
+  return join $COLON, uniq grep {defined} @list;
+}
+
+########################################################################
+sub get_dir_list {
+########################################################################
+  my ( $self, $extra_dirs, @dir_names ) = @_;
+
+  $extra_dirs //= [];
+
+  my @dir_list = @ENV{@dir_names};
+
+  push @dir_list, @{$self}{@dir_names};
+
+  return uniq_list( @dir_list, @{$extra_dirs} );
+}
+
+########################################################################
 sub get_include_dir {
 ########################################################################
   my ($self) = @_;
 
-  my @include_dir = @ENV{qw(INCLUDE_DIR BEDROCK_INCLUDE_DIR)};
-
-  push @include_dir, @{$self}{qw(INCLUDE_DIR BEDROCK_INCLUDE_DIR)};
-
-  push @include_dir, $DEFAULT_BEDROCK_INCLUDE_DIR;
-
-  @include_dir = uniq grep {defined} @include_dir;
-
-  return join $COLON, @include_dir;
+  return $self->get_dir_list( [$DEFAULT_BEDROCK_INCLUDE_DIR], qw(INCLUDE_DIR BEDROCK_INCLUDE_DIR) );
 }
 
 ########################################################################
@@ -317,15 +344,7 @@ sub get_pebble_dir {
 ########################################################################
   my ($self) = @_;
 
-  my @pebble_dir = @ENV{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)};
-
-  push @pebble_dir, @{$self}{qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR)};
-
-  push @pebble_dir, $DEFAULT_BEDROCK_PEBBLE_DIR;
-
-  @pebble_dir = uniq grep {defined} @pebble_dir;
-
-  return join $COLON, @pebble_dir;
+  return $self->get_dir_list( [$DEFAULT_BEDROCK_PEBBLE_DIR], qw(PEBBLE_DIR BEDROCK_PEBBLE_DIR) );
 }
 
 ########################################################################
@@ -333,7 +352,8 @@ sub init_plugin_path {
 ########################################################################
   my ($self) = @_;
 
-  return if !$self->{PLUGIN_PATH};
+  return
+    if !$self->{PLUGIN_PATH};
 
   # add PLUGIN_PATH to @INC
   my @plugin_inc = split /:/xsm, $self->{PLUGIN_PATH};
@@ -398,7 +418,7 @@ sub _set_get {
 ########################################################################
     my ($file) = @_;
 
-    $file = _locate_file($file);
+    $file = locate_file($file);
 
     my $ext;
 
@@ -451,36 +471,31 @@ sub _locate_file {
 ########################################################################
   my ( $self, $file ) = @_;
 
-  if ( !ref $self ) {
-    $file = $self;
-    undef $self;
-  }
+  $file = ref $self ? $file : $self;
 
-  my $path;
+  my $path = eval {
+    return $file
+      if $file && $file =~ m{^/}xsm;
 
-  if ( $file && $file =~ m{^/}xsm ) {
-    $path = $file;
-  }
-  elsif ( $file && !-e $file ) {
+    return $file
+      if !$file || -e $file;
 
     $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
-    my @search_paths
-      = validate_config_paths( @ENV{qw(CONFIG_PATH BEDROCK_CONFIG_PATH)} );
+    my @search_paths = validate_config_paths( @ENV{qw(CONFIG_PATH BEDROCK_CONFIG_PATH)} );
 
     for my $dir (@search_paths) {
-      next if !-e "$dir/$file";
-
-      $path = "$dir/$file";
-
-      last;
+      return "$dir/$file"
+        if -e "$dir/$file";
     }
-  }
 
-  croak "_locate_file: Config file $file not found"
-    if !$path;
+    return;
+  };
 
-  croak "_locate_file: Cannot open config file $path for reading."
+  croak "Config file $file not found"
+    if !$path || !-e $path;
+
+  croak "Cannot open config file $path for reading."
     if !-r $path;
 
   return $path;
@@ -494,7 +509,7 @@ __END__
 
 =head1 NAME
 
-Bedrock::Config - methods for interacting with a serialized configuration file.
+Bedrock::Config - methods for interacting with a serialized configuration files.
 
 =head1 SYNOPSIS
 

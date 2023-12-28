@@ -1,0 +1,189 @@
+package Faux::Logger;
+
+# provide a mocked Handler and logger class for testing
+
+use strict;
+use warnings;
+
+use IO::Scalar;
+use Data::Dumper;
+
+our $LOG_LEVEL;
+
+our %LOG_LEVELS = (
+  error => 0,
+  warn  => 1,
+  info  => 2,
+  debug => 3,
+  trace => 4,
+);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $level ) = @_;
+
+  $LOG_LEVEL = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
+
+  my $log = '';
+
+  my $fh = IO::Scalar->new( \$log );
+
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
+
+  foreach my $m (qw{ error debug warn fatal info trace }) {
+    *{ $class . "::$m" } = sub {
+      my ( $self, @message ) = @_;
+
+      return $self->_log( $m, @message );
+    };
+  }
+
+  return bless { log => \$log, fh => $fh }, $class;
+}
+
+########################################################################
+sub _log {
+########################################################################
+  my ( $self, $level, @message ) = @_;
+
+  my $log_level = $LOG_LEVELS{$level};
+
+  return
+    if $log_level > $LOG_LEVEL;
+
+  my $depth = 0;
+  my @stack;
+
+  while ( my @frame = caller $depth++ ) {
+    push @stack, \@frame;
+  }
+
+  my $caller_package = $stack[2]->[3];
+  my $lineno         = $stack[1]->[2];
+
+  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join q{}, @message;
+
+  return print { $self->{fh} } $log_message, "\n";
+}
+
+########################################################################
+sub as_string {
+########################################################################
+  my ($self) = @_;
+
+  return ${ $self->{log} };
+}
+
+########################################################################
+sub close {  ## no critic (ProhibitAmbiguousNames ProhibitBuiltIn)
+########################################################################
+  my ($self) = @_;
+
+  return $self->{fh}->close;
+}
+
+########################################################################
+package Bedrock::Test::RequestHandler;
+########################################################################
+
+use English qw(_no_match_vars);
+use List::Util qw(pairs);
+
+caller or __PACKAGE__->main();
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %config ) = @_;
+
+  $config{headers}      //= [];
+  $config{content_type} //= 'text/html';
+
+  $config{logger} = Faux::Logger->new( $config{log_level} );
+
+  return bless \%config, $class;
+}
+
+########################################################################
+sub log {  ## no critic (ProhibitBuiltIn)
+########################################################################
+  my ($self) = @_;
+
+  return $self->{logger};
+}
+
+########################################################################
+sub filename {
+########################################################################
+  my ($self) = @_;
+
+  return $self->{filename} // $PROGRAM_NAME;
+}
+
+########################################################################
+sub uri {
+########################################################################
+  my ($self) = @_;
+
+  return $self->{uri} // q{/};
+}
+
+########################################################################
+sub content_type {
+########################################################################
+  my ( $self, $content_type ) = @_;
+
+  return $self->{content_type}
+    if !$content_type;
+
+  $self->cgi_header_out( 'Content-type' => $content_type );
+
+  return $content_type;
+}
+
+########################################################################
+sub cgi_header_out {
+########################################################################
+  my ( $self, @headers ) = @_;
+
+  push @{ $self->{headers} }, @headers;
+
+  return;
+}
+
+########################################################################
+sub send_http_header {
+########################################################################
+  my ($self) = @_;
+
+  print {*STDOUT} sprintf "%s\n", join '', map { sprintf "%s: %s\n", @{$_} } pairs @{ $self->{headers} };
+
+  return;
+}
+
+########################################################################
+sub DESTROY {
+########################################################################
+  my ($self) = @_;
+
+  return $self->log->close;
+}
+
+########################################################################
+sub main {
+########################################################################
+  use Data::Dumper;
+
+  my $handler = Bedrock::Test::RequestHandler->new( log_level => 'info', filename => 'foo' );
+
+  $handler->log->debug('started');
+
+  $handler->log->close;
+
+  print {*STDERR} $handler->log->as_string;
+
+  exit 0;
+}
+
+1;

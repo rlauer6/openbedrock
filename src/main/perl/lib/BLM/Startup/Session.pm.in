@@ -4,6 +4,7 @@ package BLM::Startup::Session;
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,73 +21,69 @@ package BLM::Startup::Session;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
+# This classs is a reference implementation for session classes.
+
 use strict;
 use warnings;
 
-use Carp;
-use Bedrock::Hash;
+use Bedrock::XML;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use JSON::PP;
 
-use parent qw{ Bedrock::Hash };
+use parent qw( Bedrock::Hash );
 
-# Method which should look up session id from somewhere and return a hash
-# ref to the session data.
-# Invoked with: $config, $id
-# Return: Hash ref
-sub readData {
-  my $self = shift;
-
-  die "Session class ", ref($self), " must implement method `readData()'\n";
-}
-
-# Method to construct a new session identifier. Subclasses can override this method
-# to generate a session ID however they want to.
-sub newSessionID {
-
-  # For now let's use Apache's UNIQUE_ID as the session id
-  return $ENV{'UNIQUE_ID'};
-}
-
+########################################################################
+# TIEHASH
+########################################################################
+# Purpose:
+#   Generic constructor for sessions. Typically session classes perform
+#   the tasks below.
 #
-# Generic constructor for Sessions. Does the following:
-# 1. Use the value of `param' from configuration to look for a session
-#    identifier in the cookie or input
-# 2. Create the session object
-# 3. Invoke the readData() method to read the session data from the store.
-#    Subclasses need to override this method to implement specific session
-#    data storage policies like using a file, SDBM, or a database. Subclasses
-#    are expected to return a string containing the session data. Typically
-#    this string was given to the subclass by us to store.
-# Returns: The session object
+#   1. Use the value of `param' from the configuration object
+#      to look for a session identifier in the cookie or input
+#   2. Create the session object
+#   3. Invoke the readData() method to read the session data from the session store.
+#      Subclasses need to override this method to implement specific session
+#      data storage implementations like  a file, Redis, or a database. Subclasses
+#      are expected to return a string containing the session data. Typically
+#      this string was given to the subclass by us to store.
+#
+# Returns:
+#   reference to the session object
+#
 # Properties: The session object has the following properties as a minimum.
 # Subclasses could define additional properties.
 #    id		=> The session identifier
 #    data	=> The session data hash
 
+########################################################################
 sub TIEHASH {
+########################################################################
   my ( $class, $ctx, $config ) = @_;
 
-  # What is the name of the session variable being used?
-  my $name = $config->{'param'};
-  die "$class->TIEHASH(): `param' not set in config\n" unless $name;
+  # get name of session variable (cookie name)
+  my ( $name, $verbose ) = @{$config}{qw(param verbose)};
+
+  die sprintf "%s->TIEHASH(): `param' not set in config\n", $class
+    if !$name;
 
   # Create session object
   my $self = bless {}, $class;
-  $self->{'ctx'}  = $ctx;
-  $self->{'name'} = $name;
-  my $verbose = $self->{'verbose'} = $config->{'verbose'};
+
+  @{$self}{qw(verbose ctx name)} = ( $verbose, $ctx, $name );
 
   # Check for an existing session
   my $id = $ctx->getCookieValue($name);
 
   # Get the session data only if a session exists
-  if ( defined $id ) {
+  if ($id) {
     # Get session data as a string
-    my $ses_string = $self->readData( $config, $id );
+    my $raw_session = $self->readData( $config, $id );
 
     # Make a hash from the string which should be in our XML format
-    if ( length $ses_string ) {
-      $self->{'data'} = Bedrock::XML->newFromString($ses_string);
-    }
+    $self->{data} = $self->deserialize_session($raw_session);
+
   }
   else {
     $id = $self->newSessionID;
@@ -100,92 +97,309 @@ sub TIEHASH {
   }
 
   # Initialize data if we don't have any
-  $self->{'data'} = {} unless $self->{'data'};
+
+  $self->{data} //= {};
 
   # Store the session id too in case someone asks for it
-  $self->{'id'} = $id;
+  $self->{id} = $id;
 
   # And return the session object
   return $self;
 }
 
-# Invoked to fetch the value of a session var
+########################################################################
+# FETCH
+########################################################################
+# Purpose:
+#  fetch the value of a an individual session key
+#
+# Input:
+#  key
+#
+# Return:
+#  value of key
+########################################################################
+
+########################################################################
 sub FETCH {
+########################################################################
   my ( $self, $key ) = @_;
-  $self->{'data'}->{$key};
+
+  return $self->{data}->{$key};
 }
 
-# Just store the value in the session and return the value
+########################################################################
+# STORE
+########################################################################
+# Purpose:
+#  store the value in the session and return the value
+#
+# Input:
+#  session object
+#  key
+#  value
+#
+# Return:
+#  value
+########################################################################
+
+########################################################################
 sub STORE {
+########################################################################
   my ( $self, $key, $value ) = @_;
-  $self->{'data'}->{$key} = $value;
-  $self->{'data_changed'}++;
-  $value;
+
+  $self->{data}->{$key} = $value;
+
+  $self->{data_changed}++;
+
+  return $value;
 }
 
-# Invoked to loop over the properties of the session
+########################################################################
+# FIRSTKEY
+########################################################################
+# Purpose:
+#  return first key in session hash
+#
+# Input:
+#  session objecte
+#
+# Return:
+#  first key in session hash
+########################################################################
+
+########################################################################
 sub FIRSTKEY {
-  my $self = shift;
-  my $a    = scalar keys %{ $self->{'data'} };
-  each %{ $self->{'data'} };
+########################################################################
+  my ($self) = @_;
+
+  # forces each to start fresh...
+  my $a = scalar keys %{ $self->{data} };
+
+  return each %{ $self->{data} };
 }
 
+########################################################################
+# NEXTKEY
+########################################################################
+# Purpose:
+#  return next key in session hash
+#
+# Input:
+#  session object
+#
+# Return:
+#  next key in session hash
+########################################################################
+
+########################################################################
 sub NEXTKEY {
-  each %{ shift->{'data'} };
+########################################################################
+  return each %{ shift->{data} };
 }
 
+########################################################################
+# EXISTS
+########################################################################
+# Purpose:
+#  determine if key exists
+#
+# Input:
+#  key
+#
+# Return:
+#  boolean that indicates if key exists
+########################################################################
+
+########################################################################
 sub EXISTS {
-  exists $_[0]->{'data'}->{ $_[1] };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return exists $self->{data}->{$key};
 }
 
+########################################################################
+# DELETE
+########################################################################
+# Purpose:
+#  delete a key from the session hash
+#
+# Input:
+#  session object
+#  key
+#
+# Return:
+#  value of the key deleted
+########################################################################
+
+########################################################################
 sub DELETE {
-  my $self = shift;
-  $self->{'data_changed'}++;
-  delete $self->{'data'}->{ $_[0] };
+########################################################################
+  my ( $self, $key ) = @_;
+
+  $self->{data_changed}++;
+
+  return delete $self->{data}->{$key};
 }
 
+########################################################################
+# CLEAR
+########################################################################
+# Purpose:
+#  clear the data from the session hash
+#
+# Input:
+#  session object
+#
+# Return:
+#  empty list
+########################################################################
+
+########################################################################
 sub CLEAR {
-  my $self = shift;
-  $self->{'data_changed'}++;
-  %{ $self->{'data'} } = ();
+########################################################################
+  my ($self) = @_;
+
+  $self->{data_changed}++;
+
+  return %{ $self->{data} } = ();
 }
 
-# This method is invoked at session close. Pack the session data into
-# an XML string and hand it to the object's writeData() method to store
-# whereever.
+########################################################################
+# closeBLM
+########################################################################
+# Purpose:
+#  Perform whatever ceremonies necessary to close a session.
+#  This method is invoked at session close. Typically you want to
+#  serialize and persist the session data.
+#
+# Input:
+#  session object
+#
+# Return:
+#  return value from serializing the session data
+########################################################################
+
+########################################################################
 sub closeBLM {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
 
   # Check if data has been purged
-  return unless exists $self->{'id'};
+  return
+    if !exists $self->{id};
 
   # Check if data has been changed at all
-  return unless $self->{'data_changed'};
+  return
+    if !$self->{data_changed};
 
-  my $xml = Bedrock::XML::writeXMLString( $self->{'data'} );
-  $self->writeData($xml);
+  my $data = $self->serialize_session();
+
+  return $self->writeData($data);
 }
 
+########################################################################
+# The methods below support the reference implemention and must be
+# implemented
+########################################################################
+
+########################################################################
+sub readData {
+########################################################################
+  my ( $self, $id ) = @_;
+
+  die sprintf "%s must implement the readData() method\n", ref $self;
+}
+
+########################################################################
+sub writeData {
+########################################################################
+  my ( $self, $data ) = @_;
+
+  die sprintf "%s must implement a writeData() method\n", ref $self;
+}
+
+########################################################################
+sub newSessionID {
+########################################################################
+  my ( $self, $id ) = @_;
+
+  die sprintf "%s must implement the newSessionID() method\n", ref $self;
+}
+
+########################################################################
+# Example serialization/deserialization methods
+########################################################################
+
+########################################################################
+sub deserialize_session {
+########################################################################
+  my ( $self, $raw_session ) = @_;
+
+  return
+    if !$raw_session;
+
+  my $data = eval { return Bedrock::XML->newFromString($raw_session); };
+
+  return
+    if $data;
+
+  my $errstr = $EVAL_ERROR;
+
+  # maybe this is a JSON string?
+  $data = eval { return JSON::PP->new->decode($raw_session); };
+
+  $errstr .= "\n$EVAL_ERROR";
+
+  die "session data is neither Bedrock XML nor JSON\n$errstr"
+    if !$data;
+
+  return $data;
+}
+
+########################################################################
+sub serialize_session {
+########################################################################
+  my ( $self, $data ) = @_;
+
+  # this is one way to serialize data...
+  return Bedrock::XML::writeXMLString($data);
+
+  # here's another
+  return JSON::PP->new->encode($data);
+}
+
+########################################################################
 sub clear {
-  my $obj = shift;
-  %{$obj} = ();
+########################################################################
+  my ($obj) = @_;
+
+  return %{$obj} = ();
 }
 
-# Method to remove all traces of the session from everywhere
-#   -- cookie is deleted from browser
-#   -- Data is removed from store
-#   -- No more data can be stored
-sub kill {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
+########################################################################
+# optional methods that might be called by Bedrock pages
+########################################################################
+
+########################################################################
+sub kill {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
+
   $self->purgeData;
-  my $ctx    = $self->{'ctx'};
-  my $name   = $self->{'name'};
-  my $id     = delete $self->{'id'};
-  my $expiry = 'Thu 09-Nov-2000 20:46:54 GMT';
-  my $header = $name . '=' . $id . '; expires=' . $expiry . ';';
-  $ctx->cgi_header_out( 'Set-Cookie', $header );
+
+  my ( $ctx, $name, $id ) = @{$self}{qw(ctx name id)};
+
+  delete $self->{id};
+
+  my $header = sprintf '%s=%s; expires=%s;', $name, $id, 'Thu 09-Nov-2000 20:46:54 GMT';
+
+  return $ctx->cgi_header_out( 'Set-Cookie' => $header );
 }
 
 1;
