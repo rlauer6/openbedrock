@@ -1,3 +1,13 @@
+#!/bin/bash
+# -*- mode: sh; -*-
+
+trap 'test -e "$create_db" && rm -f "$create_db"' EXIT
+
+MYSQL_VERSION="$1"
+
+create_db=$(mktemp)
+
+cat >$create_db <<EOF
 drop database if exists bedrock;
 
 create database bedrock;
@@ -25,4 +35,23 @@ create table session
   added        datetime     default null,
   expires      datetime     default null
 );
+EOF
 
+PASSWORD=bedrock
+USER=root
+MYSQL_VERSION=${MYSQL_VERSION:-latest}
+
+export DOCKER_CONTAINER_ID=$(docker run -e MYSQL_ROOT_PASSWORD=$PASSWORD -d mysql:$MYSQL_VERSION)
+export DBI_HOST=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $DOCKER_CONTAINER_ID)
+
+n=0
+
+while  ! mysqladmin ping -u $USER --password=$PASSWORD -h $DBI_HOST 2>/dev/null; do
+      printf "...waiting for MySQL..%d\r" $n
+      sleep 2;
+      n=$((n + 1))
+done
+      
+cat $create_db | mysql -u $USER --password=$PASSWORD -h $DBI_HOST
+
+echo "describe session" | mysql -u $USER --password=$PASSWORD -h $DBI_HOST bedrock

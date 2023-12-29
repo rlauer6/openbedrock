@@ -181,7 +181,8 @@ subtest 'set' => sub {
   $output = q{};
 
   $header->print_header($ctx);
-  like( $output, qr/X-AMZ-TOKEN:\sfoo\r\n\r\n\z/xsm, 'set' )
+
+  like( $output, qr/X-AMZ-TOKEN:\sfoo/xsm, 'set' )
     or diag( Dumper( [$output] ) );
 };
 

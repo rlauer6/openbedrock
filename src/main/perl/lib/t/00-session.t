@@ -43,8 +43,8 @@ use lib qw{.};
 
 use Test::More tests => 10;
 
-use Bedrock qw{slurp_file};
-use Bedrock::Constants qw{:defaults :chars};
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:defaults :chars);
 use Bedrock::BedrockConfig;
 use Data::Dumper;
 use DBI;
@@ -69,6 +69,7 @@ sub bind_module {
 }
 
 ########################################################################
+
 my $config_file = "$DEFAULT_BEDROCK_CONFIG_PATH/mysql-session.xml";
 
 my $config = eval { return Bedrock::Config->new($config_file); };
@@ -77,8 +78,10 @@ if ( !$config ) {
   BAIL_OUT("could not read $config_file");
 }
 
+my $dbi_host = $ENV{DBI_HOST} // '127.0.0.1';
+
 my $session_config = $config->{config};
-$session_config->{data_source} .= ':127.0.0.1';
+$session_config->{data_source} .= ":$dbi_host";
 $session_config->{cookieless_sessions} = 1;
 $session_config->{verbose}             = 0;
 
@@ -99,7 +102,7 @@ my $db_available = eval {
 
 my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
 
-diag( 'db_available ' . $db_available );
+diag( 'db_available ' . ($db_available // $EMPTY) );
 
 SKIP: {
   skip 'no database available', 9

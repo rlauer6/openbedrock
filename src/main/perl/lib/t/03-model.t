@@ -110,8 +110,17 @@ is( $migration->should_migrate(), 1, 'should migrate' )
 eval { $migration->execute(); };
 
 ok( !$EVAL_ERROR, 'execute migration' )
-  or BAIL_OUT( "migration failed - $EVAL_ERROR - " . join "\n",
-  @{ $migration->get_migration() } );
+  or do {
+  diag(
+    Dumper(
+      [
+        EVAL_ERROR =>  [ $EVAL_ERROR ],
+        migration => [ $migration->get_migration() ]
+      ]
+    )
+  );
+  BAIL_OUT('migration failed');
+  };
 
 is( $dbi->do('describe users'), 5, 'add new column to table' );
 

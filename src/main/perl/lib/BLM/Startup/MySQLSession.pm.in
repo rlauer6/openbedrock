@@ -1,13 +1,34 @@
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 package BLM::Startup::MySQLSession8;
 
 use strict;
 use warnings;
 
+use BLM::Startup::SQLSession qw($DUPLICATE_USERNAME $USERNAME_NOT_FOUND $BAD_LOGIN);
+
 use parent qw(BLM::Startup::SQLSession);
 
 use Readonly;
-
-Readonly our $BAD_LOGIN => "Unable to login user: %s\n";
 
 Readonly our $TRUE  => 1;
 Readonly our $FALSE => 0;
@@ -48,6 +69,33 @@ sub LOGIN {
 }
 
 ########################################################################
+sub REGISTER {
+########################################################################
+  my ( $self, %options ) = @_;
+
+  if ( $self->do_select( 'LOOKUP_USER', %options ) ) {
+    die sprintf $DUPLICATE_USERNAME;
+  }
+
+  my $sql = $self->is_version_8 ? 'REGISTER_V8' : 'REGISTER';
+
+  return $self->do_sql( $sql, %options );
+}
+
+########################################################################
+sub REMOVE_USER {
+########################################################################
+  my ( $self, %options ) = @_;
+
+  die sprintf $USERNAME_NOT_FOUND
+    if !$self->do_select( 'LOOKUP_USER', %options );
+
+  my $sql = $self->is_version_8 ? 'REMOVE_USER_V8' : 'REMOVE_USER';
+
+  return $self->do_sql( $sql, %options );
+}
+
+########################################################################
 sub v8_login {
 ########################################################################
   my ( $self, %args ) = @_;
@@ -81,26 +129,6 @@ sub v8_login {
 
 package BLM::Startup::MySQLSession;
 
-#
-#    This file is a part of Bedrock, a server-side web scripting tool.
-#    Check out http://www.openbedrock.net
-#    Copyright (C) 2001, Charles Jones, LLC.
-#
-#    This program is free software; you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation; either version 2 of the License, or
-#    any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with this program; if not, write to the Free Software
-#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
-#
-
 use strict;
 use warnings;
 
@@ -115,8 +143,8 @@ our @ISA = qw( BLM::Startup::MySQLSession8 );  ## no critic (ProhibitExplicitISA
   FETCH_EXPIRED_SESSIONS => {
     sql => <<'END_OF_SQL',
 select session
-from %s
-where expires < now()
+  from %s
+  where expires < now()
 END_OF_SQL
     , args => [qw()]
   },
@@ -128,8 +156,8 @@ select username,
        lastname,
        email,
        prefs
-from %s
-where login_cookie = ?
+  from %s
+  where login_cookie = ?
 END_OF_SQL
     , args => [qw(login_id)]
   },
@@ -143,11 +171,10 @@ select username,
        prefs,
        session,
        expires
-from %s
-where username = ?
-  and (session is not null
-       and session <> '')
-  and expires > now()
+  from %s
+  where username = ? and
+        (session is not null and session <> '') and
+        expires > now()
 END_OF_SQL
     , args => [qw(username)]
   },
@@ -159,9 +186,8 @@ select username,
        lastname,
        email,
        prefs
-from %s
-where session = ?
-  and expires > now()
+  from %s
+  where session = ? and expires > now()
 END_OF_SQL
     , args => [qw(session)]
   },
@@ -169,8 +195,8 @@ END_OF_SQL
   KILL_SESSION => {
     sql => <<'END_OF_SQL',
 delete
-from %s
-where session = ?
+  from %s
+  where session = ?
 END_OF_SQL
     , args => [qw(session)]
   },
@@ -183,11 +209,11 @@ select username,
        email,
        prefs,
        session
-from %s
-where username = ?
-  and (password = encrypt(?, substring(password, 1, 2))
-       or password = password(?)
-       or password = sha2(?, 256))
+  from %s
+  where username = ? and
+     (password = encrypt(?, substring(password, 1, 2)) or
+     password = password(?) or
+     password = sha2(?, 256))
 END_OF_SQL
     , args => [qw(username password password password)]
   },
@@ -195,11 +221,11 @@ END_OF_SQL
   LOGIN_SESSION_CLEANUP => {
     sql => <<'END_OF_SQL',
 update %s
-set session = null,
-              expires = now()
-where expires < now()
-  and username <> ''
-  and username is not null
+  set session = null,
+      expires = now()
+  where expires < now() and
+    username <> '' and
+    username is not null
 END_OF_SQL
     , args => [qw()]
   },
@@ -207,12 +233,12 @@ END_OF_SQL
   LOGIN_SESSION_SANITIZE => {
     sql => <<'END_OF_SQL',
 update %s
-set prefs = null,
-    session = null,
-              expires = now()
-where expires < now()
-  and username <> ''
-  and username is not null
+  set prefs = null,
+      session = null,
+      expires = now()
+  where expires < now() and
+        username <> '' and
+        username is not null
 END_OF_SQL
     , args => [qw()]
   },
@@ -228,8 +254,8 @@ select username,
        password,
        sha2(?, 256) password_sha2,
        CONCAT('*', UPPER(SHA1(UNHEX(SHA1(?))))) password_sha1
-from %s
-where username = ?
+  from %s
+  where username = ?
 END_OF_SQL
     , args => [qw(password password username)]
   },
@@ -237,9 +263,9 @@ END_OF_SQL
   LOGOUT_ANON => {
     sql => <<'END_OF_SQL',
 update %s
-set session = null,
-              expires = now()
-where session = ?
+  set session = null,
+      expires = now()
+  where session = ?
 END_OF_SQL
     , args => [qw(session)]
   },
@@ -247,9 +273,9 @@ END_OF_SQL
   LOGOUT_USER => {
     sql => <<'END_OF_SQL',
 update %s
-set session = null,
-              expires = now()
-where username = ?
+  set session = null,
+      expires = now()
+  where username = ?
 END_OF_SQL
     , args => [qw(username)]
   },
@@ -257,26 +283,46 @@ END_OF_SQL
   LOOKUP_USER => {
     sql => <<'END_OF_SQL',
 select username
-from %s
-where username = ?
+  from %s
+  where username = ?
 END_OF_SQL
     , args => [qw(username)]
   },
 
+  REGISTER_V8 => {
+    sql => <<'END_OF_SQL',
+insert into %s 
+    (username, password, firstname, lastname, email, added)
+  values 
+    (?, sha2(?, 256), ?, ?, ?, now())
+END_OF_SQL
+    , args => [qw(username password firstname lastname email)]
+  },
+
   REGISTER => {
     sql => <<'END_OF_SQL',
-insert into %s (username, password, firstname, lastname, email, added)
-values (?, encrypt(?, substring(?,1,2)), ?, ?, ?, now())
+insert into %s 
+    (username, password, firstname, lastname, email, added)
+  values 
+    (?, encrypt(?, substring(?,1,2)), ?, ?, ?, now())
 END_OF_SQL
     , args => [qw(username password password firstname lastname email)]
+  },
+
+  REMOVE_USER_V8 => {
+    sql => <<'END_OF_SQL',
+delete
+  from %s
+  where username = ? and password = sha2(?, 256)
+END_OF_SQL
+    , args => [qw(username password)]
   },
 
   REMOVE_USER => {
     sql => <<'END_OF_SQL',
 delete
-from %s
-where username = ?
-  and password = encrypt(?, substring(password, 1, 2))
+  from %s
+  where username = ? and password = encrypt(?, substring(password, 1, 2))
 END_OF_SQL
     , args => [qw(username password)]
   },
@@ -284,10 +330,10 @@ END_OF_SQL
   SESSION_CLEANUP => {
     sql => <<'END_OF_SQL',
 delete
-from %s
-where expires < now()
-  and (username = ''
-       or username is null)
+  from %s
+  where expires < now()
+    and (username = ''
+         or username is null)
 END_OF_SQL
     , args => [qw()]
   },
@@ -295,9 +341,9 @@ END_OF_SQL
   STORE_LOGIN_SESSION_BY_LOGIN_ID => {
     sql => <<'END_OF_SQL',
 update %s
-set session = ?,
-              expires = now() + interval ? second
-where login_cookie = ?
+  set session = ?,
+      expires = now() + interval ? second
+  where login_cookie = ?
 END_OF_SQL
     , args => [qw(session expires login_id)]
   },
@@ -305,18 +351,17 @@ END_OF_SQL
   STORE_LOGIN_SESSION_BY_USERNAME => {
     sql => <<'END_OF_SQL',
 update %s
-set session = ?,
-              prefs = ?,
-              expires = now() + interval ? second
-where username = ?
+  set session = ?,
+      prefs = ?,
+      expires = now() + interval ? second
+  where username = ?
 END_OF_SQL
     , args => [qw(session prefs expires username)]
   },
 
   STORE_SESSION_INSERT => {
     sql => <<'END_OF_SQL',
-insert into %s (added, session, prefs)
-values (now(), ?, ?)
+insert into %s (added, session, prefs) values (now(), ?, ?)
 END_OF_SQL
     , args => [qw(session prefs)]
   },
@@ -324,10 +369,8 @@ END_OF_SQL
   STORE_SESSION_UPDATE => {
     sql => <<'END_OF_SQL',
 update %s
-set updated = null,
-    expires = now() + interval ? second,
-                                 prefs = ?
-where session = ?
+  set expires = now() + interval ? second, prefs = ?
+  where session = ?
 END_OF_SQL
     , args => [qw(expires prefs session)]
   },
@@ -335,8 +378,8 @@ END_OF_SQL
   UPDATE_LOGIN_PASSWORD => {
     sql => <<'END_OF_SQL',
 update %s
-set password = sha2(?, 256), updated = null
-where username = ?
+  set password = sha2(?, 256)
+  where username = ?
 END_OF_SQL
     , args => [qw(password username)]
   },
@@ -344,8 +387,8 @@ END_OF_SQL
   UPDATE_LOGIN_SESSION => {
     sql => <<'END_OF_SQL',
 update %s
-set login_cookie = ?
-where username = ?
+  set login_cookie = ?
+  where username = ?
 END_OF_SQL
     , args => [qw(login_id username)]
   },
@@ -353,9 +396,8 @@ END_OF_SQL
   UPDATE_SESSION => {
     sql => <<'END_OF_SQL',
 update %s
-set updated = null,
-    expires = now() + interval ? second
-where session = ?
+  set expires = now() + interval ? second
+  where session = ?
 END_OF_SQL
     , args => [qw(expires session)]
   },
