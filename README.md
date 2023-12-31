@@ -47,6 +47,15 @@ built-in objects **$input**, **$header**, **$session**, and **$config**:
 <foreach>
 ```
 
+# Running Bedrock in a Shell
+
+Bedrock can also be run in a shell as templating engine.
+
+```
+echo '<trace --output $env>' | bedrock
+echo 'Bedrock says <var $input.text>' | bedrock text='Hello World!'
+```
+
 # Installation
 
 ## RPM
@@ -93,8 +102,6 @@ make test
 
 # More Information
 
-* [Bedrock Wiki](http://twiki.openbedrock.net)
-* [Bedrock Blog](http://openbedrock.blogspot.com)
 * See the `NEWS` file for changes for this release, and a running list of
 changes from previous releases. Any incompatibilities with previous versions
 will be noted in the 'NEWS' file.
@@ -117,14 +124,13 @@ to 5.16 as well.
 # Ubuntu/Debian
 
 _Ubuntu support via Debian packages will likely never happen, however
-there is no reason to believe Bedrock will not run on Ubuntu using a
-manual installation method._
+believe Bedrock will run on Ubuntu using the manual installation method._
 
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.
 I'm going to try to resurrect the Debian packaging scripts and see if
-we get a first class package for Ubuntu users.  In the interim, try
-the `setup-ubuntu.sh` script or follow the instructions below.
+we get a first class package for Ubuntu users.  In the interim, take a
+look at the `setup-ubuntu.sh` script as a starting point.
 
 If you want to install Bedrock on Debian based system like Ubunutu,
 first satisfy the Bedrock Perl dependencies using `apt` or install
@@ -154,6 +160,13 @@ standard Unix way:
  $ sudo make install
 ```
 
+# Testing
+
+There is a comprehensive set of unit test that test Bedrock and many
+of the classes that make up Bedrock.  See the `README.md` files in
+`src/main/perl` and `src/main/perl/lib` for details on testing your
+Bedrock installation.
+
 # Performance
 
 * Bedrock running as a CGI should work with no compatibility issues
@@ -172,7 +185,6 @@ To create the database and table necessary to use the Bedrock $session
 object, you'll want to do something similar to:
 
 ```
-$ mysqladmin -u root -p create bedrock
 $ cat /usr/share/bedrock/create-session.sql | mysql -u root -p bedrock
 ```
 
