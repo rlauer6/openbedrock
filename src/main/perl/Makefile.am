@@ -102,7 +102,7 @@ test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
 	  test_file=$$(basename $$a .yml); \
 	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
 	done; \
-	DBI_SOCKET="$$DBI_SOCKET" CONFIG_PATH=.:$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
+	DBI_SOCKET="$$DBI_SOCKET" CONFIG_PATH=t/config:.:$(top_srcdir)/src/main/bedrock/config:t/config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
 	test -n "$$test_dir" && rm -rf "$$test_dir"
 	rm -f foo.roc foo.inc foo.csv
 
