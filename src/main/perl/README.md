@@ -1,3 +1,23 @@
+# README
+
+
+This is the README for the Bedrock tag test suite. This __should__
+always be a work-in-progress...
+
+Since unit tests were not created when the project began, an attempt
+is being made to at least add unit tests whenever a problem is found
+or new features are added to Bedrock. There are __still__ many untested features
+of Bedrock, so again, new tests __should__ be added whenever code is
+refactored or bugs are found.
+
+The intent of these particular tests is to exercise tag features and
+behavior. _A successful run of these tests does not necessarily mean
+Bedrock is working in as web framework. More tests that exercise
+Bedrock in that context are required._
+
+Additional tests of specific Bedrock Perl modules can be found in the
+`src/main/perl/lib` directory.
+
 # Quickstart - Running the Tag Unit Tests
 
 ## Running the tests
@@ -19,39 +39,29 @@ a New Tests](#adding-a-new-test) for more details.
 > Note that in order to run all tests you need to have a MySQL
 > database running. See [SQL Tests](#sql-tests) for more details.
 
-
-# README
-
-This is the README for the Bedrock tag test suite. This __should__
-always be a work-in-progress...
-
-Since unit tests were not created when the project began, an attempt
-is being made to at least add unit tests whenever a problem is found
-or new features are added to Bedrock. There are __still__ many untested features
-of Bedrock, so again, new tests __should__ be added whenever code is
-refactored or bugs are found.
-
-The intent of these particular tests is to exercise tag features and
-behavior. _A successful run of these tests does not necessarily mean
-Bedrock is working in as web framework. More tests that exercise
-Bedrock in that context are required._
-
-Additional tests of specific Bedrock Perl modules can be found in the
-`src/main/perl/lib` directory.
-
-# Docker
+# Docker Compose
 
 A Docker image can be built that will not only help with testing
 Bedrock by providing a MySQL database but serves as a documentation
 server.
 
 A `docker-compose` file (`docker-compose-local.yml`) is located in the
-`docker` directory. It will create a:
+project's `docker` directory. It will create a:
 
 * Redis server
-* MySQL server
+* MySQL server (5.7)
 * Apache server running Bedrock
 * A instance of LocalStack
+
+## Bringing Up the LAMB Stack
+
+To bring up the Bedrock stack use the command below
+
+```
+BEDROCK=~/git/openbedrock docker-compose up
+```
+
+...then
 
 ```
 export DBI_HOST=$(docker inspect docker_web_1 | \
@@ -64,22 +74,50 @@ export DBI_PASS=bedrock
 If the `bedrock` database does not exist try:
 
 ```
-cat /usr/share/bedrock/create-session.sql | \
+cat ../bedrock/config/create-session.sql | \
   mysql -u root --password=bedrock -h $DBI_HOST
 ```
+
+...then to run the tests
 
 ```
 cd src/main/perl
 TESTS=all make test
 ```
 
+
+# MySQL Docker Images
+
+You can launch versions of MySQL using just the Docker image. Use the
+`mysql-up` script in the `docker` directory to launch a Docker image
+of a version of MySQL. 
+
+To start a 5.7 MySQL server:
+
+```
+mysql-up 5.7
+```
+
+To start the latest version of a MySQL server:
+
+```
+mysql-up
+```
+
+The included `create-session.sql` script for creating a session table
+for use with `BLM::Startup::Session` will create a `bedrock`
+database. When you use the `mysql-up` script a new `bedrock` database
+will be created for you that is compatible with both versions 5.7 and
+version 8 of MySQL.
+
+Use the `mysql-down` script to cleanly stop the Docker versions of
+MySQL.
+
 # Where are the Tests?
 
-## Test Ordering
-
-The tests are located in the `src/main/perl/t` directory. Tests are
-sequentially named with a number to insure they are run in a specific
-order. Test names follow the convention:
+The tag tests are located in the `src/main/perl/t` directory. Tests are
+sequentially named with a number to insure they are run in a __specific
+order__. Test names follow the convention:
 
 `{nn}-{test-name}.yml`
 
@@ -116,30 +154,33 @@ For more information regarding how to construct test descriptions, see
 ## Running One or More Tests
 
 You can run a single test by setting the environment variable `TESTS`
-to the test name (if it is unique) or the test file name.
+to the test name (if it is unique) or the test file name. Note as
+indicated earlier, tests are designed to run in specific sequence so
+you may not be able to run some tests indepdently.
 
 ```
 make test TESTS=sqlconnect
 make test TESTS=12-sqlconnect.yml
 ```
 
-Similarly, you can a set of specific tests by setting `TESTS` to one
+Similarly, you can a test a set of tests by setting `TESTS` to one
 or more test names.
 
-make test TESTS="sqlconnect sql sqlselect"
+make test TESTS="12-sqlconnect 13-sql 21-sqlselect"
 
 ## Running Just the SQL Tests
 
 ```
 make test TESTS=sql
 ```
-# Where are the Test Logs?
 
-When you run the unit tests, Bedrock will create logs with that aid in
+# Test Logs
+
+When you run the unit tests, Bedrock will create logs with aid in
 debugging.  Bedrock is capable of both internal logging designed to
-debug Bedrock itself, adds messages to the logs for Bedrock
+debug Bedrock itself and creating log messages for Bedrock
 applications when one or more `--verbose` options are included in a
-tag. Log file configuration for testa and application usages is
+tag. Log file configuration for tests and application usage is
 controlled by a `log4perl.conf` file located in `src/main/perl/t`. You
 can further tune Bedrock log verbosity by modifying this file. In
 general each Bedrock Perl module uses `Log::Log4perl` meaning you can
@@ -152,18 +193,27 @@ log4perl.category.BLM.Startup.UserSession=TRACE, Bedrock
 log4perl.additivity.BLM.Startup.UserSession=0
 ```
 
-The `log4perl.conf` configuration for testing tags defines two
+The `log4perl.conf` configuration for testing tags defines several
 appenders.
 
+
 ```
- ### Bedrock
- log4perl.appender.BedrockTest=Log::Log4perl::Appender::File
- log4perl.appender.BedrockTest.filename=bedrock-test.log
- log4perl.appender.BedrockTest.mode=append
- log4perl.appender.BedrockTest.autoflush=1
- log4perl.appender.BedrockTest.layout=PatternLayout
- log4perl.appender.BedrockTest.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
- 
+## Bedrock
+log4perl.appender.Bedrock=Log::Log4perl::Appender::File
+log4perl.appender.Bedrock.filename=bedrock.log
+log4perl.appender.Bedrock.mode=append
+log4perl.appender.Bedrock.autoflush=1
+log4perl.appender.Bedrock.layout=PatternLayout
+log4perl.appender.Bedrock.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
+
+## Test
+log4perl.appender.Test=Log::Log4perl::Appender::File
+log4perl.appender.Test.filename=bedrock-test.log
+log4perl.appender.Test.mode=append
+log4perl.appender.Test.autoflush=1
+log4perl.appender.Test.layout=PatternLayout
+log4perl.appender.Test.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %m%n
+
  ### TagX
  log4perl.appender.TagX=Log::Log4perl::Appender::File
  log4perl.appender.TagX.filename=bedrock-page.log
@@ -173,32 +223,53 @@ appenders.
  log4perl.appender.TagX.layout.ConversionPattern=%d (%r) (%p) [%P] [%l] %c - %n%m%n
 ```
 
-...hence, tests will produce two log files (`bedrock-test.log`,
-`bedrock-page.log`).
+Tests will produce several files
+
+* `bedrock-test.log` - messages generated by the test harness
+* `bedrock-page.log` - messages generated while processing tags
+* `bedrock.log`- messages generated by other Bedrock modules
+* `bedrock-{pid}.log` - messages generated by the request handler
 
 Three categories are defined that control where log information is
 written.
 
 ```
- ### Bedrock::Apache::Bedrock
- log4perl.category.Bedrock.Apache.Bedrock=DEBUG, BedrockTest
- 
- ### Bedrock::
- log4perl.category.Test.Bedrock=DEBUG, BedrockTest
- 
- ### TagX::
- log4perl.category.TagX=INFO, TagX
+### Bedrock::*
+log4perl.category.Bedrock=DEBUG, Bedrock
+log4perl.additivity.Bedrock=0
+
+log4perl.category.Bedrock.Test=DEBUG, Test
+log4perl.additivity.Bedrock.Test=0
+
+### TagX::
+log4perl.category.TagX.TAG=INFO, Trace
 ```
 
 The way the categories are defined causes most of Bedrock's internal
 processing other than actual tag processing to log to the
-`bedrock-test.log` file. Tag processing is logged to
+`bedrock.log` file. Tag processing is logged to
 `bedrock-page.log` at the `INFO` level to avoid a noisy
 `bedrock-page.log` which is used to log user level messages when the
-`<trace>` tag is used.
+`<trace>` tag is used. For more detailed messages at the trace level,
+most tags support adding one or more `--verbose` options.
 
-In short when you run `make test`, your logfile will be found in the
-`src/main/perl` directory as `bedrock-test.log`.
+In short when you run `make test`, your logs will be found in the
+`src/main/perl` directory.
+
+## PID Log
+
+Note that the fourth log file (`bedrock-{pid}.log`) contains the log
+messages generated by the request handler. When running under Apache,
+these logs would generally be found where your Apache configuration
+indicates they should be written. When running tests, a __faux__
+handler is used that captures these log messages to a log file where
+the suffix is the pid of the test run. By default messages are logged at
+the `debug` level for the handler. You can modify this if you want
+less noisy logs by adding an environment variable REQUEST_LOG_LEVEL
+with a value of `error`, `warn`, `info`, `debug`, or `trace`. During
+this phase of Bedrock's startup however, few messages are logged at
+anything but the `debug` level. If you are having issues with Bedrock
+starting or finding configuration files, consult this pid log.
 
 The `<trace>` tag can take arguments (Bedrock object) or
 stand-alone it will indicate the point (line number) in the snippet at
@@ -300,9 +371,9 @@ settting the `BEDROCK_CONFIG_PATH` environment variable.
     $ BEDROCK_CONFIG_PATH=/tmp make test
 
 By default The test script will look for a `tagx.xml` file in the
-`src/main/perl/t`.
+`src/main/perl/t/config`.
 
-## Specifying Environment and Configuration Values in Test Descriptions
+## Using  Environment and Configuration Values in Test Descriptions
 
 You can also override the environment and configuration values in
 `tagx.xml` __temporarily__ for one test by setting the environment and

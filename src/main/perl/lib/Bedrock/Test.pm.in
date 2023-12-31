@@ -23,16 +23,102 @@ use warnings;
 
 package Faux::ApacheHandler;
 
+{
+  no strict 'refs';  ## no critic
+
+  for my $level (qw(error info trace warn debug)) {
+    *{ 'Faux::ApacheHandler::' . $level } = sub {
+      my ( $self, @message ) = @_;
+
+      return $self->_log( $level, @message );
+    };
+  }
+}
+
+use Data::Dumper;
+
+use English qw(-no_match_vars);
+
+our %LOG_LEVELS = (
+  error => 0,
+  warn  => 1,
+  info  => 2,
+  debug => 3,
+  trace => 4,
+);
+
+our $HANDLER;
+
 ########################################################################
 sub new {
 ########################################################################
-  return bless {}, shift;
+  my ( $class, $level ) = @_;
+
+  return $HANDLER
+    if $HANDLER;
+
+  my $self = bless {}, $class;
+  $HANDLER = $self;
+
+  $self->{_log_level} = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
+
+  my $logfile = sprintf 'bedrock-%s.log', $PID;
+
+  my $fh;
+
+  open $fh, '>', $logfile  ## no critic (RequireBriefOpen)
+    or die "could not open $logfile\n";
+
+  $self->{_fh} = $fh;
+
+  $self->{_log_file} = $logfile;
+
+  return $self;
 }
 
-sub AUTOLOAD { } ## no critic (ProhibitAutoLoading)
+########################################################################
+sub _log {
+########################################################################
+  my ( $self, $level, @message ) = @_;
+
+  my $log_level = $LOG_LEVELS{$level};
+
+  return
+    if $log_level > $self->{_log_level};
+
+  my $depth = 0;
+  my @stack;
+
+  while ( my @frame = caller $depth++ ) {
+    push @stack, \@frame;
+  }
+
+  my $caller_package = $stack[2]->[3];
+  my $lineno         = $stack[1]->[2];
+
+  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join q{}, @message;
+
+  return print { $self->{_fh} } $log_message, "\n";
+}
 
 ########################################################################
-sub log { ## no critic (ProhibitBuiltinHomonyms)
+sub DESTROY {
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->{_fh} ) {
+    close $self->{_fh};
+  }
+
+  return;
+}
+
+########################################################################
+sub AUTOLOAD { }  ## no critic (ProhibitAutoLoading)
+########################################################################
+
+########################################################################
+sub log {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ($self) = @_;
 
@@ -43,7 +129,7 @@ sub log { ## no critic (ProhibitBuiltinHomonyms)
 package Faux::Context;
 
 use Bedrock;
-use Bedrock::Context qw{init_log4perl_logger};
+use Bedrock::Context qw(init_log4perl_logger);
 
 use Data::Dumper;
 
@@ -61,13 +147,11 @@ sub new {
 
   my $self = bless \%options, $class;
 
-  $self->request( Faux::ApacheHandler->new );
+  my $log_level = $ENV{REQUEST_LOG_LEVEL} // $options{CONFIG}->{LogLevel};
 
-  # you do know that $log4perl_conf if undef ?
-  my ( $log_level, $log4perl_conf )
-    = @{ $options{CONFIG} }{qw{ LogLevel}};
+  $self->request( Faux::ApacheHandler->new( $log_level // 'debug' ) );
 
-  init_log4perl_logger($log4perl_conf);
+  init_log4perl_logger();
 
   return $self;
 }
@@ -107,7 +191,7 @@ sub cgi_header_out {
 }
 
 ########################################################################
-sub request { return _set( @_, 'request' ) }; ## no critic (RequireArgUnpacking)
+sub request { return _set( @_, 'request' ) };  ## no critic (RequireArgUnpacking)
 ########################################################################
 
 ########################################################################
@@ -124,7 +208,7 @@ sub _set {
 }
 
 ########################################################################
-sub print { ## no critic (ProhibitBuiltinHomonyms)
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -132,7 +216,7 @@ sub print { ## no critic (ProhibitBuiltinHomonyms)
 }
 
 ########################################################################
-sub close { ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -144,7 +228,7 @@ package Bedrock::Test;
 
 use parent qw(Exporter);
 
-use Bedrock qw(slurp_file); # keep this first
+use Bedrock qw(slurp_file);  # keep this first
 
 use Apache::Bedrock qw(load_startup_modules);
 use Bedrock::BedrockConfig;
@@ -153,11 +237,11 @@ use Bedrock::Handler;
 use Bedrock::Test::Utils qw(create_temp_file);
 use Carp;
 use Data::Dumper;
-use English    qw(-no_match_vars);
+use English qw(-no_match_vars);
 use File::Temp qw( tempfile );
 use IO::Scalar;
 use JSON;
-use List::Util   qw( any none);
+use List::Util qw( any none);
 use Scalar::Util qw(reftype);
 use Symbol;
 use Test::More;
@@ -302,8 +386,7 @@ sub run {
       },
 
       cmp_ok => sub {
-        return cmp_ok( $r{output}, $t->{op}->{cmp_ok}, $t->{result},
-          $t->{name} );
+        return cmp_ok( $r{output}, $t->{op}->{cmp_ok}, $t->{result}, $t->{name} );
       },
       isa_ok => sub {
         return isa_ok( $r{output}, $t->{result}, $t->{name} );
@@ -337,8 +420,9 @@ sub config {
   $bedrock_config_path //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
   $ENV{BEDROCK_CONFIG_PATH} //= $bedrock_config_path;
+  my $log_level = $ENV{REQUEST_LOG_LEVEL} // 'debug';
 
-  return Bedrock::Handler->new( Faux::ApacheHandler->new )->config;
+  return Bedrock::Handler->new( Faux::ApacheHandler->new($log_level) )->config;
 }
 
 # loads the t/{file}.txt file
@@ -390,8 +474,7 @@ sub bedrock {
 
   my $output = $EMPTY;
 
-  my $ctx
-    = Faux::Context->new( IO::Scalar->new( \$output ), CONFIG => $config, );
+  my $ctx = Faux::Context->new( IO::Scalar->new( \$output ), CONFIG => $config, );
 
   my $tx = Text::TagX->new( IO::Scalar->new( \$text ), $ctx );
 
@@ -399,9 +482,7 @@ sub bedrock {
 
   $tx->param( %param, config => $config );
 
-  my @modules
-    = grep { $_->{module} ne 'BLM::Startup::UserSession' }
-    @{ $config->get_module_config() };
+  my @modules = grep { $_->{module} ne 'BLM::Startup::UserSession' } @{ $config->get_module_config() };
 
   $config->init_plugin_path;
 
