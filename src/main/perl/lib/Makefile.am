@@ -388,7 +388,7 @@ test: Bedrock/Test.pm Bedrock/Test/Utils.pm
 	fi; \
 	if test -e /tmp/mysqld/mysqld.sock; then \
 	  DBI_SOCKET=/tmp/mysqld/mysqld.sock; \
-	  DBI_PASS=bedrock; \
+	  DBI_PASS=$${DBI_PASS:-bedrock}; \
 	fi; \
 	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" \
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \

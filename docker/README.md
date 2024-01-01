@@ -60,7 +60,7 @@ BEDROCK=~/git/openbedrock docker-compose up
 
 # Connecting to the MySQL Server
 
-## Connecting to localhost`
+## Connecting to localhost
 
 To connect to the MySQL server running in the container without using
 TCP you need to expose the socket to your host.  The
@@ -142,7 +142,13 @@ port 8080.  The setup Looks something like this...
 
 ```
 
-Typically all ports are blocked to my EC2 except 22. In this scenario
+>>Note: Chrome on your Chromebook is unable to access ports opened in
+your Linux container.  You must configure your Chromebook for port
+forwarding. Do this by going to the settings menu on your
+Chromebook. Access the "Advanced>Developers" settings.  There you can
+configure port forwarding for port 8080.
+
+Additionally, all ports are normally blocked to my EC2 except 22. In this scenario
 we open port 80 of my EC2 to the bastion host as well as port 22. Keep
 in mind you still want to restrict port 22 on your bastion host to
 your local IP address __only__.

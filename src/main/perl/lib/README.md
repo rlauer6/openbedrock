@@ -32,21 +32,23 @@ cd src/main/perl/lib
 make test
 ```
 
-To specify a different server and use custom connection parameters,
-set environment variables as shown below:
+The `Makefile.am` and the test harness use the settings in the table
+below as the defaults. To specify a different server and use custom
+connection parameters, set environment variables as shown below:
 
 | Environment Variable | Description | Default |
 | -------------------- | ----- |
 | `DBI_HOST` | Name of the MySQL host | `localhost` |
 | `DBI_USER` | username | `root` |
-| `DBI_PASS` | password | none |
+| `DBI_PASS` | password | `bedrock` |
 | `DBI_DB` | database name  | none |
 | `DBI_SOCKET` | socket path | none |
 
 The database connection for every test that involves using a MySQL
-server `requires` the Perl module `t/db-setup.pl`. This module
-includes a subroutine named `connect_db` which creates the datasebase
-handle passed to the module being tested.
+server `requires` the Perl module `t/db-setup.pl`. 
+
+This module includes a subroutine named `connect_db` which creates the
+datasebase handle passed to the module being tested.
 
 # Testing a Single Group
 
