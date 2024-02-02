@@ -1,9 +1,13 @@
-package MyApp::Users;
-
 use strict;
 use warnings;
 
-use parent qw/Bedrock::Model::Handler/;
+package MyApp::Users;
+
+BEGIN {
+  use lib qw(. Bedrock);
+}
+
+use parent qw(Bedrock::Model::Handler);
 
 our $MODEL = Bedrock::Hash->new(
   id => Bedrock::Model::Field->new(
@@ -34,10 +38,11 @@ our $MODEL = Bedrock::Hash->new(
   )
 );
 
-use Test::More;
+########################################################################
+package main;
+########################################################################
 
-use strict;
-use warnings;
+use Test::More;
 
 use DBI;
 use Data::Dumper;
@@ -50,9 +55,6 @@ my $dbi = eval { return connect_db(); };
 
 if ( !$dbi ) {
   plan skip_all => 'no datbase connection';
-}
-else {
-  plan tests => 4;
 }
 
 use_ok('Bedrock::Model::Handler');
@@ -101,6 +103,8 @@ subtest 'read record' => sub {
   is( $new_user->get('lname'), 'flintstone' )
     or diag( Dumper( [$new_user] ) );
 };
+
+done_testing;
 
 END {
   eval { $dbi->do('drop database foo'); };

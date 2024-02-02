@@ -1,27 +1,32 @@
+#!/usr/bin/env perl
+
 ## no critic (RequireVersionVar, RequirePodSections)
 
 use strict;
 use warnings;
 
+BEGIN {
+  use lib qw(.);
+}
+
 use DBI;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English    qw{-no_match_vars};
 use List::Util qw{none};
-use Readonly;
 use Test::More;
+
+use Readonly;
 
 Readonly my $TRUE  => 1;
 Readonly my $FALSE => 0;
 
+########################################################################
 require 't/db-setup.pl';
 
 my $dbi = eval { connect_db() };
 
 if ( !$dbi ) {
   plan skip_all => 'no database connection';
-}
-else {
-  plan tests => 13;
 }
 
 use_ok('BLM::DBHandler');
@@ -39,17 +44,38 @@ subtest 'new' => sub {
 
   isa_ok( $dbh, 'BLM::DBHandler', 'new - no options' );
 
-  $dbh = BLM::DBHandler->new( $dbi, max_rows => 0 );
+  $dbh = BLM::DBHandler->new( $dbi, max_rows => 0, auto_commit => 1 );
+
+  ok( 0 == $dbh->max_rows, 'max_rows' );
+
+  ok( $dbh->dbi->{AutoCommit}, 'auto_commit' );
 
   isa_ok( $dbh, 'BLM::DBHandler', 'new - max_rows' );
 
   $dbh = eval { return BLM::DBHandler->new( {} ); };
 
-  ok( !$dbh && $EVAL_ERROR, '->new(HASH)' );
+  ok( !$dbh && $EVAL_ERROR, '->new({})' );
 
   $dbh = eval { return BLM::DBHandler->new( {} ); };
 
-  ok( !$dbh && $EVAL_ERROR, '->new(SCALAR)' );
+  ok( !$dbh && $EVAL_ERROR, '->new()' );
+};
+
+########################################################################
+subtest 'package variables' => sub {
+########################################################################
+  my $dbh = BLM::DBHandler->new($dbi);
+
+  no warnings 'once';  ## no critic (ProhibitNoWarnings)
+
+  local $BLM::DBHandler::MAX_ROWS = 10;
+  ok( $dbh->max_rows == 10, 'MAX_ROWS' );
+
+  local $BLM::DBHandler::MAX_HISTORY = 10;
+  ok( $dbh->max_rows == 10, 'MAX_HISTORY' );
+
+  local $BLM::DBHandler::BEDROCK_REFS = 0;
+  ok( $dbh->bedrock_refs == 0, 'BEDROCK_REFS' );
 };
 
 ########################################################################
@@ -81,24 +107,36 @@ subtest 'errstr' => sub {
 ########################################################################
   my $dbh = BLM::DBHandler->new( $dbi, max_rows => 0, max_history => 2 );
 
+  ## no critic (ProhibitLocalVars)
   local $dbi->{RaiseError} = $FALSE;
 
-  my $result
-    = eval { $dbh->select('select count(*) as foo_count from boo'); };
+  my $result = eval { $dbh->select('select count(*) as foo_count from boo'); };
 
-  ok( !$result,      'SQL error' );
-  ok( $dbh->get_err, 'error string set' );
-  like(
-    $dbh->get_err,
-    qr/^MySQL\s+error\s+[(]\d+[)]:\s+.*/xsm,
-    'formatted error'
-  ) or diag( Dumper( [ $dbh->get_err ] ) );
+  ok( !$result && !$EVAL_ERROR, 'SQL error' )
+    or diag(
+    Dumper(
+      [ EVAL_ERROR => $EVAL_ERROR,
+        result     => $result
+      ]
+    )
+    );
 
-  diag( Dumper( [ $dbh->get_err, $EVAL_ERROR, $dbi->{mysql_errno} ] ) );
+  my $error = $dbh->get_err;
+  ok( $error, 'get_err()' );
+
+  like( $error, qr/^MySQL\s+error\s+[(]\d+[)]:\s+.*/xsm, 'formatted error' )
+    or diag(
+    Dumper(
+      [ error       => $error,
+        EVAL_ERROR  => $EVAL_ERROR,
+        mysql_errno => $dbi->{mysql_errno}
+      ]
+    )
+    );
 
   $dbh->select('select curtime()');
-  ok( !$dbh->get_err, 'no error string' );
 
+  ok( !$dbh->get_err, 'no error string' );
 };
 
 ########################################################################
@@ -122,9 +160,8 @@ SQL
     local $dbi->{RaiseError} = $FALSE;
 
     my $rv = $dbh->do('delete from boo');
-    ok( $rv && $rv == $dbi->{mysql_errno}, 'do returns error code' );
-
-    diag( Dumper( [ $rv, $dbh->get_err ] ) );
+    ok( $rv && $rv == $dbi->{mysql_errno}, 'do returns error code' )
+      or diag( Dumper( [ $rv, $dbh->get_err ] ) );
   }
 
 };
@@ -170,14 +207,11 @@ subtest 'select_list' => sub {
 
   isa_ok( $result, 'ARRAY' );
 
-  ok(
-    ref $result eq 'Bedrock::Array::Reference',
-    'returns a Bedrock::Array object'
-  );
-  ok(
-    ref $result->[0] eq 'Bedrock::Hash',
-    'returns array of Bedrock::Hash objects'
-  );
+  ok( ref $result eq 'Bedrock::Array', 'returns a Bedrock::Array object' )
+    or diag( ref $result );
+
+  ok( ref $result->[0] eq 'Bedrock::Hash', 'returns array of Bedrock::Hash objects' )
+    or diag( ref $result );
 
   $dbh->set_return_bedrock_refs($FALSE);
 
@@ -188,14 +222,43 @@ subtest 'select_list' => sub {
 
   $result = $dbh->select_list('select * from foo');
 
-  ok( ref $result ne 'Bedrock::Array',     'returns a Perl array' );
+  ok( ref $result ne 'Bedrock::Array', 'returns a Perl array' );
+
   ok( ref $result->[0] ne 'Bedrock::Hash', 'returns array of hashes' );
 
-  is_deeply(
-    [ sort keys %{ $result->[0] } ],
-    [ sort @fields ],
-    'returns all columns'
-  ) or diag( Dumper( \@fields, [ keys %{ $result->[0] } ] ) );
+  is_deeply( [ sort keys %{ $result->[0] } ], [ sort @fields ], 'returns all columns' )
+    or diag( Dumper( \@fields, [ keys %{ $result->[0] } ] ) );
+};
+
+########################################################################
+subtest 'select_some' => sub {
+########################################################################
+  my $dbh = BLM::DBHandler->new($dbi);
+
+  for ( 0 .. 200 ) {
+    $dbh->do( 'insert into foo (id, name, foo, bar_phone) values (?,?,?,?)', 0, 'rob', '', '' );
+  }
+
+  my $max_rows = 75;
+
+  $dbh->max_rows($max_rows);
+
+  my $result = $dbh->select_some( 'select * from foo where name = ?', 'rob' );
+
+  my $page = 0;
+
+  while ( $result && @{$result} ) {
+    ok( $result, 'select_list returns a result' );
+
+    ok( @{$result} <= $max_rows, 'only 10 returned by select_some()' );
+
+    $page++;
+
+    $result = $dbh->select_some();
+  }
+
+  ok( $page > 1, 'multiple pages returned' )
+    or diag( Dumper( [ result => $result ] ) );
 };
 
 ########################################################################
@@ -230,7 +293,6 @@ SQL
   is( @{$result}, 100, 'max_row default == 100' );
 
   $dbh->max_rows(10);
-
   $result = $dbh->select_list('select * from foo');
   ok( $result, 'got result' );
   isa_ok( $result, 'ARRAY' );
@@ -240,7 +302,9 @@ SQL
 
   $result = $dbh->select_list('select * from foo');
   ok( $result, 'got result' );
+
   isa_ok( $result, 'ARRAY' );
+
   is( @{$result}, $foo_count, 'max_row(10) == ' . $foo_count );
 };
 
@@ -280,20 +344,16 @@ subtest 'date_format' => sub {
 
   $date = $dbh->date_format();
 
-  like(
-    $date,
-    qr/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/xsm,
-    'ISO 8601 format'
-  ) or diag( Dumper( [$date] ) );
+  like( $date, qr/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/xsm, 'ISO 8601 format' )
+    or diag( Dumper( [$date] ) );
 
   $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', 0 );
-  my $perl_date = scalar gmtime time;
+  my $perl_date = scalar localtime time;
 
   while ( $perl_date =~ s/\s\s/ /xsmg ) { };  # remove multiple whitespace
 
   ok( $date eq $perl_date, 'localtime formatted correctly' )
-    or
-    diag( Dumper( [ $dbh->get_args, $dbh->get_query, $date, $perl_date ] ) );
+    or diag( Dumper( [ $dbh->get_args, $dbh->get_query, $date, $perl_date ] ) );
 };
 
 ########################################################################
@@ -318,8 +378,7 @@ SQL
 
   my @bind_vars = $dbh->bind_vars;
 
-  ok( @{$args} == @bind_vars,
-    'get_args, bind_vars return arrays of same length' )
+  ok( @{$args} == @bind_vars, 'get_args, bind_vars return arrays of same length' )
     or diag( $args, $dbh->bind_vars );
 
   is_deeply( $args, \@bind_vars, 'get_args, bind_vars return same object' );
@@ -343,9 +402,7 @@ SQL
 
   ok( $dbh->get_arg_list );
 
-  is( $dbh->get_arg_list, '%r|0', 'formatter arg list' );
-
-  diag( Dumper( [ $dbh->arg_list ] ) );
+  is( ( $dbh->get_arg_list ), '%r|0', 'formatter arg list' );
 };
 
 ########################################################################
@@ -405,7 +462,10 @@ subtest 'commit/rollback' => sub {
   is( $result->{foo_count}, 0, 'commit successful' );
 };
 
+done_testing;
+
 END {
+
   eval {
     if ( $dbi && $dbi->ping ) {
       $dbi->do('drop database foo');

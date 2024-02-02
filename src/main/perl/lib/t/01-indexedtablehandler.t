@@ -1,14 +1,20 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
+
+BEGIN {
+  use lib qw(.);
+}
 
 use Test::More;
 
 use DBI;
-use Benchmark qw(:hireswallclock :all);
+use Time::HiRes;
 
 use BLM::DBHandler;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English    qw{-no_match_vars};
 use List::Util qw{none};
 
 use Text::ASCIITable;
@@ -72,8 +78,7 @@ Readonly::Hash our %TEST_RECORD => (
 subtest 'new - 4 argument' => sub {
 ########################################################################
 
-  my $ith
-    = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
+  my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, 'foo' ); };
 
   isa_ok( $ith, 'BLM::IndexedTableHandler' )
     or BAIL_OUT($EVAL_ERROR);
@@ -200,9 +205,7 @@ subtest 'new - query' => sub {
 ########################################################################
 subtest 'new - query (or)' => sub {
 ########################################################################
-  my $ith
-    = ITH::Foo->new(
-    { dbi => $dbi, _or_ => [ foo => 'bar', name => 'test' ] } );
+  my $ith = ITH::Foo->new( { dbi => $dbi, _or_ => [ foo => 'bar', name => 'test' ] } );
 
   isa_ok( $ith, 'ITH::Foo' )
     or do {
@@ -228,11 +231,9 @@ subtest delete => sub {
 
   ok( $ith->delete($id), 'delete record from table' );
 
-  ok( ( none { exists $ith->{$_} } $ith->get_fields ),
-    'delete fields from record' );
+  ok( ( none { exists $ith->{$_} } $ith->get_fields ), 'delete fields from record' );
 
-  my ($deleted_record)
-    = $dbi->selectall_array( 'select * from foo where id = ?', undef, $id );
+  my ($deleted_record) = $dbi->selectall_array( 'select * from foo where id = ?', undef, $id );
 
   ok( !$deleted_record, 'verify record deleted' )
     or diag( Dumper( [$deleted_record] ) );

@@ -253,6 +253,7 @@ perl5bedrockmodellib_DATA = \
     Bedrock/Model/Migration.pm \
     Bedrock/Model/Handler.pm \
     Bedrock/Model/Importer.pm \
+    Bedrock/Model/Maker.pm \
     Bedrock/Model/ReservedWords.pm \
     Bedrock/Model/Role.pm
 

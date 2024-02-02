@@ -3,6 +3,7 @@ package BLM::DBHandler;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,35 +24,49 @@ package BLM::DBHandler;
 use strict;
 use warnings;
 
+use Bedrock qw(:booleans force_array force_hash);
+
 use Bedrock::Array;
-use Bedrock::Constants qw{:booleans :chars};
+use Bedrock::Hash;
+use Bedrock::Constants qw(:booleans :chars);
+use Benchmark          qw(:all :hireswallclock);
 use Carp;
-use DBI;
 use Data::Dumper;
-use Digest::MD5 qw(md5_hex);
-use Scalar::Util qw/reftype/;
-use Benchmark qw(:all :hireswallclock);
+use DBI;
+use JSON         qw(to_json);
+use List::Util   qw(any none);
+use Scalar::Util qw(reftype);
 
 use Readonly;
 
 Readonly our $DEFAULT_MAX_ROWS    => 100;
-Readonly our $MAX_HISTORY_ENTRIES => 5;
+Readonly our $DEFAULT_MAX_HISTORY => 5;
 Readonly our $ISO_8601_FORMAT     => '%Y-%m-%dT%TZ';
 
 __PACKAGE__->_create_accessors(
-  qw{
+  qw(
     rows
     mysql_insertid
     return_bedrock_refs
-    _query
     max_history
-  }
+    _query
+    last_sth
+  )
 );
 
 use parent qw(Bedrock::Hash);
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
-our $BENCHMARK;
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+
+our $BENCHMARK    = $FALSE;
+our $HISTORY      = $TRUE;
+our $HISTORY_ARGS = $TRUE;
+our $MAX_HISTORY  = $DEFAULT_MAX_HISTORY;
+our $MAX_ROWS     = $DEFAULT_MAX_ROWS;
+
+our $BEDROCK_REFS = $TRUE;
+
+our @EXPORT_OK = qw(easy_connect is_dbi);
 
 ########################################################################
 sub new {
@@ -59,11 +74,7 @@ sub new {
   my ( $class, $dbi, %options ) = @_;
 
   die 'usage: BLM::DBHandler->new(dbi-handle, key, value, ...)'
-    if !ref $dbi || ref($dbi) !~ /DBI::db/xsm;
-
-  $options{max_rows}            //= $DEFAULT_MAX_ROWS;
-  $options{return_bedrock_refs} //= $TRUE;
-  $options{max_history}         //= $MAX_HISTORY_ENTRIES;
+    if !is_dbi($dbi);
 
   if ( exists $options{auto_commit} ) {
     $dbi->{AutoCommit} = delete $options{auto_commit};
@@ -87,6 +98,102 @@ sub new {
 }
 
 ########################################################################
+sub max_rows {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->set_max_rows( $args[0] )
+    if @args;
+
+  my $max_rows = $self->get_max_rows();
+
+  return defined $max_rows ? $max_rows : $MAX_ROWS;
+}
+
+########################################################################
+sub table_exists {
+########################################################################
+  my ( $self, $table ) = @_;
+
+  my $sth = $self->prepare('show tables like ?');
+  $self->execute($table);
+
+  my ($found) = $sth->fetchrow_array;
+
+  return $found && $found eq $table;
+}
+
+########################################################################
+sub return_bedrock_refs {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->set_return_bedrock_refs( $args[0] )
+    if @args;
+
+  my $return_bedrock_refs = $self->get_return_bedrock_refs();
+
+  return defined $return_bedrock_refs ? $return_bedrock_refs : $BEDROCK_REFS;
+}
+
+########################################################################
+sub bedrock_refs { goto &return_bedrock_refs; }
+########################################################################
+
+########################################################################
+sub max_history {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->set_max_history( $args[0] )
+    if @args;
+
+  my $max_history = $self->get_max_history();
+
+  return defined $max_history ? $max_history : $MAX_HISTORY;
+}
+
+########################################################################
+sub easy_connect {
+########################################################################
+  my (@args) = @_;
+
+  # Foo::Bar->easy_connect
+  if ( $args[0] && $args[0] =~ /::/xsm && @args % 2 ) {
+    shift @args;  # in case someone calls this like __PACKAGE__->easy_connect();
+  }
+
+  my $options = force_hash(@args);
+
+  my ( $host, $user, $password, $database, $dsn )
+    = @{$options}{qw(host user password $database dsn)};
+
+  for (qw(host user password database)) {
+    delete $options->{$_};
+  }
+
+  $host     //= $ENV{DBI_HOST} // 'localhost';
+  $user     //= $ENV{DBI_USER};
+  $password //= $ENV{DBI_PASS};
+  $database //= $ENV{DBI_DB} // $EMPTY;
+  $dsn      //= $ENV{DBI_DSN};
+
+  $options->{AutoCommit} //= $TRUE;
+  $options->{RaiseError} //= $TRUE;
+  $options->{PrintError} //= $TRUE;
+
+  die "no host - set DBI_HOST or DSN\n"
+    if !$host && !$dsn;
+
+  die "no user - set DB_USER\n"
+    if !$user;
+
+  $dsn //= sprintf 'dbi:mysql:%s:%s', $database, $host;
+
+  return DBI->connect( $dsn, $user, $password, $options );
+}
+
+########################################################################
 sub track {
 ########################################################################
   my ( $self, $arg, $state ) = @_;
@@ -104,7 +211,19 @@ sub track {
 ########################################################################
 sub show_history {
 ########################################################################
-  my ( $self, $style, $format ) = @_;
+  my ( $self, @args ) = @_;
+
+  my ( $style, $format );
+
+  if ( is_hash( $args[0] ) ) {
+    ( $style, $format ) = @{ $args[0] }{qw(style format)};
+  }
+  else {
+    ( $style, $format ) = @args;
+  }
+
+  $format //= $EMPTY;
+  $format =~ s/^%//xsm;
 
   require Text::ASCIITable;
 
@@ -114,23 +233,29 @@ sub show_history {
 
   $t->setColWidth( 'Query', 50, 1 );
 
-  $t->alignCol(
-    { 'Index' => 'center', 'Arguments' => 'left', 'Time' => 'center' } );
+  $t->alignCol( { 'Index' => 'center', 'Arguments' => 'left', 'Time' => 'center' } );
 
-  foreach my $row ( @{ $self->history } ) {
+  my @history = @{ $self->history };
+
+  my $has_benchmarks = any { ref $_->[3] } @history;
+
+  foreach my $row (@history) {
     my @cols = @{$row};
-
-    if ( ref $cols[3] ) {
-      if ( $style && $format ) {
+    if ($has_benchmarks) {
+      if ( !$cols[3] ) {
+        $cols[3] = '<missing>';
+      }
+      elsif ($style) {
         $cols[3] = timestr( timediff( @{ $cols[3] } ), $style, $format );
       }
       else {
-        $format //= '%08.5f';
-      }
-      my $t0 = $cols[3]->[1];
-      my $t1 = $cols[3]->[0];
+        $format ||= '08.5f';
 
-      $cols[3] = sprintf $format, $t1->[0] - $t0->[0];
+        my $t0 = $cols[3]->[1];
+        my $t1 = $cols[3]->[0];
+
+        $cols[3] = sprintf "%$format", $t1->[0] - $t0->[0];
+      }
     }
 
     $t->addRow(@cols);
@@ -140,30 +265,116 @@ sub show_history {
   return scalar $t;
 }
 
+{
+  my $csv;
+  my $json;
+
+########################################################################
+  sub format_history {
+########################################################################
+    my ( $self, %args ) = @_;
+
+    my $format = $args{format} // q{};
+
+    my @history = @{ $self->history // [] };
+
+    for (@history) {
+      if ( !$args{index} ) {
+        shift @{$_};
+      }
+
+      next
+        if !$_->[2];
+
+      push @{$_}, $_->[2]->[1]->[0];  # start time
+      push @{$_}, $_->[2]->[0]->[0];  # end time
+
+      $_->[2] = timestr( timediff( @{ $_->[2] } ) );
+    }
+
+    return to_json( \@history, $args{options} )
+      if $format eq 'json';
+
+    return Dumper( \@history )
+      if $format eq 'dumper';
+
+    return $self->show_history( $args{options} )
+      if $format eq 'table' || !$format;
+
+    die "unknown format\n"
+      if $format ne 'csv';
+
+    require Text::CSV_XS;
+
+    if ( $args{options} ) {
+      $csv = Text::CSV_XS->new( $args{options} );
+    }
+    else {
+      $csv //= Text::CSV_XS->new;
+    }
+
+    my @buffer;
+
+    foreach my $h (@history) {
+      my @data = map { ref $_ ? @{$_} : $_ } @{$h};
+
+      for (@data) {
+        next
+          if !defined $_;
+
+        s/\n/\\n/gxsm;
+      }
+
+      $csv->combine(@data);
+
+      push @buffer, $csv->string;
+    }
+
+    return @buffer;
+  }
+}
+
+########################################################################
+sub flush_history {
+########################################################################
+  my ( $self, $callback ) = @_;
+
+  if ( is_code($callback) ) {
+    $callback->( $self, [ reverse @{ $self->history } ] );
+  }
+
+  foreach (qw(benchmarks query arg_list)) {
+    $self->{"__$_"} = [];
+  }
+
+  return;
+}
+
+########################################################################
+sub query_history {
+########################################################################
+  my ($self) = @_;
+
+  return @{ $self->{__query} || [] };
+}
+
 ########################################################################
 sub history {
 ########################################################################
   my ($self) = @_;
 
-  my @history;
-  my @benchmarks;
+  my @query_list = @{ $self->{__query} || [] };
 
-  if ( @{ $self->{__benchmarks} } ) {
-    @benchmarks = @{ $self->{__benchmarks} };
-  }
-  else {
-    @benchmarks = (q{none}) x @{ $self->{__query} };
-  }
+  # re-order benchmarks, arg_list to correspond to queries,
+  # compensates for missing a benchmark (or arg_list) if someone
+  # called prepare(), without calling execute();
+  my @arg_list   = map { $_->[0] } _reorder( @{ $self->{__arg_list} || [] } );
+  my @benchmarks = _reorder( @{ $self->{__benchmarks} || [] } );
 
-  foreach ( 0 .. $#{ $self->{__query} } ) {
-    push @history,
-      [
-      $_ + 1,                    $self->{__query}->[$_],
-      $self->{__arg_list}->[$_], $benchmarks[$_]
-      ];
-  }
+  my $index = @query_list;
 
-  return \@history;
+  return [ map { [ $index--, $query_list[$_], $arg_list[$_], $benchmarks[$_] ] }
+      ( 0 .. $#query_list ) ];
 }
 
 ########################################################################
@@ -213,12 +424,11 @@ sub set_dbi       { goto &dbi; }
   sub get_args { return shift->_set_get( '_args', @_ ); }
   sub set_args { return shift->_set_get( '_args', @_ ); }
 ########################################################################
-  sub max_rows     { return shift->_set_get( '_max_rows', @_ ); }
   sub set_max_rows { return shift->_set_get( '_max_rows', @_ ); }
-  sub get_max_rows { return shift->_set_get( '_max_rows', @_ ); }
+  sub get_max_rows { return shift->_set_get( '_max_rows', @_ ) // $MAX_ROWS; }
 ########################################################################
-  sub get_arg_list { return shift->_set_get( '_arg_list', @_ ); }
-  sub set_arg_list { return shift->_set_get( '_arg_list', @_ ); }
+  sub _get_arg_list { return shift->_set_get( '_arg_list', @_ ); }
+  sub _set_arg_list { return shift->_set_get( '_arg_list', @_ ); }
 ########################################################################
   # getter/setters for these created by create_accessors()
   sub mysql_insert_id { return shift->_set_get( 'mysql_insert_id', @_ ); }
@@ -228,7 +438,27 @@ sub set_dbi       { goto &dbi; }
   sub set_auto_commit { return shift->auto_commit(@_); }
   sub get_auto_commit { return shift->auto_commit; }
 }
+
 ########################################################################
+sub get_arg_list {
+########################################################################
+  my ($self) = @_;
+
+  my ($last_arg_list) = map { $_->[0] } @{ $self->{__arg_list} || [] };
+
+  return $last_arg_list;
+}
+
+########################################################################
+sub set_arg_list {
+########################################################################
+  my ( $self, $list ) = @_;
+
+  return $self->_set_arg_list($list)
+    if ref $list;
+
+  return $self->_set_arg_list( [ $list, -1 + scalar $self->query_history ] );
+}
 
 ########################################################################
 sub date_format {
@@ -269,14 +499,41 @@ sub auto_commit {
 }
 
 ########################################################################
+sub is_history_var {
+########################################################################
+  my ( $self, $var ) = @_;
+
+  return
+    if none { $var eq $_ } qw(_query _benchmarks _arg_list);
+
+  return "_$var";
+}
+
+########################################################################
+sub is_dbi {
+########################################################################
+  my ($self) = @_;
+
+  return ref($self) && ref($self) eq 'DBI::db';
+}
+
+########################################################################
+sub is_sth {
+########################################################################
+  my ($self) = @_;
+
+  return ref($self) && ref($self) eq 'DBI::st';
+}
+
+########################################################################
 sub dbi {
 ########################################################################
   my ( $self, @args ) = @_;
 
   if (@args) {
-    push @args, sub {  # argument checker
+    push @args, sub {
       die 'not a DBI::db object'
-        if !ref $args[0] || ref( $args[0] ) !~ /DBI::db/xsm;
+        if !is_dbi( $args[0] );
 
       return $args[0];
     };
@@ -310,11 +567,52 @@ sub select_list {
 }
 
 ########################################################################
+sub select_some {
+########################################################################
+  my ( $self, $query, @bind_args ) = @_;
+
+  if ( !$query ) {
+    return []
+      if !$self->get_last_sth;
+
+    my $result = $self->_db_select_some(
+      dbi => $self->dbi,
+      sth => $self->get_last_sth,
+    );
+
+    return $result;
+  }
+  else {
+    $self->set_last_sth(undef);
+
+    return $self->_db_select_some(
+      dbi       => $self->dbi,
+      query     => $query,
+      bind_args => \@bind_args
+    );
+  }
+}
+
+########################################################################
 sub prepare {
 ########################################################################
   my ( $self, @args ) = @_;
 
   return $self->_db_prepare( $self->dbi, @args );
+}
+
+########################################################################
+sub format_arg_list {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  # do not save arguments
+  return q{}
+    if !$BLM::DBHandler::HISTORY_ARGS;
+
+  my @arg_list = ref $args[0] ? @{ $args[0] } : @args;
+
+  return join q{|}, map { defined $_ ? $_ : 'null' } @arg_list;
 }
 
 ########################################################################
@@ -327,8 +625,7 @@ sub bind_vars {
 
     $self->set_args($arg_list);
 
-    $self->set_arg_list( join q{|},
-      map { defined $_ ? $_ : 'null' } @{$arg_list} );
+    $self->set_arg_list( [ $self->format_arg_list($arg_list), -1 + scalar $self->query_history ] );
   }
 
   return $self->get_args ? @{ $self->get_args } : ();
@@ -339,11 +636,7 @@ sub commit {
 ########################################################################
   my ($self) = @_;
 
-  if ( !$self->dbi->{AutoCommit} ) {
-    return $self->dbi->commit;
-  }
-
-  return $TRUE;
+  return $self->dbi->{AutoCommit} ? $TRUE : $self->dbi->commit;
 }
 
 ########################################################################
@@ -351,23 +644,135 @@ sub rollback {
 ########################################################################
   my ($self) = @_;
 
-  if ( !$self->dbi->{AutoCommit} ) {
-    return $self->dbi->rollback;
+  return $self->dbi->{AutoCommit} ? $TRUE : $self->dbi->rollback;
+}
+
+########################################################################
+sub create_benchmark {
+########################################################################
+  return Benchmark->new;
+}
+
+########################################################################
+sub benchmark {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  return
+    if !$BENCHMARK;
+
+  my ( $start, $end, $arg_list ) = @args{qw(start end arg_list)};
+
+  my $index = scalar $self->query_history;
+
+  if ($start) {
+    $self->set_query($start);
+    $arg_list //= [];
+
+    $self->bind_vars($arg_list);
+    $end = $EMPTY;
   }
 
-  return $TRUE;
+  return [ create_benchmark(), $index ]
+    if !$end;
+
+  $self->set_benchmarks( [ create_benchmark(), @{$end} ] );
+
+  return;
+}
+
+########################################################################
+sub save_history { goto &_save_history_local }
+########################################################################
+
+########################################################################
+sub pop_history {
+########################################################################
+  my ($self) = @_;
+
+  my $last_history = [];
+
+  for (qw(__query __benchmarks __arg_list)) {
+    next
+      if !$_ || !@{ $self->{$_} };
+
+    push @{$last_history}, pop @{ $self->{$_} };
+  }
+
+  return $last_history;
+}
+
+########################################################################
+sub execute {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $bm;
+  my $sth;
+
+  if ( !is_sth $args[0] ) {
+    $sth = $self->get_last_sth;
+
+    if ($BENCHMARK) {
+      $bm = $self->benchmark;
+      $bm->[1]--;
+    }
+
+    $self->set_bind_vars( \@args );
+  }
+  else {
+    $sth = shift @args;
+  }
+
+  die "no statement handle\n"
+    if !$sth;
+
+  my $rv = $sth->execute(@args);
+
+  if ($bm) {
+    $self->benchmark( end => $bm );
+  }
+
+  return $rv;
 }
 
 # +-----------------+
 # | PRIVATE METHODS |
 # +-----------------+
 
+# takes a list of array references where the last element of the array
+# is a pointer to the entry's static index. This method will reorder
+# the list based on that pointer.
+#
+# Imagine a list that is being created but each element of the list
+# might be moved (a stack for example), but eventually we want to
+# reorder the list based on its original position (or some position
+# relative to the current state of the list).
+
+########################################################################
+sub _reorder {
+########################################################################
+  my (@list) = @_;
+
+  my @ordered_list;
+
+  foreach my $item (@list) {
+    my @entry = @{$item};
+
+    my $index = pop @entry;
+
+    $ordered_list[$index] = [@entry];
+  }
+
+  return reverse @ordered_list;
+}
+
 ########################################################################
 sub _create_accessors {
 ########################################################################
   my ( $self, @accessors ) = @_;
 
-  no strict 'refs';  ## no critic
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
 
   my $class = ref $self || $self;
 
@@ -418,19 +823,10 @@ sub _set_get {
     }
   }
 
-  my $history_var = '_' . $args[0];
+  my $history_var = $self->is_history_var( $args[0] );
 
-  if ( $args[0] =~ /^_[^_]/xsm && exists $self->{$history_var} ) {
-
-    $self->{$history_var} //= [];
-
-    unshift @{ $self->{$history_var} }, $args[1];  # save last value in history
-
-    # only keep $MAX_HISTORY_ENTRIES
-    if ( @{ $self->{$history_var} }
-      > ( $self->get_max_history || $MAX_HISTORY_ENTRIES ) ) {
-      pop @{ $self->{$history_var} };
-    }
+  if ( $HISTORY && $history_var ) {
+    $self->save_history(@args);
   }
 
   $self->{ $args[0] } = $args[1];
@@ -439,11 +835,26 @@ sub _set_get {
 }
 
 ########################################################################
-sub execute {
+sub _save_history_local {
 ########################################################################
-  my ( $self, $sth, @args ) = @_;
+  my ( $self, $key, $value ) = @_;
 
-  return $sth->execute(@args);
+  $key = "_$key";
+
+  $self->{$key} //= [];
+
+  unshift @{ $self->{$key} }, $value;
+
+  # only keep $MAX_HISTORY_ENTRIES locally
+  my $max_history = $self->max_history;
+
+  if ( $max_history && !$BLM::DBHandler::MAX_HISTORY ) {
+    if ( @{ $self->{$key} } > $max_history ) {
+      $self->pop_history;  # pop @{ $self->{$key} };
+    }
+  }
+
+  return $TRUE;
 }
 
 ########################################################################
@@ -451,11 +862,11 @@ sub _db_do {
 ########################################################################
   my ( $self, $dbi, $query, @args ) = @_;
 
-  my $bm = $BENCHMARK ? Benchmark->new : undef;
-
-  $self->set_bind_vars( \@args );
+  my $bm = $self->benchmark;
 
   my $sth = $self->_db_prepare( $dbi, $query );
+
+  $self->set_bind_vars( \@args );
 
   my $rv = $sth->err();
 
@@ -478,9 +889,7 @@ sub _db_do {
 
   $sth->finish;
 
-  if ($BENCHMARK) {
-    $self->set_benchmarks( [ Benchmark->new, $bm ] );
-  }
+  $self->benchmark( end => $bm );
 
   return $rv;
 }
@@ -493,23 +902,24 @@ sub _db_prepare {  ## no critic (Capitalization)
   $self->set_query($statement);
 
   croak sprintf 'no database handle for: [%s]:[%s]', $statement, ref $dbi
-    if !ref $dbi || ref($dbi) !~ /DBI::db/xsm;
+    if !is_dbi($dbi);
 
   my $sth = $dbi->prepare($statement);
+  $self->set_last_sth($sth);
 
   return $sth;
 }
 
 ########################################################################
-sub _db_select {  ## no critic Capitalization
+sub _db_select {
 ########################################################################
   my ( $self, $dbi, $query, @args ) = @_;
 
-  $self->set_bind_vars( \@args );
-
-  my $bm = $BENCHMARK ? Benchmark->new : undef;
+  my $bm = $self->benchmark;
 
   my $sth = $self->_db_prepare( $dbi, $query );
+  $self->set_bind_vars( \@args );
+
   $self->execute( $sth, @args );
 
   if ( !$dbi->{RaiseError} ) {
@@ -527,12 +937,10 @@ sub _db_select {  ## no critic Capitalization
   my $result = $sth->fetchrow_hashref;
   $sth->finish;
 
-  if ($BENCHMARK) {
-    $self->set_benchmarks( [ Benchmark->new, $bm ] );
-  }
+  $self->benchmark( end => $bm );
 
   return $result
-    if !$result || !$self->get_return_bedrock_refs;
+    if !$result || !$self->return_bedrock_refs;
 
   my $obj = bless {}, 'Bedrock::Hash';
 
@@ -542,28 +950,65 @@ sub _db_select {  ## no critic Capitalization
 }
 
 ########################################################################
-sub _db_select_list {  ## no critic Capitalization
+sub sth_close {
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->get_last_sth ) {
+    $self->get_last_sth->finish;
+  }
+
+  $self->set_last_sth(undef);
+
+  return;
+}
+
+########################################################################
+sub _db_select_list {
 ########################################################################
   my ( $self, $dbi, $query, @args ) = @_;
 
-  $self->set_bind_vars( \@args );
+  my $result = $self->_db_select_some( dbi => $dbi, query => $query, bind_args => \@args );
 
-  my $bm = $BENCHMARK ? Benchmark->new : undef;
+  $self->sth_close;
 
-  my $sth = $self->_db_prepare( $dbi, $query );
-  $self->execute( $sth, @args );
+  return $result;
+}
 
-  my $max_rows = $self->get_max_rows // 0;
+########################################################################
+sub _db_select_some {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $options = force_hash(@args);
+
+  my ( $dbi, $query, $bind_args, $max_rows, $sth )
+    = @{$options}{qw(dbi query bind_args max_rows sth)};
+
+  my $bm;
+
+  if ( !$sth ) {
+    $sth = $self->_db_prepare( $dbi, $query );
+
+    $self->set_last_sth($sth);
+
+    $self->set_bind_vars($bind_args);
+
+    $bm = $self->benchmark;
+
+    $self->execute( $sth, @{$bind_args} );
+  }
+
+  $max_rows //= $self->get_max_rows // 0;
 
   my $result = [];
 
-  my $return_bedrock_refs = $self->get_return_bedrock_refs;
-
   my $count = 0;
+  my $row;
 
-  while ( my $row = $sth->fetchrow_hashref ) {
+  while ( $row = $sth->fetchrow_hashref ) {
 
-    if ($return_bedrock_refs) {
+    if ( $self->return_bedrock_refs ) {
 
       my $obj = bless {}, 'Bedrock::Hash';
       tie %{$obj}, 'Bedrock::Hash', %{$row};  ## no critic (ProhibitTies)
@@ -577,17 +1022,13 @@ sub _db_select_list {  ## no critic Capitalization
     last if $max_rows && ++$count >= $max_rows;
   }
 
-  $sth->finish;
-
-  if ($BENCHMARK) {
-    $self->set_benchmarks( [ Benchmark->new, $bm ] );
+  if ( !$row ) {
+    $self->sth_close;
   }
 
-  if ($return_bedrock_refs) {
-    $result = Bedrock::Array::Reference->new($result);
-  }
+  $self->benchmark( end => $bm );
 
-  return $result;
+  return $self->bedrock_refs ? Bedrock::Array->new($result) : $result;
 }
 
 1;
@@ -598,9 +1039,9 @@ __END__
 
 =pod
 
-=head1 PUBLIC
+=head1 NAME
 
-BLM::DBHandler - Provides support for MySQL database operations
+BLM::DBHandler - A class for interacting with MySQL
 
 =head1 SYNOPSIS
 
@@ -610,21 +1051,86 @@ BLM::DBHandler - Provides support for MySQL database operations
 
  1;
 
+ use BLM::DBHandler qw(easy_connect);
+
+ my $dbi = easy_connect();
+ my $customer = BLM::Customer->new($dbi);
+
+ my $customers = $customer->select_list('select * from customers');
+
 =head1 DESCRIPTION
 
-Use as a base class to create a module you can use to perform CRUD
+Use as a base class to create a module you can use to perform various CRUD
 operations on your MySQL database.
 
 or use directly...
 
  my $dbi = DBI->connect('dbi:mysql:mydb', 'user', 'password');
 
- my $dbhandler = BLM::DBHandler->new( $dbi );
+ my $dbh = BLM::DBHandler->new( $dbi );
 
- my $results = $dbhandler->select_list("select * from customer where name acct = ?", $acct);
+ my $results = $dbh->select_list('select * from customer where name acct = ?', $acct);
 
 See L<BLM::IndexedTableHandler> for a more robust implementation of an
 ORM for MySQL tables.
+
+=head2 Why Should I Use This Module?
+
+There are more than a few ORMs for working with databases and this is
+not a true ORM. Most are very robust implementations to the point of
+being a bit I<bloated> (IMHO) when all you really want is some
+convience routines that make all the common operations I<easy>. This
+module doesn't try to bring in all of CPAN to accomplish that
+goal. This isn't an ORM trying to mask relational databases from you,
+or trying to support every database out there.  It is really just some
+convience methods that we sometimes need for quick & dirty scripts
+when dealing with MySQL databases.
+
+Having said that it's possible a clever person would find that there
+really isn't too much specific to MySQL here and might be amibitious
+enough to contribute?
+
+Here's the bottom line, if you stick with the methods here for
+selecting rows and performing database operations against your tables
+you'll get some benefits:
+
+=over 5
+
+=item brevity
+
+Does it get any easier than this?
+
+ my $dbh = BLM::DBHandler->new( easy_connect() ) ;
+
+ print {*STDOUT} Dumper([$dbh->select_list('select * from from foo')]);
+
+=item benchmarking
+
+Eventually, you'll need to benchmark you queries.  Wouldn't it be nice
+if it was just this easy?
+
+ $BLM::DBHandler::BENCHMARK = 1;
+
+ ... do something
+
+ $dbh->show_history();
+
+=item efficiency
+
+I've tried to consider performance as well as functionality. The
+dependency stack should be relatively low and I try to generally use
+well worn Perl idioms. Bringing in a ton of dependencies is a two
+edged sword. CPAN modules are in general, stable and a good idea to
+use versus rolling your own. OTOH, bringing in L<File::Slurp> to slurp a
+file might not be the best idea when the idiom for slurping a file is
+(somewhat) obvious.
+
+=item stability
+
+It's been used in production, many commercial applications, and has proven
+its usefulness and ability to do the job without major bugs.
+
+=back
 
 =head1 METHODS AND SUBROUTINES
 
@@ -649,7 +1155,7 @@ Options is a list of key/value pairs described below.
 boolean indicating whether a commit should be done after the C<do()>
 method is called.
 
-This is a convenience method setting the AutoCommit member of the DBI
+This is a convience method setting the AutoCommit member of the DBI
 handle.
 
 It will reflect the current value of AutoCommit when the handler is
@@ -668,20 +1174,76 @@ default: 100
 
 =back
 
-=head3 return_bedrock_refs
+=head3 set_return_bedrock_refs
 
 boolean indicating whether methods should return simple Perl objects
-or Bedrock objects for C<select_*> methods.
+or Bedrock objects for C<select_*> methods.  Setting this value is an
+instance level state. You can also set that package variable
+BLM::DBHandler::BEDROCK_REFS which would set the state for all
+instances of BLM::DBHandler.
 
 default: true.
+
+See L</PACKAGE VARIABLES>
 
 =head3 max_history
 
 The number of versions of queries and their arguments to keep in
-history. This can be most useful for dumping the SQL queries and bind
-values used in an application. See L</history>.
+history. This can be useful for dumping the SQL queries and bind
+values used in an application during debugging. See L</history>.
 
 default: 5
+
+=head2 PACKAGE VARIABLES
+
+There several package variables that can alter the behavior of C<BLM::DBHandler>.
+
+=over
+
+=item BLM::DBHandler::HISTORY
+
+Determines if query history will be saved. Set C<max_history> or set
+the package variable MAX_HISTORY.
+
+default: true
+
+=item BLM::DBHandler::HISTORY_ARGS
+
+Determines if bind arguments are stored to history.
+
+B<!!CAUTION!!>
+
+If you work with sensitive data, you may want to set this value to
+false to avoid exfiltration of sensitive data.
+
+default: true
+
+=item BLM::DBHandler::MAX_HISTORY
+
+Maximum number of history records to save. After MAX_HISTORY history
+records are saved the oldest record will be removed.
+
+default: 5
+
+=item BLM::DBHandler::MAX_ROWS
+
+Maximum number of rows to return for a query.
+
+default: 100
+
+=item BLM::DBHandler::BENCHMARK
+
+Determines if benchmarking is enabled.
+
+default: false
+
+=item BLM::DBHandler::BEDROCK_REFS
+
+Determines if Bedrock objects are returned from C<select> and C<select_list>.
+
+default: true
+
+=back
 
 =head2 SETTER/GETTER METHODS
 
@@ -717,34 +1279,12 @@ Return an array containing the last bind variables used.  Helpful in debugging.
 
 Return the last query executed. Helpful in debugging.
 
-=head3 history
-
-Returns the an array of tuples that represent the history of queries,
-there arguments and possibly their timings. The argument list is
-returned as a pipe delimited string of values.
-
- my $history = $dbh->history();
-
- for ( @{$history) {
-   printf "query: %s arguments: %s time: %s\n", @{$_});
- }
-
-See L</show_history>
-
 =head3 max_rows
 
  max_rows( [rows] )
 
 Set or retrieve the maximum number of rows to return in a
 C<SelectList> call.  The default is 100.
-
-=head3 show_history
-
-Returns an ASCII formatted table that represents the history of SQL
-querier, their arguments and their timings (if benchmarking is
-enabled).
-
-C<show_history()> requires L<Text::ASCIITable>.
 
 =head2 SQL METHODS
 
@@ -809,7 +1349,7 @@ the number of rows affected by the statement.
 
  prepare( query )
 
-Prepare a statement for execution. Returns a statement handle.
+Prepare a statement for execution. Returns a DBI statement handle.
 
 =over 5
 
@@ -821,16 +1361,19 @@ The query to execute.
 
 Example:
 
- my $sth = $dbhandler->prepare("select * from my_table where ...");
- $sth->execute;
+ my $dbhandler = BLM::DBHandler->new($dbi);
 
-Why would you do this instead of:
+ my $sth = $dbhandler->prepare("select * from my_table where ...");
+ $dbhandler->execute;
+
+Why wouldn't you do this instead of:
 
    my $sth = $dbi->prepare("select * from my_table where ....");
    $sth->execute;
 
-...well because this class handles errors, saves querys, etc. (see below).
-
+C<BLM::DBHandler> provides some under the cover conveniences for
+handling errors, saving history and benchmarking. In general you
+should avoid using the raw database handle.
 
 =head3 rollback
 
@@ -838,20 +1381,50 @@ Why would you do this instead of:
 
 Rollback a transaction if C<AutoCommit> is not enabled.
 
+=head3 table_exists
+
+ table_exists(name)
+
+Returns a boolean indicating whether the table exists in the current database.
+
+=head2 SQL SELECT METHODS
+
+C<select> and C<select_list> are convenience routines that return
+records from a C<SELECT> statement.  By default the methods return
+blessed objects imbued with a host of useful methods.  A
+L<Bedrock::Hash> is returned for each row and a
+L<Bedrock::Array::Reference> is returned for a set of rows.
+
+You can disable this behavior and return Perl objects by setting the
+package variable $BLM::DBHandler::BEDROCK_REFS to a false value.
+
 =head3 select
 
  select( query, [args] )
 
-Select a record from a database. Returns a C<Bedrock::Hash> containing
-the fields of the record.  Returns C<undef> if the query does not
-return a result.
+Returns a single record as a C<Bedrock::Hash> containing the columns
+of the record.  Returns C<undef> if the query does not return a
+result. 
+
+If you do not want to return a C<Bedrock::Hash>, set the
+package variable $BLM::DBHandler::BEDROCK_REFS to a false value.
 
 Example:
 
-  my $rec = $dbhandler->select("select * from custmr where acct = ?", 1);
+  my $rec = $dbhandler->select('select * from custmr where acct = ?', 1);
 
+  printf "%s\n", $rec->get('NAME');
+
+  # with BEDROCK_REFS disabled...
+
+  my $rec = eval {
+   local $BLM::DBHandler::BEDROCK_REFS = 0;
+
+   return $dbhandler->select('select * from customer where account = ?', 1);
+  };
+  
   printf "%s\n", $rec->{'NAME'};
-
+  
 =over 5
 
 =item query
@@ -868,8 +1441,10 @@ The bind variables to use in the query.
 
  select_list( query, [args] )
 
-Selects multiple records from a database.  Returns a C<Bedrock::Array>
-of C<Bedrock::Hash> objects.
+Returns a C<Bedrock::Array> of the rows selected by the query. Each
+row is a C<Bedrock::Hash> containing the columns of the row. Returns a
+0 length C<Bedrock::Array> object if no records are selected.
+
 
   my $list = $dbhandler->select_list("select * from custmr where name like 'TEST%'");
 
@@ -877,7 +1452,9 @@ of C<Bedrock::Hash> objects.
     printf "%s\n", $rec->{'NAME'};
   }
 
-Returns a 0 length L<Bedrock::Array> object if no records are selected.
+
+If you do not want to return Bedrock objects, set the
+package variable $BLM::DBHandler::BEDROCK_REFS to a false value.
 
 =over 5
 
@@ -915,22 +1492,223 @@ with an C<auto_increment> field.
 
 Number of rows affected by the last execute statement.
 
+=head2 MISCELLANEOUS METHODS
+
+=head2 easy_connect
+
+A convience routine for connecting to the database and return a DBI
+handle. This is a class method (not an instance method) and can be
+exported.
+
+It's easy because it will use your environment variables to create a
+database connection if they are available. It will use the following environment variables:
+
+
+=over 5
+
+=item  DBI_HOST
+
+default: localhost
+
+=item  DBI_USER
+
+default: none
+
+=item  DBI_PASS
+
+default: none
+
+=item  DBI_DB
+
+=item  DBI_DSN
+
+You can provide the full DSN instead of C<DBI_HOST> and C<DBI_DB>. Example:
+
+ dbi:mysql:customers:localhost
+
+=back
+
+Also accepts a list of key/value pairs.
+
+=over
+
+=item user
+
+=item password
+
+=item host
+
+default: localhost
+
+=item database
+
+=item dsn
+
+=back
+
+Any additional keys are considered options that will be passed to C<DBI::connect>.
+
+ use BLM::DBHandler qw(easy_connect);
+
+ my $dbi = easy_connect();
+
+ my $dbi = easy_connect(user => 'fred', password => 'fl1ntst0ne', AutoCommit => 0);
+
+=head2 flush_history
+
+Empties the history queue.
+
+=head2 format_history
+
+ format_history(format => format, index => 1)
+
+Returns a formatted list of history objects.
+
+=over 5
+
+=item format
+
+Determines the format of the object returned.
+
+=over 10
+
+=item csv
+
+Comma delimited list of elements
+
+=item json
+
+JSON string
+
+=item dumper
+
+Data::Dumper format
+
+=item table
+
+ASCII table format.
+
+=back
+
+default: table
+
+=item index
+
+If set to 1, includes an index of the record.
+
+default: false
+
+=item options
+
+A hash reference that is passed directly to the formatters.
+ 
+=back
+
+=head2 history
+
+Returns an array of tuples that represent the history of queries,
+their arguments, and possibly their timings. The argument list is
+returned as a pipe delimited string of values.
+
+ my $history = $dbh->history();
+
+ for ( @{$history) {
+   printf "query: %s arguments: %s time: %s\n", @{$_});
+ }
+
+These package variables control the behavior of the history of queries:
+
+ BLM::DBHandler::MAX_HISTORY
+ BLM::DBHandler::HISTORY_ARGS
+ BLM::DBHandler::HISTORY
+
+See L</show_history>, L</PACKAGE VARIABLES>
+
+=head2 show_history
+
+ show_history(options)
+
+Returns an ASCII formatted table that represents the history of SQL
+querier, their arguments and their timings (if benchmarking is
+enabled).
+
+C<show_history()> requires L<Text::ASCIITable>.
+
+=over 5
+
+=item style
+
+From L<Benchmark> : I<STYLE can be any of 'all', 'none', 'noc', 'nop'
+or 'auto'.  'all' shows each of the 5 times available ('wallclock'
+time, user time, system time, user time of children, and system time
+of children). 'noc' shows all except the two children times.  'nop'
+shows only wallclock and the two children times. 'auto' (the default)
+will act as 'all' unless the children times are both zero, in which
+case it acts as 'noc'. 'none' prevents output.>
+
+=item format
+
+From L<Benchmark> : I<FORMAT is the printf(3)-style format specifier
+(without the eading '%') to use to print the times. It defaults to
+'5.2f'.>
+
+=back
+
 =head1 BENCHMARKING QUERIES
 
+Benchmarking requires the L<Benchmark> and L<Time::HiRes> modules.
+
 SQL operations can be timed by setting the package global
-C<$BLM::DBHandler::BENCHMARKS> to a true value. The default is false.
+C<$BLM::DBHandler::BENCHMARK> to a true value. The default is false.
 
-Benchmarking requires the L<Benchmark> and L<Time::Hires> modules.
+Use the C<max_history()> or the package variable
+C<$BLM::DBHandler::MAX_HISTORY> method to set the number of queries to
+record. The default is 5. A value of 0 will allow for unlimited
+benchmarking of queries.  You can flush the history buffer by calling
+C<flush_history()>.
 
-Use the C<max_history()> method to set the number of queries to record. The default is 5.
+=head2 Benchmarking Tips & Tricks
 
-Operations that use the C<do()>, C<select()> and C<select_list> methods are benchmarked when benchmarking is enabled. Use the C<history()> method to retrieve the history and timings.
+=over 5
 
-For a "pretty" version of the results use the C<show_history()> method.
+=item * WARNING: When you enable benchmarking, the
+$BLM::DBHandler::MAX_HISTORY value is ignored.
+
+If you are concerned about too much history being saved, periodically
+flush the history buffer. You can output the current history and
+timings using the C<show_history()> method.
+
+=item * You can retrieve a formatted version of the history buffer by calling
+C<history> or C<show_history>.
+
+=item * Operations that use the class methods C<do()>, C<select()> and
+C<select_list> and C<execute> methods are benchmarked when
+benchmarking is enabled.
+
+=item * For a "pretty" version of the results use the C<show_history()>
+method (Requires L<Text::ASCIITable>).
+
+=item * You should not use the C<BLM::DBHandler> class method C<prepare()> without also using
+the class method C<execute> otherwise your benchmarking history will be incomplete.
+
+ my $sth = $dbh->prepare($query);
+ $dbh->execute()
+
+In the above example we use the class instance C<execute> method to
+capture benchmarking history. You can then use the statement handle
+returned from the C<prepare()> in the normal way.
+
+=item * You can benchmark any block of code by calling the C<benchmark> method as shown below:
+
+ my $t0 = $dbh->benchmark(start => 'add a new user');
+ ...
+ $dbh->benchmark(end => $t0);
+
+=back
 
 =head1 SEE ALSO
 
-L<DBI>, L<BLM::IndexedTableHandler>
+L<DBI>, L<Bedrock::Array>, L<Bedrock::Hash>, L<BLM::IndexedTableHandler>
 
 =head1 AUTHOR
 

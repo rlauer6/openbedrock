@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 ## no critic (RequireVersionVar)
 use strict;
 use warnings;
@@ -21,7 +23,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 13;
+  plan tests => 16;
 }
 
 use_ok('BLM::IndexedTableHandler');
@@ -47,11 +49,21 @@ if ($EVAL_ERROR) {
 }
 ########################################################################
 
-my $ith
-  = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
+my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
 isa_ok( $ith, 'BLM::IndexedTableHandler' )
   or BAIL_OUT($EVAL_ERROR);
+
+my @filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], [qw(c d)] );
+ok( !( grep {/[cd]/xsm} @filtered_list ), 'filter array (array)' );
+
+@filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], 'c' );
+ok( !( grep {/[c]/xsm} @filtered_list ), 'filter array (scalar)' );
+
+my @not_id = $ith->not_id();
+
+ok( !( grep {/id/xsm} @not_id ), 'not id' )
+  or diag( Dumper( [ not_id => \@not_id ] ) );
 
 is( $ith->get_upsert_mode(), $FALSE, 'upsert default 0?' )
   or diag( $ith->get_upsert_mode );

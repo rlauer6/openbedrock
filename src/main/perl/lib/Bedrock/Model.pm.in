@@ -3,6 +3,7 @@ package Bedrock::Model;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,18 +24,60 @@ package Bedrock::Model;
 use strict;
 use warnings;
 
-use parent qw/Class::Accessor::Fast/;
-
+use Bedrock qw(:booleans);
 use Bedrock::Model::Migration;
+use Bedrock::Hash;
 use Bedrock::Constants qw(:booleans);
 
 use Carp;
 use Data::Dumper;
-use English qw{-no_match_vars};
-use Scalar::Util qw/reftype blessed/;
+use English      qw(-no_match_vars);
+use Scalar::Util qw(reftype blessed);
+
+use parent qw(Class::Accessor::Fast);
+
+use Role::Tiny::With;
+with 'Bedrock::Model::Role';
 
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(qw/dbi table model dry_run serializer engine verbose debug/);
+__PACKAGE__->mk_accessors(
+  qw(
+    debug
+    engine
+    migration
+    model
+    serializer
+    table
+    dbi
+    dry_run
+    verbose
+  )
+);
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+########################################################################
+sub _check_model {
+########################################################################
+  my ($self) = @_;
+
+  my $model = $self->get_model;
+
+  carp "model must be an array or hash ref\n"
+    if !is_hash($model) && !is_array($model);
+
+  # turn an array ref into a hash of fields
+  if ( is_array($model) ) {
+    $self->set_model( Bedrock::Hash->new( map { ( $_->{field} => $_ ) } @{$model} ) );
+  }
+
+  foreach ( values %{ $self->get_model } ) {
+    carp "field definitions must be Bedrock::Model::Field objects\n"
+      if ref $_ ne 'Bedrock::Model::Field';
+  }
+
+  return $self->get_model;
+}
 
 ########################################################################
 sub new {
@@ -43,11 +86,13 @@ sub new {
 
   $class = ref($class) || $class;
 
-  my $args = ref( $args[0] ) ? $args[0] : {@args};
+  my $options = ref $args[0] ? $args[0] : {@args};
 
-  $args->{engine} = 'MySQL' || $args->{engine};
+  $options->{engine} = 'MySQL' || $options->{engine};
 
-  my $self = $class->SUPER::new($args);
+  my $self = $class->SUPER::new($options);
+
+  my $model = $self->_check_model();
 
   my $serializer = _init_serializer( $self->get_dbi, $self->get_table, $self->get_engine );
 
@@ -135,6 +180,8 @@ sub create_table {
 
     my $migration = $self->verify_model( $dbi, %args );
 
+    $self->set_migration($migration);
+
     if ( $migration->should_migrate
       && ( $args{verbose} || $self->get_verbose ) ) {
       print {*STDERR} "WARNING: Migration required\n";
@@ -159,15 +206,13 @@ sub create {
 
   my $class = ref($self) || $self;
 
-  my $model = $class->_model;
+  my $no_warnings = delete $args{no_warnings};
 
-  if ( !ref $model || reftype($model) ne 'ARRAY' || @{$model} ) {
-    croak "$class must provide a MODEL\n";
-  }
+  my $model = $class->_model( $dbi, %args );
 
-  my $table = $class->_table_name;
+  my $table = $model->get_table;
 
-  croak "could not determine table name from $class\n"
+  croak "could not determine table name\n"
     if !$table;
 
   my $sth = $dbi->prepare('show tables like ?');
@@ -176,21 +221,28 @@ sub create {
   my ($result) = $sth->fetchrow_array;
 
   if ( $result && lc $result eq lc $table ) {
-    carp "table $table already exists!\n";
-    my $migration = $class->verify_model( $dbi, %args );
+    if ( !$no_warnings ) {
+      carp "table $table already exists\n";
+    }
 
-    if ($migration) {
-      carp 'WARNING: Model is out of sync with database';
+    my $migration = $model->verify_model( $dbi, %args );
+    $model->set_migration($migration);
+
+    if ( $migration->should_migrate ) {
+      if ($no_warnings) {
+        carp "migration required\n";
+      }
     }
   }
   else {
-    my $stmnt = eval { $self->create_table( dbi => $dbi, table => $table, model => $model ); };
+    my $stmnt
+      = eval { $self->create_table( dbi => $dbi, table => $table, model => $model->get_model ); };
 
-    croak "error creating table: $table\n$EVAL_ERROR"
+    croak "error creating table: $table\n$EVAL_ERROR\n"
       if $EVAL_ERROR;
   }
 
-  return $table;
+  return $model;
 }
 
 ########################################################################
@@ -206,7 +258,7 @@ sub _create_table {
 
   foreach my $k ( keys %{$model} ) {
     croak "$k is not a Bedrock::Model::Field object:\n" . Dumper( $model->{$k} )
-      if !ref $model->{$k} || ref $model->{$k} ne 'Bedrock::Model::Field';
+      if !ref( $model->{$k} ) || ref( $model->{$k} ) !~ /Bedrock::Model::Field/xsm;
   }
 
   my @column_defs = map { $_->as_string } values %{ $args{model} };
@@ -235,7 +287,7 @@ sub verify_model {
 ########################################################################
   my ( $class, $dbi, %args ) = @_;
 
-  my $self = ref($class) ? $class : $class->new( { dbi => $dbi } );
+  my $self = ref $class ? $class : $class->new( { dbi => $dbi } );
 
   return Bedrock::Model::Migration->new(
     { model   => $self,
@@ -341,7 +393,7 @@ __END__
 
 =head1 NAME
 
-Bedrock::Model - An ORM for Bedrock
+Bedrock::Model - Yet another ORM for MySQL
 
 =head1 SYNOPSIS
                   
@@ -361,7 +413,7 @@ Bedrock::Model - An ORM for Bedrock
 
  package MyApp::Users;
 
- use parent qw/Bedrock::Model::Handler/;
+ use parent qw(Bedrock::Model::Handler);
 
  our $MODEL = {
      
@@ -424,7 +476,7 @@ Name of the table.
 =item model
 
 A hash of key/value pairs where the keys are the column names and the
-fields are C<Bedrock::Model::Field> objects.
+fields are L<Bedrock::Model::Field> objects.
 
 =back
 
@@ -439,17 +491,48 @@ Creates a new table based on the object's model.
 
 =head2 create
 
- $model->create();
+ create(dbi, [ model => model, table => table ] );
 
- Foo::Bar::create($dbi);
+ Foo::Bar->create($dbi, [ model => model, table => table, no_warnings => 1 ]);
 
-Class method to create the table.  This method can be called as an
-instance or class method depending on the need. It checks to make sure
-you have a valid model defined for the class.
+Method used to create a new table and return a C<Bedrock::Model>
+instance.  This method can be called as an instance or class
+method.  If the table exists a check will be made against the model to
+see if a migration is required. You can call C<get_migration()> to
+return the C<Bedrock::Model::Migration> object.
+
+Throws an exception if the table cannot be created.
+
+Throws an exception of no valid model is defined for the
+class. 
+
+=over 5
+
+=item model (optional)
+
+A hash of C<Bedrock::Model::Field> definitions where the keys are the
+names of each field or an array of C<Bedrock::Model::Field>
+definitons.
+
+=item table (optional)
+
+The name of the table to create. If you don't pass the table name, the
+table name will be derived as from the last segment of the class if
+the class subclasses C<Bedrock::Model>.
+
+=item no_warnings
+
+If true will suppress warning messages when the table exists or needs migration.
+
+=back
+
+Example:
+ my @fields = (Bedrock::Model::Field->
+ Bedrock::Model->create($dbi, 
 
 =head2 verify_model
 
-Creates a C<Bedrock::Model::Migration> object suitable for querying to
+Creates a L<Bedrock::Model::Migration> object suitable for querying to
 determine if a migration is required, but not suitable for execution.
 
  my $migration = $model->verify_model();

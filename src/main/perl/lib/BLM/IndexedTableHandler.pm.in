@@ -4,6 +4,7 @@ package BLM::IndexedTableHandler;
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2023, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -23,12 +24,9 @@ package BLM::IndexedTableHandler;
 use strict;
 use warnings;
 
-use parent qw( BLM::DBHandler );
-
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
-
 use Bedrock::Array;
 use Bedrock::Constants qw( :chars :booleans :find_flags );
+use Text::CSV_XS;
 
 use Bedrock::HTML::Helper qw(
   create_html_element
@@ -41,11 +39,16 @@ use Bedrock::HTML::Helper qw(
 use BLM::IndexedTableHandler::RecordSet;
 use Data::Dumper;
 use English qw(-no_match_vars);
-use List::Util qw( pairs any none);
+use JSON;
+use List::Util   qw( pairs any none);
 use Scalar::Util qw( reftype );
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+
+use parent qw( Exporter BLM::DBHandler );
+
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 ## no critic (ErrorHandling::RequireCarping, ProhibitManyArgs)
 
@@ -84,7 +87,7 @@ sub _new {
   $self->dbi( shift @args );
 
   return $self->_new_with_id(@args)
-    if !ref $args[0] || reftype( $args[0] ) ne 'HASH';
+    if !is_hash( $args[0] );
 
   return $self->_new_with_options(@args);
 }
@@ -152,6 +155,8 @@ sub new {
     $self->set_return_bedrock_refs($TRUE);
   }
 
+  $self->init_config;
+
   return $self->_init_record($id);
 }
 
@@ -213,8 +218,7 @@ END_OF_SQL
   my $field_names = join $COMMA, @fields;
   my $table_name  = $self->get_table_name;
 
-  my $bind_vars = join $COMMA, split $EMPTY,
-    ($QUESTION_MARK) x scalar @fields;
+  my $bind_vars = join $COMMA, split $EMPTY, ($QUESTION_MARK) x scalar @fields;
 
   return sprintf $query, $table_name, $field_names, $bind_vars;
 }
@@ -451,10 +455,11 @@ END_OF_SQL
 ########################################################################
 sub init_config {
 ########################################################################
-  my $self = shift;
+  my ($self) = @_;
 
   # no configuration passed
-  return if !$self->get_config || !$self->get_table_config;
+  return
+    if !$self->get_config || !$self->get_table_config;
 
   my $config = $self->get_table_config;
 
@@ -462,11 +467,18 @@ sub init_config {
 
   my $table_config = $config->{$table_name};
 
-  return if !$table_config;
+  return
+    if !$table_config;
 
   my %default = (
-    set        => $EMPTY,
-    get        => $EMPTY,
+    set => sub {
+      my ( $self, $f, $v ) = @_;
+      return $self->{$f} = $v;
+    },
+    get => sub {
+      my ( $self, $f, $v ) = @_;
+      return $self->{$f};
+    },
     attributes => {},
     labels     => $EMPTY,
   );
@@ -474,8 +486,9 @@ sub init_config {
   foreach my $type (qw(set get attributes labels)) {
     my $config = $table_config->{$type} || {};
 
-    foreach my $column ( @{ $self->get_fields } ) {
-      next if !exists $config->{$column};
+    foreach my $column ( $self->get_fields ) {
+      next
+        if exists $config->{$column};
 
       $config->{$column} = $default{$type};
     }
@@ -502,6 +515,20 @@ sub get_table_config {
   my ($self) = @_;
 
   return $self->get_config->{tables} || {};
+}
+
+########################################################################
+sub set_table_config {
+########################################################################
+  my ( $self, $config ) = @_;
+
+  $config //= {};
+
+  $self->get_config->{tables} = $config;
+
+  $self->init_config;
+
+  return $config;
 }
 
 ########################################################################
@@ -534,13 +561,13 @@ sub set {  ## no critic (ProhibitBuiltinHomonyms,ProhibitAmbiguousNames)
     my $ref = $args[0];
 
     die "use of set() with one argument requires a hash reference\n"
-      if !ref $ref || reftype($ref) ne 'HASH';
+      if !is_hash($ref);
 
     foreach my $f ( $self->get_fields() ) {
       if ( exists $ref->{$f} ) {
         $self->_set( $f, $ref->{$f} );
       }
-      # - drudge! if the field type is a 'tinyint', i.e. boolean, then this was
+      # NOTE: if the field type is a 'tinyint', i.e. boolean, then this was
       #   rendered as a checkbox.  Unfortunately, an HTML checkbox that is not checked
       #   does not manifest itself in the QUERY_STRING.  Therefore, we're going out a bit
       #   on a limb here, but if you've asked this method to use an object to set the
@@ -683,7 +710,22 @@ sub get_fields {
     }
   }
 
-  return @field_names;
+  return @field_names
+    if !$options{exclude};
+
+  return _filter_array( \@field_names, $options{exclude} );
+}
+
+########################################################################
+sub _filter_array {
+########################################################################
+  my ( $array, $exclude ) = @_;
+
+  $exclude = is_array($exclude) ? $exclude : [$exclude];
+
+  my %exclude_list = map { $_ => 1 } @{$exclude};
+
+  return grep { !exists $exclude_list{$_} } @{$array};
 }
 
 ########################################################################
@@ -752,9 +794,7 @@ sub set_field {
           my ( $hh, $mi, $sec, $ampm ) = ( $1, $2, $3, $4 );
           $sec =~ s/[:]//xsm;
 
-          $date .= sprintf ' %02d:%02d:%02d',
-            uc $ampm eq 'PM' ? $hh + 12 : $hh,
-            $mi, $sec;
+          $date .= sprintf ' %02d:%02d:%02d', uc $ampm eq 'PM' ? $hh + 12 : $hh, $mi, $sec;
         }
         else {
           my ( $cday, $cmon, $cyear ) = (localtime)[ ( 3, 4, 5 ) ];
@@ -796,8 +836,7 @@ sub max_id {
 ########################################################################
   my ($self) = @_;
 
-  my $result = $self->select( sprintf 'select max(id) id from %s',
-    $self->get_table_name );
+  my $result = $self->select( sprintf 'select max(id) id from %s', $self->get_table_name );
 
   return $result->{id};
 }
@@ -989,31 +1028,97 @@ sub find_unique {
 }
 
 ########################################################################
-# asref()
-# asref(key, key, ...)
-# asref([key, key, ...])
+sub as_string {
+########################################################################
+  my ($self) = @_;
+
+  return join $LIST_SEPARATOR, @{ $self->as_array_no_ref };
+}
+
+{
+  my $csv;
+
+########################################################################
+  sub as_csv {
+########################################################################
+    my ($self) = @_;
+
+    my @row  = @{ $self->as_array_no_ref };
+    my @data = (@row)[ map { 1 + 2 * $_ } ( 0 .. $#row / 2 ) ];
+
+    $csv //= Text::CSV_XS->new;
+
+    return $csv->string()
+      if $csv->combine(@data);
+
+    die $csv->error_diag;
+  }
+}
+
+########################################################################
+sub as_json {
+########################################################################
+  my ($self) = @_;
+
+  my @data = @{ $self->as_array };
+
+  return JSON->new->encode( { @{ $self->as_array } } );
+}
+
 ########################################################################
 sub asref {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my @cols;
+  return Bedrock::Hash->new( @{ $self->as_array(@args) } );
+}
 
-  if (@args) {
-    push @cols, map { is_array($_) ? @{$_} : $_ } @args;
-  }
-  else {
-    @cols = $self->get_fields();
-  }
+########################################################################
+sub as_ref_raw {
+########################################################################
+  my ( $self, @args ) = @_;
 
-  my %ref = map { ( $_ => $self->{$_} ) } @cols;
-
-  return Bedrock::Hash->new(%ref);
+  return Bedrock::Hash->new( @{ $self->as_array_no_ref(@args) } );
 }
 
 ########################################################################
 sub as_ref { goto &asref; }
 ########################################################################
+
+########################################################################
+sub _as_array_columns {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->get_fields()
+    if !@args;
+
+  return map { is_array($_) ? @{$_} : $_ } @args;
+}
+
+########################################################################
+sub as_array {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return [ map { ( $_ => $self->get($_) ) } $self->_as_array_columns(@args) ];
+}
+
+# if a getter returns a ref, use the raw value
+########################################################################
+sub as_array_no_ref {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $data = [];
+
+  foreach ( $self->_as_array_columns(@args) ) {
+    my $val = $self->get($_);
+    push @{$data}, ref $val ? $self->{$_} : $val;
+  }
+
+  return $data;
+}
 
 ########################################################################
 sub get_formatted_field_length {
@@ -1170,8 +1275,7 @@ sub create_select_field {
     $attributes->{disabled} = undef;
   }
 
-  return create_select_list( $field_name, $value, $attributes,
-    $options->{list} );
+  return create_select_list( $field_name, $value, $attributes, $options->{list} );
 }
 
 ########################################################################
@@ -1183,8 +1287,7 @@ sub create_radio_field {
     $attributes->{disabled} = undef;
   }
 
-  return create_radio_buttons( $field_name, $self->{$field_name},
-    $attributes, $options->{list} );
+  return create_radio_buttons( $field_name, $self->{$field_name}, $attributes, $options->{list} );
 }
 
 ########################################################################
@@ -1254,8 +1357,7 @@ sub create_tinyint_field {
 ########################################################################
   my ( $self, $field_name, $attributes, $labels, $lists, $options ) = @_;
 
-  return $self->create_checkbox_field( $field_name, $attributes, $labels,
-    $lists );
+  return $self->create_checkbox_field( $field_name, $attributes, $labels, $lists );
 
   my $disabled = $self->get_display_only($field_name);
 
@@ -1361,7 +1463,9 @@ sub create_timestamp_field {
   );
 }
 
+########################################################################
 sub create_decimal_field {
+########################################################################
   my ( $self, $field_name, $attributes, $labels, $lists ) = @_;
 
   my $size = $self->get_field_length($field_name);
@@ -1557,8 +1661,7 @@ sub html_form_body_with_class {
     };
   }
 
-  return $self->html_form_body( $attributes, $labels, $lists,
-    $exclude_fields );
+  return $self->html_form_body( $attributes, $labels, $lists, $exclude_fields );
 }
 
 ########################################################################
@@ -1607,18 +1710,17 @@ sub html_form_body {
 
         if ( $options->{type} eq 'select' ) {
           $input_element
-            = $self->create_select_field( $field, $attributes->{$field},
-            $labels, $lists, $options );
+            = $self->create_select_field( $field, $attributes->{$field}, $labels, $lists,
+            $options );
         }
         elsif ( $options->{type} eq 'radio' ) {
           $input_element
-            = $self->create_radio_field( $field, $attributes->{$field},
-            $labels, $lists, $options );
+            = $self->create_radio_field( $field, $attributes->{$field}, $labels, $lists, $options );
         }
         elsif ( $options->{type} eq 'checkbox' ) {
           $input_element
-            = $self->create_checkbox_field( $field, $attributes->{$field},
-            $labels, $lists, $options );
+            = $self->create_checkbox_field( $field, $attributes->{$field}, $labels, $lists,
+            $options );
         }
 
         $html .= sprintf
@@ -1638,20 +1740,18 @@ sub html_form_body {
           create_html_element( 'th', %{$th_attributes} ),
           $labels->{$field} || create_label_name($field),
           create_html_element( 'td', %{$td_attributes} ),
-          $self->create_select_field( $field, $attributes->{$field}, $labels,
-          $lists, $options );
+          $self->create_select_field( $field, $attributes->{$field}, $labels, $lists, $options );
       }
       else {
         my $input_element;
         if ( $field_type =~ /enum/xsm ) {
           $input_element
-            = $self->create_radio_field( $field, $attributes->{$field},
-            $labels, $lists, $options );
+            = $self->create_radio_field( $field, $attributes->{$field}, $labels, $lists, $options );
         }
         else {
           $input_element
-            = $self->create_checkbox_field( $field, $attributes->{$field},
-            $labels, $lists, $options );
+            = $self->create_checkbox_field( $field, $attributes->{$field}, $labels, $lists,
+            $options );
         }
 
         $html .= sprintf
@@ -1670,8 +1770,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_tinyint_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_tinyint_field( $field, $attributes->{$field}, $labels, $lists );
 
     }
     elsif ( $field_type =~ /varchar/xsm ) {
@@ -1681,8 +1780,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_varchar_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_varchar_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /int/xsm ) {
       next if $field =~ /^id$/xsm;
@@ -1692,8 +1790,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_int_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_int_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /^char/xsm ) {
       $html .= sprintf
@@ -1702,8 +1799,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_char_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_char_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /date/xsm ) {
 
@@ -1713,8 +1809,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_date_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_date_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /timestamp/xsm ) {
       $html .= sprintf
@@ -1723,8 +1818,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_timestamp_field( $field, $attributes->{$field},
-        $labels, $lists );
+        $self->create_timestamp_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /text/xsm ) {
       $html .= sprintf
@@ -1733,8 +1827,7 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_text_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_text_field( $field, $attributes->{$field}, $labels, $lists );
     }
     elsif ( $field_type =~ /decimal/xsm ) {
       $html .= sprintf
@@ -1743,15 +1836,13 @@ sub html_form_body {
         create_html_element( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_html_element( 'td', %{$td_attributes} ),
-        $self->create_decimal_field( $field, $attributes->{$field}, $labels,
-        $lists );
+        $self->create_decimal_field( $field, $attributes->{$field}, $labels, $lists );
     }
   }
 
   $html .= "</table>\n";
 
-  $html .= create_html_element( 'input',
-    ( type => 'hidden', value => $self->{id}, name => 'id' ) );
+  $html .= create_html_element( 'input', ( type => 'hidden', value => $self->{id}, name => 'id' ) );
 
   return $html;
 }
@@ -2057,63 +2148,69 @@ sub autocomplete {
 ########################################################################
   my ( $self, %options ) = @_;
 
-  my $where = $options{query};
-  my $query;
+  my $query = <<'END_OF_SQL';
+select %s
+  from %s
+END_OF_SQL
 
-  if ( !$options{query} ) {
-    $query = 'select %s from %s';
-    $where = $EMPTY;
-  }
-  else {
-    $query = 'select %s from %s where %s';
-    $where = $options{query};
-  }
+  my $where = $options{query} // $EMPTY;
 
-  if ( !is_array( $options{columns} ) ) {
-    $options{columns} = [$ASTERISK];
+  if ($where) {
+    $query .= "\n  where %s\n";
   }
 
-  my $columns = join $COMMA, @{ $options{columns} };
+  my $columns = $options{columns} // [$ASTERISK];
 
-  my @print_args = ( $columns, $self->get_table_name, $where ? $where : () );
-  $query = sprintf $query, @print_args;
+  if ( !is_array($columns) ) {
+    $columns = [$columns];
+  }
 
-  my @bind_vals = is_array( $options{args} ) ? @{ $options{args} } : ();
+  my @labels = $columns->[0] eq $ASTERISK ? $self->not_id : @{$columns};
 
-  my $result = $self->select_list( $query, @bind_vals );
+  $columns = join $COMMA, @{$columns};
+
+  $query = sprintf $query, $columns, $self->get_table_name, $where ? $where : ();
+
+  my @bind_args = is_array( $options{args} ) ? @{ $options{args} } : ();
+
+  my $result = $self->select_list( $query, @bind_args );
 
   my @list;
 
   foreach my $row ( @{$result} ) {
 
-    my @labels;
-
-    if ( $options{columns}->[0] eq $ASTERISK ) {
-      @labels = grep { !/^id$/xsm } $self->get_fields;
-    }
-    else {
-      @labels = @{ $options{columns} };
-    }
-
     foreach my $label (@labels) {
-      if ( $row->{$label} ) {
-        my $value = $row->{$label};
+      my $value = $row->{$label};
 
-        if ( $options{uc} ) {
-          $value = uc $value;
-        }
+      # while this could be 0, '' it's doubtful it would be a useful value in an autocomplete list
+      next
+        if !$value;
 
-        if ( $options{ucfirst} ) {
-          $value = ucfirst $value;
-        }
-
-        push @list,
-          { id => $row->{id}, label => $value, value => $row->{$label} };
+      if ( $options{uc} ) {
+        $value = uc $value;
       }
+      elsif ( $options{ucfirst} ) {
+        $value = ucfirst $value;
+      }
+
+      push @list,
+        {
+        id    => $row->{id},
+        label => $value,
+        value => $row->{$label},
+        };
     }
   }
 
   return \@list;
+}
+
+#######################################################################
+sub not_id {
+#######################################################################
+  my ($self) = @_;
+
+  return _filter_array( [ $self->get_fields ], 'id' );
 }
 
 # +-----------------+
@@ -2238,8 +2335,7 @@ sub _find_or_count {
     die "$self: invalid column name: [$field]\n"
       if none { $field eq $_ } @fields;
 
-    push @where_clause, sprintf ' %s %s ?', $field,
-      $exact_flag ? $EQUALS_SIGN : 'like';
+    push @where_clause, sprintf ' %s %s ?', $field, $exact_flag ? $EQUALS_SIGN : 'like';
 
     push @bind_args, $exact_flag ? $value : $value . $PERCENT;
   }
@@ -2278,8 +2374,7 @@ sub _find_or_count {
     my $config   = $self->get_config;
     my $max_rows = $self->max_rows;
 
-    @records = map { $self->new( $dbi, $_->{id}, $config, $table_name ); }
-      @{$result};
+    @records = map { $self->new( $dbi, $_->{id}, $config, $table_name ); } @{$result};
 
     if (@records) {
       foreach my $i ( 0 .. $#records ) {
@@ -2328,9 +2423,7 @@ sub _insert {
     $query = $self->get_insert_query;
   }
 
-  my @bind_vals = $self->_get_values(@fields);
-
-  $self->do( $query, @bind_vals );
+  $self->do( $query, $self->_get_values(@fields) );
 
   $self->{id} = $self->dbi->{mysql_insertid};
 
@@ -2374,8 +2467,7 @@ sub _update {
 update %s set %s where id = ?
 END_OF_SQL
 
-  $query = sprintf $query, $self->get_table_name, join $COMMA,
-    map {"$_ = ?"} @fields;
+  $query = sprintf $query, $self->get_table_name, join $COMMA, map {"$_ = ?"} @fields;
 
   $self->do( $query, $self->_get_values(@fields), $self->{id} );
 
@@ -2392,24 +2484,18 @@ sub _get {
   die "($field) is not a field in the table\n"
     if !$self->is_field($field);
 
-  if ( $self->get_table_config ) {
-    my $getters = $self->get_table_config->{ $self->get_table_name }->{get};
+  return $self->{$field}
+    if !$self->get_table_config;
 
-    return $self->{$field}
-      if !$getters || reftype($getters) ne 'HASH';
+  my $getters = $self->get_table_config->{ $self->get_table_name }->{get};
 
-    my $func = $getters->{$field};
+  return $self->{$field}
+    if !is_hash($getters);
 
-    if ( !$self->can($func) ) {
-      CORE::warn "no function $func defined\n";
+  my $func = $getters->{$field};
+  $func = ref $func ? $func : $self->can($func);
 
-      return $self->{$field};
-    }
-
-    return $self->can($func)->( $self, $field );
-  }
-
-  return $self->{$field};
+  return $func ? $func->( $self, $field ) : $self->{$field};
 }
 
 ########################################################################
@@ -2433,19 +2519,20 @@ sub _set {
     }
 
     if ( my $method = $setters->{$field} ) {
-      if ( $self->can($method) ) {
-        $self->{$field} = $self->can($method)->( $self, $field, $value );
+      my $func = ref $method ? $method : $self->can($method);
+
+      if ( ref $func ) {
+        $self->{$field} = $func->( $self, $field, $value );
       }
       else {
-        die
-          "You've specified a field formatter, but there is no method \'$method\'\n";
+        &warn( $self, "You've specified a field formatter, but there is no method \'$method\'\n" );
+        $self->{$field} = $value;
       }
     }
     elsif ( $type eq 'date' ) {
 
       if ( $value && $value =~ /\d{1,2}\/\d{1,2}\/\d{4}/xsm ) {
-        $value = sprintf '%04d-%02d-%02d',
-          ( split /\//xsm, $value )[ 2, 0, 1 ];
+        $value = sprintf '%04d-%02d-%02d', ( split /\//xsm, $value )[ 2, 0, 1 ];
       }
       elsif ( $value && $value =~ /\d{1,2}\/\d{1,2}\/\d{2}/xsm ) {
         my @date = split /\//xsm, $value;
@@ -2566,8 +2653,8 @@ sub _new_with_query {
     }
   }
 
-  my $filter = sprintf 'select id from %s where %s', $self->get_table_name,
-    join ' and ', @conditions;
+  my $filter = sprintf 'select id from %s where %s', $self->get_table_name, join ' and ',
+    @conditions;
 
   my $ref = $self->select( $filter, @bind_vars );
 
@@ -2609,25 +2696,14 @@ sub _new_with_options {
 ########################################################################
 sub _new_with_id {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $id, @args ) = @_;
 
-  my $id;
-
-  # new(dbi, id, config)
-  if ( @args == 2 && ref $args[1] ) {
-    $id = shift @args;
-    $self->set_config(@args);
+  if ( is_hash( $args[0] ) ) {
+    $self->set_config( $args[0] );
+    $self->set_table_name( $args[1] );
   }
-  # new(dbi, id, table-name)
-  elsif ( @args == 2 ) {
-    $id = shift @args;
-    $self->set_table_name(@args);
-  }
-  # new(dbi, id, config, table-name)
   else {
-    $id = shift @args;
-    $self->set_config( shift @args );
-    $self->set_table_name(@args);
+    $self->set_table_name( pop @args );
   }
 
   return $id ? $id : 0;
@@ -2639,6 +2715,14 @@ sub _get_table_dir {
   my ($self) = @_;
 
   my $table_name = $self->get_table_name;
+
+  my $database = $self->select('select database() as db');
+
+  die "no datase selected\n"
+    if !$database || !$database->{db};
+
+  die "table $table_name does not exist\n"
+    if !$self->table_exists($table_name);
 
   my $sth = $self->dbi->prepare( 'show fields from ' . $table_name );
   $sth->execute;
@@ -2658,17 +2742,14 @@ sub _get_table_dir {
     }
   }
 
-  die
-    'Table must have an indexed field named [id] and it must be auto_increment!'
+  die 'Table must have an indexed field named [id] and it must be auto_increment!'
     if !$self->{_id};
 
   $sth->finish;
 
   $self->set_table_dir($fields);
 
-  my @field_list
-    = sort { $fields->{$a}->{idx} <=> $fields->{$b}->{idx} }
-    CORE::keys %{$fields};
+  my @field_list = sort { $fields->{$a}->{idx} <=> $fields->{$b}->{idx} } CORE::keys %{$fields};
 
   $self->set_field_list( [@field_list] );
 
@@ -2681,8 +2762,7 @@ sub _get_table_dir {
   }
 
   if ( $self->get_table_config->{$table_name}->{attributes} ) {
-    $self->set_attributes(
-      $self->get_table_config->{$table_name}->{attributes} );
+    $self->set_attributes( $self->get_table_config->{$table_name}->{attributes} );
   }
 
   if ( $self->get_table_config->{$table_name}->{search_fields} ) {
@@ -2732,7 +2812,7 @@ BLM::IndexedTableHandler - Base class for a MySQL ORM
 
 =head1 SYNOPSIS
 
-  my $foo_ith = BLM::IndexedTableHandler->new( $dbi, $id, undef, 'foo' );
+  my $foo_ith = BLM::IndexedTableHandler->new( $dbi, $id, 'foo' );
 
   # foo handler with locking
   my $foo_ith = BLM::IndexedTableHandler->new( $dbi, { id => $id, 
@@ -2743,14 +2823,13 @@ BLM::IndexedTableHandler - Base class for a MySQL ORM
 
 Using L<BLM::IndexedTableHandler> as a base class:
 
-  package BLM::Foo;
+ package BLM::Foo;
 
-  use parent BLM::IndexedTableHandler;
+ use parent qw(BLM::IndexedTableHandler);
 
-  1;
+ 1;
 
  my $foo_ith = BLM::Foo->new( $dbi );
-
 
 =head1 DESCRIPTION
 
@@ -2762,9 +2841,9 @@ mundane tasks associated with managing the table's data.
 It can also be used to construct web applications that that manage the
 data in a single table.
 
-Essentially, L<BLM::IndexedTableHandler> through itE<039>s super-class
+Essentially, L<BLM::IndexedTableHandler> through itE<039>s sub-class
 represents a MySQL table and thus is named according to the tableE<039>s
-name.  In the synopsis above the super-class C<BLM::Foo> represents
+name.  In the synopsis above the sub-class C<BLM::Foo> represents
 the MySQL table C<foo>.
 
 L<BLM::IndexedTableHandler> is a sub-class of L<BLM::DBHandler>.
@@ -2824,7 +2903,7 @@ B<Example of overriding one of the HTML construction methods...>
     return $html;
   } 
 
-These HTML construction methods are described in more detail later in
+The HTML construction methods are described in more detail later in
 this documentation.
 
 I<The MySQL table should conform to certain conventions.  It must have
@@ -2927,6 +3006,7 @@ YouE<039>ll then want to create your MySQL table.
    email varchar(32)
  );
 
+Note: See L<Bedrock::Model> for a better way to create MySQL tables.
 
  $ cp Foo.pm /var/www/vhosts/www.mysite.com/perl5/BLM/Foo.pm
 
@@ -3214,22 +3294,88 @@ with class and id attributes that correspond to your table name.>
 
 =head1 METHODS AND SUBROUTINES
 
-=head2 asref
+=head2 "as_" FUNCTIONS
 
- asref()
- asref( key, key, ... )
+All of the "as_" functions act as serializers for one or more columns
+defined in the object. When the data is serialized it uses any custom
+getter you may have defined for the column. You can bypass the use a
+custom getter by calling the "_noref" version of the function. By
+default, C<as_json>, C<as_csv> and C<as_string> wil never use a
+reference if it is returned by your getter.
 
-Returns a hash object containing just the values of the columns of the
-table.  This is not a particular useful object as it is not endowed
-with the magic of the C<BLM::IndexedTableHandler> class, however some
-may find it more satisfying than seeing all of the internal guts of
-the classE<039> object hierarchy.
-
-If the C<key> argument is provided, the returned hash will contain
-only the keys specified.  C<key> can be a scalar or an array
+If you want to access the values of the columns as they would have
+been stored to your table you can access them directly from the object
 reference.
 
- <null:record $ith.asref( $ith.get_field_list(), 'my_extra_key') >
+ my $name = $ith->{name};
+
+Note that if you stored the value using C<set()> and you have defined
+a setter for that column, then the value stored in the hash will be
+the return value from your setter.
+
+=over 5
+
+=item as_array
+
+ as_array()
+ as_array(key, [key, key], ... )
+
+Returns an array of values for the list of keys provided.  A list
+element can also be a reference to a list of keys.
+
+=item as_array_no_ref
+
+If you have a custom getter that would normally return a reference you
+can use C<as_array_no_ref> to return the raw value of that column. A
+typical example where you might want to return the raw value might be
+a getter that decodes a JSON string into a Perl object but you need
+the serialized version for output.
+
+Setting customer getters using C<BLM::IndexedTableHandler> is done by
+sending a configuration object to the constructor that describes
+custom setters and getters for each column. See L</CUSTOM SETTERS & GETTERS>.
+
+=item asref
+
+Deprecated - use C<as_ref>
+
+=item as_ref
+
+ as_ref()
+ as_ref( key, [key, key], ... )
+
+Returns a C<Bedrock::Hash> object where the keys are column names and
+the values are the values returned by the column C<get> method. If you
+want to avoid references that might be returned by custom getters, use
+C<as_ref_raw>.
+
+If on or more C<key> arguments are provided, the returned hash will
+contain only the keys specified.  C<key> can be a scalar or an array
+reference containing additional keys.
+
+ <null:record $ith.as_ref( $ith.get_field_list(), 'my_extra_key') >
+
+=item as_ref_raw
+
+Same as C<as_ref> however values will be returned as strings. Prevents
+a getter from returning a reference.
+
+=item as_csv
+
+Returns a comma delimited version of the row. The order of the
+columns will always reflect the order in which the columns were
+defined in the table.
+
+=item as_json
+
+Returns the JSON representation of a row in the database.
+
+=item as_string
+
+Returns a string representation of each column. Use Perl's
+C<LIST_SEPARATOR> value to separate columns.
+
+=back
 
 =head2 autocomplete
 
@@ -3329,7 +3475,6 @@ class.  Typically used for debugging.
 
  [0] => Bedrock hash representing the public key/value pairs (column values)
  [1] => Bedrock hash of private key/value pairs
-
 
 =head2 encrypt
 
@@ -3532,7 +3677,6 @@ lists to L<Bedrock::Array> objects.>
 Returns a boolean value that determines if a field should be formatted
 when it is show in a form field.
 
-
 =head2 get_phone_field
 
  get_phone_field( field-name )
@@ -3587,7 +3731,6 @@ Example: Insert a new record, setting all columns ('baz', 'buz', will be set to 
 Note this will produce a NOT NULL exception on column 'buz' since we
 attempt to insert all column and no value is given for 'buz'.
 
-
 =head2 handler
 
   handler($input)
@@ -3638,7 +3781,6 @@ If no rows are found after executing the query, the method will return
 a table handler object.
 
 =back
-
 
 =head2 html_form_body
 
@@ -3714,12 +3856,29 @@ The C<id> field which uniquely identifies a record in the MySQL table.
 
 =item config
 
-Configuration object containing an object named C<tables> that
-contains options for handling MySQL tables.
+A hash reference representing configuration information associated
+with this or other tables. The configuration object should contain
+object named C<tables> that can contain custom setters and getter for
+columns in your table. The configuration object really can be used for
+anything you would like, the only caveat being that the C<tables>
+object should be a hash of key/value pairs where the key are the names
+of each table config.
+
+Each table configuration can have a C<set> and C<get> object which can
+define custom setter/getter methods for selected columns.  Setters and
+getters are essentially used for serializing/deserializing data to or
+from the table.
+
+Other than that, you can use the configuration object for whatever
+purpose you might like.
+
+See L</CUSTOMER SETTERS & GETTERS>
 
 =item table-name
 
-The name of the MySQL table.
+The name of the MySQL table. If a table name is not provided to the
+constructor it attempts to determine the table name from the suffix of
+the class name if you have sub-classed C<BLM::IndexedTableHandler>.
 
 =item lock
 
@@ -4062,15 +4221,15 @@ only called if I<format mode> is selected for the given field.
  <null $customer.save()>
 
 C<BLM::IndexedTableHandler> has built-in formatters for field whose
-names contain the words date, time or phone and whose types are
-date/datetime, timestamp, char or varchar.
+names contain the words B<date>, B<time> or B<phone> and whose types are
+C<date>, C<datetime>, C<timestamp>, C<char> or C<varchar>.
 
-If the field type is B<date>, B<datetime>, B<timestamp> and the column
-name contains the words date or time, AND format mode is selected,
+If the field type is C<date>, C<datetime>, C<timestamp> and the column
+name contains the words B<date> or B<time>, AND B<format> mode is enabled,
 then the field is formatted appropriately before being inserted into
 the database.
 
-If the field type is B<char> or B<varchar> and the column name
+If the field type is C<char> or C<varchar> and the column name
 contains the word B<phone> the field is formatted as a phone number
 (Either xxx-yyyy or (zzz) xxx-yyyy).
 
@@ -4157,6 +4316,57 @@ Returns true or false depending on validity of email address.  This
 doesnE<039>t mean this address is associated with a real email account,
 just that it might. ;-)
 
+=head1 CUSTOM SETTER & GETTERS
+
+You can define customer setters and getters for any of the columns in
+your table. When you instantiate the class, pass a configuration
+object that contains the custom setters and getters. The format of the
+configuration object you passed looks something like this:
+
+ { tables => {
+     table_name => {
+       set => { column_name => CODEREF | FUNCTION NAME,
+                column_name => CODEREF | FUNCTION NAME,
+                ...
+              },
+       get => { column_name => CODEREF | FUNCTION NAME
+                ...
+              }
+     },
+    }
+ }
+
+You B<do not> need to provide a setter and getter for every column.
+
+Here's an example of serializer to store a JSON text object in the database.
+
+Example:
+
+  my $config = {
+    tables => {
+      user => {
+        set => {
+          profile => sub {
+            my ( $f, $v ) = @_;
+            return q{} if !$v;
+            return ref $v ? JSON->new->encode($v) : $v;
+          },
+        },
+        get => {
+          profile => sub {
+            my ( $f, $v ) = @_;
+            return {} if !$v;
+            return JSON->new->decode($v);
+          },
+        }
+      }
+    }
+  };
+
+ my $ith = Bedrock::IndexedTableHandler->new($dbi, 0, $config, 'users');
+
+See L<Bedrock::Model> to learn about a mechanism to include your custom
+setter/getters as part of the table definition.
 
 =head1 CAVEATS
 
