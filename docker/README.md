@@ -58,6 +58,13 @@ port 3306. Disable the service and update `mysql-session.xml` and
 BEDROCK=~/git/openbedrock docker-compose up
 ```
 
+## Bedrock Documentation
+
+By default Bedrock documentation is enabled (See `ALLOW_BEDROCK_INFO`
+in `tagx.xml`) however your webserver document directory must have an empty
+`/bedrock` directory created. You can then access documentation at
+http://localhost:8080/bedrock
+
 # Connecting to the MySQL Server
 
 ## Connecting to localhost
