@@ -3,6 +3,7 @@ package Bedrock::Model::Migration;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,11 +24,13 @@ package Bedrock::Model::Migration;
 use strict;
 use warnings;
 
-use parent qw(Class::Accessor::Fast);
-
-use English qw(-no_match_vars);
+use Bedrock            qw(:booleans force_hash);
+use Bedrock::Constants qw(:booleans);
+use English            qw(-no_match_vars);
 use Data::Dumper;
 use Scalar::Util qw(reftype blessed);
+
+use parent qw(Class::Accessor::Fast);
 
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(
@@ -45,7 +48,7 @@ sub new {
 ########################################################################
   my ( $class, @args ) = @_;
 
-  my $options = ref $args[0] ? $args[0] : {@args};
+  my $options = force_hash(@args);
 
   my $self = $class->SUPER::new($options);
 
@@ -160,10 +163,9 @@ sub migrate {
   foreach my $field ( keys %table_state ) {
     if ( $self->get_debug ) {
       print {*STDERR} Dumper(
-        [
-          field => $field,
-          model => { %{$target_model{$field}}},
-          table => { %{$table_state{$field}}},
+        [ field => $field,
+          model => { %{ $target_model{$field} } },
+          table => { %{ $table_state{$field} } },
         ]
       );
     }
@@ -213,12 +215,11 @@ sub migrate {
 
   my %migration;
 
-  my $table   = $self->get_model->get_table;
-  my $dry_run = $self->get_dry_run;
-  my $dbi     = $self->get_model->get_dbi;
+  my $table = $self->get_model->get_table;
 
   foreach (@modify_these) {
-    $migration{$_} = sprintf 'alter table %s modify %s;', $table, $model->get_model->{$_}->as_string;
+    $migration{$_} = sprintf 'alter table %s modify %s;', $table,
+      $model->get_model->{$_}->as_string;
   }
 
   foreach (@add_these) {
@@ -241,10 +242,10 @@ sub should_migrate {
 
   my $migration = $self->get_migration;
 
-  return 0
-    if !ref $migration || !reftype($migration) eq 'HASH';
+  return $FALSE
+    if !is_hash($migration);
 
-  return keys %{$migration} ? 1 : 0;
+  return keys %{$migration} ? $TRUE : $FALSE;
 }
 
 ########################################################################
@@ -292,7 +293,7 @@ sub rename_field {
     if !$current_model->{$old_field};
 
   die "column with that name exists\n"
-    if $current_model->{$new_field};
+    if exists $current_model->{$new_field};
 
   my $migration = $self->get_migration || {};
 
@@ -308,7 +309,8 @@ sub rename_field {
     $field->{field} = $new_field;
   }
 
-  $migration->{$old_field} = sprintf 'alter table %s change %s %s', $self->get_model->get_table, $old_field,
+  $migration->{$old_field} = sprintf 'alter table %s change %s %s', $self->get_model->get_table,
+    $old_field,
     $field->as_string;
 
   delete $migration->{$new_field};
@@ -326,9 +328,33 @@ __END__
 
 =pod
 
+=head1 NAME
+
+Bedrock::Model::Migration
+
+=head1 SYNOPSIS
+
+ package MyApp::Users;
+
+ use Bedrock::Model::Migration;
+
+ use parent qw(Bedrock::Model);
+ 
+ my $migration = Bedrock::Model::Migration->new(model => $self);
+
+ if ( $migration->should_migrate) {
+   $migration->execute;
+ }
+
+=head1 DESCRIPTION
+
+A class that provides methods for updating table schemas. Typically
+you don't need to create this object since it is created for you when
+you instantiate a L<Bedrock::Model> object.
+
 =head2 new
 
-  new({ model => model, dry_run => 0/1 });
+  new(model => model, dry_run => 0/1) ;
 
 Compares the currently defined model and the state of the table to
 produce a set of SQL statements to apply in order to migrate a table.
@@ -366,6 +392,7 @@ Returns the number of statements needed for migrating table.
 Renaming a field can be done as an atomic operation or after you have
 altered the model definition and instantiated a migration object.
 
- my $migration = new Bedrock::Model::Migration({ model => $model });
+ my $migration = Bedrock::Model::Migration->new({ model => $model });
+ $migration->rename_field(last_updated => 'last_updated_date');
 
 =cut

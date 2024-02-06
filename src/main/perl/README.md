@@ -1,6 +1,5 @@
 # README
 
-
 This is the README for the Bedrock tag test suite. This __should__
 always be a work-in-progress...
 
@@ -30,13 +29,18 @@ $ cd src/main/perl
 $ make test
 ```
 
+This is invoke a test harness that exercises a subset of the Bedrock
+tags. There are some additional tests that can be run if you have a
+MySQL database available.
+
 As shown above, tests are run my invoking `make`.  The `Makefile.am`
 file controls which tests are run...in other words only the tests
-specified in the `Makefile.am` will be run. See [Adding
-a New Tests](#adding-a-new-test) for more details.
+specified in the `Makefile.am` will be run - regardless of whether you
+have added new tests to the `t/` subdirectory!
 
+See [Adding New Tests](#adding-a-new-test) for more details.
 
-> Note that in order to run all tests you need to have a MySQL
+> Note that in order to run ALL tests you need to have a MySQL
 > database running. See [SQL Tests](#sql-tests) for more details.
 
 # Docker Compose
@@ -46,12 +50,12 @@ Bedrock by providing a MySQL database but serves as a documentation
 server.
 
 A `docker-compose` file (`docker-compose-local.yml`) is located in the
-project's `docker` directory. It will create a:
+project's `docker` directory. It will launch a:
 
-* Redis server
-* MySQL server (5.7)
-* Apache server running Bedrock
-* A instance of LocalStack
+* ...Redis server
+* ...MySQL server (5.7)
+* ...Apache server running Bedrock
+* ...LocalStack
 
 ## Bringing Up the LAMB Stack
 
@@ -60,8 +64,9 @@ To bring up the Bedrock stack use the command below
 ```
 BEDROCK=~/git/openbedrock docker-compose up
 ```
+or `bedrock-up`
 
-...then
+...then in another shell
 
 ```
 export DBI_HOST=$(docker inspect docker_web_1 | \
@@ -71,7 +76,8 @@ export DBI_USER=root
 export DBI_PASS=bedrock
 ```
 
-If the `bedrock` database does not exist try:
+If the `bedrock` database does not exist you can create it as shown
+below:
 
 ```
 cat ../bedrock/config/create-session.sql | \
@@ -84,7 +90,6 @@ cat ../bedrock/config/create-session.sql | \
 cd src/main/perl
 TESTS=all make test
 ```
-
 
 # MySQL Docker Images
 
@@ -123,7 +128,7 @@ order__. Test names follow the convention:
 
 Where `{nn}` is a 0 padded integer and `{test-name}` is the name of
 the test. Test names should generally be indicative of the tag being
-tested. For example `12-sqlconnect.yml`.
+tested. For example `12-sqlconnect.yml` will test the `<sqlconnect>` tag.
 
 The integer prefix is used to order the tests. The order of tests
 should place tags that exercise the core features of
@@ -176,11 +181,13 @@ make test TESTS=sql
 
 # Test Logs
 
-When you run the unit tests, Bedrock will create logs with aid in
+When you run the unit tests, Bedrock will create logs to aid in
 debugging.  Bedrock is capable of both internal logging designed to
 debug Bedrock itself and creating log messages for Bedrock
 applications when one or more `--verbose` options are included in a
-tag. Log file configuration for tests and application usage is
+tag.
+
+Log file configuration for tests and application usage is
 controlled by a `log4perl.conf` file located in `src/main/perl/t`. You
 can further tune Bedrock log verbosity by modifying this file. In
 general each Bedrock Perl module uses `Log::Log4perl` meaning you can
@@ -195,7 +202,6 @@ log4perl.additivity.BLM.Startup.UserSession=0
 
 The `log4perl.conf` configuration for testing tags defines several
 appenders.
-
 
 ```
 ## Bedrock
@@ -409,18 +415,28 @@ running MySQL server with a `bedrock` database. You should also have a
 `session` table defined. The recipe below _should_ work to create the
 necessary environment for testing.
 
+Before you start...
+
+> Check the `t/config/data-sources.xml` file to make sure the
+> connection parameters for the `bedrock` database match your
+> environment.
+
+Note that the [`create-session.sql`](src/main/bedrock/create-session.sql) script
+will perform all of these steps. __CAUTION:__ the script will drop
+your `bedrock` database if it exists!
+
 1. Create the database and session table
    ```
+   cd src/main/perl
    mysqladmin -u root create bedrock
-   cat ../bedrock/config/mysql-session.sql | mysql -u root bedrock
+   cat ../bedrock/mysql-session.sql | mysql -u root bedrock
    ```
 1. Grant user `fred` privileges. Test will be run with user=`fred`,
 password=`flintstone`.
    ```
    grant all on *.* to 'fred'@'%' identified by 'flintstone'
    ```
-1. Run the tests. If your MySQL server is accessible as `localhost` you can simply run
-the tests thusly:
+1. Run the tests.
    ```
    TESTS=all make test
    ```
