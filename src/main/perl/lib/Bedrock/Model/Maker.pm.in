@@ -26,11 +26,12 @@ use warnings;
 
 use English qw(-no_match_vars);
 use Bedrock::Model;
+use Bedrock::Model::Handler qw(easy_connect);
 
 use parent qw(Class::Accessor::Fast);
 
 __PACKAGE__->follow_best_practice;
-__PACKAGE__->mk_accessors(qw(model package_name _tidy author));
+__PACKAGE__->mk_accessors(qw(dbi database table model package_name _tidy author));
 
 our $TEMPLATE;
 
@@ -45,7 +46,7 @@ caller or __PACKAGE__->main();
 
 =pod
 
-=head1 PUBLIC
+=head1 NAME
 
 Bedrock::Model::Maker
 
@@ -62,13 +63,15 @@ Bedrock::Model::Maker
    varchar_field( 'address2', 64 ),
    varchar_field( 'city', 32),
    zip_field(),
- );
-
+   date_field( 'start_date'),
+   date_field( 'end_date'), 
    enum_field( 'position', [ 'president', 'vice-president', 'cabinet', ] ),
    json_field('json'),
    date_inserted_field(),
    last_updated_field(),
  );
+ 
+ my $model = Bedrock::Model->new(model => \%fields);
 
  my $maker = Bedrock::Model::Maker->new(model => $model);
 
@@ -76,7 +79,62 @@ Bedrock::Model::Maker
 
 =head1 DESCRIPTION
 
+Creates a L<Bedrock::Model::Handler> class from a model definition
+that can be used for interacting with a MySQL table. Can also be used
+to create a model from an existing table.
+
 =head1 METHODS AND SUBROUTINES
+
+=head1 new
+
+Create a new C<Bedrock::Model::Maker> instance.
+
+=over 5
+
+=item author
+
+Name of the module author to use in the AUTHOR section of the pod.
+
+=item table
+
+Name of a MySQL table.
+
+=item dbi
+
+Open handle to a MySQL server.
+
+=item database
+
+Optional name of the database to use.
+
+=item package_name
+
+Name of the package to create.
+
+=item model
+
+A model definition.  Either an array of L<Bedrock::Model::Field>
+definitions or a hash of key/value pairs where the key is the field
+name and the value is a L<Bedrock::Model::Field> object.
+
+Note that if you use a hash, the order in which fields will be created
+in MySQL is non-deterministic. If you want to impose an order to the
+columns in the table, use an array.
+
+=back
+
+=head1 as_string
+
+Returns the text of a class based on the model definition.
+
+=head1 create_model_def
+
+Returns an array of L<Bedrock::Model::Field> objects. Note that these
+will be in the order in which they are show when you do a DESCRIBE
+{table} in MySQL.
+
+=head1 tidy
+
 
 =head1 AUTHOR
 
@@ -93,7 +151,13 @@ sub new {
 
   my $options = ref $args[0] ? $args[0] : {@args};
 
-  return $class->SUPER::new($options);
+  my $self = $class->SUPER::new($options);
+
+  if ( $self->get_dbi && $self->get_database ) {
+    $self->use_database( $self->get_database );
+  }
+
+  return $self;
 }
 
 ########################################################################
@@ -116,6 +180,38 @@ sub as_string {
   $template =~ s/[{][{]author[}][}]/$author/xsm;
 
   return $self->get__tidy ? $self->_tidy($template) : $template;
+}
+
+########################################################################
+sub create_model_def {
+########################################################################
+  my ( $self, $table_name ) = @_;
+
+  $table_name //= $self->get_table;
+  die "usage: create_model_def([table]);\n"
+    if !$table_name;
+
+  my $dbi = $self->get_dbi;
+  die "set dbi first\n"
+    if !$dbi;
+
+  my $ith = BLM::IndexedTableHandler->new( $dbi, { table_name => $table_name } );
+
+  my $table = $ith->_get_table_dir;
+
+  my @model_def;
+
+  foreach my $f ( sort { $a->{idx} <=> $b->{idx} } values %{$table} ) {
+    next if $f->{Field} eq 'idx';
+    my $field = $f->{Field};
+
+    my @fields = map { lc $_ => $table->{$field}->{$_} } grep { !/idx/xsm }
+      keys %{ $table->{$field} };
+
+    push @model_def, Bedrock::Model::Field->new(@fields);
+  }
+
+  return @model_def;
 }
 
 ########################################################################
@@ -147,7 +243,29 @@ sub tidy {
 ########################################################################
 sub main {
 ########################################################################
-  return print $TEMPLATE;
+  my $table_name = shift @ARGV;
+
+  die "usage: bedrock-model-maker table-name package-name\n"
+    if !$table_name;
+
+  my $package_name = shift @ARGV;
+  $package_name //= 'App::' . ucfirst $table_name;
+
+  my $dbi = easy_connect();
+
+  my $maker = Bedrock::Model::Maker->new(
+    dbi          => $dbi,
+    table        => $table_name,
+    package_name => $package_name,
+  );
+
+  my @model_def = $maker->create_model_def();
+  my $model     = Bedrock::Model->new( model => \@model_def );
+  $maker->set_model($model);
+
+  print {*STDOUT} $maker->tidy->as_string;
+
+  return 0;
 }
 
 1;

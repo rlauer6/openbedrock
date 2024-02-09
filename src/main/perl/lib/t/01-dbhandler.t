@@ -14,6 +14,7 @@ use Data::Dumper;
 use English    qw{-no_match_vars};
 use List::Util qw{none};
 use Test::More;
+use Time::Local;
 
 use Readonly;
 
@@ -347,13 +348,57 @@ subtest 'date_format' => sub {
   like( $date, qr/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/xsm, 'ISO 8601 format' )
     or diag( Dumper( [$date] ) );
 
+  my @localtime = localtime time;
+
+  my $utc_offset = timegm(@localtime) - timelocal(@localtime);
+  $utc_offset = $utc_offset / ( 60 * 60 );
+
+  $dbh->do( sprintf q{set @@session.time_zone='%s'}, sprintf '%+d:00', $utc_offset );
+
   $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', 0 );
   my $perl_date = scalar localtime time;
 
   while ( $perl_date =~ s/\s\s/ /xsmg ) { };  # remove multiple whitespace
 
-  ok( $date eq $perl_date, 'localtime formatted correctly' )
-    or diag( Dumper( [ $dbh->get_args, $dbh->get_query, $date, $perl_date ] ) );
+  ok( $date eq $perl_date, 'localtime formatted correctly - session.time_zone = UTC offset' )
+    or diag(
+    Dumper(
+      [ $dbh->get_args, $dbh->get_query,
+        date_format => $date,
+        perl_date   => $perl_date
+      ]
+    )
+    );
+
+  $dbh->do( sprintf q{set @@session.time_zone='+00:00'} );
+
+  $date = $dbh->date_format( undef, '%a %b %e %H:%i:%S %Y', $utc_offset );
+
+  $perl_date = scalar localtime time;
+
+  while ( $perl_date =~ s/\s\s/ /xsmg ) { };  # remove multiple whitespace
+
+  ok( $date eq $perl_date, 'localtime formatted correctly - session.time_zone = 00:00' )
+    or diag(
+    Dumper(
+      [ $dbh->get_args, $dbh->get_query,
+        date_format => $date,
+        perl_date   => $perl_date
+      ]
+    )
+    );
+
+};
+
+########################################################################
+subtest 'default date_format' => sub {
+########################################################################
+  my $dbh = BLM::DBHandler->new($dbi);
+
+  $dbh->do(q{set @@session.time_zone="+00:00"});
+  my $date = $dbh->date_format();
+
+  like( $date, qr/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/xsm, 'ISO format' );
 };
 
 ########################################################################

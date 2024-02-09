@@ -33,7 +33,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 14;
+  plan tests => 16;
 }
 
 use_ok('BLM::IndexedTableHandler')
@@ -75,7 +75,7 @@ Readonly::Hash our %TEST_RECORD => (
 );
 
 ########################################################################
-subtest 'new - 4 argument' => sub {
+subtest 'new(dbi, id, table)' => sub {
 ########################################################################
 
   my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, 'foo' ); };
@@ -85,7 +85,27 @@ subtest 'new - 4 argument' => sub {
 };
 
 ########################################################################
-subtest 'new - sub-classed' => sub {
+subtest 'new(dbi, { table => } )' => sub {
+########################################################################
+
+  my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, { table => 'foo' } ); };
+
+  isa_ok( $ith, 'BLM::IndexedTableHandler' )
+    or BAIL_OUT($EVAL_ERROR);
+};
+
+########################################################################
+subtest 'new(dbi, { table_name => } )' => sub {
+########################################################################
+
+  my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, { table_name => 'foo' } ); };
+
+  isa_ok( $ith, 'BLM::IndexedTableHandler' )
+    or BAIL_OUT($EVAL_ERROR);
+};
+
+########################################################################
+subtest 'new(dbi) - sub-classed' => sub {
 ########################################################################
 
   my $ith = ITH::Foo->new($dbi);
@@ -93,7 +113,7 @@ subtest 'new - sub-classed' => sub {
   isa_ok( $ith, 'ITH::Foo' )
     or do {
     diag($EVAL_ERROR);
-    bail_out('could not create BLM::IndexedTableHandler instance');
+    BAIL_OUT('could not create BLM::IndexedTableHandler instance');
     };
 };
 
@@ -141,7 +161,7 @@ subtest 'save' => sub {
 };
 
 ########################################################################
-subtest 'new - id' => sub {
+subtest 'new(dbi, id)' => sub {
 ########################################################################
   my $id = $dbi->last_insert_id();
 
@@ -155,7 +175,7 @@ subtest 'new - id' => sub {
 };
 
 ########################################################################
-subtest 'new - { id => ... }' => sub {
+subtest 'new( dbi, { id => ... })' => sub {
 ########################################################################
   my $id = $dbi->last_insert_id();
 
@@ -169,9 +189,9 @@ subtest 'new - { id => ... }' => sub {
 };
 
 ########################################################################
-subtest 'new - query' => sub {
+subtest 'new({}) - query ' => sub {
 ########################################################################
-  my $ith = ITH::Foo->new( { dbi => $dbi, foo => 'bar' } );
+  my $ith = ITH::Foo->new( { dbi => $dbi, table => 'foo', foo => 'bar' } );
 
   isa_ok( $ith, 'ITH::Foo' )
     or do {
@@ -203,7 +223,7 @@ subtest 'new - query' => sub {
 };
 
 ########################################################################
-subtest 'new - query (or)' => sub {
+subtest 'new({}) - query (or)' => sub {
 ########################################################################
   my $ith = ITH::Foo->new( { dbi => $dbi, _or_ => [ foo => 'bar', name => 'test' ] } );
 
