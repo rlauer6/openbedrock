@@ -20,9 +20,9 @@
 
   <hr/>
   <h1>Bedrock Log Configuration</h1>
-
-  <ul>
-    <li><var $config.LOG4PERL></li>
-  </ul>
+  <h2><var $config.LOG4PERL></h2>
+  <pre>
+    <var $log4perl>
+  </pre>
   </body>
 </html>

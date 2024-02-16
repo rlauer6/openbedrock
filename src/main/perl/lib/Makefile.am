@@ -288,6 +288,7 @@ perl5blmlib_DATA = \
     BLM/Recycle.pm \
     BLM/FTP.pm \
     BLM/SMTP.pm \
+    BLM/Redis.pm \
     BLM/Session.pm \
     BLM/Source.pm \
     BLM/Stat.pm \
@@ -297,6 +298,7 @@ BLM=$(perl5blmlib_DATA:.pm=.pm.in)
 
 perl5blmstartuplib_DATA = \
     BLM/Startup/BaseSession.pm \
+    BLM/Startup/Bedrock.pm \
     BLM/Startup/Config.pm \
     BLM/Startup/Cookie.pm \
     BLM/Startup/Env.pm \

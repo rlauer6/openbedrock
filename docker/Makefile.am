@@ -33,8 +33,8 @@ $(GTAGX): % : %.in
 	else \
 	  logfile="bedrock.log"; \
 	fi; \
-	sed -e 's,@logfile@,'$$logfile',' \
-	    -e 's,@html_logfile@,'$$html_logfile',' < $< >$@
+	$(do_subst) $< | sed -e 's,@logfile@,'$$logfile',' \
+	    -e 's,@html_logfile@,'$$html_logfile',' >$@
 
 APACHE_CONF = \
   httpd.conf.in

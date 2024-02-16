@@ -1,5 +1,26 @@
 package Bedrock::RedisClient;
 
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 use Role::Tiny;
 
 use Bedrock::XML;
@@ -13,7 +34,7 @@ Readonly our $DEFAULT_PORT   => 6379;
 Readonly our $DEFAULT_SERVER => 'localhost';
 Readonly our $REDIS_CONFIG   => 'redis-session.xml';
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic RequireInterpolationOfMetachars
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic RequireInterpolationOfMetachars
 
 our $HANDLE;
 our $CONFIG;
@@ -26,12 +47,14 @@ sub redis_config {
 
   my @paths;
 
-  for ( $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
-    push @paths, ( $_, "$_.d", "$_.d/startup" );
+  for ( grep {defined} $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
+    push @paths, ( $_, "$_.d", "$_.d/startup", "$_.d/plugin" );
   }
 
+  my $config_name = $ENV{REDIS_CONFIG} // $REDIS_CONFIG;
+
   for (@paths) {
-    my $xml_file = sprintf '%s/%s', $_, $REDIS_CONFIG;
+    my $xml_file = sprintf '%s/%s', $_, $config_name;
     next if !-e $xml_file;
 
     $CONFIG = eval { return Bedrock::XML->new($xml_file); };
@@ -39,7 +62,8 @@ sub redis_config {
     last if $CONFIG;
   }
 
-  die 'unable to find a valid redis config in: ' . Dumper( join "\n", @paths )
+  die sprintf 'unable to find a valid Redis configuration file (%s): %s', $config_name,
+    Dumper( join "\n", @paths )
     if !$CONFIG;
 
   return $CONFIG;
@@ -103,8 +127,7 @@ sub redis_session {
   return
     if !$redis->exists($session_key);
 
-  return
-    eval { return Bedrock::XML->newFromString( $redis->get($session_key) ); };
+  return eval { return Bedrock::XML->newFromString( $redis->get($session_key) ); };
 }
 
 ########################################################################
@@ -152,13 +175,16 @@ A Bedrock session using Redis.
 
 =head2 redis_config
 
-Returns the F<redis.xml> configuration as a hash. The configuration
-file must exist somewhere in one of the standard places Bedrock config files
-are supposed to exist. The method will search for the file in:
+Returns the Redis session configuration as a hash.  Typically the
+Redis configuration is stored in a Bedrock XML file named
+F<redis-session.xml>. The configuration file must exist somewhere in
+one of the typcial places Bedrock config files located. The method
+will search for the file in:
 
- $ENV{CONFIG_PATH}/redis.xml
- $ENV{CONFIG_PATH}.d/redis.xml
- $ENV{CONFIG_PATH}.d/startup/redis.xml
+ $ENV{CONFIG_PATH}
+ $ENV{CONFIG_PATH}.d
+ $ENV{CONFIG_PATH}.d/startup
+ $ENV{CONFIG_PATH}.d/plugin
 
 or the same directories rooted at Bedrock's configuration path
 $ENV{BEDROCK_CONFIG_PATH}.
@@ -168,6 +194,9 @@ file with provisions for Redis specific requirements like server name,
 port, etc.  See L<BLM::Startup::RedisSession> for more information
 about the format of the configuration file.
 
+You can add whatever additional values you would like to the
+configuration and access them from the hash returned by this method.
+
 =head2 redis_handle
 
 Returns a handle to a L<Redis> object.
@@ -176,7 +205,33 @@ Returns a handle to a L<Redis> object.
 
  redis_key(session-id)
 
-Returns a formatted Redis key that can be used to retrieve a session.
+Returns a formatted Redis key that can be used to retrieve a
+session. The key stored in Redis will be formatted with a namespace
+prefix (C<bedrock:session>). You can override the namespace prefix in the
+configuration file by setting the C<namespace> value.
+
+ <!-- Bedrock RedisSessions -->
+ <object>
+   <scalar name="binding">session</scalar>
+   <scalar name="session">yes</scalar>
+   <scalar name="module">BLM::Startup::RedisSession</scalar>
+ 
+   <object name="config">
+     <scalar name="verbose">2</scalar>
+     <scalar name="param">session</scalar>
+     <scalar name="namespace">bedrock:session</scalar>
+ 
+     <!-- Redis connect information -->
+     <scalar name="server">localhost</scalar>
+     <scalar name="port">6379</scalar>
+ 
+     <object name="cookie">
+       <scalar name="path">/</scalar>
+       <scalar name="expiry_secs">3600</scalar>
+       <scalar name="domain"></scalar>
+     </object>
+   </object>
+ </object>
 
 =head2 redis_session
 
@@ -186,10 +241,10 @@ Returns a reference to a hash that represents a user's session.
 
 =head1 AUTHOR
 
-Rob Lauer - rclauer@gmail.com
+BIGFOOT - <bigfoot@cpan.org>
 
 =head1 SEE OTHER
 
-L<BLM::Startup::RedisSession>, L<Redis>
+L<BLM::Startup::RedisSession>, L<Redis>, L<Bedrock::Apache::RedisSessionManager>
 
 =cut

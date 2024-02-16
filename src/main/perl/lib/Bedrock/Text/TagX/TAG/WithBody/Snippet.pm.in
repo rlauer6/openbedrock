@@ -1,6 +1,9 @@
+package TagX::TAG::WithBody::Snippet;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -18,22 +21,20 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::TAG::WithBody::Snippet;
-
 use strict;
 use warnings;
 
-use Bedrock qw{:booleans};
-use Bedrock::Constants qw{:chars :booleans};
+use Bedrock            qw(:booleans);
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Snippet;
-use English qw/-no_match_vars/;
+use English qw(-no_match_vars);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use parent qw{ Exporter TagX::TAG::WithBody};
+use parent qw( Exporter TagX::TAG::WithBody);
 
 ########################################################################
 sub error_listing {
@@ -56,8 +57,7 @@ sub error_listing {
 
   while ( defined( $_ = $fd->getline ) ) {
     chomp;
-    $listing .= sprintf "[%4d] %s %s\n", ++$line_no,
-      $line_no eq $err_line ? '>>' : q{  }, $_;
+    $listing .= sprintf "[%4d] %s %s\n", ++$line_no, $line_no eq $err_line ? '>>' : q{  }, $_;
   }
 
   $fd->close;
@@ -77,6 +77,7 @@ sub define_options {
   return (
     'define-var=s'     => $UNDERSCORE,
     'define-snippet=s' => 'snippet',
+    'export=s'         => undef,
   );
 
 } ## end sub define_options
@@ -95,14 +96,13 @@ sub finalize {
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   if ( $tag_opts->{type} ) {
-    $options{'define-var'} = $tag_opts->{name};
-
-    $options{'define-snippet'} = $tag_opts->{type};
+    $options{'define-var'}     = $tag_opts->{type};
+    $options{'define-snippet'} = $tag_opts->{name};
 
     shift @argv;
   }
   elsif ( $tag_opts->{name} ) {
-    $options{'define-var'} = $tag_opts->{name};
+    $options{'define-snippet'} = $tag_opts->{name};
 
     shift @argv;
   }
@@ -116,9 +116,9 @@ sub finalize {
   );
 
   # compile snippet
-  my $obj = eval { $self->create_snippet_class($snippet); };
+  my $obj = eval { $self->create_snippet_class( $snippet, \%options ); };
 
-  die error_listing( $snippet, $EVAL_ERROR, 'complilation error' )
+  die error_listing( $snippet, $EVAL_ERROR, 'compilation error' )
     if $EVAL_ERROR;
 
   $self->get_logger->debug(
@@ -128,10 +128,12 @@ sub finalize {
   );
 
   # initiaize snippet, create methods
-  my $rv = eval { $obj->init_snippet( \@context, $tx->config, @argv ); };
+  my $rv = eval { return $obj->init_snippet( \@context, $tx->config, @argv ); };
 
   die error_listing( $snippet, $EVAL_ERROR, 'error initializing snippet' )
     if $EVAL_ERROR;
+
+  $obj->export();
 
   $tx->param( $options{'define-var'}     => $rv );
   $tx->param( $options{'define-snippet'} => $obj );
@@ -139,18 +141,17 @@ sub finalize {
   return;
 }
 
-# create_snippet_class( name, code );
 ########################################################################
 sub create_snippet_class {
 ########################################################################
-  my ( $self, $code ) = @_;
+  my ( $self, $code, $options ) = @_;
 
   my $prefix = <<'END_OF_CODE';
   my $context = shift;
   my $config = shift;
 
-  $self->config(\$config);
-  $self->context(\$context);
+  $self->config($config); 
+  $self->context($context);
 
 # 8<------- YOUR CODE START HERE -------
 END_OF_CODE
@@ -158,7 +159,7 @@ END_OF_CODE
   $code = $prefix . $code;
   $code .= "# 8<------- YOUR CODE STOPS HERE -------\n";
 
-  my $snip = Bedrock::Snippet->new( name => 'init_snippet', code => $code );
+  my $snip = Bedrock::Snippet->new( name => 'init_snippet', code => $code, options => $options );
 
   die $EVAL_ERROR
     if $EVAL_ERROR;
@@ -183,15 +184,19 @@ snippet of Perl code.
 
 =head1 SYNOPSIS
 
+Execute some Perl code and return a value:
+
  <snippet $input.some_value>
- use Digest::MD5 qw/md5/;
+ use Digest::MD5 qw(md5);
 
  return md5(shift);
  </snippet>
  <var $_>
 
+Define a function in a snippet and then use it to return a value:
+
  <snippet:foo>
- use Digest::MD5 qw/md5/;
+ use Digest::MD5 qw(md5);
 
  sub my_md5 {
    my $self = shift;
@@ -202,43 +207,64 @@ snippet of Perl code.
 
  <var $foo.md5($input.value)>
 
+Export variables from your snippet:
+
+ <snippet --export foo>
+ our $foo = rand 10;
+ </snippet>
+
 =head1 DESCRIPTION
 
- <snippet[:var-name] [options] arg1 arg2 ... >
+ <snippet[:snippet-name:var-name] [options] arg1 arg2 ... >
  # your Perl code here...
  </snippet>
 
 While I<highly discouraged>, the C<E<lt>snippetE<gt>> tag can be used
-to include Perl code in your Bedrock page that can return a single
-value or perform some function.  The tag can encapsulate defined methods that
-can then be invoked anywhere on the page.
+to embed Perl code in your Bedrock page. The snippet can return a
+single value, export package variables into your Bedrock page or just
+execute some Perl code.  The tag can also define methods that can then
+be invoked anywhere on the page.
 
-Arguments defined in snippet definition are used to invoke a one time
-initialization sequence for the snippet.
+Arguments in the snippet definition are passed to your snippet as a
+list (C<@_>).
 
  <snippet --define-var="foo" $bar>
- use Digest::MD5 qw/md5/;
+ use Digest::MD5 qw(md5);
 
  return md5(shift);
 
  </snippet>
  md5: <var $foo>
 
-=head1 OPTIONS
-
- <snippet[:var-name] [options] arg1 arg2 ... >
+ <snippet[:name:var-name] [options] arg1 arg2 ... >
  # your Perl code here...
  </snippet>
 
+Optionally name your snippet and the return variable's name as
+suffixes of the tag name.
+
+ <snippet:mySnippet:retval>
+ ...
+ </snippet>
+
+...or use the options to set the return variable name and the snippet
+name. See L</OPTIONS>.
+
+=head1 OPTIONS
+
  --define-var     = "var-name"
  --define-snippet = "snippet-name"
+ --export         = "var-name"
+
+By default the name of your snippet is C<$snippet> and the return
+variable is C<$_>.
 
 =over 5
 
 =item --define-var
 
 The name of the object that will hold the return value of the C<snippet>.
-If not provided the C<snippet> value is available as the default
+If not provided the C<snippet> return value is available as the default
 variable C<$_>.
 
 =item --define-snippet
@@ -261,31 +287,49 @@ Then to use the snippet...
 
  <var $snippet.my_join("a", "b", "c")>
 
-I<Note that the C<my_join> is a method of a class whose parent is
-C<BLM::Hash>.  Hence you can provide persistence to your snippet
-object<039>s hash members.>
+I<Note that the snippets are subclasses of L<Bedrock::Hash>.  Hence
+you can use allof the methods of that class, including its setter
+c<set()> to provide peristence.>
+
+ $snippet.set('foo', 'bar');
+
+=item --export
+
+ --export=var-name
+
+Use the C<--export> option to export package variables you define
+inside your snippet. If you only need to return one value, use the
+return value of the snippet block.
 
 =back
 
 =head1 NOTES
 
+=over 5
+
+=item * Use With Caution
+
 As noted above, Bedrock B<discourages> the use of programming
 constructs within your Bedrock page.  Bedrock should be used to
-assemble a page, not to create a program that outputs an HTML page.
-If you really want to write program that creates an HTML page, you
-probably use PHP or Perl directly. Having said that, this tag can be
-useful for prototyping.
+I<assemble> a page, not to create a program that outputs an HTML page.
+If you really want to write a program that creates an HTML page, you
+probably should use Mason, PHP or Perl itself. Having said that,
+this tag can be useful for prototyping.
 
-It may be useful for a web application development tool like Bedrock to
-include an environment whereby a protoype of a Plugin can be
-developed. Hence the C<snippet> concept.  I<Proceed with caution.>
+While it may be useful for a web application development tool like
+Bedrock to include an environment whereby a protoype of a Plugin can
+be developed, I<proceed with caution.>
 
-I<The return value of a C<snippet> is stored in a variable specified by
+=item * Return Values
+
+The return value of a C<snippet> is stored in a variable specified by
 the C<--define-var> option or in C<$_> if no variable name is
-specified.>
+specified.
 
-I<You can create subroutines within the snippet that are called
-locally or that are invoked from your Bedrock page.>
+=item * Creating Subroutines
+
+You can create subroutines within the snippet that are called
+locally or that are invoked from your Bedrock page.
 
 Subroutines are actually class methods of a I<pseudo-Plugin> that is
 temporarily created during the intepretation of your page.  You can
@@ -294,6 +338,8 @@ calls.  The pseudo-Plugin C<ISA> C<Bedrock::Hash> so the methods
 associated with hash objects are also available.
 
 See the examples below.
+
+=item Create a Plugin from Your Snippet
 
 When you're happy with your little C<snippet> and want to make it a
 Plugin, you can simply collect all your methods and take the
@@ -306,10 +352,7 @@ C<BLM/Foo.pm>) I<somewhere where Perl will find it>.
  use strict;
  use warnings;
 
- use Bedrock::Plugin;
- use Bedrock::Hash;
-
- use parent qw{ Bedrock::Hash Bedrock::Plugin };
+ use parent qw( Bedrock::Hash Bedrock::Plugin );
  
  sub init_plugin {
    my $self = shift;
@@ -351,7 +394,7 @@ C<BLM/Foo.pm>) I<somewhere where Perl will find it>.
 
  Foo is <var $foo>
 
-=item * Create named snippet with a method
+=item * Create a named snippet with a method
 
  <snippet --define-snippet="hello_world" "hello world">
  my @a = split " ", shift;
@@ -396,13 +439,21 @@ method in your snippet.
 
 =head2 context
 
-Returns an array reference to BedrockE<039>s current symbol context.
-Each element of the array defines a C<TagX::Symtab> object.  The
-symbol table object contains a set of key/value pairs that represent
-localized Bedrock variables.  Tread with care...you probably do not
-really need to access this.
+Returns an array reference to BedrockE<039>s current symbol table
+context. Each element of the array represents a lexical scope. The
+value of each element the array is a hash reference that contains the
+variables for that scope.
 
  $self->context->[0]->{'_'}; # current default variable if defined
+
+=head2 current_context
+
+Returns a reference to the current context's symbol table.
+
+=head2 request
+
+Returns the request handler. When running under Apache this is
+Apache's request object.
 
 =head1 SEE ALSO
 

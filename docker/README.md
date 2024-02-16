@@ -58,6 +58,19 @@ port 3306. Disable the service and update `mysql-session.xml` and
 BEDROCK=~/git/openbedrock docker-compose up
 ```
 
+## Localstack & Redis
+
+The `docker-compose.yml` file also contains the configurations to
+bring up a Redis server and the Localstack (AWS emulator)
+environments.
+
+These can be enabled using the `--profile` option when you invoke
+`docker-compose`.
+
+```
+BEDROCK=~/git/openbedrock docker-compose --profile redis --profile localstack up
+```
+
 ## Bedrock Documentation
 
 By default Bedrock documentation is enabled (See `ALLOW_BEDROCK_INFO`
