@@ -28,7 +28,8 @@ use Role::Tiny::With;
 with 'Bedrock::RedisClient';
 
 use Bedrock::XML;
-use English qw(-no_match_vars);
+use Digest::MD5 qw(md5_hex);
+use English     qw(-no_match_vars);
 use JSON;
 use Scalar::Util qw(reftype);
 use Storable     qw(thaw freeze);
@@ -42,7 +43,8 @@ sub init_plugin {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  $self->custom_options(qw( json storable port server sock options export-keys));
+  $self->custom_options(
+    qw( no-md5 no-timestamp xml json storable port server sock options export-keys));
 
   $self->SUPER::init_plugin(@args);
 
@@ -125,6 +127,20 @@ sub json {
 }
 
 ########################################################################
+sub xml {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $options = $self->options;
+
+  if (@args) {
+    $options->{xml} = $args[0];
+  }
+
+  return $options->{xml};
+}
+
+########################################################################
 sub export_keys {
 ########################################################################
   my ( $self, @args ) = @_;
@@ -148,7 +164,7 @@ sub handle { return shift->get_handle; }
   sub serialize {
     my ( $self, $data, $deserialize ) = @_;
 
-    my $serialization_method = $self->storable ? 'storable' : 'json';
+    my $serialization_method = $self->serialization_method;
 
     $json //= JSON->new->allow_blessed->convert_blessed;
 
@@ -168,6 +184,9 @@ sub handle { return shift->get_handle; }
       return thaw($value)
         if $method eq 'storable';
 
+      return Bedrock::XML->newFromString($value)
+        if $method eq 'xml';
+
       return $value;
     }
     else {
@@ -177,6 +196,9 @@ sub handle { return shift->get_handle; }
       elsif ( $serialization_method eq 'storable' && ref $data ) {
         return freeze($data);
       }
+      elsif ( $serialization_method eq 'xml' && ref $data ) {
+        return Bedrock::XML::writeXMLString($data);
+      }
       else {
         return $data;
       }
@@ -185,21 +207,44 @@ sub handle { return shift->get_handle; }
 }
 
 ########################################################################
+sub serialization_method {
+########################################################################
+  my ($self) = @_;
+
+  my $options = $self->options();
+
+  for my $method (qw(xml json storable)) {
+    print {*STDERR} "method: $method\n";
+
+    return $method
+      if $options->{$method};
+  }
+
+  return 'json';
+}
+
+########################################################################
 sub set_key {
 ########################################################################
   my ( $self, $key, $value ) = @_;
 
+  my $options = $self->options();
+
   my $serialized_value = $value;
-  my $method           = 'raw';
+
+  my $method = 'raw';
 
   if ( ref $value ) {
     $serialized_value = $self->get__serialize->( $self, $value );
-    $method           = $self->storable ? 'storable' : 'json';
+
+    $method = $self->serialization_method;
   }
 
   my $metadata = {
     method => $method,
     value  => $serialized_value,
+    $options->{'no-timestamp'} ? () : ( timestamp => time ),
+    $options->{'no-md5'}       ? () : ( md5       => md5_hex($serialized_value) ),
   };
 
   return $self->handle->set( $key, JSON->new->encode($metadata) );
@@ -208,27 +253,34 @@ sub set_key {
 ########################################################################
 sub get_key {
 ########################################################################
-  my ( $self, $key, $options ) = @_;
+  my ( $self, $key, %options ) = @_;
 
   my $value = $self->handle->get($key);
 
-  my $deserialized_value = eval { $self->get__serialize->( $self, $value, 1 ); };
+  my $deserialized_value = eval {
+    return $value
+      if $options{raw};
 
-  if ( !defined $deserialized_value || $EVAL_ERROR ) {
-    $deserialized_value = $value;
-    $self->get_logger->error( 'error deserializing value: ' . $value . "\n$EVAL_ERROR" );
-  }
+    return $self->get__serialize->( $self, $value, 1 )
+      if !$options{metadata};
+
+    my $meta_data = eval { JSON->new->decode($value) };
+
+    return $meta_data
+      if $options{raw};
+
+    $meta_data->{value} = $self->get__serialize->( $self, $value, 1 );
+    return $meta_data;
+  };
 
   if ( $self->options('export-keys') ) {
     $self->export( $key, $deserialized_value );
   }
 
-  return $value;
+  return $deserialized_value;
 }
 
 1;
-
-## no critic (RequirePodSections)
 
 __END__
 
@@ -250,19 +302,51 @@ BLM::Redis - Interface to a Redis server
 
 =head1 DESCRIPTION
 
-Plugin access to Redis. Can be used to serialize/deserialize Perl objects to a Redis server.
+Plugin access to Redis. Can be used to serialize/deserialize Perl
+objects to a Redis server.
 
 =head1 METHODS AND SUBROUTINES
 
-=head2 set_key
+=head2 export_keys
+
+Causes the plugin to automatically export keys retrieved from Redis as
+Bedrock variables.
 
 =head2 get_key
 
-=head2 storable
+ get_key(key, [raw])
+
+Retrieves a serialized version of an object from Redis and converts it
+to a Perl object.
+
+Set C<raw> to a true value to retrieve the serialized version of the
+object. The serialized version will be a JSON object containing some
+metadata and the serialized representation of the object.
+
+ {
+  "value" : "...",
+  "timestamp": "
+  "method" : "json"
+ }
 
 =head2 json
 
-=head2 export_keys
+Causes the plugin to use the L<JSON> class for
+serialization/deserialization.
+
+=head2 xml
+
+Causes the plugin to use the L<Bedrock::XML> class for
+serialization/deserialization.
+
+=head2 set_key
+
+Stores a serialized version of an object to Redis.
+
+=head2 storable
+
+Causes the plugin to use the L<Storable> class for
+serialization/deserialization.
 
 =head1 CONFIGURATION
 
@@ -335,6 +419,13 @@ or
 
  <var $Redis.get_key('foo')>
 
+=item * Serialization methods can be dynamically changed.
+
+The plugin stores metadata with each object indicating the time the
+object was stored and the method used for serialization.  You can get
+the raw serialized data from Redis using the handle's C<get> method or
+by using the C<get_key> method with the raw option enabled.
+
 =back
 
 =head1 TAG OPTIONS
@@ -349,6 +440,16 @@ variable as the key name.
  <null $Redis.get_key('x')>
 
  <var $x>
+
+=item --no-md5
+
+By default serialized objects are stored with an MD5 hex hash. To
+disable this use the C<--no-md5> option.
+
+=item --no-timestamp
+
+By default serialized objects are stored with an timestamp. To
+disable this use the C<--no-timestamp> option.
 
 =item --options
 
@@ -390,6 +491,11 @@ Path for Unix domain socket.
 Example:
 
  <plugin:Redis --sock=/path/to/sock>
+
+=item --xml
+
+When using the C<xml> option, Bedrock will use L<Bedrock::XML> to
+serialize/deserialize objects to Redis.
 
 =back
 
