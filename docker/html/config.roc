@@ -1,3 +1,3 @@
 <pre>
-<trace --output $config>
+<trace --output $config.redis>
 </pre>

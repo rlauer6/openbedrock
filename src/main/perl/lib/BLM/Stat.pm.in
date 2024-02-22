@@ -1,6 +1,9 @@
+package BLM::Stat;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -18,37 +21,102 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package BLM::Stat;
-
 use strict;
 use warnings;
 
-use English qw(-no_match_vars);
+use Bedrock::Constants qw(:booleans);
+use English            qw(-no_match_vars);
 
-use parent qw( Bedrock::Hash );
+use parent qw( BLM::Plugin );
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw(attrs));
 
 ########################################################################
-sub TIEHASH {
+sub new {
 ########################################################################
   my ( $class, $file ) = @_;
 
-  $class = ref($class) || $class;
+  my $self = $class->SUPER::new;
 
-  die "no file argument\n"
-    if !defined $file;
+  my @attributes = qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks);
 
-  my @l = stat $file;
+  $self->mk_accessors( @attributes, qw(file attrs) );
 
-  die "unable to stat $file: $OS_ERROR\n"
-    if !@l;
+  $self->set_file($file);
 
-  my $self = bless Bedrock::Hash->new, $class;
-
-  @{$self}{
-    qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)}
-    = @l;
+  $self->set_attrs( \@attributes );
 
   return $self;
+}
+
+########################################################################
+sub stat {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $file ) = @_;
+
+  $file //= $self->get_file;
+
+  my @file_stat = CORE::stat $file;
+
+  my $i = 0;
+
+  foreach ( @{ $self->get_attrs } ) {
+    $self->set( $_, $file_stat[ $i++ ] );
+  }
+
+  return \@file_stat;
+}
+
+########################################################################
+sub mk_accessors {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( ref $args[0] ) {
+    my $options = $args[0];
+
+    foreach ( keys %{$options} ) {
+      $self->SUPER::mk_accessors($_);
+      $self->set( $_, $options->{$_} );
+    }
+  }
+  else {
+    $self->SUPER::mk_accessors(@args);
+  }
+
+  return;
+}
+
+########################################################################
+sub export {
+########################################################################
+  my ($self) = @_;
+
+  return $TRUE
+    if $self->options('no-export');
+
+  for my $var ( grep { $_ !~ /file|attrs/xsm } @{ $self->get_attrs } ) {
+    $self->SUPER::export( $var, $self->get($var) );
+  }
+
+  return $TRUE;
+}
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  $self->custom_options('no-export');
+
+  $self->SUPER::init_plugin(@args);
+
+  if ( $self->get_file ) {
+    $self->stat;
+  }
+
+  return $self->export;
 }
 
 1;
@@ -69,14 +137,19 @@ BLM::Stat - Return info about a file.
  <plugin:Stat $file>
 
  <var $Stat.size>
+ <var $size>
 
-=head1 CONSTRUCTOR
-
- <plugin:Stat "path">
+ <null:file_stats $Stat.stat($file)>
 
 =head1 DESCRIPTION
 
 Returns a 13 element hash of file information. See C<perldoc -f stat>.
+
+Also exports the property names below as scalars. You can access the
+values in the page as shown below:
+
+ <var $size>
+ <var $Stat.size>
 
 =head1 PROPERTIES
 
@@ -138,10 +211,17 @@ actual number of blocks allocated
 
 =head1 METHODS AND SUBROUTINES
 
-None.
+=head1 stat
+
+ stat(file)
+
+Returns the 13 element array described above. Also exports all
+elements as scalars unless the C<--no-export> is enabled.
 
 =head1 AUTHOR
 
 J. Sridhar
+
+BIGFOOT - <bigfoot@cpan.org>
 
 =cut

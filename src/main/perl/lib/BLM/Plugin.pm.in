@@ -1,0 +1,494 @@
+package BLM::Plugin;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use Bedrock::Constants qw(:booleans :chars);
+
+use Data::Dumper;
+use English    qw(-no_match_vars);
+use List::Util qw(pairs none);
+use Log::Log4perl::Level;
+
+use parent qw(Class::Accessor::Fast);
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw(
+    _argv
+    _config
+    _context
+    _custom_options
+    _log_level
+    _options
+    _valid_options
+  )
+);
+
+########################################################################
+sub _log      { my $level = shift; return shift->get_logger->$level(@_); }
+sub log_error { unshift @_, 'error'; goto &_log; }
+sub log_warn  { unshift @_, 'warn';  goto &_log; }
+sub log_info  { unshift @_, 'info';  goto &_log; }
+sub log_trace { unshift @_, 'trace'; goto &_log; }
+########################################################################
+
+########################################################################
+sub verbose {
+########################################################################
+  my ( $self, $verbose ) = @_;
+
+  my $level = $self->get_logger->level;
+
+  $self->set__log_level($level);
+
+  return $level > 1 ? $self->get_logger->level($TRACE) : $self->get_logger->level($DEBUG);
+}
+
+########################################################################
+sub context {
+########################################################################
+  my ($self) = @_;
+
+  my ($context) = @{ $self->get__context // [] };
+
+  return $context;
+}
+
+########################################################################
+sub export {
+########################################################################
+  my ( $self, $name, $value ) = @_;
+
+  return $self->context->{$name} = $value;
+}
+
+########################################################################
+sub options {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->get__options()
+    if !@args;
+
+  return $self->get__options->{ $args[0] };
+}
+
+########################################################################
+sub argv {
+########################################################################
+  my ($self) = @_;
+
+  return @{ $self->get__argv() };
+}
+
+########################################################################
+sub custom_options {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->get__custom_options()
+    if !@args;
+
+  my $options = ref $args[0] ? $args[0] : [@args];
+  $self->set__custom_options($options);
+
+  return $options;
+}
+
+########################################################################
+sub _check_options {
+########################################################################
+  my ($self) = @_;
+
+  my @valid_options = ( @{ $self->get__valid_options }, @{ $self->get__custom_options // [] } );
+
+  foreach (@valid_options) {
+    s/^--//xsm;
+  }
+
+  foreach my $option ( keys %{ $self->get__options } ) {
+    die "unknown option '$option'\n"
+      if none { $_ =~ /$option/xsm } @valid_options;
+  }
+
+  return;
+}
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  return $class->SUPER::new();
+}
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $params = ref $args[0] ? $args[0] : {@args};
+
+  my ( $context, $argv, $config, $options, $valid_options )
+    = @{$params}{qw(context params config options valid_options)};
+
+  $self->set__argv( $argv // [] );
+  $self->set__config($config);
+  $self->set__options( $options             // {} );
+  $self->set__context( $context             // [] );
+  $self->set__valid_options( $valid_options // [] );
+
+  $self->export( $UNDERSCORE, $TRUE );
+
+  $self->_create_accessors($params);
+
+  $self->_check_options();
+
+  return $TRUE;
+}
+
+########################################################################
+sub _create_accessors {
+########################################################################
+  my ( $self, $params ) = @_;
+
+  my ( $args, $options ) = @{$params}{qw(params options)};
+
+  return
+    if $options->{'disable-accessors'} || @{$args} % 2;
+
+  my $class = ref $self;
+
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
+
+  foreach my $p ( pairs @{$args} ) {
+    my $method = $p->[0];
+    next if *{ $class . '::get_' . $method } || *{ $class . '::set_' . $method };
+
+    $self->mk_accessors( $p->[0] );
+  }
+
+  return;
+}
+
+########################################################################
+sub DESTROY {
+########################################################################
+  my ($self) = @_;
+
+  if ( defined $self->get__log_level ) {
+    $self->get_logger->level( $self->get__log_level );
+  }
+
+  return;
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 PUBLIC
+
+BLM::Plugin - Base class for create Bedrock Plugins
+
+=head1 SYNOPSIS
+
+ use parent qw(BLM::Plugin);
+
+ sub init_plugin {
+   my ($self, $params) = @_;
+
+   ...
+
+   return 1;
+ }
+
+ 1;
+
+=head1 DESCRIPTION
+
+Use as a base class for creating plugins. This class is derived from
+L<Class::Accessor::Fast>. The C<Bedrock::Plugin> class was previously
+designed to be used as a base class for plugins. This class should be
+used in all future plugins.
+
+Your plugin can (but doesn't have to) override the C<new()> and
+C<init_plugin()> methods.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+The constructor is passed the list of arguments that you specfied in
+the C<E<lt>>pluginC<E<gt>> tag.
+
+=head2 custom_options
+
+Set or retrieve an array of custom options.
+
+ $self->custom_options('export');
+
+These options are then available in your plugin using the C<options()> method.
+
+Make sure you call C<custom_options()> BEFORE the C<init_plugin()>
+method of the parent class is called. You can call this method in your
+C<new()> method or if you override the C<init_plugin()> method, call
+this method prior to calling the parent's C<init_plugin()> method.
+
+ sub init_plugin {
+    my ( $self, @args ) = @_;
+
+    $self->custom_options('export');
+    ...
+    $self->init_plugin(@args);
+
+    return 1;
+}
+
+After the call to the parent's C<init_plugin()> the options are
+availble via the C<options()> method.
+
+=head2 export
+
+ export(key, value);
+
+Exports a variable to the current Bedrock context.
+
+Shorthand for:
+
+ $self->context->{$key} = $value;
+
+Example:
+
+ $self->export('foo', 'bar');
+
+...then in your Bedrock page:
+
+ <var $foo>
+
+=head2 init_plugin
+
+The C<init_plugin> method is called with a hash ref of potentially
+useful parameters.
+
+=over 5
+
+=item config
+
+Bedrock's global config object.
+
+=item context
+
+The context object contains the symbol tables used by
+Bedrock. This is an array of symbol tables that are formed for each
+lexical scope encountered by Bedrock. The most recent lexical scope is
+the last element of the array.
+
+You do not need to use this object directly. To set or retrieve a
+Bedrock variable in the current lexical scope use the C<context()>
+method:
+
+ $self->context->{foo} = 'bar';
+
+The context object is available only if you do not override this
+class' C<init_plugin()> method or if you call the parent's
+implementation of C<init_plugin()> prior to attempting to access it.
+
+ sub init_plugin {
+   my ( $self, $params ) = @_;
+
+   $self->SUPER::init_plugin($params);
+
+   $self->context->{foo} = 'bar';
+
+   return 1;
+ }
+
+If you choose to implement your own C<init_plugin> the C<context>
+object passed to you is an array of symbol table objects.  The current
+context is the last element of that array.  So to get the current
+context:
+
+ my ($context) = @{$params->{context} // []};
+
+In general it is more convenient to use the C<export()> method for
+exporting data into Bedrock's context.
+
+ $self->export('foo', 'bar');
+
+=item params
+
+An array of arguments passed to the plugin. This I<should> be a list
+of key/value pairs in the same vein as you would pass to
+C<Class::Accessor::Fast>.
+
+ <plugin:Plugin a 1 b 2 c 2>
+
+The C<init_plugin()> method will create setters/getters for these
+arguments if you have not defined your own methods with the same
+names.
+
+=item options
+
+The options passed to the plugin if any. This is a hash reference of
+the currently valid options for plugins which at this writing consists
+of:
+
+ --define-var
+ --init
+ --define-plugin
+
+=back
+
+=head1 CUSTOM OPTIONS
+
+Normally you would pass parameters and options to your plugin using a
+list that is placed after the tag name and tag options.
+
+ <plugin:Foo bar biz baz>
+
+It is possible however to add custom tag options to plugins. You might
+want to do this to disambiguate options for the plugin from the
+I<arguments> used in your plugin.  For example, you might define a custom
+option C<--no-export> which when present disables the exporting of
+some variables into the Bedrock page's namespace.  Here's an example:
+
+ <plugin:Stat --no-export $file>
+
+The C<BLM::Stat> plugin can be told to not to export the values that you
+would normally access as attributes of the plugin.
+
+ file size: <var $size>
+
+Adding the C<--no-export> tag changes the behavior of the plugin so
+that it disables exporting the attributes as scalars and forces you to
+access them as attributes of the plugin.
+
+ file size: <var $Stat.size>
+
+To define custom options, call the C<custom_options()> method with an
+array or list of options. Call this method in your C<new()> or
+C<init_plugin()> method.
+
+ $self->custom_options('no-export');
+
+These options are now available to the plugin via the C<options()> method.
+
+ $self->options('no-export');
+
+Custom options can have values associated with them or with no
+arguments represent booleans. The tag parser will assume that options
+with no arguments are boolean true values.
+
+=head1 LOGGING
+
+You can use the C<get_logger()> method to retrieve Bedrock's
+C<Log::Log4perl> logger object if you want to log messages in your
+plugin. The logger will log at the C<BLM> category level. You can set
+that in the F<log4perl.conf> file. Pick an appender like C<Bedrock> or
+C<BedrockPage> or create your own to redirect your messages
+to the appropriate appender.
+
+ log4perl.additivity.BLM=0
+ log4perl.category.BLM=INFO, Bedrock
+
+In your plugin:
+
+ $self->get_logger->info('this is a log message');
+
+In your Bedrock page:
+
+ <plugin:Plugin>
+ <null:logger $Plugin.get_logger()>
+ <null $logger.error('error message')>
+
+You can also use some convenience routines for logging.
+
+ $self->log_trace();
+ $self->log_debug();
+ $self->log_warn();
+ $self->log_info();
+ $self->log_error();
+
+ <plugin:Plugin>
+ <null $Plugin.log_info('this is a message')>
+
+=head1 EXAMPLE PLUGIN
+
+ package BLM::JSON;
+
+ use strict;
+ use warnings;
+
+ use parent qw(BLM::Plugin);
+ 
+# <plugin:JSON [--pretty] [--encode] [--decode] value>
+
+ sub init_plugin {
+   my ($self, @args) = @_;
+
+   $self->custom_options(qw(decode encode pretty));
+
+   $self->SUPER::init_plugin(@args);
+
+   my ($value) = $self->argv;
+
+   return $self->decode($value)
+     if $self->options('decode');
+
+    return $self->encode($value)
+      if $self->options('encode');
+   
+    return 1;
+  }
+
+ sub decode {
+   my ($self, $value) = @_;
+
+   return JSON->new->decode($value);
+ }
+
+ sub encode {
+   my ($self, $value) = @_;
+   my $pretty = $self->options('pretty') ? 1 : 0;
+  
+   return JSON->new->pretty($pretty)->encode($value);
+ }
+ 
+ 1;
+
+=head1 SEE OTHER
+
+L<Bedrock::Application::Plugin>
+
+=head1 AUTHOR
+
+BIGFOOT - <bigfoot@cpan.org>
+
+=cut

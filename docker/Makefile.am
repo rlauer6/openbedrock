@@ -14,7 +14,8 @@ REPOS = \
 XML_FILES = \
    mysql-session.xml.in \
    data-sources.xml.in \
-   redis-session.xml.in
+   redis-session.xml.in \
+   redis.xml.in
 
 YML_FILES = \
    docker-compose.yml.in
@@ -69,6 +70,8 @@ GXML_FILES = $(XML_FILES:.xml.in=.xml)
 GYML_FILES = $(YML_FILES:.yml.in=.yml)
 
 $(GXML_FILES): % : %.in
+	SESSION="$(SESSION)"; \
+	SESSION=$${SESSION:-mysql}; \
 	DBI_USER="$(DBI_USER)";\
 	DBI_USER=$${DBI_USER:-fred}; \
 	DBI_PASS="$(DBI_PASS)";\
@@ -79,28 +82,32 @@ $(GXML_FILES): % : %.in
 	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
 	DBI_DB="$(DBI_DB)";\
 	DBI_DB=$${DBI_DB:-bedrock}; \
-	sed -e 's/@dbi_user@/'$$DBI_USER'/' \
-	    -e 's/@dbi_pass@/'$$DBI_PASS'/' \
-	    -e 's/@dbi_db@/'$$DBI_DB'/' \
-	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/' \
-	    -e 's/@dbi_host@/'$$DBI_HOST'/' < $< >$@
+	sed -e 's/@session@/'$$SESSION'/g' \
+            -e 's/@dbi_user@/'$$DBI_USER'/g' \
+	    -e 's/@dbi_pass@/'$$DBI_PASS'/g' \
+	    -e 's/@dbi_db@/'$$DBI_DB'/g' \
+	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/g' \
+	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$@
 
 $(GYML_FILES): % : %.in
-	DBI_USER="$(DBI_USER)";\
+	SESSION="$(SESSION)"; \
+	SESSION=$${SESSION:-mysql}; \
+	DBI_USER="$(DBI_USER)"; \
 	DBI_USER=$${DBI_USER:-fred}; \
-	DBI_PASS="$(DBI_PASS)";\
+	DBI_PASS="$(DBI_PASS)"; \
 	DBI_PASS=$${DBI_PASS:-flintstone}; \
-	DBI_ROOT_PASS="$(DBI_ROOT_PASS)";\
+	DBI_ROOT_PASS="$(DBI_ROOT_PASS)"; \
 	DBI_ROOT_PASS=$${DBI_ROOT_PASS:-bedrock}; \
-	DBI_HOST="$(DBI_HOST)";\
+	DBI_HOST="$(DBI_HOST)"; \
 	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
-	DBI_DB="$(DBI_DB)";\
+	DBI_DB="$(DBI_DB)"; \
 	DBI_DB=$${DBI_DB:-bedrock}; \
-	sed -e 's/@dbi_user@/'$$DBI_USER'/' \
-	    -e 's/@dbi_pass@/'$$DBI_PASS'/' \
-	    -e 's/@dbi_db@/'$$DBI_DB'/' \
-	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/' \
-	    -e 's/@dbi_host@/'$$DBI_HOST'/' < $< >$@
+	sed -e 's/@session@/'$$SESSION'/g' \
+	    -e 's/@dbi_user@/'$$DBI_USER'/g' \
+	    -e 's/@dbi_pass@/'$$DBI_PASS'/g' \
+	    -e 's/@dbi_db@/'$$DBI_DB'/g' \
+	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/g' \
+	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$@
 
 CONFIG_FILES = \
     $(GXML_FILES) \
@@ -131,6 +138,7 @@ dist_noinst_DATA = \
 
 .PHONY: config
 config: $(CONFIG_FILES)
+	echo $(GYML_FILES)
 
 docker-image: $(DOCKERFILE) $(REPOS) $(CONFIG_FILES)
 	set -x; LOG=$$(mktemp); \

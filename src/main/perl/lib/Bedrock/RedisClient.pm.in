@@ -37,62 +37,65 @@ Readonly our $REDIS_CONFIG   => 'redis-session.xml';
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic RequireInterpolationOfMetachars
 
 our $HANDLE;
-our $CONFIG;
 
 ########################################################################
 sub redis_config {
 ########################################################################
-  return $CONFIG
-    if $CONFIG;
+  my ($file) = @_;
 
-  my @paths;
+  $file //= $ENV{REDIS_CONFIG};
 
-  for ( grep {defined} $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
-    push @paths, ( $_, "$_.d", "$_.d/startup", "$_.d/plugin" );
+  if ( !$file ) {
+    my @paths;
+
+    for ( grep {defined} $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} ) {
+      push @paths, ( $_, "$_.d", "$_.d/startup", "$_.d/plugin" );
+    }
+
+    for (@paths) {
+      $file = sprintf '%s/%s', $_, $REDIS_CONFIG;
+      last if -e $file;
+    }
   }
 
-  my $config_name = $ENV{REDIS_CONFIG} // $REDIS_CONFIG;
+  $file //= $REDIS_CONFIG;
 
-  for (@paths) {
-    my $xml_file = sprintf '%s/%s', $_, $config_name;
-    next if !-e $xml_file;
+  die "no config file found\n"
+    if !-e $file;
 
-    $CONFIG = eval { return Bedrock::XML->new($xml_file); };
+  my $config = eval { return Bedrock::XML->new($file); };
 
-    last if $CONFIG;
-  }
+  die sprintf "unable to load config (%s): %s\n", $file, $EVAL_ERROR // q{}
+    if !$config || $EVAL_ERROR;
 
-  die sprintf 'unable to find a valid Redis configuration file (%s): %s', $config_name,
-    Dumper( join "\n", @paths )
-    if !$CONFIG;
-
-  return $CONFIG;
+  # Redis configuration might be found in:
+  # - the 'config' object if redis-session.xml
+  # - the 'redis' object if Bedrock's global config
+  # - the root object if reading redis.xml
+  return $config->{config} // $config->{redis} // $config;
 }
 
 ########################################################################
 sub redis_connect {
 ########################################################################
-  my ($config) = @_;
+  my (@args) = @_;
 
-  $config = redis_config()->{config};
+  return $HANDLE
+    if $HANDLE;
 
-  my $port = $config->{port}   || $DEFAULT_PORT;
-  my $host = $config->{server} || $DEFAULT_SERVER;
-  my $sock = $config->{sock};
+  my $config = ref $args[0] ? $args[0] : {@args};
 
-  my $connect_options = $config->{options} // {};
+  $config->{port}   //= $DEFAULT_PORT;
+  $config->{server} //= $DEFAULT_SERVER;
+  $config->{name}   //= 'session-' . $PID;
 
-  $connect_options->{name}
-    = 'bedrock_' . ( $config->{name} || 'session' );
-
-  if ($sock) {
-    $connect_options->{sock} = $sock;
-  }
-  else {
-    $connect_options->{server} = "$host:$port";
+  if ( !$config->{sock} && $config->{server} !~ /:\d+$/xsm ) {
+    $config->{server} = sprintf '%s:%s', @{$config}{qw(server port)};
   }
 
-  return eval { return Redis->new( %{$connect_options} ); };
+  $HANDLE = Redis->new( %{$config} );
+
+  return $HANDLE;
 }
 
 ########################################################################
@@ -175,9 +178,10 @@ A Bedrock session using Redis.
 
 =head2 redis_config
 
-Returns the Redis session configuration as a hash.  Typically the
-Redis configuration is stored in a Bedrock XML file named
-F<redis-session.xml>. The configuration file must exist somewhere in
+Returns a Redis configuration file as a hash.  Typically the Redis
+configuration is stored in a Bedrock XML file named
+F<redis-session.xml> (but you can store your Redis configuration in
+any Bedrock XML file). The configuration file must exist somewhere in
 one of the typcial places Bedrock config files located. The method
 will search for the file in:
 
@@ -189,14 +193,42 @@ will search for the file in:
 or the same directories rooted at Bedrock's configuration path
 $ENV{BEDROCK_CONFIG_PATH}.
 
-The configuration file is a standard Bedrock session configuration
-file with provisions for Redis specific requirements like server name,
-port, etc.  See L<BLM::Startup::RedisSession> for more information
-about the format of the configuration file.
+The configuration file is usually a standard Bedrock session
+configuration file with provisions for Redis specific requirements
+like server name, port, etc embedded in a C<config> object.  See
+L<BLM::Startup::RedisSession> for more information about the format of
+the configuration file.
 
-You can add whatever additional values you would like to the
-configuration and access them from the hash returned by this method.
+You can add whatever additional values for configuring Redis you require.
 
+=over 5
+
+=item * The configuration file should be a Bedrock XML file that represents a
+hash of arguments.
+
+=item * If you use the standard session configuration file,
+your Redis configuration should be contained within the C<config>
+object.
+
+=item * If you use your own Bedrock XML file, the Redis configuration
+can be in either the root of the object or contained in within
+C<redis> sub-object. This is typically how you would specify the Redis
+configuration so that it would be merged into Bedrock's global
+configuaration object as 'redis'.
+
+ <object>
+   <object name="redis">
+     <scalar name="server">docker_redis_1</scalar>
+   </object>
+ </object>
+
+I<Note that you can place any valid configuration setting supported by
+the L<Redis> class.>
+
+=item
+
+=back
+ 
 =head2 redis_handle
 
 Returns a handle to a L<Redis> object.

@@ -1,6 +1,9 @@
+package TagX::TAG::NoBody::Plugin;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -18,17 +21,15 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::TAG::NoBody::Plugin;
-
 use strict;
 use warnings;
 
-use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Plugin;
-use English qw{-no_match_vars};
-use List::Util qw{any none};
+use English    qw(-no_match_vars);
+use List::Util qw(any none);
 use Symbol;
 
 use parent qw (Exporter TagX::TAG::NoBody);
@@ -44,9 +45,17 @@ sub define_options {
     'dir-prefix=s'    => undef,
     'define-plugin=s' => undef,
     'tie'             => undef,
+    'init=s'          => undef,
   );
+}
 
-} ## end sub define_options
+########################################################################
+sub option_names {
+########################################################################
+  my ($self) = @_;
+
+  return map { /(^[^=]+)/xsm && $1; } ( $self->define_options );
+}
 
 ########################################################################
 sub finalize {
@@ -54,46 +63,39 @@ sub finalize {
   my ( $self, $tx, @context ) = @_;
 
   my %options = $self->define_options;
-  my @argv    = $self->parse_options( \%options, @context );
+
+  local $TagX::TAG::PROHIBIT_UNKNOWN_OPTIONS = 0;
+
+  my @argv = $self->parse_options( \%options, @context );
+
+  my %extra_options;
+
+  foreach my $val (@argv) {
+    next if $val !~ /^\-\-(.*)$/xsm;
+
+    $extra_options{$1} = undef;
+  }
+
+  %options = ( %extra_options, $self->define_options );
+
+  # reset parse_options() so it will re-evaluate arguments with new options
+  delete $self->{__args_to_eval};
+
+  @argv = $self->parse_options( \%options, @context );
 
   $self->dump_options( \%options, @argv );
 
-  $options{'define-var'} //= $UNDERSCORE;
+  my $define_var = $options{'define-var'} //= $UNDERSCORE;
+  $tx->var_exists($define_var);
 
-  my $config = $tx->out_handle->{Handle}->{'CONFIG'};
+  my $config = $tx->config;  # $tx->out_handle->{Handle}->{'CONFIG'};
 
-  my $tag_name = shift @argv;
-  my $tag_opts = $self->parse_tag_name($tag_name);
-  my $name;
-  my $class;
+  my $tag = shift @argv;
 
-  if ( exists $options{'define-plugin'} ) {
-    $name  = $options{'define-plugin'};
-    $class = $tag_opts->{name} || $tag_opts->{type};
-  }
-  else {
-    $name  = $tag_opts->{name};
-    $class = $tag_opts->{type};
-    $name =~ s/:://gxsm;
-  }
+  my ( $name, $class ) = $self->parse_tag_name( $tag, $options{'plugin-name'} );
+  $tx->var_exists($name);
 
-  if ( exists $tx->{'VARS'}->{$name} ) {
-    $self->get_logger->warn(
-      sub {
-        sprintf 'plugin name: [%s] conflicts with existing variable.', $name;
-      }
-    );
-  }
-
-  if ( exists $tx->{'VARS'}->{ $options{'define-var'} } ) {
-    $self->get_logger->warn(
-      sub {
-        sprintf
-          'return variable name: [%s] conflicts with existing variable.',
-          $options{'define-var'};
-      }
-    );
-  }
+  my $plugin = $class =~ /^BLM/xsm ? $class : 'BLM::' . $class;
 
   # still undecided about this
   if ( exists $options{'dir-prefix'} ) {
@@ -112,102 +114,181 @@ sub finalize {
     }
   }
 
-  my $plugin = $class =~ /^BLM/xsm ? $class : 'BLM::' . $class;
+  $class = $self->loadPlugin( $plugin, $class );
 
-  if ( $self->loadModule($plugin) ) {
-    $class = $plugin;
-  }
-  elsif ( $self->loadModule($class) ) {
-    $self->get_logger->debug(
-      sub {
-        sprintf 'Successfully loaded perl class (%s)', $class;
-      }
-    );
-  }
-  else {
-    die sprintf
-      "Could not load module: [%s]. Check your syntax [<plugin:%s>] or your plugin path.\n",
-      $class, $tag_name;
-  }
+  my $plugin_obj = eval {
 
-  my $obj;
+    if ( $class->can('new') && !exists $options{tie} ) {  ## no critic (ProhibitCascadingIfElse)
+      $self->get_logger->trace(
+        sub {
+          Bedrock::Dump::compact [ 'args', \@argv ];
+        }
+      );
 
-  if ( $class->can('new') && !exists $options{tie} ) {  ## no critic (ProhibitCascadingIfElse)
-    $self->get_logger->trace(
-      sub {
-        Bedrock::Dump::compact [ 'args', \@argv ];
-      }
-    );
+      return $class->new(@argv);
+    }
+    elsif ( $class->can('TIEHASH') ) {
+      $self->get_logger->debug(
+        sub {
+          ref($self) . " creating an object of class $class";
+        }
+      );
 
-    $obj = $class->new(@argv);
-  }
-  elsif ( $class->can('TIEHASH') ) {
-    $self->get_logger->debug(
-      sub {
-        ref($self) . " creating an object of class $class";
-      }
-    );
+      my $obj = {};
+      tie %{$obj}, $class, @argv;  ## no critic (ProhibitTies)
 
-    $obj = {};
-    tie %{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-  }
-  elsif ( $class->can('TIEARRAY') ) {
-    $self->get_logger->debug(
-      sub {
-        ref($self) . "creating an array of class $class";
-      }
-    );
+      return $obj;
+    }
+    elsif ( $class->can('TIEARRAY') ) {
+      $self->get_logger->debug(
+        sub {
+          ref($self) . "creating an array of class $class";
+        }
+      );
 
-    $obj = [];
-    tie @{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-  }
-  elsif ( $class->can('TIEHANDLE') ) {
-    $self->get_logger->debug(
-      sub {
-        ref($self) . " creating a handle of class $class";
-      }
-    );
+      my $obj = [];
+      tie @{$obj}, $class, @argv;  ## no critic (ProhibitTies)
 
-    $obj = gensym;
-    tie *{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-  }
-  elsif ( $class->can('TIESCALAR') ) {
-    $self->get_logger->debug(
-      sub {
-        ref($self) . " creating a scalar of class $class";
-      }
-    );
+      return $obj;
+    }
+    elsif ( $class->can('TIEHANDLE') ) {
+      $self->get_logger->debug(
+        sub {
+          ref($self) . " creating a handle of class $class";
+        }
+      );
 
-    $obj = $argv[0];
-    tie $obj, $class;            ## no critic (ProhibitTies)
-  }
-  else {
-    die "Attempt to load invalid module: $class.\n";
-  }
+      my $obj = gensym;
+      tie *{$obj}, $class, @argv;  ## no critic (ProhibitTies)
 
-  if ( ref $obj ne $class ) {
-    bless $obj, $class;
+      return $obj;
+    }
+    elsif ( $class->can('TIESCALAR') ) {
+      $self->get_logger->debug(
+        sub {
+          ref($self) . " creating a scalar of class $class";
+        }
+      );
+
+      my $obj = $argv[0];
+      tie $obj, $class;            ## no critic (ProhibitTies)
+
+      return $obj;
+    }
+    else {
+      die "Attempt to load invalid module: $class.\n";
+    }
+  };
+
+  my $err = $EVAL_ERROR;
+
+  die "unable to  load plugin ($class)\n$err"
+    if !$plugin_obj || $err;
+
+  if ( ref $plugin_obj ne $class ) {
+    bless $plugin_obj, $class;
   }
 
   # call the plugin's init_plugin() if it exists...note that <plugin>
   # can be used to access "some" Perl modules that are not derived
   # from Bedrock::Plugin
 
-  if ( ref($obj) && $obj->can('init_plugin') ) {
-    if ( $obj->can('verbose') ) {
-      $obj->verbose( $self->verbose );
-    }
+  my @params;
+  my $init_method;
 
-    if ( $obj->can('options') ) {
-      $obj->options( Bedrock::Hash->new(%options) );
-    }
+  # new BLM::Plugin classes get called with different parameters
+  # than legacy Bedrock::Plugins...
+  if ( $self->isa_plugin( $class, $options{init} ) ) {
+    $init_method = $options{init} // 'init_plugin';
 
-    $tx->{'VARS'}->{ $options{'define-var'} } = $obj->init_plugin(@argv);
+    my %valid_options = $self->define_options;
+
+    @params = (
+      params        => \@argv,
+      config        => $config,
+      options       => \%options,
+      context       => \@context,
+      valid_options => [ keys %valid_options ],
+    );
+  }
+  else {
+    # legacy Bedrock::Plugins and others just get the plugin args
+    @params      = @argv;
+    $init_method = 'init_plugin';
   }
 
-  $tx->{'VARS'}->{$name} = $obj;
+  if ( ref $plugin_obj && $plugin_obj->can($init_method) ) {
+    if ( $plugin_obj->can('verbose') ) {
+      $plugin_obj->verbose( $self->verbose );
+    }
 
-  return $tx->{'VARS'}->{$name};
+    if ( $plugin_obj->can('options') && !$self->isa_plugin( $class, $options{init} ) ) {
+      $plugin_obj->options( Bedrock::Hash->new(%options) );
+    }
+
+    $tx->{VARS}->{$define_var} = $plugin_obj->$init_method(@params);
+  }
+
+  $tx->{VARS}->{$name} = $plugin_obj;
+
+  return $tx->{VARS}->{$name};
+}
+
+########################################################################
+sub parse_tag_name {
+########################################################################
+  my ( $self, $tag, $plugin_name ) = @_;
+
+  my ( $name, $type ) = @{ $self->SUPER::parse_tag_name($tag) // {} }{qw(name type)};
+
+  return ( $plugin_name, $name || $type )
+    if $plugin_name;
+
+  $name =~ s/:://gxsm;
+
+  return ( $name, $type );
+}
+
+########################################################################
+sub isa_plugin {
+########################################################################
+  my ( $self, $class, $init ) = @_;
+
+  return $TRUE
+    if $init || $class eq 'BLM::Plugin';
+
+  my $isa = do {
+    no strict 'refs';  ## no critic (ProhibitNoStrict)
+    \@{ $class . '::ISA' };
+  };
+
+  return $init || any { $_ eq 'BLM::Plugin' } @{ $isa || [] };
+}
+
+########################################################################
+sub loadPlugin {
+########################################################################
+  my ( $self, $plugin, $class ) = @_;
+
+  # We first look for a BLM, then a class with the name which allows
+  # us to use some Perl modules as Plugins.
+  if ( $self->loadModule($plugin) ) {
+    $class = $plugin;
+  }
+  elsif ( $self->loadModule($class) ) {
+    $self->get_logger->debug(
+      sub {
+        sprintf 'Successfully loaded Perl class (%s)', $class;
+      }
+    );
+  }
+  else {
+    die sprintf
+      "Could not load module: [%s]. Check your syntax or your plugin path.\n",
+      $class;
+  }
+
+  return $class;
 }
 
 ########################################################################

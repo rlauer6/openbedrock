@@ -3,8 +3,8 @@ package BLM::Redis;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
-#    Copyright (C) 2001, Charles Jones, LLC.
 #    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -27,58 +27,161 @@ use warnings;
 use Role::Tiny::With;
 with 'Bedrock::RedisClient';
 
-use English qw(-no_match_vars);
 use Bedrock::XML;
+use English qw(-no_match_vars);
 use JSON;
+use Scalar::Util qw(reftype);
+use Storable     qw(thaw freeze);
+use parent       qw( BLM::Plugin );
 
-use parent qw( Bedrock::Hash );
-
-########################################################################
-sub TIEHASH {
-########################################################################
-  my ( $class, @args ) = @_;
-
-  $class = ref($class) || $class;
-
-  my $self = bless {}, $class;
-
-  $self->init_blm;
-
-  return $self;
-}
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw(_serialize handle config));
 
 ########################################################################
-sub init_blm {
+sub init_plugin {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my $redis_config = $self->config( redis_config() );
+  $self->custom_options(qw( json storable port server sock options export-keys));
 
-  my $handle = $self->handle( redis_connect($redis_config) );
+  $self->SUPER::init_plugin(@args);
+
+  my $redis_options = $self->options('options');
+
+  # try to find a Redis configuration
+  # 1. --options=
+  # 2. Bedrock's global configuration
+  # 3. BLM::Startup::RedisSession configuration
+  # 4. Just take the defaults for connect to a Redis server (localhost:6379)
+
+  my $config = eval {
+    return $redis_options
+      if $redis_options && reftype($redis_options) eq 'HASH';
+
+    return $self->get__config->{redis}
+      if $self->get__config->{redis};
+
+    return redis_config();
+  };
+
+  if ( !$config || $EVAL_ERROR ) {
+    $self->get_logger->warn('no config file found or error reading config...using default values');
+    $config = {};
+  }
+
+  if ( !$redis_options ) {
+    my $options = $self->options();
+
+    if ( $options->{port} ) {
+      $config->{port} = $options->{port};
+      delete $config->{sock};
+    }
+
+    if ( $options->{sock} ) {
+      $config->{sock} = $options->{sock};
+      delete $config->{port};
+    }
+
+    if ( $options->{server} ) {
+      $config->{server} = $options->{server};
+    }
+  }
+
+  my $redis_config = $self->set_config($config);
+
+  my $handle = $self->set_handle( redis_connect($redis_config) );
+
+  $self->set__serialize( \&serialize );
 
   return $handle;
 }
 
 ########################################################################
-sub handle {
+sub storable {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{_handle}
-    if !@args;
+  my $options = $self->options;
 
-  return $self->{_handle} = $args[0];
+  if (@args) {
+    $options->{storable} = $args[0];
+  }
+
+  return $options->{storable};
 }
 
 ########################################################################
-sub config {
+sub json {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{_config}
-    if !@args;
+  my $options = $self->options;
 
-  return $self->{_config} = $args[0];
+  if (@args) {
+    $options->{json} = $args[0];
+  }
+
+  return $options->{json};
+}
+
+########################################################################
+sub export_keys {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $options = $self->options;
+
+  if (@args) {
+    $options->{'export-keys'} = $args[0];
+  }
+
+  return $options->{'export-keys'};
+}
+
+########################################################################
+sub handle { return shift->get_handle; }
+########################################################################
+
+{
+  my $json;
+
+  sub serialize {
+    my ( $self, $data, $deserialize ) = @_;
+
+    my $serialization_method = $self->storable ? 'storable' : 'json';
+
+    $json //= JSON->new->allow_blessed->convert_blessed;
+
+    if ($deserialize) {
+      return
+        if !$data;
+
+      my $metadata = $json->decode($data);
+      my ( $method, $value ) = @{$metadata}{qw(method value)};
+
+      return $value
+        if $method eq 'raw';
+
+      return $json->pretty->decode($value)
+        if $method eq 'json';
+
+      return thaw($value)
+        if $method eq 'storable';
+
+      return $value;
+    }
+    else {
+      if ( $serialization_method eq 'json' && ref $data ) {
+        return $json->encode($data);
+      }
+      elsif ( $serialization_method eq 'storable' && ref $data ) {
+        return freeze($data);
+      }
+      else {
+        return $data;
+      }
+    }
+  }
 }
 
 ########################################################################
@@ -86,11 +189,20 @@ sub set_key {
 ########################################################################
   my ( $self, $key, $value ) = @_;
 
+  my $serialized_value = $value;
+  my $method           = 'raw';
+
   if ( ref $value ) {
-    $value = JSON->new->encode($value);
+    $serialized_value = $self->get__serialize->( $self, $value );
+    $method           = $self->storable ? 'storable' : 'json';
   }
 
-  return $self->handle->set( $key, $value );
+  my $metadata = {
+    method => $method,
+    value  => $serialized_value,
+  };
+
+  return $self->handle->set( $key, JSON->new->encode($metadata) );
 }
 
 ########################################################################
@@ -100,18 +212,15 @@ sub get_key {
 
   my $value = $self->handle->get($key);
 
-  if ( $options && !ref $options ) {
-    $options = { $options => 1 };
+  my $deserialized_value = eval { $self->get__serialize->( $self, $value, 1 ); };
+
+  if ( !defined $deserialized_value || $EVAL_ERROR ) {
+    $deserialized_value = $value;
+    $self->get_logger->error( 'error deserializing value: ' . $value . "\n$EVAL_ERROR" );
   }
 
-  if ( $options && ref $options ) {
-    return JSON->new->decode($value)
-      if $options->{json};
-
-    return Bedrock::XML->newFromString($value)
-      if $options->{xml};
-
-    return $value;
+  if ( $self->options('export-keys') ) {
+    $self->export( $key, $deserialized_value );
   }
 
   return $value;
@@ -132,6 +241,7 @@ BLM::Redis - Interface to a Redis server
 =head1 SYNOPSIS
 
  <plugin:Redis>
+ <plugin:Redis --port=6379 --server=docker_redis_1 >
 
  <null:handle $Redis.handle()>
  <null $handle.set('foo', 'bar');
@@ -140,7 +250,152 @@ BLM::Redis - Interface to a Redis server
 
 =head1 DESCRIPTION
 
+Plugin access to Redis. Can be used to serialize/deserialize Perl objects to a Redis server.
+
 =head1 METHODS AND SUBROUTINES
+
+=head2 set_key
+
+=head2 get_key
+
+=head2 storable
+
+=head2 json
+
+=head2 export_keys
+
+=head1 CONFIGURATION
+
+The Redis plugin can use either the configuration file used by the
+L<BLM::Startup::RedisSession> module, or a C<redis> configuration object
+in the global Bedrock configuration object.
+
+You can also use the options to the plugin to configure the Redis
+client.
+
+=over 5
+
+=item C<BLM::Startup::RedisSession> Configuration
+
+ <object>
+   <scalar name="binding">session</scalar>
+   <scalar name="session">yes</scalar>
+   <scalar name="module">BLM::Startup::RedisSession</scalar>
+ 
+   <object name="config">
+     <scalar name="verbose">2</scalar>
+     <scalar name="param">session</scalar>
+ 
+     <!-- Redis connect information -->
+     <scalar name="server">172.25.0.1</scalar>
+     <scalar name="port">6379</scalar>
+     <scalar name="sock">/path/to/sock</scalar>
+     <scalar name="name">connection-name</scalar>
+     <object name="cookie">
+       <scalar name="path">/</scalar>
+       <scalar name="expiry_secs">3600</scalar>
+       <scalar name="domain"></scalar>
+     </object>
+   </object>
+ </object>
+
+=item Global Configuration
+
+ <object name="redis">
+   <scalar name="port">6379</scalar>
+   <scalar name="server">localhost</scalar>
+   <scalar name="sock">/path/to/sock</scalar>
+   <scalar name="name">connection-name</scalar>
+ </object>
+
+=back
+
+=head2 NOTES
+
+=over 5
+
+=item * Use either C<port> or C<sock> but not both. 
+
+=item * Use the C<get_key> and C<set_key> methods to store Perl objects to Redis. If you want to use the Redis connection directly call Redis methods by retrieving the handle.
+
+ <plugin:Redis --define-var="handle" >
+
+or
+
+ <null:handle $Redis.handle()>
+
+=item * Use the C<--export-keys> option to export the value of a Redis key into a Bedrock variable.
+
+ <plugin:Redis --export-keys>
+ 
+ <null $Redis.get_key('foo')>
+ <var $foo>
+
+=item * C<get_key> will return the value from the Redis store immediately for use.
+
+ <var $Redis.get_key('foo')>
+
+=back
+
+=head1 TAG OPTIONS
+
+=over 5
+
+=item --export-keys
+
+When using the C<get_key> method exports the key value as a Bedrock
+variable as the key name.
+
+ <null $Redis.get_key('x')>
+
+ <var $x>
+
+=item --options
+
+Name of a Bedrock hash that contains the Redis configuration.  This
+allows you to pass whatever values you require when connection to the
+Redis server.
+
+ <hash:redis_config server myserver port 6379>
+ <plugin:Redis --option=$redis_config>
+
+=item --port
+
+Port value.
+
+default: 6379
+
+=item --json
+
+Serialize Perl objects as JSON.
+
+When using the C<json> options, Bedrock will use the L<JSON> class.
+Blessed objects will be converted if possible to POPOs.
+
+=item --storable
+
+When using the C<storable> option, Bedrock will use the C<freeze()>
+and C<store()> methods of the L<Storable> class.
+
+=item --server
+
+Name of the server.  You can include the port value or use the C<--port> option.
+
+default: localhost
+
+=item --sock
+
+Path for Unix domain socket.
+
+Example:
+
+ <plugin:Redis --sock=/path/to/sock>
+
+=back
+
+=head1 SEE ALSO
+
+L<Redis>, L<Storable>, L<JSON>
 
 =head1 AUTHOR
 

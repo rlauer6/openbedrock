@@ -283,8 +283,10 @@ perl5blmlib_DATA = \
     BLM/DBHandler.pm \
     BLM/FileIO.pm \
     BLM/Filter.pm \
+    BLM/JSON.pm \
     BLM/IndexedTableHandler.pm \
     BLM/Mail.pm \
+    BLM/Plugin.pm \
     BLM/Recycle.pm \
     BLM/FTP.pm \
     BLM/SMTP.pm \
