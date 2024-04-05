@@ -1,9 +1,10 @@
-#!@PERL@ -w
+package TagX::Output::Frame;
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,60 +21,81 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::Output::Frame;
-
 #
 # Create new frame and store the parent output handle
 #
+
+use strict;
+use warnings;
+
+########################################################################
 sub new {
+########################################################################
   my ( $class, $out_handle ) = @_;
+
   my $self = bless {}, $class;
-  $self->{'out_handle'} = $out_handle;
-  $self->{'discard'}    = 1;
-  $self;
+
+  $self->{out_handle} = $out_handle;
+
+  $self->{discard} = 1;
+
+  return $self;
 }
 
+########################################################################
 sub end {
-  my $self = shift;
-  $self->{'discard'} = 0;
-  $self->{'out_handle'}->end_frame;
+########################################################################
+  my ($self) = @_;
+
+  $self->{discard} = 0;
+
+  return $self->{'out_handle'}->end_frame;
 }
 
 #
 # Frame being destroyed due to unhandled exception. Remove
 # me from parent's list of frames
 #
+########################################################################
 sub DESTROY {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
-  $self->{'out_handle'}->discard_frame
-    if $self->{'discard'};
+  if ( $self->{'discard'} ) {
+    $self->{'out_handle'}->discard_frame;
+  }
+
+  return;
 }
 
 1;
 
+########################################################################
 package TagX::Output;
+########################################################################
 
 use strict;
+use warnings;
+
 use IO::Handle;
 use IO::File;
+use English qw(-no_match_vars);
 
-BEGIN {
-  use Exporter ();
-  use vars qw ($VERSION @ISA);
-  @ISA = qw (Exporter);
-}
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic
 
+use parent qw(Exporter);
+
+########################################################################
 sub new {
-  my $class          = shift;
-  my $file_or_handle = shift;
+########################################################################
+  my ( $class, $file_or_handle ) = @_;
 
   my $self = bless {}, $class;
 
-  if ( ref($file_or_handle) ) {
+  if ( ref $file_or_handle ) {
     my $cond = eval { $file_or_handle->can('print') };
 
-    if ( $@ or not $cond ) {
+    if ( $EVAL_ERROR or not $cond ) {
       $self->{'Handle'} = IO::Handle->new_from_fd( $file_or_handle, 'w' );
     }
     else {
@@ -82,123 +104,167 @@ sub new {
     }
   }
   else {
-
     # is a file
     $self->{'Handle'} = IO::File->new( $file_or_handle, 'w' );
   }
 
   die "$class: could not create output handle for print() from [$file_or_handle]"
-    unless defined( $self->{'Handle'} );
+    if !defined $self->{'Handle'};
 
-  $self;
+  return $self;
 }
 
+########################################################################
 sub header {
-  my $self = shift;
-  $self->{'__header'} = shift if @_ == 1;
-  $self->{'__header'};
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( $args[0] ) {
+    $self->{__header} = $args[0];
+  }
+
+  return $self->{__header};
 }
 
-#
 # Make a new frame -- from now on all print data goes to this
 # frame
-#
+########################################################################
 sub create_frame {
-  my $self  = shift;
+########################################################################
+  my ($self) = @_;
+
   my $frame = TagX::Output::Frame->new($self);
-  push @{ $self->{'buffers'} }, '';
-  $frame;
+
+  push @{ $self->{buffers} }, q{};
+
+  return $frame;
 }
 
-#
 # Discard the data from the last frame due to unhandled exception
-#
+########################################################################
 sub discard_frame {
-  my $self = shift;
-  if ( $self->{'buffers'} ) {
-    pop @{ $self->{'buffers'} };
-    delete $self->{'buffers'} unless @{ $self->{'buffers'} } > 0;
-  }
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->{buffers};
+
+  pop @{ $self->{buffers} };
+
+  return
+    if @{ $self->{buffers} };
+
+  delete $self->{buffers};
+
+  return;
 }
 
-#
 # Delete data in frame
-#
+########################################################################
 sub empty_frame {
-  my $self = shift;
-  $self->{'buffers'}->[-1] = '' if $self->{'buffers'};
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->{buffers} ) {
+    $self->{buffers}->[-1] = q{};
+  }
+
+  return;
 }
 
-#
 # Done successfully with current frame -- Append current frame's data
 # to previous frame
-#
+########################################################################
 sub end_frame {
-  my $self = shift;
-  
-  if ( $self->{'buffers'} ) {
-    my $data = pop @{ $self->{'buffers'} };
-    
-    delete $self->{'buffers'}
-      unless @{ $self->{'buffers'} } > 0;
-    
-    $self->print($data);
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->{buffers};
+
+  my $data = pop @{ $self->{buffers} };
+
+  if ( !@{ $self->{buffers} } ) {
+    delete $self->{buffers};
   }
+
+  return $self->print($data);
 }
 
-#
 # Return data for specified frame. Return last frame data if none
 # specified
-#
+########################################################################
 sub frame_data {
-  my $self = shift;
-  return undef unless $self->{'buffers'};
-  return $self->{'buffers'}->[ @_ == 1 ? shift : -1 ];
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->{buffers};
+
+  my $frame = @args ? $args[0] : -1;
+
+  return $self->{buffers}->[$frame];
 }
 
+########################################################################
 sub dump_state {
-  my $self = shift;
-  my $mesg = shift;
-  warn "$mesg\nNumber of frames: ", scalar( @{ $self->{'buffers'} } ), "\n";
-  for ( my $i = 0 ; $i < scalar( @{ $self->{'buffers'} } ) ; $i++ ) {
-    warn "Frame ", $i + 1, "\n{$self->{'buffers'}->[$i]}\n";
-  }
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $mesg = shift @args;
+
+  warn sprintf "%s\nNumber of frames: %d\n", $mesg, scalar @{ $self->{buffers} };
+
+  my $i = 0;
+
+  warn sprintf "Frame %d\n{%s}\n", ++$i, $_ for @{ $self->{buffers} };  ## no critic
+
+  return;
 }
 
+########################################################################
 sub print_header {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
-  my $header = delete $self->{'__header'};
-  $header->print_header( $self->{'Handle'} );
+  my $header = delete $self->{__header};
+
+  return $header->print_header( $self->{Handle} );
 }
 
-#
-# Append info to the last frame; if no frames, output it
-#
-sub print {
-  my $self = shift;
-  return unless @_;
+# Append data to the last frame; if no frames, output it
+########################################################################
+sub print {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !@args;
 
   my $output;
 
-  if ( $self->{'buffers'} ) {
-    $self->{'buffers'}->[-1] .= "@_";
+  if ( $self->{buffers} ) {
+    $self->{buffers}->[-1] .= "@args";
+
+    return;
   }
-  else {
-    my $header = $self->{'__header'};
 
-    if ($header) {
-      my $obj = tied( %{$header} );
-      $output = $obj->{'output'};
+  my $header = $self->{__header};
 
-      $self->print_header;
-    }
+  if ($header) {
+    my $obj = tied %{$header};
 
-    # don't bother writing output if we're just redirecting!
-    unless ( $output && $output->{location} || $output->{Location} ) {
-      $self->{'Handle'}->print(@_);
-    }
+    $output = $obj->{output};
+
+    $self->print_header;
+
+    return
+      if $output && ( $output->{location} || $output->{Location} );
   }
+
+  $self->{Handle}->print(@args);
+
+  return;
 }
 
 1;
