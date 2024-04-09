@@ -4,7 +4,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2023, TBC Development Group, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -24,16 +24,21 @@
 use strict;
 use warnings;
 
+BEGIN {
+  use lib '@PERL_LIBDIR@';
+}
+
 use Bedrock qw(slurp_file);
 use Bedrock::Hash;
 use Carp;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use Getopt::Long;
 use IPC::Shareable;
 use JSON::PP;
 
 our %BEDROCK_CONFIG_CACHE;
+our $VERSION = '@PACKAGE_VERSION@';
 
 ########################################################################
 sub usage {
@@ -41,24 +46,63 @@ sub usage {
   print {*STDOUT} <<'END_OF_USAGE';
 usage: bedrock-cache.pl options
 
- Options:
+ Options
+ -------
 
-   --create = create the cache
-   --delete = delete the cache
-   --file   = filename of a file to cache (experimental)
-   --list   = list the contents of the cache
-   --help   = this
-   --reset  = clear the cache
-   --size   = size of the cache in MB (default: 256)
+  --create, -c   create the cache
+  --delete, -d   delete the cache
+  --file, -f     filename of a file to cache (experimental)
+  --list, -l     list the contents of the cache
+  --help, -h     this
+  --reset, -r    clear the cache
+  --size, -s     size of the cache in MB (default: 256)
+  --version, -v  version
+
+See man bedrock-cache.pl for more details.
+
 END_OF_USAGE
+
+  version();
 
   return;
 }
 
 ########################################################################
+sub version {
+########################################################################
+  print {*STDOUT} <<"END_OF_VERSION";
+(c) Copyright 2024 - TBC Development Group, LLC
+Version: $VERSION
+All rights reserved
+END_OF_VERSION
+
+  return;
+}
+
+########################################################################
+sub create_cache {
+########################################################################
+  my ( $create, $size ) = @_;
+
+  my $cache = eval {
+    local $SIG{__WARN__} = sub { };
+
+    ## no critic (ProhibitTies)
+    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
+      {
+      key     => 'BCFG',
+      create  => $create,
+      destroy => 0,
+      size    => 1024 * $size
+      };
+  };
+
+  return $cache;
+}
+
+########################################################################
 sub main {
 ########################################################################
-
   my %options;
 
   my @option_specs = qw(
@@ -69,6 +113,7 @@ sub main {
     help|?
     reset
     file=s
+    version|v
   );
 
   GetOptions( \%options, @option_specs );
@@ -77,19 +122,7 @@ sub main {
     $options{size} //= $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256;
   }
 
-  # see if we have a cache defined
-  {
-    local $SIG{__WARN__} = sub { };
-
-    ## no critic (ProhibitTies)
-    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
-      {
-      key     => 'BCFG',
-      create  => $options{create} ? 1 : 0,
-      destroy => 0,
-      size    => 1024 * $options{size}
-      };
-  }
+  my $cache = create_cache( 0, $options{size} );
 
   my %commands = (
     list => sub {
@@ -100,10 +133,16 @@ sub main {
     },
 
     delete => sub {
-      ( tied %BEDROCK_CONFIG_CACHE )->remove;
+      if ($cache) {
+        $cache->remove;
+      }
+
       return 0;
     },
-
+    version => sub {
+      version();
+      return 0;
+    },
     reset => sub {
       %BEDROCK_CONFIG_CACHE = ();
     },
@@ -118,6 +157,11 @@ sub main {
     },
 
     create => sub {
+      if ($cache) {
+        $cache->remove;
+      }
+
+      create_cache( 1, $options{size} );
       return 0;
     },
 
@@ -134,9 +178,11 @@ sub main {
     },
   );
 
-  my $command = 'default';
+  my $command = shift @ARGV;
 
-  foreach (qw( list delete reset file help create )) {
+  $command //= 'default';
+
+  foreach (qw( list delete reset file help create version )) {
     next if !$options{$_};
 
     $command = $_;
@@ -160,23 +206,22 @@ bedrock-cache.pl
 
 Create the cache...
 
- $ bedrock-cache.pl -c
+ bedrock-cache.pl create
 
 List cache contents...
 
- $ bedrock-cache.pl -l
+ bedrock-cache.pl list
 
 Delete the cache...
 
- $ bedrock-cache.pl -d
+ bedrock-cache.pl delete
 
 =head1 DESCRIPTION
 
-The Bedrock I<cache> is currently used to cache the Bedrock
-configuration objects created by Bedrock when a Bedrock page is
-accessed on an Apache virtual host.  Caching of the configuration is
-optionally done when the Bedrock Apache handler begins to process a
-page.
+The Bedrock I<cache> is used to cache the Bedrock configuration
+objects created by Bedrock when a Bedrock page is accessed on an
+Apache virtual host.  Caching of the configuration is optionally done
+when the Bedrock Apache handler begins to process a page.
 
 The I<cache> is implemented as shared memory using Perl's
 C<IPC::Shareable> module.
@@ -198,7 +243,7 @@ directive.
 
 Prior to starting the Apache server you should initialize the cache.
 
- bedrock-cache.pl --create
+ bedrock-cache.pl create
  apachectl start
 
 =head1 NOTES
@@ -206,37 +251,52 @@ Prior to starting the Apache server you should initialize the cache.
 For more gory details regarding Bedrock configuration file caching,
 see the I<perldocs> for C<Bedrock::Handler>.
 
-=head1 OPTIONS
+=head1 USAGE
+
+ bedrock-cache.pl [options] command
+
+=head2 Commands
 
 =over 5
 
-=item --delete
+=item delete
 
 Deletes the shared memory object and removes the cache.
 
-=item --file
+=item file
 
 Caches a file.  The key is the fully qualified path name of the file.
 This is experimental and Bedrock does not currently use this in any
 way shape or form.  It has been added to this utility for potential
 future usage.
 
-=item --list
+=item list
 
 Dumps the contents of the cache in JSON format. Note that the cache
 may include sensitive information.  You have been warned.
+
+=item reset
+
+Clears the cache, but does not delete it.
+
+=back
+
+=head2 Options
+
+=over 5
 
 =item --help
 
 Usage notes.
 
-=item --reset
-
-Clears the cache, but does not delete it.
-
 =item --size
 
-Sets the size of the cache.  Only valid when used with the C<--create> option.
+Sets the size of the cache.
+
+=item version
+
+Prints the program version. This will always be the same version as
+Bedrock itself.
 
 =back
 
