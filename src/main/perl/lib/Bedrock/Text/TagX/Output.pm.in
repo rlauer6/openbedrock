@@ -49,7 +49,7 @@ sub end {
 
   $self->{discard} = 0;
 
-  return $self->{'out_handle'}->end_frame;
+  return $self->{out_handle}->end_frame;
 }
 
 #
@@ -61,8 +61,8 @@ sub DESTROY {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self->{'discard'} ) {
-    $self->{'out_handle'}->discard_frame;
+  if ( $self->{discard} ) {
+    $self->{out_handle}->discard_frame;
   }
 
   return;
@@ -79,6 +79,12 @@ use warnings;
 
 use IO::Handle;
 use IO::File;
+use Data::Dumper;
+use Digest::MD5 qw(md5_hex);
+
+use List::Util qw(none any);
+use Scalar::Util qw(reftype blessed);
+
 use English qw(-no_match_vars);
 
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic
@@ -96,20 +102,20 @@ sub new {
     my $cond = eval { $file_or_handle->can('print') };
 
     if ( $EVAL_ERROR or not $cond ) {
-      $self->{'Handle'} = IO::Handle->new_from_fd( $file_or_handle, 'w' );
+      $self->{Handle} = IO::Handle->new_from_fd( $file_or_handle, 'w' );
     }
     else {
       # is probably IO:: or Apache::
-      $self->{'Handle'} = $file_or_handle;
+      $self->{Handle} = $file_or_handle;
     }
   }
   else {
     # is a file
-    $self->{'Handle'} = IO::File->new( $file_or_handle, 'w' );
+    $self->{Handle} = IO::File->new( $file_or_handle, 'w' );
   }
 
   die "$class: could not create output handle for print() from [$file_or_handle]"
-    if !defined $self->{'Handle'};
+    if !defined $self->{Handle};
 
   return $self;
 }
@@ -241,8 +247,6 @@ sub print {  ## no critic
   return
     if !@args;
 
-  my $output;
-
   @args = grep {defined} @args;
 
   if ( $self->{buffers} ) {
@@ -253,10 +257,25 @@ sub print {  ## no critic
 
   my $header = $self->{__header};
 
+  my $handle = $self->{Handle};
+
+  local $LIST_SEPARATOR = q{};
+
+  my $content = "@args";
+
+  my $caching_enabled = can_cache_page($handle);
+
+  my $etag;
+
   if ($header) {
     my $obj = tied %{$header};
 
-    $output = $obj->{output};
+    my $output = $obj->{output};
+
+    if ($caching_enabled) {
+      $etag = md5_hex($content);
+      $header->set( Etag => $etag );
+    }
 
     $self->print_header;
 
@@ -264,9 +283,38 @@ sub print {  ## no critic
       if $output && ( $output->{location} || $output->{Location} );
   }
 
-  $self->{Handle}->print(@args);
+  $handle->print($content);
 
-  return;
+  return
+    if !$caching_enabled;
+
+  my $redis = $handle->redis();
+
+  $redis->get_handle->set( $etag, $content );
+  my $ttl = $redis->get_config->{ttl};
+
+  return
+    if !$ttl;
+
+  return $redis->get_handle->expireat( $etag, time + $ttl );
+}
+
+########################################################################
+sub can_cache_page {
+########################################################################
+  my ($handle) = @_;
+
+  return
+    if !blessed $handle || !$handle->can('redis') || !$handle->redis();
+
+  my $redis_config = $handle->redis->get_config() // { cache => [] };
+
+  my $cache_list = $redis_config->{cache};
+
+  return
+    if !@{$cache_list};
+
+  return any { $ENV{REQUEST_URI} eq $_ } @{$cache_list};
 }
 
 1;

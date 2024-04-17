@@ -1,0 +1,123 @@
+package Bedrock::RedisCache;
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:booleans);
+use English qw(-no_match_vars);
+use JSON;
+use Redis;
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw(
+    auto_connect
+    cache
+    cnx_timeout
+    config
+    every
+    handle
+    host
+    port
+    read_timeout
+    reconnect
+    socket
+    write_timeout
+  )
+);
+
+use parent qw(Exporter Class::Accessor::Fast);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $options = ref $args[0] ? $args[0] : {@args};
+
+  my $config = eval {
+    return $options
+      if !$options->{config};
+
+    return $options->{config}
+      if ref $options->{config};
+
+    return JSON->new->decode( scalar slurp_file $options->{config} );
+  };
+
+  die "could not read REDIS config file\n$EVAL_ERROR"
+    if !$config || $EVAL_ERROR;
+
+  my $redis_config = init_defaults($config);
+
+  my $self = $class->SUPER::new( { config => $redis_config, %{$redis_config} } );
+
+  return $self
+    if !$self->get_auto_connect;
+
+  return $self
+    if !$self->get_host && !$self->get_socket;
+
+  my $host = sprintf '%s:%s', $self->get_host, $self->get_port;
+
+  my $socket = $self->get_socket;
+
+  my $reconnect = $self->get_reconnect;
+  my $every     = $self->get_every;
+
+  my $cnx_timeout   = $self->get_cnx_timeout;
+  my $read_timeout  = $self->get_read_timeout;
+  my $write_timeout = $self->get_write_timeout;
+
+  my $handle = Redis->new(
+    $socket        ? ( socket        => $socket )        : ( server => $host ),
+    $reconnect     ? ( reconnect     => $reconnect )     : (),
+    $cnx_timeout   ? ( cnx_timeout   => $cnx_timeout )   : (),
+    $read_timeout  ? ( read_timeout  => $read_timeout )  : (),
+    $write_timeout ? ( write_timeout => $write_timeout ) : (),
+  );
+
+  $self->set_handle($handle);
+
+  return $self;
+}
+
+########################################################################
+sub init_defaults {
+########################################################################
+  my ($config) = @_;
+
+  $config //= {};
+
+  $config->{auto_connect} //= $TRUE;
+
+  $config->{cache} //= [];
+
+  $config->{host}   //= $ENV{REDIS_HOST} // 'localhost';
+  $config->{port}   //= $ENV{REDIS_PORT} // '6379';
+  $config->{socket} //= $ENV{REDIS_SOCKET};
+
+  return $config;
+}
+
+1;

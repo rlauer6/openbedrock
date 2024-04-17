@@ -38,7 +38,7 @@ use Text::TagX;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
-use JSON::PP;
+use JSON;
 
 use List::Util qw( any uniq );
 use Scalar::Util qw(blessed);
@@ -77,10 +77,35 @@ our %EXPORT_TAGS = (
   ]
 );
 
+our $REDIS;
+
+if ( $ENV{REDIS_CONFIG} ) {
+  require Bedrock::RedisCache;
+
+  $REDIS = eval { Bedrock::RedisCache->new( config => $ENV{REDIS_CONFIG} ); };
+
+  if ( !$REDIS || $EVAL_ERROR ) {
+    warn "WARNING: could not initialize Bedrock::RedisCache object:\n$EVAL_ERROR";
+  }
+}
+
 ########################################################################
 sub handler {
 ########################################################################
   my ($r) = @_;
+
+  # see if our page is in cache, if so send a 304
+  if ( $REDIS && $REDIS->get_cache ) {
+    my $etag = $r->headers_in->{'If-None-Match'} // q{};
+
+    if ( $REDIS->get_handle->get($etag) ) {
+      $r->log->info('cache hit...serving - not modified');
+      $r->send_http_header;
+      $r->status($NOT_MODIFIED);
+
+      return $OK;
+    }
+  }
 
   my $benchmarks = $Bedrock::Handler::BEDROCK_BENCHMARK ? [ Benchmark->new ] : [];
 
@@ -192,7 +217,8 @@ sub handler {
 
   my $ctx = Bedrock::Context->new(
     REQUEST_HANDLER => $r,
-    CONFIG          => $conf
+    CONFIG          => $conf,
+    REDIS           => $REDIS,
   );
 
   # --- benchmark

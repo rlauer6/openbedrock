@@ -24,6 +24,7 @@ perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
 
+perl5bedrockredisclientlibdir    	  = $(perl5libdir)/Bedrock/RedisClient
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
@@ -70,7 +71,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Object.pm \
     Bedrock/Plugin.pm \
     Bedrock/PodWriter.pm \
-    Bedrock/RedisClient.pm \
+    Bedrock/RedisCache.pm \
     Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
@@ -78,6 +79,9 @@ perl5bedrocklib_DATA = \
     Bedrock/Template.pm \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm
+
+perl5bedrockredisclientlib_DATA = \
+    Bedrock/RedisClient/Role.pm
 
 perl5bedrocktestlib_DATA = \
     Bedrock/Test/Utils.pm \
@@ -135,6 +139,8 @@ perl5bedrocktextlib_DATA = \
 BEDROCK_TEXT=$(perl5bedrocktextlib_DATA:.pm=.pm.in)
 
 BEDROCK_TEST=$(perl5bedrocktestlib_DATA:.pm=.pm.in)
+
+BEDROCK_REDIS=$(perl5bedrockredisclientlib_DATA:.pm=.pm.in)
 
 perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/Error.pm \
@@ -333,6 +339,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_POD) \
+    $(BEDROCK_REDIS) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \
