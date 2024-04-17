@@ -3,8 +3,8 @@ package TagX::TAG::NoBody::Plugin;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
-#    Copyright (C) 2001, Charles Jones, LLC.
 #    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -85,7 +85,9 @@ sub finalize {
 
   $self->dump_options( \%options, @argv );
 
-  my $define_var = $options{'define-var'} //= $UNDERSCORE;
+  $options{'define-var'} //= $UNDERSCORE;
+  my $define_var = $options{'define-var'};
+
   $tx->var_exists($define_var);
 
   my $config = $tx->config;  # $tx->out_handle->{Handle}->{'CONFIG'};
@@ -116,69 +118,7 @@ sub finalize {
 
   $class = $self->loadPlugin( $plugin, $class );
 
-  my $plugin_obj = eval {
-
-    if ( $class->can('new') && !exists $options{tie} ) {  ## no critic (ProhibitCascadingIfElse)
-      $self->get_logger->trace(
-        sub {
-          Bedrock::Dump::compact [ args => \@argv ];
-        }
-      );
-
-      return $class->new(@argv);
-    }
-    elsif ( $class->can('TIEHASH') ) {
-      $self->get_logger->debug(
-        sub {
-          ref($self) . " creating an object of class $class";
-        }
-      );
-
-      my $obj = {};
-      tie %{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-
-      return $obj;
-    }
-    elsif ( $class->can('TIEARRAY') ) {
-      $self->get_logger->debug(
-        sub {
-          ref($self) . "creating an array of class $class";
-        }
-      );
-
-      my $obj = [];
-      tie @{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-
-      return $obj;
-    }
-    elsif ( $class->can('TIEHANDLE') ) {
-      $self->get_logger->debug(
-        sub {
-          ref($self) . " creating a handle of class $class";
-        }
-      );
-
-      my $obj = gensym;
-      tie *{$obj}, $class, @argv;  ## no critic (ProhibitTies)
-
-      return $obj;
-    }
-    elsif ( $class->can('TIESCALAR') ) {
-      $self->get_logger->debug(
-        sub {
-          ref($self) . " creating a scalar of class $class";
-        }
-      );
-
-      my $obj = $argv[0];
-      tie $obj, $class;            ## no critic (ProhibitTies)
-
-      return $obj;
-    }
-    else {
-      die "Attempt to load invalid module: $class.\n";
-    }
-  };
+  my $plugin_obj = eval { return $self->create_plugin_instance( class => $class, argv => \@argv, tie => $options{tie}, ); };
 
   my $err = $EVAL_ERROR;
 
@@ -189,6 +129,92 @@ sub finalize {
     bless $plugin_obj, $class;
   }
 
+  $tx->{VARS}->{$name} = $plugin_obj;
+
+  $tx->{VARS}->{$define_var} = $self->init_plugin(
+    { plugin_obj => $plugin_obj,
+      options    => \%options,
+      argv       => \@argv,
+      tx         => $tx,
+      context    => \@context,
+    }
+  );
+
+  return $tx->{VARS}->{$name};
+}
+
+########################################################################
+sub create_plugin_instance {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $class, $argv, $tie ) = @args{qw(class argv tie)};
+
+  ## no critic (ProhibitTies);
+  my %subs = (
+    new => sub {
+      return
+        if !$class->can('new') || $tie;
+
+      return $class->new( @{$argv} );
+    },
+    TIEHASH => sub {
+      return
+        if !$class->can('TIEHASH');
+
+      my $obj = {};
+      tie %{$obj}, $class, @{$argv};
+      return $obj;
+    },
+    TIEARRAY => sub {
+
+      return
+        if !$class->can('TIEARRAY');
+
+      my $obj = [];
+      tie @{$obj}, $class, @{$argv};
+      return $obj;
+    },
+    TIEHANDLE => sub {
+
+      return
+        if !$class->can('TIEHANDLE');
+
+      my $obj = gensym;
+      tie *{$obj}, $class, @{$argv};
+      return $obj;
+    },
+    TIESCALAR => sub {
+
+      return
+        if !$class->can('TIESCALAR');
+
+      my $obj = $argv->[0];
+      tie $obj, $class;
+      return $obj;
+    },
+  );
+
+  my $obj;
+
+  foreach my $type ( keys %subs ) {
+    my $obj = $subs{$type}->();
+
+    return $obj
+      if $obj;
+  }
+
+  die "Attempt to load invalid module: $class.\n";
+}
+
+########################################################################
+sub init_plugin {
+########################################################################
+  my ( $self, $args ) = @_;
+
+  my ( $plugin_obj, $options, $argv, $tx, $context )
+    = @{$args}{qw(plugin_obj options argv tx context)};
+
   # call the plugin's init_plugin() if it exists...note that <plugin>
   # can be used to access "some" Perl modules that are not derived
   # from Bedrock::Plugin
@@ -198,40 +224,38 @@ sub finalize {
 
   # new BLM::Plugin classes get called with different parameters
   # than legacy Bedrock::Plugins...
-  if ( $self->isa_plugin( $class, $options{init} ) ) {
-    $init_method = $options{init} // 'init_plugin';
+  my $class = ref $plugin_obj;
+  if ( $self->isa_plugin( $class, $options->{init} ) ) {
+    $init_method = $options->{init} // 'init_plugin';
 
     my %valid_options = $self->define_options;
 
     @params = (
-      params        => \@argv,
-      config        => $config,
-      options       => \%options,
-      context       => \@context,
+      params        => $argv,
+      config        => $tx->config,
+      options       => $options,
+      context       => $context,
       valid_options => [ keys %valid_options ],
     );
   }
   else {
     # legacy Bedrock::Plugins and others just get the plugin args
-    @params      = @argv;
+    @params      = @{$argv};
     $init_method = 'init_plugin';
   }
 
-  if ( ref $plugin_obj && $plugin_obj->can($init_method) ) {
-    if ( $plugin_obj->can('verbose') ) {
-      $plugin_obj->verbose( $self->verbose );
-    }
+  return $TRUE
+    if !ref $plugin_obj || !$plugin_obj->can($init_method);
 
-    if ( $plugin_obj->can('options') && !$self->isa_plugin( $class, $options{init} ) ) {
-      $plugin_obj->options( Bedrock::Hash->new(%options) );
-    }
-
-    $tx->{VARS}->{$define_var} = $plugin_obj->$init_method(@params);
+  if ( $plugin_obj->can('verbose') ) {
+    $plugin_obj->verbose( $self->verbose );
   }
 
-  $tx->{VARS}->{$name} = $plugin_obj;
+  if ( $plugin_obj->can('options') && !$self->isa_plugin( $class, $options->{init} ) ) {
+    $plugin_obj->options( Bedrock::Hash->new( %{$options} ) );
+  }
 
-  return $tx->{VARS}->{$name};
+  return $plugin_obj->$init_method(@params);
 }
 
 ########################################################################
@@ -279,7 +303,7 @@ sub loadPlugin {
     $self->get_logger->debug(
       sub {
         sprintf 'Successfully loaded Perl class (%s)', $class;
-      }
+      },
     );
   }
   else {
@@ -305,22 +329,20 @@ sub loadModule {
   return $module
     if $INC{$module};
 
-  eval { require $module; };
+  my $retval = eval { return require $module; };
 
-  print {*STDERR} $EVAL_ERROR;
-
-  if ($EVAL_ERROR) {
+  if ( !$retval || $EVAL_ERROR ) {
     $self->get_logger->error(
       sub {
         "module: [$module] not loaded!\n" . $EVAL_ERROR;
-      }
+      },
     );
   }
 
   $self->get_logger->debug(
     sub {
       "module: [$module] loaded successfully";
-    }
+    },
   );
 
   return $EVAL_ERROR ? undef : $module;
@@ -342,7 +364,7 @@ Load a Bedrock Plugin or Perl module.
 
 =head1 SYNTAX
 
- <plugin:[plugin name][:name] [--define-var="name"] [--define-plugin="name"] args...>
+ <plugin:[plugin name][:name] [--define-var="name"] args...>
 
 =head1 DESCRIPTION
 
@@ -353,10 +375,14 @@ application or add features not found in core Bedrock.
 Plugins are used to invoke methods that perform actions or that return
 objects or snippets of HTML for assembling your page.
 
+See L<BLM::Plugin> for a detailed guide on building custom plugins.
+
 =head1 OPTIONS
 
  --define-var    = "var-name"
  --define-plugin = "var-name"
+ --dir-prefix    = "path"
+ --init          = "sub"
  --tie
 
 =over 5
@@ -388,60 +414,67 @@ others may expect (by convention) that you instantiate them using a
 C<new()> method.  This option forces a tie even if the Perl class
 contains a C<new()> method.
 
+=item dir-prefix
+
+Additional path where the plugin might be found.
+
+=item init
+
+Name of the subroutine to call in order to initialize the plugin.
+
+default: init_plugin
+
+I<C<init_plugin()> is only invoked if it exists.>
+
 =back
 
 =head1 NOTES
 
 Plugins are just Perl modules that have implemented a C<new()> method
-or ones that can be C<tie>'d.  Bedrock will pass any of the argument
+or ones that can be C<tie>'d.  Bedrock will pass any of the arguments
 in the tag to the C<new()> constructor.
 
-You can also subclass the Perl C<Bedrock::Plugin> class.  Typically a
-plugin will look something like this:
+You are encouraged however to subclass the Perl C<BLM::Plugin> class.
+Typically a plugin will look something like this:
 
  package BLM::Foo;
 
  use strict;
  use warnings;
 
- use parent qw/Bedrock::Plugin/;
-
- use Bedrock::Hash;
- use Bedrock::Array;
+ use parent qw(BLM::Plugin);
  
  sub init_plugin {
-   my $self = shift;
-   my @args = @_;
+   my ($self, $params) = @_;
 
-   "Greetings from Foo!";
+   ...
+   return 1;
  }
  
  sub hello_world {
-   my $self = shift;
+   my ($self) = @_;
 
-   "Hello World!";
- }
-
- sub return_a_hash {
-   return Bedrock::Hash->new( color => "red", value => 1 );
- }
-
- sub return_an_array {
-   return Bedrock::Array->new( qw/red blue green/ );
+   return 'Hello World!';
  }
 
  1;
+
+ <plugin:Foo>
+
+ <var $Foo.hello_world()>
 
 =head1 TIPS
 
 =over 5
 
-=item Returning a value upon initialization
+=item * Returning a value upon initialization
 
 You should override the C<init_plugin> method if you want to return a
-value upon instantiation.
+value upon instantiation. The value will be available in the default
+variable C<$_> or the variable you specified in the C<--define-var>
+option.
 
-=item Passing arguments to the plugin
+=item * Passing arguments to the plugin
 
 The plugin tagE<039>s arguments are passed to your initialization
 function or the new constructor if your are instantiating a Perl
@@ -449,41 +482,45 @@ module.
 
  <plugin:FileIO "foo.txt" "r">
 
-=item Plugin location
+The C<FileIO> plugin would be called something like this:
 
-Plugins should be placed in a location where Perl will find them.
-They should be part of the C<BLM> namespace.
+ BLM::FileIO->new("foo.txt", "r");
+
+=item * Plugin location
+
+Plugins should be installed somewhere where Perl will find them.
+By convention they should be part of the C<BLM> namespace.
 
  package BLM::Foo;
 
 I<In case you are wondering - C<BLM> = Bedrock Loadable Module.>
 
-If you are running Bedrock as a CGI, you probably want to make sure
+If you are running Bedrock as a CGI, you'll want to make sure
 the the C<perl.INC> file points to a directory that contains your
 plugins.
 
-If you are running C<mod_perl> you probably want to use
+If you are running C<mod_perl> you'll want to use
 C<PerlSwitches> or create a C<startup.pl> script that adds the
 necessary paths to C<@INC>.
 
-You can also set the configuration variable C<PLUGIN_PATH> in F<tagx.xml>.
+You can also set the configuration variable C<PLUGIN_PATH> in
+F<tagx.xml>.
 
  <scalar name="PLUGIN_PATH">/var/www/vhosts/mysite.com/share/perl5</scalar>
 
-
 =item Retrieving custom plugin options
 
-The C<E<lt>pluginE<gt>> tag can accept custom options when you use
+The C<E<lt>pluginE<gt>> tag can accept custom options if you use
 C<BLM::Plugin> as your base class. See L<BLM::Plugin> for details.
 
-Custom options passed to the plugin (e.g. --define-var) can be
+Custom options passed to the plugin (e.g. --my-custom-option) can be
 retrieved using the C<options()> method.
 
 =back
 
 =head1 EXAMPLE
 
-Load the C<BLM::FileIO> plugin and write something to the error log.
+Load the L<BLM::FileIO> plugin and write something to the error log.
 
  <plugin:FileIO --define-plugin="fd" "/var/www/mysite.com/logs/error.log" "w+">
 
@@ -517,11 +554,7 @@ Example. Assume method c<bas()> returns a hash reference.
 
 =head1 SEE ALSO
 
-L<Bedrock::Plugin>, L<Bedrock::Application::Plugin>, C<E<lt>pebbleE<gt>>, 
-C<E<lt>hashE<gt>>, C<E<lt>arrayE<gt>>, 
-
-=head1 AUTHOR
-
-Rob Lauer - <bigfoot@cpan.org>
+L<BLM::Plugin>, L<Bedrock::Application::Plugin>, L<E<lt>pebbleE<gt>>, 
+L<E<lt>hashE<gt>>, L<E<lt>arrayE<gt>>, 
 
 =cut
