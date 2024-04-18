@@ -128,7 +128,7 @@ sub can_cache_page {
 
   my $cache_list = $self->get_cache // [];
 
-  return any { $uri eq @{$cache_list} };
+  return any { $uri eq $_ } @{$cache_list};
 }
 
 ########################################################################
@@ -163,30 +163,153 @@ Bedrock::RedisCache - provides a wrapper class of Redis for Bedrock caching
 
 =head1 DESCRIPTION
 
-Provides a wrapper class used by Bedrock::Apache::Bedrock and
-TagX::Output to implement page caching. Page caching is only available
+Provides a wrapper class used by C<Bedrock::Apache::Bedrock> and
+C<TagX::Output> to implement page caching. Page caching is only available
 when running Bedrock in a web context. You provide a list of URIs that
 are acceptable to cache. In a typical Bedrock web application not all
 pages may be candidates for caching.  Only pages that are static after
 they have been rendered should be considered for caching.
 
-If your pages may be somewhat static you might want to set a cache
+If your pages may be I<somewhat> static you might want to set a cache
 expiration value (ttl).
 
 The primary purpose of this class is to provide support for page
-caching.  L<Bedrock::Apache::Bedrock> will instantiate this class once
-for each Apache child when that class is loaded in response to a
-request.  The object created will be stored in Bedrock's context
-object (L<Bedrock::Context>) and is therefore available throughout
-Bedrock wherever the context object can be found using the C<redis()>
-method of the context object.
+caching, but you can use if for whatever you'd like in your
+applications (see below).  L<Bedrock::Apache::Bedrock> will
+instantiate this class once for each Apache child when that class is
+loaded in response to a request.  If the handler is able to connect to
+a Redis server then the instatiated object will be stored in Bedrock's
+context object (L<Bedrock::Context>) and is therefore available
+throughout Bedrock wherever the context object can be found (use the
+C<redis()> method of the context object).  That's a fancy way of
+saying you may have dig into Bedrock internals if you are trying use
+the Redis cache through that object.
+
+A more direct way of accessing the object can be created using an
+Application Plugin which gives direct access to the context object via
+the C<context()> getter.
+
+ package BLM::Startup::RedisCache;
+
+ use strict;
+ use warnings;
+
+ use parent qw(Bedrock::Application::Plugin);
+
+ sub handle {
+   my ($self) = @_;
+
+   my $redis = $self->context->redis();
+   
+   return
+     if !$redis;
+
+   return $redis->get_handle;
+ }
+
+ sub redis {
+   my ($self) = @_;
+
+   return $self->context->redis();
+ }
+
+ 1;
+
+Drop this in your site's application plugin config directory
+(typically /var/www/config.d/startup).
+
+ <object>
+   <scalar name="binding">redis</scalar> 
+   <scalar name="module">BLM::Startup::RedisCache</scalar> 
+ </object> 
+
+Then test:
+
+ <null:handle $redis.handle()>
+ <null:keys $handle.keys('*')>
+
+ <foreach --define-index=i --start-index=0 $keys>
+ [<var $i>] <var $_><br/>
+ </foreach>
+
+=head1 CACHING SUPPORT IN BEDROCK
+
+=head2 Page Caching
+
+Some pages are static after they have been rendered by Bedrock.  You
+might use Bedrock to create a page but once it has been assembled it
+is relatively static.  To avoid having Bedrock re-assemble pages that
+are static once they are rendered, simply add the page URI to the list
+of cached pages in the configuration.
+
+After Bedrock renders the page it looks to see if caching is enabled
+and if the page just rendered is in the cache list. If so, Bedrock
+will add an Etag header containing the MD5 sum of the page
+contents. Bedrock will then store the page in Redis using the Etag as
+the key.
+
+If a browser makes a request for the page using an Etag, Bedrock will
+consult the cache if it is enabled to see if that key exists.  If so,
+Bedrock will return a 304 (NOT-MODIFIED) HTTP status code and suspend
+further processing.  This process happens as early as possible, even
+before Bedrock performs any other actions (like reading config
+files).
+
+Page caching can have a significant impact on performance. Consider
+using caching for other operations that add to page latency.
+
+=head2 Tags that write to the cache
+
+=over 5
+
+=item <var>
+
+ <var --cache="key-name" $value>
+
+=item <sink>
+
+ <sink --cache="key-name">
+ Hello World!
+ </sink>
+
+=back
+
+Tags for writing to the cache also support a C<--ttl> option for
+setting the expiration of a key.
+
+=head2 Tags that read from cache
+
+=over 5
+
+=item <null>
+
+ <null:foo --cache="key-name">
+
+The C<E<lt>nullE<gt>> tag has options for transforming data.  For
+example, to convert a JSON representation to a Perl object use the
+C<--json> option.
+
+ <null:customer --cache="customer" --json>
+
+=back
+
+=head2 Other support for caching in Bedrock
+
+The C<--cached> boolean operator can be used to determine if a key is in the cache.
+
+ <if --cached "customer">
+   <null:customer --cache="customer" --json>
+ <else>
+   <null:customer $customer.get($input.id)>
+   <sink --cache="customer"><var $customer --json></sink>
+ </if>
 
 =head1 CONFIGURATION
 
-Configure the class by creating a JSON file and passing the name of
-the file to the C<new()> constructor.
+Configure the class by creating a JSON file with the configuration values listed below.
 
- my $redis = Bedrock::RedisCache->new(config => $config_file);
+The configuration object will be passed to the C<new()> constructor
+the first time an Apache child responds to a request.
 
 You can also configure the class by passing the same element shown
 below in the constructor or pass a hash reference containing the
@@ -208,6 +331,16 @@ values.
     "every" : "",
     "ttl" : ""
  }
+
+In practice you don't use this class directly, it is used by
+C<Bedrock::Apache::Bedrock>.  All you need to do to enable caching is
+create the configuration object and let Bedrock now where it is by
+setting an environment variable in the hosts configuration file.
+
+ PerlSetEnv REDIS_CONFIG /var/www/config/redis-cache.json
+
+If there's an error reading the file or the file can't be found,
+Bedrock will just continue without caching.
 
 =over 5
 

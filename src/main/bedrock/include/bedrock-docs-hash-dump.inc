@@ -1,12 +1,12 @@
 <var $head>
-    <table cellpadding="0" cellspacing="0" border="0">
+    <table class="bedrock-hash">
     <foreach $hash>
       <tr>
-        <th valign="middle" align="right"><code class="bedrock-config-var"><var $key></code>&nbsp;</th>
+        <th><code class="bedrock-hash-key"><var $key></code>&nbsp;</th>
         <if --ref $value>
-        <td valign="bottom"><pre class="bedrock-config"><var $value.compact()></pre></td>
+        <td><pre class="bedrock-hash-value"><var $value.compact()></pre></td>
         <else>
-        <td valign="bottom"><pre class="bedrock-config"><var $value></pre></td>
+        <td><pre class="bedrock-hash-value"><var $value></pre></td>
         </if>
       </tr>
     </foreach>
