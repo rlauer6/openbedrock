@@ -1,7 +1,9 @@
+package TagX::Expr;
 
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -18,33 +20,51 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::Expr;
-
 use strict;
 use warnings;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use Bedrock::Constants qw{:chars :booleans};
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::RegExp;
 use Cwd;
 use Data::Dumper;
-use English qw{-no_match_vars};
-use List::Util qw{ none any pairs};
+use English qw(-no_match_vars);
+use List::Util qw( none any pairs );
 use Log::Log4perl::Level;
-use Scalar::Util qw(looks_like_number reftype);
+use Scalar::Util qw( looks_like_number reftype );
 
-use parent qw{Exporter};
+use parent qw(Exporter);
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 use Readonly;
 
-Readonly::Array our @COMPARISON_OPS =>
-  qw{eq ne gt ge lt le re or and ref file exists};
+Readonly::Array our @COMPARISON_OPS => qw(
+  and
+  eq
+  exists
+  file
+  ge
+  gt
+  le
+  lt
+  ne
+  or
+  re
+  ref
+);
 
-Readonly::Array our @UNARY_OPS =>
-  qw{ not defined exists array scalar hash object};
+Readonly::Array our @UNARY_OPS => qw(
+  array
+  cached
+  defined
+  exists
+  hash
+  not
+  object
+  scalar
+);
 
 Readonly::Array our @BINARY_OPS => ( map {"--$_"} @COMPARISON_OPS ),
   split //xsm, '+.-*/';
@@ -114,8 +134,7 @@ our %STRING_CMP = (
 
   '--ref' => sub { return ( ref( $_[0] ) =~ /$_[1]/ ) ? 1 : 0; },
 
-  '--reftype' =>
-    sub { return ( ref( $_[0] ) && reftype( $_[0] ) eq $_[1] ) ? 1 : 0; },
+  '--reftype' => sub { return ( ref( $_[0] ) && reftype( $_[0] ) eq $_[1] ) ? 1 : 0; },
 
   '--re' => sub {
     # $lhs may be undef
@@ -126,7 +145,6 @@ our %STRING_CMP = (
 
     return $lhs !~ $re ? $FALSE : ( $TRUE, regexp_capture_group() );
   },
-
   '--exists' => sub {
     my ( $lhs, $rhs ) = @_;
 
@@ -232,6 +250,81 @@ our %ARITHMETIC_OPERATIONS = (
   },
 );
 
+our %UNARY_FUNCS = (
+  array => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if !$l->can('eval');
+
+    my $value = $l->eval(@args);
+
+    return ref $value && reftype($value) eq 'ARRAY';
+  },
+  cached => sub {
+    my ( $op, $l, @args ) = @_;
+    die "invalid argument for unary(`--$op') operator.\n"
+      if !$l;
+
+    my $value = $l->can('eval') ? $l->eval(@args) : $l;
+
+    return sub {
+      my ($tx) = @_;
+      return $tx->is_cached($value);
+    };
+  },
+  defined => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if ref($l) ne 'TagX::Term::Var';
+
+    my $defined = $l->defined(@args);
+
+    return $defined;
+  },
+  exists => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if ref($l) ne 'TagX::Term::Var';
+
+    my $exists = $l->exists(@args);
+
+    return $exists;
+  },
+  hash => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if !$l->can('eval');
+
+    my $value = $l->eval(@args);
+
+    return ref($value) && reftype($value) eq 'HASH';
+  },
+  not => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if !$l->can('eval');
+
+    my $value = $l->eval(@args);
+
+    return !( defined($value) && $value );
+  },
+  scalar => sub {
+    my ( $op, $l, @args ) = @_;
+
+    die "invalid argument for unary(`--$op') operator.\n"
+      if !$l->can('eval');
+
+    my $value = $l->eval(@args);
+
+    return ref $value && reftype($value) eq 'SCALAR';
+  },
+);
+
 ########################################################################
 sub new {
 ########################################################################
@@ -250,8 +343,7 @@ sub new {
       if ref $op;
 
     if ( $op && $op =~ /^[+\-.*\/]$/xsm ) {
-      die sprintf "Insufficient number of arguments(%s) to operator (%s)\n",
-        $nargs - 1, $op
+      die sprintf "Insufficient number of arguments(%s) to operator (%s)\n", $nargs - 1, $op
         if $nargs <= 2;
 
       @{$self} = ( $op_or_lhs, $op );
@@ -277,8 +369,7 @@ sub new {
     }
     elsif ( $op && any { $op eq $_ } map {"--$_"} @COMPARISON_OPS ) {
 
-      die sprintf "Invalid number of arguments(%s) for operator (%s)\n",
-        $nargs - 1, $op
+      die sprintf "Invalid number of arguments(%s) for operator (%s)\n", $nargs - 1, $op
         if $nargs != 3;
 
       my $rhs = shift @args;
@@ -297,15 +388,12 @@ sub new {
   }
   elsif ( any { lc $op_or_lhs eq $_ } map {"--$_"} @UNARY_OPS ) {
 
-    die sprintf
-      "Unary operator %s requires a single argument: found %d instead\n",
-      $op_or_lhs, $nargs - 1
+    die sprintf "Unary operator %s requires a single argument: found %d instead\n", $op_or_lhs, $nargs - 1
       if $nargs != 2;
 
     my $rhs = shift @args;
 
-    die
-      "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n"
+    die "Token `$rhs' is not a valid argument to unary operator `$op_or_lhs'.\n"
       if !ref $rhs;
 
     @{$self} = ( $op_or_lhs, $rhs );
@@ -334,7 +422,7 @@ sub verbose {
 ########################################################################
 sub eval {  ## no critic (ProhibitBuiltinHomonyms, RequireArgUnpacking)
 ########################################################################
-  my $self = shift;
+  my $self = shift;  # shift off self, we'll unpack later
 
   my $logger = $self->get_logger( ref $self );
 
@@ -397,22 +485,24 @@ sub eval {  ## no critic (ProhibitBuiltinHomonyms, RequireArgUnpacking)
             $result = $NUMBER_CMP{$op}( $lval, $rval );
           }
           else {
-            $logger->debug(
-              'result: ' . $STRING_CMP{$op}( $lval, $rval, $self )
-                // $EMPTY );
+            $logger->debug( 'result: ' . $STRING_CMP{$op}( $lval, $rval, $self ) // $EMPTY );
 
             my $cg;
             ( $result, $cg ) = $STRING_CMP{$op}( $lval, $rval, $self );
+            print {*STDERR} Dumper(
+              [ result => $result,
+                cg     => $cg
+              ]
+            );
 
             # grab capture group from regular expression if op is --re
-            if ( $result && $op-- eq '--re' ) {
+            if ( $result && $op eq '--re' ) {
               map { $_[0]->{$_} = $cg->{$_}; } keys %{$cg};
             }
           }
         };
 
-        die
-          "internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$EVAL_ERROR\n"
+        die "internal error evaluating expression op: $op lval:[$lval] rval:[$rval]\n$EVAL_ERROR\n"
           if $EVAL_ERROR;
 
         return $result;
@@ -425,9 +515,8 @@ sub eval {  ## no critic (ProhibitBuiltinHomonyms, RequireArgUnpacking)
       return $v;
     }
   }
-  elsif ( $l && $l =~ /^--(not|defined|array|scalar|object|hash|exists)$/oi )
-  {
-    $logger->debug("LHS [$l] is an operator");
+  elsif ( $l && $l =~ /^--(not|cached|defined|array|scalar|object|hash|exists)$/oixsm ) {
+    $logger->debug("found a unary operator: [$l]");
 
     # unary operators
     $op = lc $l;
@@ -435,79 +524,15 @@ sub eval {  ## no critic (ProhibitBuiltinHomonyms, RequireArgUnpacking)
 
     $logger->debug("Argument to unary(`op') operator is [$l]");
 
-    if ( $op eq '--exists' ) {
-      die "Invalid argument for `--exists' operator.\n"
-        if ref($l) ne 'TagX::Term::Var';
+    # we expect the argument to the unary operator to be a TagX::Term
+    # or something that can('eval') or can('exists')
 
-      my $exists = $l->exists(@_);
+    $UNARY_FUNCS{object} = $UNARY_FUNCS{hash};
 
-      return $exists;
-    }
-    elsif ( $op eq '--defined' ) {
-      die "Invalid argument for `--defined' operator.\n"
-        if ref($l) ne 'TagX::Term::Var';
+    $op =~ s/^--//xsm;
+    my $retval = $UNARY_FUNCS{$op}->( $op, $l, @_ );
 
-      my $defined = $l->defined(@_);
-
-      return $defined;
-    }
-    elsif ( $op eq '--scalar' ) {
-      die "invalid argument for unary(`$op') operator.\n"
-        if !$l->can('eval');
-
-      my $value = $l->eval(@_);
-
-      $logger->debug(
-        sprintf q{Argument to unary(`op') operator evaluated to [%s]},
-        $value // $EMPTY );
-
-      return ( ref($value) && reftype($value) eq 'SCALAR' ) ? 1 : 0;
-    }
-    elsif ( $op eq '--array' ) {
-      die "invalid argument for unary(`$op') operator.\n"
-        if !$l->can('eval');
-
-      my $value = $l->eval(@_);
-
-      $logger->debug(
-        sprintf q{Argument to unary(`op') operator evaluated to [%s]},
-        $value // $EMPTY );
-
-      return ( ref($value) && reftype($value) eq 'ARRAY' ) ? 1 : 0;
-    }
-    elsif ( $op eq '--hash' ) {
-      die "invalid argument for unary(`$op') operator.\n"
-        if !$l->can('eval');
-
-      my $value = $l->eval(@_);
-
-      $logger->debug( q{Argument to unary(`op') operator evaluated to [%s]},
-        $value // $EMPTY );
-
-      return ( ref($value) && reftype($value) eq 'HASH' ) ? 1 : 0;
-    }
-    elsif ( $op eq '--object' ) {
-      die "invalid argument for unary(`$op') operator.\n"
-        if !$l->can('eval');
-
-      my $value = $l->eval(@_);
-
-      $logger->debug( q{Argument to unary(`op') operator evaluated to [%s]},
-        $value // $EMPTY );
-
-      return ( ref($value) && reftype($value) eq 'HASH' ) ? 1 : 0;
-    }
-    else {
-      die "invalid argument for unary(`$op') operator.\n"
-        if !$l->can('eval');
-
-      my $value = $l->eval(@_);
-
-      $logger->debug( q{Argument to unary(`op') operator evaluated to [%s]},
-        $value // $EMPTY );
-
-      return defined($value) && $value ? 0 : 1;
-    }
+    return ref $retval ? $retval : $retval ? 1 : 0;
   }
   else {
     die "unsupported unary operator: $l\n";
