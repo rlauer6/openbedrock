@@ -1,3 +1,5 @@
+package TagX::TAG::NoBody::NULL;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -18,27 +20,25 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::TAG::NoBody::NULL;
-
 use strict;
 use warnings;
 
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
-use Bedrock::Constants qw{:chars};
+use Bedrock::Constants qw(:chars);
 use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Object;
-use Bedrock::Serializer qw/evolve devolve/;
+use Bedrock::Serializer qw(evolve devolve);
 use Bedrock::XML;
-use English qw/-no_match_vars/;
+use English qw(-no_match_var);
 use MIME::Base64;
-use Scalar::Util qw/reftype blessed/;
+use Scalar::Util qw(reftype blessed openhandle);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use parent qw{Exporter TagX::TAG::NoBody};
+use parent qw(Exporter TagX::TAG::NoBody);
 
 ########################################################################
 sub _promote {
@@ -60,7 +60,7 @@ sub param {
 
   my $name;
 
-  foreach (qw/define-var define-array define-object/) {
+  foreach (qw(define-var define-array define-object)) {
     last if $name = $options->{$_};
   }
 
@@ -120,7 +120,7 @@ sub finalize {
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
   # synonymous tags
-  if ( exists $options{'expand'} ) {
+  if ( exists $options{expand} ) {
     $options{'expand-args'} = 1;
   }
 
@@ -141,11 +141,13 @@ sub finalize {
     shift @argv;
   }
 
-  if ( exists $options{'handle'}
+  my $default = $options{default};
+
+  if ( exists $options{handle}
     && ( @argv != 1 || !( -r $argv[0] || $argv[0]->can('getline') ) ) ) {
     die "Use only 1 argument with --handle option and must be a handle.\n";
   }
-  elsif ( exists $options{'file'} && ( @argv != 1 || ref $argv[0] ) ) {
+  elsif ( exists $options{file} && ( @argv != 1 || ref $argv[0] ) ) {
     die "Use only 1 argument with --file option and must be filename.\n";
   }
 
@@ -215,7 +217,7 @@ sub finalize {
   # The string is a base64 encoded JSON string
   #   <null:decoded --json --base64 $input.encoded>
 
-  if ( exists $options{'base64'} ) {
+  if ( exists $options{base64} ) {
     if ( @argv == 1 && !ref $argv[0] ) {
       $argv[0] = decode_base64( $argv[0] );
     }
@@ -253,9 +255,9 @@ sub finalize {
         param( \%options, $tx, Bedrock::Array->new( split /\s+/xsm, $1 ) );
       }
       else {
-        if ( exists $options{'json'} ) {
+        if ( exists $options{json} ) {
 
-          my $json_string = $arg || $options{'default'};
+          my $json_string = $arg || $default;
 
           my $handler = $self->io_handler( $tx, 'JSON' );
 
@@ -289,61 +291,38 @@ sub finalize {
         }
       );
 
-      if ( defined $options{'file'} || defined $options{'handle'} ) {
-        my $fh = $argv[0];
+      if ( defined $options{file} || defined $options{handle} ) {
+        my ( $fh, $file ) = ( openhandle( $argv[0] ), $argv[0] );
 
-        if ( !ref $fh ) {
-          my $file = $tx->find_file( $fh, undef, $DOT );
+        die "no handle or file specified\n"
+          if !$fh && !$file;
+
+        if ( !$fh ) {
+          $file = $tx->find_file( $file, undef, $DOT );
 
           if ( !$file || !-s $file ) {
             die "error: can't read [$fh]. Either it does not exist or is empty\n";
           }
 
-          open $fh, '<', $file;  ## no critic (RequireBriefOpen)
+          open $fh, '<', $file or  ## no critic (RequireBriefOpen)
+            die "Could not open file ( $argv[0] ) for reading.";
         }
 
-        die "Could not open file ( $argv[0] ) for reading."
-          if !$fh || !-r $fh || !$fh->can('getline');
+        local $RS = undef;
 
-        {
-          local $RS = undef;
-
-          $argv[0] = <$fh>;
-        }
+        $argv[0] = <$fh>;
       }
 
-      if ( defined $options{'json'} ) {
+      my $encode = $options{encode};
+
+      if ( defined $options{json} ) {
 
         my $handler = $self->io_handler( $tx, 'JSON' );
 
-        my $value = shift @argv || $options{default};
+        my $value = shift @argv || $default;
 
         $value
-          = $options{encode}
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        _promote($value) if !$options{endcode};
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{'bedrock-xml'} ) {
-        my $handler = $self->io_handler( $tx, 'BedrockXML' );
-        my $value   = shift @argv || $options{default};
-        $value
-          = $options{encode}
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        _promote($value) if !$options{endcode};
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{'xml'} ) {
-        my $handler = $self->io_handler( $tx, 'XML' );
-        my $value   = shift @argv || $options{default};
-        $value
-          = $options{encode}
+          = $encode
           ? $handler->serialize( $value, { %options, @argv } )
           : $handler->deserialize( $value, { %options, @argv } );
 
@@ -353,13 +332,11 @@ sub finalize {
 
         param( \%options, $tx, $value );
       }
-      elsif ( defined $options{'yaml'} ) {
-        my $handler = $self->io_handler( $tx, 'YAML' );
-
-        my $value = shift @argv || $options{default};
-
+      elsif ( defined $options{'bedrock-xml'} ) {
+        my $handler = $self->io_handler( $tx, 'BedrockXML' );
+        my $value   = shift @argv || $default;
         $value
-          = $options{encode}
+          = $encode
           ? $handler->serialize( $value, { %options, @argv } )
           : $handler->deserialize( $value, { %options, @argv } );
 
@@ -367,17 +344,45 @@ sub finalize {
 
         param( \%options, $tx, $value );
       }
-      elsif ( defined $options{'serializer'} ) {
-        my $handler
-          = $self->io_handler( $tx, $options{serializer}, { 'out', @argv } );
-
-        my $value = shift @argv || $options{default};
+      elsif ( defined $options{xml} ) {
+        my $handler = $self->io_handler( $tx, 'XML' );
+        my $value   = shift @argv || $default;
         $value
-          = $options{encode}
+          = $encode
           ? $handler->serialize( $value, { %options, @argv } )
           : $handler->deserialize( $value, { %options, @argv } );
 
         if ( !$options{endcode} ) {
+          _promote($value);
+        }
+
+        param( \%options, $tx, $value );
+      }
+      elsif ( defined $options{yaml} ) {
+        my $handler = $self->io_handler( $tx, 'YAML' );
+
+        my $value = shift @argv || $default;
+
+        $value
+          = $encode
+          ? $handler->serialize( $value, { %options, @argv } )
+          : $handler->deserialize( $value, { %options, @argv } );
+
+        _promote($value) if !$options{endcode};
+
+        param( \%options, $tx, $value );
+      }
+      elsif ( defined $options{serializer} ) {
+        my $handler
+          = $self->io_handler( $tx, $options{serializer}, { 'out', @argv } );
+
+        my $value = shift @argv || $default;
+        $value
+          = $encode
+          ? $handler->serialize( $value, { %options, @argv } )
+          : $handler->deserialize( $value, { %options, @argv } );
+
+        if ( !$encode ) {
           _promote($value);
         }
 
@@ -422,8 +427,8 @@ sub finalize {
 
         param( \%options, $tx, Bedrock::Array->new(@filtered_array) );
       }
-      elsif ( defined $options{'default'} ) {
-        param( \%options, $tx, defined $argv[0] ? $argv[0] : $options{'default'} );
+      elsif ( defined $default ) {
+        param( \%options, $tx, defined $argv[0] ? $argv[0] : $default );
       }
       elsif ( defined $options{'expand-args'}
         && reftype( $argv[0] ) eq 'ARRAY' ) {
@@ -445,12 +450,12 @@ sub finalize {
       }
     }
     elsif ( $options{range} ) {
-      my ( $start, $stop ) = split /\s*[,:]\s*/xsm, $options{range};
+      my $range = $tx->parse_range( $options{range} );
 
-      die "invalid range\n"
-        if $start > $stop || !defined $stop || !defined $stop;
+      die sprintf "invalid range\n", $options{range}
+        if !$range;
 
-      param( \%options, $tx, Bedrock::Array->new( $start .. $stop ) );
+      param( \%options, $tx, Bedrock::Array->new( @{$range} ) );
     }
     else {
       # no arguments (@argv is empty)
@@ -460,7 +465,7 @@ sub finalize {
         }
       );
 
-      param( \%options, $tx, $options{default} );
+      param( \%options, $tx, $default );
     }
   }
   elsif ( exists $options{'define-array'} ) {
@@ -471,7 +476,7 @@ sub finalize {
       }
     );
 
-    if ( defined $options{'expand-args'} || defined $options{'expand-args'} ) {
+    if ( defined $options{expand} || defined $options{'expand-args'} ) {
       param( \%options, $tx, Bedrock::Array->new( map { ( reftype($_) eq 'ARRAY' ) ? @{$_} : $_; } @argv ) );
     }
     else {
@@ -480,7 +485,7 @@ sub finalize {
   }
   elsif ( exists $options{'define-object'} ) {
     # define-object creates an object and does the following
-    #  0. If $options{'json'} then assume all args represent a JSON string
+    #  0. If $options{json} then assume all args represent a JSON string
     #     to be converted into an object
     #  1. If the number of args is even, uses the arguments as
     #     key-value pairs to initialize the object
@@ -490,7 +495,7 @@ sub finalize {
     #  3. In both cases, the key must be a scalar -- cannot be an object, array ..
     #  4. Anything else is an error
 
-    if ( $options{'json'} && @argv % 2 ) {
+    if ( $options{json} && @argv % 2 ) {
 
       my $json_string = join $EMPTY, @argv;
 
@@ -612,6 +617,8 @@ sub finalize {
       param( \%options, $tx, $obj );
     }
   }
+
+  return;
 }
 
 1;
@@ -830,7 +837,7 @@ For C<--define-var> consider the string to be a JSON string.
 
 Creates an array of integers. Similar to the range operator in
 Perl. The argument to the range option should be a comma delimited
-start and stop value.
+start and stop value (actually range will accept \d+\D+\d+, e.g: 1..10)
 
  <null:foo --range="1,10">
 
@@ -865,7 +872,7 @@ Arrays and hashes have a boat load of useful methods.  See the
 documentation on the C<E<lt>hashE<gt>> and C<E<lt>arrayE<gt>> tags for
 a description of the methods associated with those objects.
 
-=head1 EXAMPLE
+=head1 EXAMPLES
 
 =over 5
 

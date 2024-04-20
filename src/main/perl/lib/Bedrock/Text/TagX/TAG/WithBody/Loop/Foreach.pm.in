@@ -1,7 +1,10 @@
+package TagX::TAG::WithBody::Loop::Foreach;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -18,16 +21,13 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::TAG::WithBody::Loop::Foreach;
-
 use strict;
 use warnings;
 
-use Bedrock qw{:booleans};
-
-use Scalar::Util qw/reftype/;
-use Bedrock::Constants qw{:booleans :chars};
+use Bedrock qw(:booleans);
+use Bedrock::Constants qw(:booleans :chars);
 use Data::Dumper;
+use Scalar::Util qw(reftype);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -57,7 +57,7 @@ sub define_options {
 
   );
 
-} ## end sub define_options
+}
 
 ########################################################################
 sub finalize {
@@ -72,7 +72,7 @@ sub finalize {
 
   $self->dump_options( \%options, @argv );
 
-  my @children = @{ $self->{'subobjs'} };
+  my @children = @{ $self->{subobjs} };
 
   my ( $start, $end, $num_items, $data );
 
@@ -80,8 +80,7 @@ sub finalize {
 
     $logger->trace(
       sub {
-        sprintf 'More than one argument found -- forced into an array: (%s)',
-          join $COMMA, @argv;
+        sprintf 'More than one argument found -- forced into an array: (%s)', join $COMMA, @argv;
       }
     );
 
@@ -94,16 +93,15 @@ sub finalize {
     $data = $argv[0];
 
     if ( !defined $data ) {
-      $logger->warn('argument s undefined');
+      $logger->warn('arguments undefined');
 
       return;
     }
 
     if ( !is_array($data) ) {
-      $logger->debug(
-        sub { sprintf 'argument [%s] is not an array', Dumper $data; } );
+      $logger->debug( sub { sprintf 'argument [%s] is not an array', Dumper $data; } );
 
-      my $alias = $options{'alias'} || $options{'define-var'};
+      my $alias = $options{alias} || $options{'define-var'};
 
       # --define-var='key,value,index'
       my $key;
@@ -115,14 +113,13 @@ sub finalize {
         ( $key, $value, $index ) = split $COMMA, $alias;
       }
 
-      $key   = $key   || 'key';
-      $value = $value || 'value';
-      $index = $index || 'index';
+      $key   //= 'key';
+      $value //= 'value';
+      $index //= 'index';
 
       # iterate over a hash where $_ eq {}
       if ( is_hash($data) ) {
-        $logger->debug(
-          sub { sprintf 'argument [%s] is a hash', Dumper $data } );
+        $logger->debug( sub { sprintf 'argument [%s] is a hash', Dumper $data } );
 
         my $idx = 0;
         my $tmp = [];
@@ -183,13 +180,28 @@ sub finalize {
   }
 
   if ( !defined $start && !defined $end && $options{range} ) {
-    ( $start, $end ) = split /\s*[,:]\s*/xsm, $options{range};
+    my @range = $tx->parse_range( $options{range} );
 
     die "invalid range\n"
-      if $start > $end || ( $num_items && $end > $num_items - 1 );
+      if !@range;
+
+    ( $start, $end ) = ( $range[0], $range[-1] );
+
+    $logger->debug(
+      Dumper(
+        [ start     => $start,
+          end       => $end,
+          range     => \@range,
+          num_items => $num_items,
+        ]
+      )
+    );
+
+    die "invalid range\n"
+      if $num_items && $end > $num_items - 1;
   }
 
-  my $alias = $options{'alias'} || $options{'define-var'};
+  my $alias = $options{alias} || $options{'define-var'};
 
   $start //= 0;
   $end   //= $num_items - 1;
@@ -248,8 +260,7 @@ sub finalize {
           my @str = "Loop $i >>";
 
           for my $key ( sort keys %{$loop_data} ) {
-            push @str, sprintf '    %s=> "%s"', $key,
-              ( $loop_data->{$key} // $EMPTY );
+            push @str, sprintf '    %s=> "%s"', $key, ( $loop_data->{$key} // $EMPTY );
           }
 
           join "\n", @str;
@@ -257,8 +268,7 @@ sub finalize {
       );
     }
 
-    $self->{'finalize_children'}
-      ->( $self->{'subobjs'}, @loop_args, @context );
+    $self->{'finalize_children'}->( $self->{subobjs}, @loop_args, @context );
   }
 
   return;
@@ -354,14 +364,13 @@ Maximum number of times to execute the loop.
 =item --range
 
 Defines the start and stop of the loop. Separate the start and end
-with either a comma (C<,>) or a colon (C<:>).
+values with one or more non-digits (Example: 0..10, 0,10 0:10, etc)
 
- <foreach --range="1,9"><var $_></foreach>
+ <foreach --range="1..9"><var $_></foreach>
 
 =item --start-index
 
 Offset into the array to begin the iteration.
-
 
 =back
 
@@ -393,18 +402,19 @@ loop.  The hash members are named  C<key> and C<value>, and C<index>.
   $_.value => the current hash value associate with that key
   $_.index => index of the current element
 
-Assuming C<$data> is a hash that you would like to traverse, the perl
+Assuming C<$data> is a hash that you would like to traverse, the Perl
 equivalent would look something like:
 
  my @loop_data = map { { key => $_, value => $data->{$_} } } keys %$data;
+
  foreach (@loop_data) {
    print $_->key . ': . $_->value . "\n";
  } 
 
-I<All hashes are ordered hashes, thus they are traversed in the
-order in which they were defined.>
+I<All hashes (created by Bedrock) are ordered hashes, thus they are
+traversed in the order in which they were defined.>
 
-The key and value are store in the default variable C<$_> unless you
+The key and value are stored in the default variable C<$_> unless you
 override that using C<--define-var>. In that case the
 key, value and index are scalars with the names you have provided.
 
@@ -425,15 +435,20 @@ Recordsets are also returned by the C<BLM::IndexedTableHandler> C<select_list()>
 
  <null:list $customer.select_list("select * from customer where state='PA')>
 
-Recordset objects provide a number of useful methods.  (See the L<E<lt>recordsetE<gt>> tag for more information).
+Recordset objects provide a number of useful methods.  (See the
+L<E<lt>recordsetE<gt>> tag for more information).
 
 You can iterate over recordsets using the C<E<lt>foreachE<gt>> tag.
 When iterating over recordsets the hash members of each array element
-are exposed as scalars.  These scalars are I<lexically scoped>, that
+is exposed as a scalar.  These scalars are I<lexically scoped>, that
 is, they only exist within the context of the C<E<lt>foreachE<gt>>
-tag.  Each array element in the recordset is a hash.  Along with the
+tag.
+
+Each array element in the recordset is a hash.  Along with the
 scalars the hash itself is exposed as either the default variable ($_)
-or as a nmae that you specified using the C<--define-var> option.
+or as a name that you specified using the C<--define-var> option.
+
+I<TIMTOWTDI>
 
  <null:list $customer.select_list("select * from customer where state='PA')>
 
@@ -496,6 +511,13 @@ or as a nmae that you specified using the C<--define-var> option.
 
 =head1 SEE ALSO
 
-C<E<lt>whileE<gt>> C<E<lt>recordsetE<gt>>
+L<Bedrock::Array>, L<Bedrock::Recordset>, L<Bedrock::Hash>, 
+C<E<lt>whileE<gt>>, C<E<lt>recordsetE<gt>>
+
+=head1 AUTHOR
+
+J. Sridhar
+
+Rob Lauer - <bigfoot@cpan.org>
 
 =cut
