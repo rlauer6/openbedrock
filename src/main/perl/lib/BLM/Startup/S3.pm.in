@@ -3,7 +3,7 @@ package BLM::Startup::S3;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2023, TBC Development Group, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -26,11 +26,11 @@ use strict;
 
 use Amazon::S3;
 use Amazon::Credentials;
-use Bedrock            qw(:booleans);
+use Bedrock qw(:booleans);
 use Bedrock::Constants qw(:booleans :chars);
 use Bedrock::Hash;
 use Data::Dumper;
-use English        qw(-no_match_vars);
+use English qw(-no_match_vars);
 use File::Basename qw(basename fileparse);
 
 use parent qw(Bedrock::Application::Plugin Class::Accessor::Fast);
@@ -91,6 +91,23 @@ sub init_plugin {
 }
 
 #######################################################################
+sub copy_object {
+#######################################################################
+  my ( $self, $source, $dest, @headers ) = @_;
+
+  my $bucket = $self->get_bucket;
+
+  die "set bucket first\n"
+    if !$bucket;
+
+  return $bucket->copy_object(
+    key    => $dest,
+    source => $dest,
+    @headers ? ( headers => {@headers} ) : ()
+  );
+}
+
+#######################################################################
 sub add_key {
 #######################################################################
   my ( $self, $key, $value, $bucket ) = @_;
@@ -127,9 +144,9 @@ sub list_bucket_keys {
 #######################################################################
   my ( $self, %args ) = @_;
 
-  my $keys = $self->list_bucket;
+  my $result = $self->list_bucket;
 
-  return Bedrock::Array->new( map { $_->{key} } @{ $keys->{keys} } );
+  return Bedrock::Array->new( map { $_->{key} } @{ $result->{keys} } );
 }
 
 #######################################################################
@@ -146,10 +163,31 @@ sub list_bucket {
   my $bucket = delete $args{bucket};
   $bucket //= $self->get_bucket;
 
-  return $bucket->list_v2( \%args )
-    if $args{'max-keys'};
+  my $result = eval {
 
-  return $bucket->list_all_v2( \%args );
+    return $bucket->list_v2( \%args )
+      if $args{'max-keys'};
+
+    return $bucket->list_all_v2( \%args );
+  };
+
+  # roll up common prefixes as keys
+  if ( $args{delimiter} && $result->{common_prefixes} ) {
+    foreach my $k ( @{ $result->{common_prefixes} } ) {
+      my $key = {
+        key               => $k . $args{delimiter},
+        owner_displayname => $EMPTY,
+        storage_class     => $EMPTY,
+        last_modified     => $EMPTY,
+        size              => $EMPTY,
+        etag              => $EMPTY,
+      };
+
+      push @{$result}, $key;
+    }
+  }
+
+  return $result;
 }
 
 #######################################################################
@@ -178,33 +216,6 @@ sub bucket {
   $self->set_bucket($bucket);
 
   return $bucket;
-}
-
-########################################################################
-sub to_boolean {
-########################################################################
-  my ($val) = @_;
-
-  # undefined may trigger defaults, so return
-  return
-    if !defined $val;
-
-  $val =~ s/^\s+|\s+$//xsmg;
-
-  $val = lc $val;
-
-  my %booleans = (
-    true  => 1,
-    false => 0,
-    yes   => 1,
-    no    => 0,
-    on    => 1,
-    off   => 0,
-    '0'   => 0,
-    '1'   => 1,
-  );
-
-  return $booleans{$val};
 }
 
 1;
@@ -258,6 +269,16 @@ A typical configuration file might look like this:
 
 =head1 METHODS AND SUBROUTINES
 
+=head2 copy_object
+
+ copy_object(source, destination, [headers])
+
+C<headers> is an optional list of key value pairs.
+
+Example:
+
+ <null $s3.copy_object('/resources/info-book.pdf', ($session.session + '/info-book.pdf')>
+
 =head2 list_bucket
 
  list_bucket(args)
@@ -281,15 +302,28 @@ Returns a hash similar to the one shown below..
        owner_id => *** Undefined ***
        size => (843243)
        key => (ChangeLog)
-       }
+       }, {
+       etag => 
+       owner_displayname =>
+       storage_class => 
+       last_modified => 
+       owner_id =>
+       size =>
+       key => '73d8d5cf730948895f1ffb2b6af6a27f/'
+      }
      ]
    marker => ()
+   common_prefixes => [
+     '73d8d5cf730948895f1ffb2b6af6a27f'
+    ],
    max_keys => (1000)
    is_truncated => (0)
    next_marker => ()
    bucket => (test-bucket)
    prefix => ()
    }
+
+I<Note that common prefixes will be rolled up into the keys array.>
 
 =over 5
 
@@ -322,7 +356,6 @@ Bucket name
 Prefix if sent in original call
  
 =back
-
 
 =head2 list_bucket_keys
 

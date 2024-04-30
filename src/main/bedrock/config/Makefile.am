@@ -12,6 +12,7 @@ CONFIG = \
     mysql-session.xml.in \
     perl_bedrock.conf22.in \
     perl_bedrock.conf24.in \
+    redis-cache.xml.in \
     redis-session.xml.in \
     rest.xml.in \
     pod_paths.xml.in \
