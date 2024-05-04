@@ -69,6 +69,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Logger.pm \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
+    Bedrock/Pager.pm \
     Bedrock/Plugin.pm \
     Bedrock/PodWriter.pm \
     Bedrock/RedisCache.pm \

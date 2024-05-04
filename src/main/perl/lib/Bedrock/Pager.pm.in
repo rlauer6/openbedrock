@@ -1,0 +1,299 @@
+package Bedrock::Pager;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use English qw(-no_match_vars);
+use Data::Dumper;
+
+use parent qw(Class::Accessor);
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw(
+    current_index
+    num_pages
+    list_len
+  )
+);
+
+use Readonly;
+
+Readonly::Scalar our $DEFAULT_PAGE_SIZE => 10;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $options = eval { ref $args[0] ? $args[0] : {@args}; };
+
+  die "usage: Bedrock::Pager->new(list => array-ref, [ page_size => page-size ]\n"
+    if !$options || $EVAL_ERROR;
+
+  $options->{_page_size} = delete $options->{page_size};
+  $options->{_page_size} ||= $DEFAULT_PAGE_SIZE;
+
+  $options->{_list} = delete $options->{list};
+
+  my $self = $class->SUPER::new($options);
+
+  $self->_init_pager;
+
+  return $self;
+}
+
+########################################################################
+sub _init_pager {
+########################################################################
+  my ($self) = @_;
+
+  my $list = $self->get_list // [];
+
+  my $page_size = $self->get_page_size // $DEFAULT_PAGE_SIZE;
+
+  my $list_len = @{$list};
+
+  my $num_pages = int $list_len / $page_size;
+  $num_pages += $list_len % $page_size ? 1 : 0;
+
+  $self->set_num_pages($num_pages);
+
+  $self->set_list_len($list_len);
+
+  $self->set_current_index(undef);
+
+  return $self;
+}
+
+########################################################################
+sub set {  ## no critic
+########################################################################
+  my ( $self, $key, $value ) = @_;
+
+  return $self->SUPER::set( $key, $value )
+    if $key !~ /^list|page_size$/xsm;
+
+  $self->{"_$key"} = $value;
+
+  return $value;
+}
+
+########################################################################
+sub get {  ## no critic
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $self->SUPER::get($key)
+    if $key !~ /^list|page_size$/xsm;
+
+  return $self->{"_$key"};
+}
+
+########################################################################
+sub get_page_size { return $_[0]->get('page_size') }
+sub get_list      { return $_[0]->get('list') }
+########################################################################
+
+########################################################################
+sub set_page_size { $_[0]->{_page_size} = $_[1]; return $_[0]->_init_pager; }
+sub set_list      { $_[0]->{_list}      = $_[1]; return $_[0]->_init_pager; }
+########################################################################
+
+########################################################################
+sub last_page {
+########################################################################
+  my ($self) = @_;
+
+  my $wantarray = wantarray;
+
+  $self->set_current_index( $self->get_num_pages - 1 );
+
+  return $self->current_page($wantarray);
+}
+
+########################################################################
+sub first_page {
+########################################################################
+  my ($self) = @_;
+
+  my $wantarray = wantarray;
+
+  return $self->rewind->next_page($wantarray);
+}
+
+########################################################################
+sub rewind {
+########################################################################
+  my ($self) = @_;
+
+  $self->set_current_index(undef);
+
+  return $self;
+}
+
+########################################################################
+sub next_page {
+########################################################################
+  my ($self) = @_;
+
+  my $cur_idx = $self->get_current_index;
+  $cur_idx = defined $cur_idx ? ++$cur_idx : 0;
+
+  $self->set_current_index($cur_idx);
+
+  return
+    if $cur_idx >= $self->get_num_pages;
+
+  return $self->current_page(wantarray);
+}
+
+########################################################################
+sub prev_page {
+########################################################################
+  my ($self) = @_;
+
+  my $cur_idx = $self->get_current_index;
+  $self->set_current_index( --$cur_idx );
+
+  return
+    if $cur_idx < 0;
+
+  return $self->current_page(wantarray);
+}
+
+########################################################################
+sub current_page {
+########################################################################
+  my ( $self, $wantarray ) = @_;
+  $wantarray //= wantarray;
+
+  my $cur_idx = $self->get_current_index;
+
+  my $num_pages = $self->get_num_pages;
+  my $page_size = $self->get_page_size;
+
+  my $list     = $self->get_list;
+  my $list_len = $self->get_list_len;
+
+  my $start_idx = $cur_idx * $page_size;
+  my $end_idx   = -1 + ( $cur_idx + 1 ) * $page_size;
+
+  $end_idx = $end_idx >= $list_len ? $list_len - 1 : $end_idx;
+
+  return $wantarray ? ( $start_idx .. $end_idx ) : [ map { $list->[$_] } ( $start_idx .. $end_idx ) ];
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 PUBLIC
+
+Bedrock::Pager - simple list pager
+
+=head1 SYNOPSIS
+
+ my $pager = Bedrock::Pager->new(list => [ 0 .. 13 ], page_size => 5);
+
+ while (my @page = $pager->next_page ) {
+  ...
+ }
+
+=head1 DESCRIPTION
+
+Simple list pager.  Returns a list or an array reference.
+
+=head1 METHODS AND SUBROUTINES
+
+I<NOTE: All methods that return a page will return an array ref in
+scalar context and a list in array context.>
+
+=head2 current_page
+
+Returns the current page.
+
+=head2 first_page
+
+Returns the first page, sets the current page to 0.
+
+=head2 last_page
+
+Returns the last page, sets the current page to number of pages - 1.
+
+=head2 next_page
+
+Returns the next page, increments the current page index. Returns
+undef if last page.
+
+=head2 prev_page
+
+Returns the previous page, decrements the current page index. Returns
+undef if first page.
+
+=head2 rewind
+
+Resets the current index. next_page() will return the first page.
+
+=head1 GETTERS/SETTERS
+
+=head2 get_current_index
+
+Returns the curent page index value.
+
+=head2 set_current_index
+
+ set_current_index(index)
+
+Sets the current page index value. I<NOTE: If you set this value to 0,
+the next page is 1, not the first page. Use C<rewind()> to reset the
+page index.>
+
+=head2 get_list
+
+ array-ref = get_list();
+
+Returns an array reference to current list.
+
+=head2 set_list
+
+ set_list(array-ref)
+
+Sets the list to the array ref passed.
+
+I<NOTE: Setting the list after C<new()> has been called
+will reset the current index, list length and the number of
+pages. Likewise if you reset the page size.>
+
+=head2 get_list_len
+
+=head2 get_num_pages
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut

@@ -24,8 +24,28 @@ groups of tests used to exercise these modules:
 To test the modules you need to have a MySQL server available. If you
 have used the Docker image created by the `Dockerfile` in the `docker`
 directory to launch an Apache web server running Bedrock it would have
-also launched a MySQL server. You can then run all of the tests in the
-`t/' directory like this:
+also launched a MySQL server. 
+
+If you just want to run a MySQL Docker instance:
+
+```
+docker run --rm -t -d --name mysql57 -e MYSQL_ROOT_PASSWORD=flintstone mysql:5.7
+```
+
+Wait for MySQL stop start completely.
+
+Create the `session` table and user `fred`
+
+```
+export DBI_HOST=$(docker inspect --format='{{.NetworkSettings.IPAddress}}' mysql57)
+export DBI_USER=fred
+export DBI_PASS=flintstone
+export DBI_DB=bedrock
+
+mysql -u root --password=flintstone -h $DBI_HOST < src/main/bedrock/create-session.sql
+```
+
+You can then run all of the tests in the `t/' directory like this:
 
 ```
 cd src/main/perl/lib
