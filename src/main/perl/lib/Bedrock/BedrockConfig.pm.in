@@ -39,13 +39,13 @@ use Bedrock qw(:booleans slurp_file);
 use Bedrock::Dump;
 use Bedrock::Serializer qw( evolve devolve);
 use Bedrock::XML;
-use Bedrock::Constants qw(:defaults :chars);
+use Bedrock::Constants qw(:defaults :chars :booleans);
 
 use English qw( -no_match_vars );
 use File::Basename;
 use JSON qw( decode_json encode_json );
 use List::Util qw( pairs uniq );
-use Scalar::Util qw( reftype );
+use Scalar::Util qw( reftype openhandle );
 use YAML qw( LoadFile Dump );
 
 use parent qw( Exporter Bedrock::Hash );
@@ -182,16 +182,28 @@ sub merge {
 ########################################################################
   my ( $self, $file ) = @_;
 
-  croak "no such file ($file) or empty"
-    if !$file || !-s $file;
+  my $fh = openhandle($file);
 
-  my $config = eval { return Bedrock::XML->new($file); };
+  if ( !$fh ) {
+    croak "no such file ($file) or empty"
+      if !$file || !-s $file;
+
+    open $fh, '<', $file
+      or die "could not open $file\n";
+  }
+
+  my $config = eval { return Bedrock::XML->new($fh); };
 
   croak "could not read $file\n$EVAL_ERROR"
     if !$config;
 
   croak 'invalid configuration file, root object must be hashes or arrays'
     if !ref $config;
+
+  my $merge_config = $config->{MERGE_CONFIG} // 'yes';
+
+  return $self
+    if !to_boolean($merge_config);
 
   if ( is_array($config) ) {
     my ( $key, undef, undef ) = fileparse( $file, qr/[.][^.]+$/xsm );
@@ -537,6 +549,15 @@ returns a L<Bedrock::Config> object.
 Return the C<dbnames> object from the configuration object.
 
 =head2 merge
+
+  merge(fh|file)
+
+Merge the contents of the config file with the current config object.
+
+You can set a MERGE_CONFIG element to 'no' to avoid merging the
+configuration object.  This is useful if you want to drop a F<.xml>
+file in Bedrock's configuration directory but don't want it merged
+into Bedrock's global config.
 
 See L</merge_config>
 

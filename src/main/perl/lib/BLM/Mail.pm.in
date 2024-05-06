@@ -1,8 +1,10 @@
+package BLM::Mail;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2023, TBC Development Group, LLC.
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -19,12 +21,11 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package BLM::Mail;
-
 use strict;
 use warnings;
 
 use Bedrock::Constants qw(:booleans);
+use Bedrock::XML;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
@@ -32,35 +33,77 @@ use English qw(-no_match_vars);
 use List::Util qw(pairs);
 use Net::SMTP;
 
+use Role::Tiny;
+
+with 'Bedrock::Logger';
+
 use parent qw(Bedrock::Hash);
 
 use Readonly;
 
 Readonly our $DEFAULT_TIMEOUT           => 60;
-Readonly our $DEFAULT_HOST              => q{localhost};
+Readonly our $DEFAULT_HOST              => 'localhost';
 Readonly our $DEFAULT_CONTENT_TYPE      => 'text/plain';
 Readonly our $DEFAULT_TRANSFER_ENCODING => '7bit';
 
 ########################################################################
 sub TIEHASH {
 ########################################################################
-  my ( $class, $server, $timeout, $debug ) = @_;
+  my ( $class, $server, $timeout, $debug, $config_file ) = @_;
 
   my $self = bless {}, $class;
+
+  $self->set_defaults( $server, $timeout, $debug );
+  $self->fetch_config($config_file);
+
+  return $self;
+}
+
+########################################################################
+sub fetch_config {
+########################################################################
+  my ( $self, $config_file ) = @_;
+
+  foreach ( $ENV{CONFIG}, $ENV{BEDROCK_CONFIG} ) {
+    $config_file = sprintf '%s/mail.xml';
+    last if -e $config_file;
+    undef $config_file;
+  }
+
+  return
+    if !$config_file;
+
+  my $config = Bedrock::XML->new($config_file);
+
+  $self->smtp_server( $config->{host} );
+  $self->timeout( $config->{timeout} );
+  $self->debug( $config->{debug} );
+
+  if ( $config->{user} && $config->{pass} ) {
+    $self->auth( @{$config}{qw(user pass)} );
+  }
+
+  $self->ssl( $config->{ssl} );
+
+  return $self;
+}
+
+########################################################################
+sub set_defaults {
+########################################################################
+  my ( $self, $server, $timeout, $debug ) = @_;
 
   $server //= $DEFAULT_HOST;
 
   $timeout //= $DEFAULT_TIMEOUT;
+
+  $debug //= $FALSE;
 
   $self->smtp_server($server);
 
   $self->content_type($DEFAULT_CONTENT_TYPE);
 
   $self->content_transfer_encoding($DEFAULT_TRANSFER_ENCODING);
-
-  $self->timeout($timeout);
-
-  $self->debug($debug);
 
   return $self;
 }
@@ -153,7 +196,7 @@ sub sendmail {
   }
 
   foreach my $to (@email) {
-    print {*STDERR} sprintf "to: %s %s\n", $to, $smtp->to($to);
+    $self->get_logger->info( sprintf "to: %s %s\n", $to, $smtp->to($to) );
 
     if ( !$smtp->to($to) ) {
       die "SEND ERROR\n";

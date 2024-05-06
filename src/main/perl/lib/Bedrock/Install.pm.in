@@ -1,0 +1,329 @@
+package Bedrock::Install;
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Bedrock::Constants qw(:booleans :chars);
+use Bedrock qw(slurp_file);
+use JSON;
+use File::Find;
+use File::Copy qw(copy);
+use File::Basename;
+use File::Path qw(make_path);
+use Scalar::Util qw(reftype);
+
+use parent qw(Bedrock::Application);
+
+caller or __PACKAGE__->main();
+
+########################################################################
+sub fetch_file_list {
+########################################################################
+  my ( $self, $dir ) = @_;
+
+  my @files;
+
+  find(
+    { wanted => sub {
+        return
+          if /^[.]/xsm;
+
+        push @files, $_;
+      },
+      preprocess => sub {
+        my @files = @_;
+
+        return grep { !-d $_ } @_;
+      }
+    },
+    $dir
+  );
+
+  return \@files;
+}
+
+########################################################################
+sub fetch_directories {
+########################################################################
+  my (@dirs) = @_;
+
+  my @directories;
+
+  foreach my $dir (@dirs) {
+    next if !$dir;
+
+    my $name   = $dir->{name};
+    my $source = $dir->{source};
+    find(
+      sub {
+        return if /^[.]/xsm || !-d $_;
+
+        my $d = $File::Find::name;
+        $d =~ s/$source//xsm;
+        push @directories,
+          {
+          source    => "$source$d",
+          mode      => $dir->{mode},
+          file_mode => $dir->{mode},
+          link      => $dir->{link},
+          overwrite => $dir->{overwrite},
+          name      => "$name$d"
+          };
+        return;
+      },
+      $source
+    );
+  }
+
+  return @directories;
+}
+
+########################################################################
+sub install {
+########################################################################
+  my ($self) = @_;
+
+  my $manifest = $self->get_manifest;
+
+  my $dryrun   = $self->get_dryrun ? '(dryrun):' : $EMPTY;
+  my $defaults = $manifest->{defaults};
+  my $destdir  = $self->get_destdir // $EMPTY;
+
+  $destdir =~ s/\/$//xsm;
+
+  my $directories = $manifest->{directories};
+  push @{$directories}, fetch_directories( grep { $_->{recurse} } @{$directories} );
+
+  foreach my $dir ( @{$directories} ) {
+    if ( !$self->test_condition($dir) ) {
+      $self->get_logger->info('condition failed...skipping');
+      next;
+    }
+
+    my $name = $dir->{name};
+
+    $self->get_logger->info( sprintf '%screating directory %s%s', $dryrun, $destdir, $name );
+
+    if ( !$dryrun ) {
+      if ( -d "$destdir$name" ) {
+        $self->get_logger->warn( sprintf '%s%s%s already exists...skipping', $dryrun, $destdir, $name );
+      }
+      else {
+        my $mode  = $dir->{mode}  // $defaults->{mode};
+        my $group = $dir->{group} // $defaults->{group};
+        my $owner = $dir->{owner} // $defaults->{owner};
+
+        make_path(
+          "$destdir$name",
+          { mode => $mode,
+            defined $owner ? ( owner => $owner ) : (),
+            defined $group ? ( group => $group ) : (),
+          }
+        );
+      }
+    }
+
+    my $files = $dir->{files};
+
+    if ( !$files ) {
+      $files = [ $self->fetch_file_list( $dir->{source} ) ];
+    }
+
+    foreach my $file ( @{$files} ) {
+      if ( reftype($file) eq 'ARRAY' ) {
+        foreach my $f ( @{$file} ) {
+          $self->_install(
+            file => {
+              name    => $f,
+              destdir => $destdir,
+            },
+            defaults => $defaults,
+            dir      => $dir,
+            dryrun   => $dryrun
+          );
+        }
+      }
+      else {
+        my %install_options = %{$file};
+        $install_options{destdir} = $destdir;
+
+        $self->_install( defaults => $defaults, file => \%install_options, dir => $dir, dryrun => $dryrun );
+      }
+    }
+  }
+
+  return;
+}
+
+########################################################################
+sub _default {
+########################################################################
+  my ( $key, $file, $dir, $defaults ) = @_;
+
+  return $file->{$key} // $dir->{$key} // $defaults->{$key};
+}
+
+########################################################################
+sub _install {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $file, $dir, $dryrun, $defaults ) = @args{qw( file dir dryrun defaults)};
+
+  my @files;
+
+  if ( !ref $file->{name} ) {
+    push @files, $file->{name} // basename $file->{source};
+  }
+  else {
+    @files = @{ $file->{name} };
+  }
+
+  my $destdir = $file->{destdir} // $EMPTY;
+
+  my $link      = _default( 'link',      $file, $dir, $defaults );
+  my $overwrite = _default( 'overwrite', $file, $dir, $defaults );
+  my $mode      = _default( 'file_mode', $file, $dir, $defaults );
+
+  my $group = _default( 'group', $file, $dir, $defaults );
+  my $owner = _default( 'owner', $file, $dir, $defaults );
+
+  foreach my $file_name (@files) {
+    my $dest = sprintf '%s%s/%s', $destdir, $dir->{name}, $file_name;
+
+    my $source = $file->{source} ? $file->{source} : sprintf '%s/%s', $dir->{source}, $file_name;
+
+    if ( !-e $source ) {
+      $self->get_logger->warn( sprintf '%s%s does not exist...skipping', $dryrun, $source );
+      return;
+    }
+
+    if ($link) {
+      $self->get_logger->info( sprintf '%slinking %s as %s', $dryrun, $source, $dest );
+
+      if ( !$dryrun ) {
+        symlink $source, $dest;
+      }
+    }
+    else {
+      $self->get_logger->info( sprintf '%scopying %s to  %s', $dryrun, $source, $dest );
+
+      if ( !$dryrun ) {
+        if ( -e $dest && !$overwrite ) {
+          $self->get_logger->warn( sprintf 'file exists - set overwrite = 1 to replace' );
+        }
+        elsif ( -e $dest ) {
+          $self->get_logger->warn( sprintf 'file exists - replacing' );
+        }
+
+        copy( $source, $dest );
+
+        if ( !-e $dest ) {
+          $self->get_logger->error( sprintf 'error copying file %s', $OS_ERROR );
+        }
+      }
+    }
+
+    if ( $group && $owner ) {
+      my ( $uid, $gid ) = ( getpwnam $owner )[ 2, 3 ];
+      $self->get_logger->info( sprintf '%ssetting owner %s:%s for %s', $dryrun, $uid, $gid, $dest );
+
+      if ( !$dryrun ) {
+        chown $uid, $gid, $dest;
+      }
+    }
+
+    $self->get_logger->info( sprintf '%ssetting mode %s for %s', $dryrun, $mode, $dest );
+
+    if ( !$dryrun ) {
+      chmod oct($mode), $dest;
+    }
+  }
+
+  return;
+}
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  my $manifest_file = $self->get_manifest;
+
+  die "--manifest is a required argument\n"
+    if !$manifest_file;
+
+  die "$manifest_file not found\n"
+    if !-e $manifest_file;
+
+  my $manifest = eval { JSON->new->decode( scalar slurp_file($manifest_file) ); };
+
+  die "could not read $manifest_file\n$EVAL_ERROR"
+    if !$manifest || $EVAL_ERROR;
+
+  $self->set_manifest($manifest);
+
+  return $self;
+}
+
+########################################################################
+sub main {
+########################################################################
+  local $ENV{LogLevel} = 'debug';
+
+  my $app = Bedrock::Install->new(
+    option_specs => [qw( manifest=s destdir=s )],
+    mk_accessors => [qw(destdir)]
+  );
+
+  $app->get_logger->debug( Dumper( [ options => $app->get_options ] ) );
+
+  $app->install;
+
+  return 0;
+}
+
+########################################################################
+sub _resolve_condition {
+########################################################################
+  my ( $condition, $args ) = @_;
+
+  if ( $condition eq 'env' ) {
+    my ( $env_var, $test_val ) = @{$args};
+
+    $test_val //= $EMPTY;
+
+    return defined $ENV{$env_var} && $ENV{$env_var} eq $test_val;
+  }
+
+  return $FALSE;
+}
+
+########################################################################
+sub test_condition {
+########################################################################
+  my ( $self, $dir ) = @_;
+
+  return $TRUE
+    if !$dir->{condition};
+
+  my $result = $TRUE;
+
+  foreach my $op ( keys %{ $dir->{condition} } ) {
+    my $rv = _resolve_condition( %{ $dir->{condition}->{$op} } );
+
+    if ( $op eq 'not_equal' ) {
+      $rv = !$rv;
+    }
+
+    $result &&= $rv;
+
+    last if !$result;
+  }
+
+  return $result;
+}
+
+1;

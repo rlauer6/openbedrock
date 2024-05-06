@@ -53,6 +53,7 @@ perl5lib_DATA = \
     bedrock_handler_common.pm
 
 perl5bedrocklib_DATA = \
+    Bedrock/Application.pm \
     Bedrock/Array.pm \
     Bedrock/BedrockCGI.pm \
     Bedrock/BedrockConfig.pm \
@@ -65,6 +66,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Handle.pm \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
+    Bedrock/Install.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
     Bedrock/Model.pm \
