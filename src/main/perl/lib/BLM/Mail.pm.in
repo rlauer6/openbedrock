@@ -32,17 +32,20 @@ use English qw(-no_match_vars);
 
 use List::Util qw(pairs);
 use Net::SMTP;
+use Authen::SASL;
 
 use Role::Tiny;
-
 with 'Bedrock::Logger';
 
+# TODO: refactor and subclass BLM::Plugin
 use parent qw(Bedrock::Hash);
 
 use Readonly;
 
 Readonly our $DEFAULT_TIMEOUT           => 60;
 Readonly our $DEFAULT_HOST              => 'localhost';
+Readonly our $DEFAULT_PORT              => 25;
+Readonly our $SSL_PORT                  => 465;
 Readonly our $DEFAULT_CONTENT_TYPE      => 'text/plain';
 Readonly our $DEFAULT_TRANSFER_ENCODING => '7bit';
 
@@ -77,13 +80,14 @@ sub fetch_config {
 
   $self->smtp_server( $config->{host} );
   $self->timeout( $config->{timeout} );
+  $self->port( $config->{port} // $DEFAULT_PORT );
   $self->debug( $config->{debug} );
 
   if ( $config->{user} && $config->{pass} ) {
-    $self->auth( @{$config}{qw(user pass)} );
+    $self->auth( [ @{$config}{qw(user pass)} ] );
   }
 
-  $self->ssl( $config->{ssl} );
+  $self->ssl( $config->{ssl} || $self->port eq $SSL_PORT );
 
   return $self;
 }
@@ -135,7 +139,12 @@ sub auth {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{auth} = \@args;
+  return $self->{auth}
+    if !@args;
+
+  $self->{auth} = ref $args[0] ? $args[0] : [@args];
+
+  return $self->{auth};
 }
 
 ########################################################################
@@ -183,8 +192,8 @@ sub sendmail {
   die "SMTP CONNECT ERROR: $EVAL_ERROR\n"
     if !$smtp;
 
-  if ( $self->{auth} ) {
-    $smtp->auth( @{ $self->{auth} } );
+  if ( $self->auth ) {
+    $smtp->auth( @{ $self->authx } );
   }
 
   $smtp->mail( $self->from );
@@ -245,7 +254,7 @@ __END__
 
 =head1 PUBLIC
 
-C<BLM::Mail> - An interface to Net::SMTP
+BLM::Mail - An interface to Net::SMTP
 
 =head1 SYNOPSIS
 
@@ -287,10 +296,9 @@ seconds. C<host> defaults to C<localhost>.
 =head2 auth
 
  auth(username, password)
- auth(SASL)
+ auth(array-ref)
 
-If authentication is used, you can the username and password for the
-server or pass an L<Authen::SASL> object. (See L</Net::SMTP>)
+ If using SSL, you need to have L<Authen::SASL> installed. (See L</Net::SMTP>)
 
 =head2 cc( address )
 
@@ -352,7 +360,8 @@ are reset after the send is complete.
 
 =head2 ssl( option ) 
 
-SSL options (see L<Net::SMTP>).
+Boolean that determines if an SSL connection will be used. (see
+L<Net::SMTP>).
 
 =head2 timeout ( timeout) 
 
