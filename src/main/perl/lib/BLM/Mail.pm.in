@@ -24,20 +24,17 @@ package BLM::Mail;
 use strict;
 use warnings;
 
-use Bedrock::Constants qw(:booleans);
+use Authen::SASL;
+use Bedrock::Constants qw(:booleans :chars);
 use Bedrock::XML;
-
 use Data::Dumper;
 use English qw(-no_match_vars);
-
-use List::Util qw(pairs);
+use List::Util qw(pairs any);
 use Net::SMTP;
-use Authen::SASL;
 
 use Role::Tiny;
 with 'Bedrock::Logger';
 
-# TODO: refactor and subclass BLM::Plugin
 use parent qw(Bedrock::Hash);
 
 use Readonly;
@@ -45,19 +42,18 @@ use Readonly;
 Readonly our $DEFAULT_TIMEOUT           => 60;
 Readonly our $DEFAULT_HOST              => 'localhost';
 Readonly our $DEFAULT_PORT              => 25;
-Readonly our $SSL_PORT                  => 465;
+Readonly our $SSL_PORT                  => [qw(465 587)];
 Readonly our $DEFAULT_CONTENT_TYPE      => 'text/plain';
 Readonly our $DEFAULT_TRANSFER_ENCODING => '7bit';
 
 ########################################################################
-sub TIEHASH {
+sub init_plugin {
 ########################################################################
-  my ( $class, $server, $timeout, $debug, $config_file ) = @_;
-
-  my $self = bless {}, $class;
+  my ( $self, $server, $timeout, $debug ) = @_;
 
   $self->set_defaults( $server, $timeout, $debug );
-  $self->fetch_config($config_file);
+
+  $self->fetch_config();
 
   return $self;
 }
@@ -65,31 +61,75 @@ sub TIEHASH {
 ########################################################################
 sub fetch_config {
 ########################################################################
-  my ( $self, $config_file ) = @_;
+  my ($self) = @_;
 
-  foreach ( $ENV{CONFIG}, $ENV{BEDROCK_CONFIG} ) {
-    $config_file = sprintf '%s/mail.xml';
-    last if -e $config_file;
-    undef $config_file;
+  my %options = %{ $self->options || {} };
+
+  my $config_file = $options{config};
+
+  if ( $config_file && $config_file !~ /[.]xml$/xsm ) {
+    $config_file .= '.xml';
   }
 
-  return
-    if !$config_file;
+  $config_file //= 'mail.xml';
 
-  my $config = Bedrock::XML->new($config_file);
+  my @paths = map { $ENV{CONFIG_PATH} . $_ } ( $EMPTY, '.d', '.d/startup', '.d/plugin' );
+  push @paths, $ENV{BEDROCK_CONFIG_PATH};
 
-  $self->smtp_server( $config->{host} );
-  $self->timeout( $config->{timeout} );
-  $self->port( $config->{port} // $DEFAULT_PORT );
-  $self->debug( $config->{debug} );
+  @paths = grep { defined $_ && -d $_ } @paths;
+
+  @paths = map { sprintf "%s/$config_file", $_ } @paths;
+
+  ($config_file) = grep { -e $_ } @paths;
+
+  my $config = eval {
+    return Bedrock::XML->new($config_file)
+      if $config_file;
+
+    return $self->_create_config;
+  };
+
+  $self->smtp_server( $options{host} // $config->{host}    // $self->smtp_server );
+  $self->timeout( $options{timeout}  // $config->{timeout} // $self->timeout );
+  $self->port( $options{port}        // $config->{port}    // $self->port // $DEFAULT_PORT );
+  $self->debug( $options{debug}      // $config->{debug}   // $self->debug );
 
   if ( $config->{user} && $config->{pass} ) {
-    $self->auth( [ @{$config}{qw(user pass)} ] );
+    my $user = $options{user} // $config->{user} // $self->auth->[0];
+    my $pass = $options{pass} // $config->{pass} // $self->auth->[1];
+
+    $self->auth( [ $user, $pass ] );
   }
 
-  $self->ssl( $config->{ssl} || $self->port eq $SSL_PORT );
+  $self->ssl( $options{ssl} // $config->{ssl} // $self->ssl // any { $self->port eq $_ } @{$SSL_PORT} );
+
+  my $new_config = $self->_create_config;
+
+  foreach ( keys %{$new_config} ) {
+    $config->{$_} = $new_config->{$_};
+  }
+
+  $self->config($config);
 
   return $self;
+}
+
+########################################################################
+sub _create_config {
+########################################################################
+  my ($self) = @_;
+
+  my $auth = $self->auth // [];
+
+  return {
+    host    => $self->smtp_server,
+    port    => $self->port,
+    timeout => $self->timeout,
+    debug   => $self->debug,
+    user    => $auth->[0],
+    pass    => $auth->[1],
+    ssl     => $self->ssl,
+  };
 }
 
 ########################################################################
@@ -97,13 +137,13 @@ sub set_defaults {
 ########################################################################
   my ( $self, $server, $timeout, $debug ) = @_;
 
-  $server //= $DEFAULT_HOST;
+  my %options = %{ $self->options // {} };
 
-  $timeout //= $DEFAULT_TIMEOUT;
+  $self->timeout( $options{timeout} // $DEFAULT_TIMEOUT );
 
-  $debug //= $FALSE;
+  $self->debug( $options{debug} // $FALSE );
 
-  $self->smtp_server($server);
+  $self->smtp_server( $options{server} // $DEFAULT_HOST );
 
   $self->content_type($DEFAULT_CONTENT_TYPE);
 
@@ -115,18 +155,20 @@ sub set_defaults {
 {
   ## no critic (RequireArgUnpacking)
 
-  sub debug        { unshift @_, 'debug';                     goto &_set_get; }
-  sub to           { unshift @_, 'to';                        goto &_set_get; }
   sub cc           { unshift @_, 'cc';                        goto &_set_get; }
-  sub from         { unshift @_, 'from';                      goto &_set_get; }
-  sub subject      { unshift @_, 'subject';                   goto &_set_get; }
-  sub message      { unshift @_, 'message';                   goto &_set_get; }
-  sub port         { unshift @_, 'port';                      goto &_set_get; }
-  sub ssl          { unshift @_, 'ssl';                       goto &_set_get; }
-  sub timeout      { unshift @_, 'timeout';                   goto &_set_get; }
+  sub config       { unshift @_, 'config';                    goto &_set_get; }
   sub content_type { unshift @_, 'content-type';              goto &_set_get; }
-  sub smtp_server  { unshift @_, 'smtp-server';               goto &_set_get; }
+  sub debug        { unshift @_, 'debug';                     goto &_set_get; }
   sub encoding     { unshift @_, 'content-transfer-encoding'; goto &_set_get; }
+  sub from         { unshift @_, 'from';                      goto &_set_get; }
+  sub message      { unshift @_, 'message';                   goto &_set_get; }
+  sub options      { unshift @_, 'options';                   goto &_set_get; }
+  sub port         { unshift @_, 'port';                      goto &_set_get; }
+  sub smtp_server  { unshift @_, 'smtp-server';               goto &_set_get; }
+  sub ssl          { unshift @_, 'ssl';                       goto &_set_get; }
+  sub subject      { unshift @_, 'subject';                   goto &_set_get; }
+  sub timeout      { unshift @_, 'timeout';                   goto &_set_get; }
+  sub to           { unshift @_, 'to';                        goto &_set_get; }
 
   sub content_transfer_encoding {
     unshift @_, 'content-transfer-encoding';
@@ -139,7 +181,7 @@ sub auth {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return $self->{auth}
+  return $self->{auth} // []
     if !@args;
 
   $self->{auth} = ref $args[0] ? $args[0] : [@args];
@@ -164,8 +206,11 @@ sub sendmail {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  if ( @args == 1 ) {
+  my $raw;
+
+  if (@args) {
     $self->message( $args[0] );
+    $raw = $args[1];
   }
 
   die "TO ERROR\n"
@@ -193,7 +238,7 @@ sub sendmail {
     if !$smtp;
 
   if ( $self->auth ) {
-    $smtp->auth( @{ $self->authx } );
+    $smtp->auth( @{ $self->auth } );
   }
 
   $smtp->mail( $self->from );
@@ -210,6 +255,12 @@ sub sendmail {
     if ( !$smtp->to($to) ) {
       die "SEND ERROR\n";
     }
+  }
+
+  if ($raw) {
+    $smtp->data( $self->message );
+    $smtp->quit;
+    return;
   }
 
   $smtp->data();
@@ -286,10 +337,60 @@ content header sent with the message.
 
 =head1 CONSTRUCTOR
 
- <plugin:Mail host [timeout, debug]>
+ <plugin:Mail host [timeout, debug, config]>
 
 If C<timeout> is not provided, the C<timeout> value will default to 60
 seconds. C<host> defaults to C<localhost>.
+
+In the spirit of TIMTOWTDI...you can also use tag options for
+configuration values. Option values override values found in your
+config file.
+
+ <plugin:Mail --enable-custom-options --host=localhost --debug --user=fred --pass=flintstone>
+ <plugin:Mail --config=ses>
+
+The constructor automatically looks for a configuration file named
+F<mail.xml> and will use those setting I<unless you use options on the
+command line or specify the configuration file using the C<--config>
+option.  The method searches for the file in the usual places one
+would find Bedrock configuration files.  Namely:
+
+=over 5
+
+=item * $ENV{CONFIG_PATH}
+
+=item * $ENV{CONFIG_PATH}.d
+
+=item * $ENV{CONFIG_PATH}.d/startup
+
+=item * $ENV{CONFIG_PATH}.d/plugin
+
+=item * $ENV{BEDROCK_CONFIG_PATH}
+
+=back
+
+The configuration file should look something like this:
+
+<object name="mail">
+  <scalar name="user">some-user</scalar>
+  <scalar name="pass">some-pass</scalar>
+  <scalar name="host">localhost</scalar>
+  <scalar name="port">465</scalar>
+  <scalar name="ssl">1</scalar>
+  <scalar name="MERGE_CONFIG">no</scalar>
+
+  <!-- your custom stuff here -->
+  <object name="support">
+    <scalar name="to">support@treasurersbriefcase.com</scalar>
+  </object>
+</object>
+
+Of course, you can add any addition items here that you would like and
+access the entire object using the C<config()> method.
+
+Normally, Bedrock will merge F<.xml> files it finds in its root
+configuration paths. If you want to prevent merging, add the
+MERGE_CONFIG element with a value of 'no'.
 
 =head1 METHODS AND SUBROUTINES
 
@@ -298,12 +399,18 @@ seconds. C<host> defaults to C<localhost>.
  auth(username, password)
  auth(array-ref)
 
- If using SSL, you need to have L<Authen::SASL> installed. (See L</Net::SMTP>)
+If you are using SSL, you need to have the L<Authen::SASL>
+installed. (See L</Net::SMTP>)
 
 =head2 cc( address )
 
 Set the 'CC' address.  This can be a ';' delimited list of email
 addresses.
+
+=head2 config
+
+Returns the current configuration which will be used when connecting
+to the SMTP server.
 
 =head2 content_type( type )
 
@@ -339,6 +446,7 @@ Set the 'From' address for the mail message.
 =head2 message ( message )
 
 Sets the message content.
+
 =head2 subject( subject )
 
 Set the 'Subject' field of the mail header.
@@ -349,27 +457,54 @@ Port to connect to.
 
 default: 25
 
-=head2 sendmail( [message] )
+See the note regarding SSL ports below. (L</ssl>)
+
+=head2 sendmail( [message], [raw] )
 
 Send the mail message.  The message can be passed as an argument or
-the Plugin will look to the C<message> property. The Plugin will
-connect to the SMTP server and deliver the message if possible.  Note
-that the connection to the server is made when you invokde this
-method.  All of the properties ('to', 'from', etc.)  of the message
-are reset after the send is complete.
+the Plugin will call the C<message()> method to retrieve the
+message. The plugin connect to the SMTP server and deliver the message
+if possible.  Note that the connection to the server is made when you
+invoke this method.  All of the properties ('to', 'from', etc.)  of
+the message are reset after the send is complete.
 
-=head2 ssl( option ) 
+You can send a MIME encoded message by setting the C<raw> flag to a
+true value.  Here's an example of using L<MIME::Entity> to construct a
+MIME encode message.
+
+ <plugin:Mail --enable-custom-options --debug > 
+ <plugin:MIME::Entity --define-plugin="mime">
+ 
+ <array:message "this is a test">
+ <null $mime.build( 'From', 'bigfoot@example.com',
+                    'To', 'sasquatch@example.com', 
+                    'Data', "test",
+                    'Subject', 'test') >
+ 
+ <null $Mail.to('sasquatch@example.com')>
+ <null $Mail.from('bigfoot@example.com')>
+ <null $Mail.sendmail($mime.stringify(), 1)>
+
+=head2 ssl
+
+ ssl(0|1)
 
 Boolean that determines if an SSL connection will be used. (see
-L<Net::SMTP>).
+L<Net::SMTP>). This will automatically be set to true if you do not
+explicitly set the SSL flag and the port value is set to one of
+the standard SSL enabled ports (465 or 587).
 
-=head2 timeout ( timeout) 
+=head2 timeout
+
+ timeout( timeout) 
 
 Sets the timeout value (in seconds) for connecting to the SMTP server.
 The default is 60 seconds.  The Plugin will throw an exception if a
 timeout occurs.
 
-=head2 to( recipient )
+=head2 to
+
+ to( recipient )
 
 Set the 'To' address for the mail message.
 
@@ -381,7 +516,7 @@ If you're having issues with this module, try setting the debug option.
 
 =head1 AUTHOR
 
-Rob Lauer - rlauer6@comcast.net
+Rob Lauer - bigfoot@cpan.org
 
 Just a wrapper on L<Net::SMTP>.
 

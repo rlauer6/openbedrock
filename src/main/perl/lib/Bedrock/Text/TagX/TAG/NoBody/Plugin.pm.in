@@ -41,11 +41,12 @@ with 'Bedrock::Logger';
 sub define_options {
 ########################################################################
   return (
-    'define-var=s'    => undef,
-    'dir-prefix=s'    => undef,
-    'define-plugin=s' => undef,
-    'tie'             => undef,
-    'init=s'          => undef,
+    'define-var=s'            => undef,
+    'dir-prefix=s'            => undef,
+    'define-plugin=s'         => undef,
+    'tie'                     => undef,
+    'init=s'                  => undef,
+    'enable-custom-options=s' => undef,
   );
 }
 
@@ -99,18 +100,23 @@ sub finalize {
 
   my $plugin = $class =~ /^BLM/xsm ? $class : 'BLM::' . $class;
 
+  my @plugin_path;
+
   # still undecided about this
   if ( exists $options{'dir-prefix'} ) {
     if ( none { $options{'dir-prefix'} eq $_ } @INC ) {
-      push @INC, $options{'dir-prefix'};
+      push @plugin_path, $options{'dir-prefix'};
     }
   }
 
   # adhoc addition of a PLUGIN path
   if ( $config->{PLUGIN_PATH} ) {
-    my @plugin_inc = split /:/xsm, $config->{PLUGIN_PATH};
+    @plugin_path = split /:/xsm, $config->{PLUGIN_PATH};
+    push @plugin_path, $ENV{BEDROCK_PLUGIN_PATH};
 
-    foreach my $path (@plugin_inc) {
+    @plugin_path = map { defined $_ && $_ && -d $_ } @plugin_path;
+
+    foreach my $path (@plugin_path) {
       next if any { $path eq $_ } @INC;
       push @INC, $path;
     }
@@ -118,7 +124,8 @@ sub finalize {
 
   $class = $self->loadPlugin( $plugin, $class );
 
-  my $plugin_obj = eval { return $self->create_plugin_instance( class => $class, argv => \@argv, tie => $options{tie}, ); };
+  my $plugin_obj
+    = eval { return $self->create_plugin_instance( class => $class, argv => \@argv, tie => $options{tie}, ); };
 
   my $err = $EVAL_ERROR;
 
@@ -225,6 +232,7 @@ sub init_plugin {
   # new BLM::Plugin classes get called with different parameters
   # than legacy Bedrock::Plugins...
   my $class = ref $plugin_obj;
+
   if ( $self->isa_plugin( $class, $options->{init} ) ) {
     $init_method = $options->{init} // 'init_plugin';
 
@@ -244,15 +252,18 @@ sub init_plugin {
     $init_method = 'init_plugin';
   }
 
+  # support legacy plugin's ability to get options
+  if ( $options->{'enable-custom-options'} ) {
+    if ( my $method = $plugin_obj->can('options') || $plugin_obj->can('set_options') ) {
+      $method->( $plugin_obj, Bedrock::Hash->new( %{$options} ) );
+    }
+  }
+
   return $TRUE
     if !ref $plugin_obj || !$plugin_obj->can($init_method);
 
   if ( $plugin_obj->can('verbose') ) {
     $plugin_obj->verbose( $self->verbose );
-  }
-
-  if ( $plugin_obj->can('options') && !$self->isa_plugin( $class, $options->{init} ) ) {
-    $plugin_obj->options( Bedrock::Hash->new( %{$options} ) );
   }
 
   return $plugin_obj->$init_method(@params);
@@ -406,6 +417,18 @@ I<By convention, you we don't use the full package name when
 specifying the plugin, although you are more than welcome to do that
 if you would like.>
 
+=item --enable-custom-options
+
+Use this option for legacy plugins that would like to now support
+custom options. While best to refactor old plugins using
+L<BLM::Plugin> that's not always practical. This option allow your old
+plugins to access custom tag options.
+
+To access custom options you must implement a setter method
+(C<options> or C<set_options>) so that the plugin tag can pass custom
+options to your plugin.  This setter should accept a hash reference of
+options and values.
+
 =item --tie
 
 Forces the plugin to tie the plugin class rather than invoking a
@@ -414,11 +437,14 @@ others may expect (by convention) that you instantiate them using a
 C<new()> method.  This option forces a tie even if the Perl class
 contains a C<new()> method.
 
-=item dir-prefix
+=item --dir-prefix
 
-Additional path where the plugin might be found.
+Additional path where the plugin might be found. By default, Bedrock
+looks for plugins in the path set by the configuration variable
+PLUGIN_PATH set in F<tagx.xml>.  You can also set the environment
+variable C<BEDROCK_PLUGIN_PATH> to point your own plugin path.
 
-=item init
+=item --init
 
 Name of the subroutine to call in order to initialize the plugin.
 
@@ -511,7 +537,8 @@ F<tagx.xml>.
 =item Retrieving custom plugin options
 
 The C<E<lt>pluginE<gt>> tag can accept custom options if you use
-C<BLM::Plugin> as your base class. See L<BLM::Plugin> for details.
+C<BLM::Plugin> as your base class or if your plugin contains a setter
+named C<options> or C<get_options>. See L<BLM::Plugin> for details.
 
 Custom options passed to the plugin (e.g. --my-custom-option) can be
 retrieved using the C<options()> method.
