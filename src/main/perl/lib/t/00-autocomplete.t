@@ -3,12 +3,17 @@
 use strict;
 use warnings;
 
-use lib qw(. .. Bedrock);
+BEGIN {
+  use Bedrock;
+  use File::Basename qw(dirname basename);
+
+  my $path = dirname( $INC{'Bedrock.pm'} );
+  push @INC, "$path/Bedrock", "$path/Bedrock/Text";
+}
 
 use Data::Dumper;
 use English qw(-no_match_vars);
 use Bedrock::Test::RequestHandler;
-use File::Basename qw(basename);
 use File::Temp qw(tempdir tempfile);
 use JSON;
 use Scalar::Util qw(reftype);
@@ -77,10 +82,10 @@ sub main {
 
   local $ENV{BEDROCK_CONFIG_PATH} = $dir;
   {
-    no strict 'refs';       ## no critic (ProhibitNoStrict)
-    no warnings 'redefine'; ## no critic (ProhibitNoWarnings)
+    no strict 'refs';        ## no critic (ProhibitNoStrict)
+    no warnings 'redefine';  ## no critic (ProhibitNoWarnings)
 
-    *{'Bedrock::Apache::HandlerUtils::check_session'}= sub { return $session; };
+    *{'Bedrock::Apache::HandlerUtils::check_session'} = sub { return $session; };
 
   }
 
@@ -92,7 +97,7 @@ sub main {
     my $stdout
       = stdout_from( sub { Apache::BedrockAutocomplete::handler($handler) } );
 
-    like($stdout,qr/\AContent-type:\sapplication\/json\n\n/xsm,'content header')
+    like( $stdout, qr/\AContent-type:\sapplication\/json\n\n/xsm, 'content header' )
       or print $handler->log->as_string;
   };
 
@@ -129,7 +134,7 @@ sub main {
 
     is( reftype( $obj->[0] ), 'HASH', 'hash element' );
 
-    is_deeply( [ sort keys %{ $obj->[0] } ],[qw(label value)], 'keys: label, value' );
+    is_deeply( [ sort keys %{ $obj->[0] } ], [qw(label value)], 'keys: label, value' );
 
     is( $obj->[0]->{label}, 'Bedrock', 'label is Bedrock' );
 

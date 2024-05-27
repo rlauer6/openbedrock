@@ -13,7 +13,7 @@ use DBI;
 use Data::Dumper;
 use English qw{-no_match_vars};
 
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 my $dbi = eval {
   my $dbh = connect_db();

@@ -7,10 +7,10 @@ use Test::More;
 
 use DBI;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 
 ########################################################################
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 my $dbi = eval {
   my $dbh = connect_db();
@@ -51,35 +51,34 @@ my $ith;
 ########################################################################
 subtest 'get_count' => sub {
 ########################################################################
-  $ith
-    = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
+  $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
   isa_ok( $ith, 'BLM::IndexedTableHandler' )
     or BAIL_OUT($EVAL_ERROR);
 
   my @colors = qw(red green blue);
 
-  for (0..9) {
-    $ith->set(id => 0,
-              name => (qw{ foo boo buz biz})[int rand 4 ],
-              foo => (qw{buz biz})[int rand 2 ],
-              active => $_ % 2,
-              bar_phone => q{},
-              colors => $colors[int rand 3],
-            );
+  for ( 0 .. 9 ) {
+    $ith->set(
+      id        => 0,
+      name      => (qw{ foo boo buz biz})[ int rand 4 ],
+      foo       => (qw{buz biz})[ int rand 2 ],
+      active    => $_ % 2,
+      bar_phone => q{},
+      colors    => $colors[ int rand 3 ],
+    );
     $ith->save();
   }
-  
-  diag('active records is ' . $ith->get_count( 1, active => 1));
 
-  diag('records ' . $ith->get_count());
+  diag( 'active records is ' . $ith->get_count( 1, active => 1 ) );
 
-  diag('active and blue = ', $ith->get_count( 1, active => 1, 1, colors => 'blue'));
-  
-  diag('not active and blue = ', $ith->get_count(1,  active => 0, 1, colors => 'blue'));
-  
+  diag( 'records ' . $ith->get_count() );
+
+  diag( 'active and blue = ', $ith->get_count( 1, active => 1, 1, colors => 'blue' ) );
+
+  diag( 'not active and blue = ', $ith->get_count( 1, active => 0, 1, colors => 'blue' ) );
+
 };
-
 
 END {
   eval {

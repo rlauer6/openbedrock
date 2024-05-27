@@ -6,7 +6,11 @@ use warnings;
 package MyApp::Users;
 
 BEGIN {
-  use lib qw(. Bedrock);
+  use Bedrock;
+  use File::Basename qw(dirname basename);
+
+  my $path = dirname( $INC{'Bedrock.pm'} );
+  push @INC, "$path/Bedrock", "$path/Bedrock/Text";
 }
 
 use parent qw(Bedrock::Model::Handler);
@@ -15,7 +19,7 @@ use parent qw(Bedrock::Model::Handler);
 package main;
 ########################################################################
 
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 use Carp::Always;
 use Bedrock::Hash;
@@ -35,7 +39,7 @@ use_ok('Bedrock::Model::Field');
 
 Bedrock::Model::Field->import(qw(:all));
 
-eval { create_db( $dbi, 1 ); };
+eval { return create_db( $dbi, 1 ); };
 
 if ($EVAL_ERROR) {
   BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
@@ -47,14 +51,10 @@ my @fields = eval {
   local $Bedrock::Model::Field::RETURN_FIELDS = 1;
 
   return (
-    id_field(),
-    varchar_field( 'name',    32 ),
-    varchar_field( 'address', 64 ),
-    zip_field('zip'),
-    enum_field( 'position', [ 'president', 'vice-president', 'cabinet', ] ),
-    json_field('json'),
-    date_inserted_field(),
-    last_updated_field(),
+    id_field(),                                                              varchar_field( 'name', 32 ),
+    varchar_field( 'address', 64 ),                                          zip_field('zip'),
+    enum_field( 'position', [ 'president', 'vice-president', 'cabinet', ] ), json_field('json'),
+    date_inserted_field(),                                                   last_updated_field(),
   );
 };
 

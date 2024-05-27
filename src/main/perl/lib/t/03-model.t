@@ -54,7 +54,7 @@ print {$fh} $model_def;
 close $fh;
 
 ########################################################################
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 use Test::More;
 

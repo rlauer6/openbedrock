@@ -18,7 +18,8 @@ BEGIN {
 like( $BLM::DBHandler::VERSION, qr/\A[\d.]+\z/xsm, 'version' );
 
 SKIP: {
-  skip 'no DBI_USER set', 1 if !$ENV{DBI_USER};
+  skip 'no DBI_USER set', 3
+    if !$ENV{DBI_USER};
 
   BLM::DBHandler->import(qw(easy_connect is_dbi));
 

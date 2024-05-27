@@ -1,6 +1,6 @@
 # -*-Makefile-*-
 
-SUBDIRS = bin src docker .
+SUBDIRS = cpan bin src docker .
 
 # The ACLOCAL_AMFLAGS are used by 'autoreconf' and by the Makefile
 # rebuild rule when they need to run 'aclocal'.

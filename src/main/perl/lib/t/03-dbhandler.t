@@ -20,7 +20,7 @@ use Readonly;
 Readonly my $TRUE  => 1;
 Readonly my $FALSE => 0;
 
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 my $dbi = eval { connect_db() };
 

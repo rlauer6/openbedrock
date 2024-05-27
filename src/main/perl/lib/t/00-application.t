@@ -11,12 +11,13 @@ use Data::Dumper;
 
 use_ok 'Bedrock::Application';
 
-my $app = Bedrock::Application->new;
-ok( ref $app && blessed $app, 'is a blessed class' );
-
 local @ARGV = qw(--foo --bar=biz --biz-buz=buz);
 
-my $options = $app->get_options( specs => [qw(foo bar=s biz-buz=s)] );
+my $app = Bedrock::Application->new( option_specs => [qw(foo bar=s biz-buz=s)] );
+
+my $options = $app->get_options;
+
+ok( ref $app && blessed $app, 'is a blessed class' );
 
 ok( ref $options && reftype($options) eq 'HASH' );
 

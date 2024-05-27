@@ -414,6 +414,7 @@ AC_CONFIG_FILES(
 	[${PACKAGE_NAME}.spec]
         [Makefile]
         [bin/Makefile]
+        [cpan/Makefile]
         [src/Makefile]
         [src/main/Makefile]
         [src/main/bedrock/Makefile]

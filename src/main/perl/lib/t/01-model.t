@@ -33,7 +33,7 @@ use DBI;
 use Data::Dumper;
 
 ########################################################################
-require 't/db-setup.pl';
+use Bedrock::Test::Utils qw(connect_db create_db);
 
 my $dbi = eval { return connect_db(); };
 

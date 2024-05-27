@@ -3,15 +3,15 @@
 use strict;
 use warnings;
 
-use Bedrock::Serializer qw/evolve devolve/;
+use Bedrock::Serializer qw(evolve devolve);
 use Bedrock::Hash;
-
-use Cwd qw/abs_path cwd/;
+use Cwd qw(abs_path cwd);
 use Data::Dumper;
-use File::Temp qw/tempfile/;
-use JSON::PP;
-use YAML qw/Dump Load/;
-use List::Util qw{ any };
+use English qw(-no_match_vars);
+use File::Temp qw(tempfile);
+use JSON;
+use YAML qw(Dump Load);
+use List::Util qw( any );
 
 use Test::More tests => 13;
 
@@ -59,9 +59,9 @@ sub write_config {
       print {$fh} Dump( devolve $obj);
     }
     elsif ( $type eq 'json' ) {
-      print {$fh} JSON::PP->new->utf8->pretty->encode( devolve $obj);
+      print {$fh} JSON->new->utf8->pretty->encode( devolve $obj);
     }
-  } ## end else [ if ( !ref($obj) ) ]
+  }
 
   close $fh;
 
@@ -98,10 +98,7 @@ while (1) {
       $yaml = Load($yaml_str);
 
       if ( !ref $yaml ) {
-        BAIL_OUT(
-          "failed to deserialize yaml\n",
-          diag( Dumper [ $yaml, $yaml_str ] )
-        );
+        BAIL_OUT( "failed to deserialize yaml\n", diag( Dumper [ $yaml, $yaml_str ] ) );
       }
 
       last;
@@ -110,7 +107,7 @@ while (1) {
     /^[#]\sjson/xsm && do {
       ( $json_str, $next_line ) = read_lines(*DATA);
 
-      $json = JSON::PP->new->utf8->decode($json_str);
+      $json = JSON->new->utf8->decode($json_str);
       last;
     };
   }
@@ -147,9 +144,11 @@ subtest 'Read all types' => sub {
 ########################################################################
 
   for my $t (qw/xml yaml json/) {
-    my $config = eval {
-      Bedrock::Config->new( $cwd . q{/} . $config_files{$t}->{filename} );
-    };
+    my $file = $config_files{$t}->{filename};
+
+    my $config = eval { Bedrock::Config->new( $cwd . q{/} . $file ); };
+    ok( $config, 'read config' )
+      or diag($EVAL_ERROR);
 
     is_deeply( $config, $config_files{$t}->{obj}, "type: $t" );
 
@@ -159,8 +158,8 @@ subtest 'Read all types' => sub {
 
 my $config_path = abs_path('../../../main/bedrock/config');
 
-if ( !$config_path ) {
-  BAIL_OUT('could not find config path');
+if ( !$config_path || !-d $config_path ) {
+  $config_path = cwd;
 }
 elsif ( !-e "$config_path/tagx.xml" ) {
   BAIL_OUT("could not find $config_path/tagx.xml");
@@ -177,11 +176,8 @@ subtest 'CONFIG_PATH' => sub {
 
   isa_ok( $config, 'Bedrock::Config' ) or diag($config);
 
-  ok(
-    $config->{_config_path}
-      && $config->{_config_path} eq "$config_path/tagx.xml",
-    'config path'
-  ) or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  ok( $config->{_config_path} && $config->{_config_path} eq "$config_path/tagx.xml", 'config path' )
+    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
 };
 
 ########################################################################
@@ -195,11 +191,8 @@ subtest 'BEDROCK_CONFIG_PATH' => sub {
 
   isa_ok( $config, 'Bedrock::Config' ) or diag($config);
 
-  ok(
-    $config->{_config_path}
-      && $config->{_config_path} eq "$config_path/tagx.xml",
-    'config path'
-  ) or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  ok( $config->{_config_path} && $config->{_config_path} eq "$config_path/tagx.xml", 'config path' )
+    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
 };
 
 ########################################################################
@@ -212,11 +205,8 @@ subtest '/usr/lib/bedrock/config' => sub {
   my $config = Bedrock::Config->new('tagx.xml');
 
   isa_ok( $config, 'Bedrock::Config' ) or diag($config);
-  ok(
-    $config->{_config_path}
-      && $config->{_config_path} eq '/usr/lib/bedrock/config/tagx.xml',
-    'config path'
-  ) or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  ok( $config->{_config_path} && $config->{_config_path} eq '/usr/lib/bedrock/config/tagx.xml', 'config path' )
+    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
 };
 
 ########################################################################
@@ -253,7 +243,7 @@ subtest 'json' => sub {
 
   my $filename = write_config( $json, 'json' );
 
-  my $obj = JSON::PP->new->utf8->decode($json);
+  my $obj = JSON->new->utf8->decode($json);
   is_deeply( $obj, $config, 'is_deeply' ) or diag($obj);
 
   my $json_config = Bedrock::Config->new( cwd . q{/} . $filename );
@@ -298,14 +288,9 @@ subtest 'merge' => sub {
 
   my $config = Bedrock::Config->new("$config_path/tagx.xml");
 
-  $config->merge_config(
-    { MODULES =>
-        [ Bedrock::Hash->new( binding => 'foo', module => 'Foo::Bar' ) ],
-    }
-  );
+  $config->merge_config( { MODULES => [ Bedrock::Hash->new( binding => 'foo', module => 'Foo::Bar' ) ], } );
 
-  ok( any { $_->{binding} eq 'foo' } @{ $config->{MODULES} },
-    'merge object' );
+  ok( any { $_->{binding} eq 'foo' } @{ $config->{MODULES} }, 'merge object' );
 
   # overwrite foo
   $config->merge_config(
@@ -322,8 +307,7 @@ subtest 'merge' => sub {
 
   my ($module) = grep { $_->{binding} eq 'foo' } @{ $config->{MODULES} };
 
-  ok( exists $module->{module} && $module->{module} eq 'Foo::Buz',
-    'overwrite merged object' );
+  ok( exists $module->{module} && $module->{module} eq 'Foo::Buz', 'overwrite merged object' );
 };
 
 ########################################################################
@@ -348,8 +332,7 @@ subtest 'get_module_config' => sub {
 
   isa_ok( $input, 'Bedrock::Hash' ) or diag( Dumper( [ $input, $config ] ) );
 
-  ok( exists $input->{foo} && $input->{foo} eq 'bar',
-    'retrieved config object' )
+  ok( exists $input->{foo} && $input->{foo} eq 'bar', 'retrieved config object' )
     or diag( Dumper( [ $input, $config ] ) );
 };
 
