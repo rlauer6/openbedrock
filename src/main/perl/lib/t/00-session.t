@@ -46,6 +46,7 @@ use Test::More tests => 10;
 use Bedrock qw(slurp_file);
 use Bedrock::Constants qw(:defaults :chars);
 use Bedrock::BedrockConfig;
+use Cwd;
 use Data::Dumper;
 use DBI;
 use English qw{-no_match_vars};
@@ -63,14 +64,17 @@ sub bind_module {
 
   tie %{$obj}, $module, $ctx, $config;  ## no critic (ProhibitTies)
 
-  diag( 'bind_module ', Dumper( [$obj] ) );
-
   return $obj;
 }
 
 ########################################################################
+my $config_path = $ENV{BEDROCK_CONFIG_PATH} // cwd;
 
-my $config_file = "$DEFAULT_BEDROCK_CONFIG_PATH/mysql-session.xml";
+my $config_file = sprintf '%s/mysql-session.xml', $config_path;
+
+if ( !-e $config_file ) {
+  BAIL_OUT("$config_file not found!");
+}
 
 my $config = eval { return Bedrock::Config->new($config_file); };
 
@@ -91,7 +95,7 @@ my ( $dsn, $username, $password )
   = @{$session_config}{qw{ data_source username password}};
 
 my $db_available = eval {
-  my $dbi = DBI->connect( $dsn, $username, $password );
+  my $dbi = DBI->connect( $dsn, $username, $password, { PrintError => 0 } );
 
   my $ping = $dbi->ping ? 'up' : $EMPTY;
 
@@ -101,8 +105,6 @@ my $db_available = eval {
 };
 
 my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
-
-diag( 'db_available ' . ($db_available // $EMPTY) );
 
 SKIP: {
   skip 'no database available', 9

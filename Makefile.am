@@ -21,7 +21,7 @@ FILES = \
     INSTALL \
     NEWS \
     README.md \
-    README.Apache \
+    README-Apache.md \
     COPYING \
     ChangeLog \
     TODO.md

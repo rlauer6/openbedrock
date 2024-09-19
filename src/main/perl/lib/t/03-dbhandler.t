@@ -12,7 +12,7 @@ BEGIN {
 use DBI;
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Test::More 'no_plan';
+use Test::More;
 use Time::HiRes;
 
 use Readonly;

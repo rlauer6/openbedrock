@@ -30,7 +30,7 @@ BEGIN {
 
   local $ENV{BEDROCK_CACHE_ENABLED} = 'on';
 
-  use_ok('Bedrock::Handler');
+  stderr_like( sub { use_ok('Bedrock::Handler'); }, qr/successfully/xsm, 'initialize caching' );
 }
 
 ########################################################################
@@ -49,12 +49,9 @@ sub main {
 
     local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
-    my $handler;
-
     local $ENV{BEDROCK_CACHE_ENABLED} = 'on';
 
-    #    stdout_from( sub { $handler = Bedrock::Handler->new($request_handler) } );
-    $handler = Bedrock::Handler->new($request_handler);
+    my $handler = Bedrock::Handler->new($request_handler);
 
     $config = $handler->config();
 

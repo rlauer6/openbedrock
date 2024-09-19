@@ -8,16 +8,16 @@ package main;
 use strict;
 use warnings;
 
-use lib qw{.};
+use lib qw(.);
 
 use Test::More tests => 7;
 
 use Bedrock::Context;
 use Carp;
 use Data::Dumper;
-use English qw{-no_match_vars};
-use File::Temp qw{tempfile};
-use HTTP::Request::Common qw{POST};
+use English qw(-no_match_vars);
+use File::Temp qw(tempfile);
+use HTTP::Request::Common qw(POST);
 use IO::Scalar;
 
 our $LOREM_IPSUM = <<'END_OF_TEXT';
@@ -109,16 +109,11 @@ ok( -e "/tmp/$filename", 'file uploaded' );
 
 is_deeply( [ sort keys %{$file_info} ], [@members], 'contains all members' );
 
-is( $file_info->{uploaded_file},
-  $filename, 'uploaded_file  member is correct' );
+is( $file_info->{uploaded_file}, $filename, 'uploaded_file  member is correct' );
 
 is( $file_info->{size}, -s "/tmp/$filename", 'size is same as file size' );
 
-is(
-  $file_info->{size},
-  length $LOREM_IPSUM,
-  'reported size is same as string written'
-);
+is( $file_info->{size}, length $LOREM_IPSUM, 'reported size is same as string written' );
 
 open my $fh, '<', "/tmp/$filename"
   or BAIL_OUT("could not open /tmp/$filename for reading");

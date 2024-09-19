@@ -15,21 +15,18 @@ use English qw{-no_match_vars};
 
 use Bedrock::Test::Utils qw(connect_db create_db);
 
-my $dbi = eval {
-  my $dbh = connect_db();
-
-  create_db($dbh);
-
-  return $dbh;
-};
-
-diag($EVAL_ERROR);
+my $dbi = eval { return connect_db(); };
 
 if ( $EVAL_ERROR || !$dbi ) {
-  plan skip_all => 'could not create database';
-
-  diag($EVAL_ERROR);
+  plan skip_all => 'no database connection';
 }
+
+if ($dbi) {
+  eval { return create_db($dbi); };
+}
+
+BAIL_OUT( 'could not create database: ' . $EVAL_ERROR )
+  if $EVAL_ERROR;
 
 use_ok('BLM::IndexedTableHandler')
   or BAIL_OUT($EVAL_ERROR);

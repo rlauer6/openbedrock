@@ -115,8 +115,8 @@ AC_DEFUN([ads_PERL_LIBDIR], [
         # as of 1.4-p5) only defines '$pkglibdir' in the generated Makefile.in
         # files, but not in 'configure.in'. We need it defined in configure
         # in order for the assignment to PERL_LIBDIR to work.
-        PERL_LIBDIR=${libdir}/${PACKAGE}/perl5
-        AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE}/perl5)
+        PERL_LIBDIR=${datadir}/perl5
+        AC_MSG_RESULT(\$pkglibdir: ${datadir}/perl5)
     elif test -z "$withval" || \
          test "$withval" = "yes"; then
         # --with-perl-libdir AKA --with-perl-libdir=yes uses 'perl -V:installsitelib'
@@ -158,8 +158,8 @@ $tmp_valid_opts
     # as of 1.4-p5) only defines '$pkglibdir' in the generated Makefile.in
     # files, but not in 'configure.in'. We need it defined in configure
     # in order for the assignment to PERL_LIBDIR to work.
-    PERL_LIBDIR=${libdir}/${PACKAGE}/perl5
-    AC_MSG_RESULT(\$pkglibdir: ${libdir}/${PACKAGE}/perl5)
+    PERL_LIBDIR=${datadir}/perl5
+    AC_MSG_RESULT(\$pkglibdir: ${datadir}/perl5)
     ])dnl end of AC_ARG_WITH(perl-libdir) macro
 
     AC_SUBST(PERL_LIBDIR)

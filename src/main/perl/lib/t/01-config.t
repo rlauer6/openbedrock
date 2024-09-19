@@ -3,24 +3,41 @@
 use strict;
 use warnings;
 
+use Cwd;
 use Test::More tests => 10;
 use IO::Scalar;
 
 use lib qw(.);
 
-use Bedrock::Constants qw{:defaults};
+use Bedrock::Constants qw(:defaults);
 use Data::Dumper;
 
 use_ok('Bedrock::BedrockConfig');
 
-my $config = Bedrock::Config->new("$DEFAULT_BEDROCK_CONFIG_PATH/tagx.xml");
+my $config_path = $ENV{BEDROCK_CONFIG_PATH} // cwd;
 
-isa_ok( $config, 'Bedrock::Config' );
+my $config_file = sprintf '%s/tagx.xml', $config_path;
+
+if ( !-e $config_file ) {
+  BAIL_OUT('tagx.xml not found');
+}
+
+my $config = eval { return Bedrock::Config->new($config_file); };
+
+isa_ok( $config, 'Bedrock::Config' )
+  or BAIL_OUT("could not read config file: $config_file");
 
 my $modules = $config->get_module_config;
 isa_ok( $modules, 'ARRAY', 'get_module_config()' );
 
-my $user_session_config = Bedrock::Config->new("$DEFAULT_BEDROCK_CONFIG_PATH/mysql-session.xml");
+my $mysql_session_config_file = sprintf '%s/mysql-session.xml', $config_path;
+
+if ( !-e $mysql_session_config_file ) {
+  BAIL_OUT("$mysql_session_config_file not found!");
+}
+
+my $user_session_config = Bedrock::Config->new($mysql_session_config_file);
+
 push @{$modules}, $user_session_config;
 
 my $session_config = $config->get_module_config('Session');

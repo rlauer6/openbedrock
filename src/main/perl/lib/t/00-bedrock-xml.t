@@ -3,25 +3,29 @@ use warnings;
 
 use Test::More tests => 7;
 
-use File::Temp qw{ mkstemps };
-use English qw{-no_match_vars};
+use File::Temp qw( mkstemps );
+use English qw(-no_match_vars);
 use Data::Dumper;
 
 BEGIN {
   use_ok('Bedrock::XML');
 }
 
-my $xml = eval {
-  local $RS = undef;
+########################################################################
+sub write_xml {
+########################################################################
+  my $xml = eval {
+    local $RS = undef;
 
-  return <DATA>;
-};
+    return <DATA>;
+  };
 
-my ( $fh, $filename ) = mkstemps( 'tagx-XXXX', '.xml' );
-print {$fh} "$xml\n";
-close $fh;
+  my ( $fh, $filename ) = mkstemps( 'tagx-XXXX', '.xml' );
+  print {$fh} "$xml\n";
+  close $fh;
 
-diag($filename);
+  return ( $xml, $filename );
+}
 
 my $obj = {
   foo => {
@@ -31,9 +35,11 @@ my $obj = {
   },
   boo     => [ 1, 2 ],
   buz     => 'string',
-  biz     => '',
+  biz     => q{},
   encoded => q{< > & " '},
 };
+
+my ( $xml, $filename ) = write_xml();
 
 my $xml_obj = Bedrock::XML->new($filename);
 
@@ -49,26 +55,23 @@ my $xml_str = Bedrock::XML->writeXMLString($xml_obj);
 
 ok( $xml_str && length $xml_str > 0, 'writeXMLString produced a string' );
 
-is_deeply(
-  $obj,
-  Bedrock::XML->newFromString($xml_str),
-  'writeXMLString produced same object'
-);
+is_deeply( $obj, Bedrock::XML->newFromString($xml_str), 'writeXMLString produced same object' );
 
 unlink $filename;
+
 Bedrock::XML::writeXML( $obj, $filename );
+
 ok( -e $filename && -s $filename, 'writeXML(' . $filename . ')' );
 
 unlink $filename;
 
-open $fh, '>', $filename
+open my $fh, '>', $filename
   or BAIL_OUT("could not open $filename for writing");
 
 Bedrock::XML::writeXML( $obj, $fh );
 close $fh;
 
-ok( -e $filename && -s $filename,
-  'writeXML(' . $filename . ') using file handle' );
+ok( -e $filename && -s $filename, 'writeXML(' . $filename . ') using file handle' );
 
 END {
   eval { unlink $filename; };

@@ -16,10 +16,21 @@ BEGIN {
   Bedrock::Model::Field->import(':all');
 }
 
-diag(Dumper( [ int => create_field_type(name => 'foo', type => 'int')]));
-diag(Dumper( [ decimal => create_field_type(name => 'foo', type => 'decimal', length => '10.2')]));
-diag(Dumper( [ auto_increment => auto_increment_field('foo')]));
-diag(Dumper( [ money => money_field()]));
+my $field = create_field_type( name => 'foo', type => 'int' );
+isa_ok( $field, 'Bedrock::Model::Field', 'isa Bedrock::Model::Field' );
+
+$field = create_field_type(
+  name   => 'foo',
+  type   => 'decimal',
+  length => '10.2'
+);
+isa_ok( $field, 'Bedrock::Model::Field', 'isa Bedrock::Model::Field' );
+
+$field = auto_increment_field('foo');
+isa_ok( $field, 'Bedrock::Model::Field', 'isa Bedrock::Model::Field' );
+
+$field = money_field('cost');
+isa_ok( $field, 'Bedrock::Model::Field', 'isa Bedrock::Model::Field' );
 
 done_testing;
 

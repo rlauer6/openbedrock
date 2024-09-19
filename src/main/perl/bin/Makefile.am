@@ -35,6 +35,7 @@ man1_MANS = $(G1MANPAGES)
 $(GPERLSCRIPTS): % : %.in 
 	$(do_subst) $< > $@
 	$(perlwc) -I $(abs_builddir)/../lib $@
+	chmod +x $@
 
 CLEANFILES = $(GPERLSCRIPTS) $(GMANPAGES)
 

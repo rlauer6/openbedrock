@@ -301,6 +301,7 @@ perl5blmlib_DATA = \
     BLM/SMTP.pm \
     BLM/Redis.pm \
     BLM/Session.pm \
+    BLM/ShareDir.pm \
     BLM/Source.pm \
     BLM/Stat.pm \
     BLM/Timenow.pm

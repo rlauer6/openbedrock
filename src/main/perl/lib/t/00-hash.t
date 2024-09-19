@@ -53,10 +53,6 @@ subtest 'print' => sub {
 
   my $value = eval { $hash->get('a'); };
 
-  diag( Dumper( [ $hash->print() ] ) );
-  diag( Dumper( [ $hash->compact() ] ) );
-  diag( Dumper( [ $hash->regular() ] ) );
-
   is( $value, 1, 'get("a"))' );
 };
 

@@ -3,9 +3,11 @@
 use strict;
 use warnings;
 
+use Bedrock::Constants qw(:defaults);
+
 use Bedrock::Serializer qw(evolve devolve);
 use Bedrock::Hash;
-use Cwd qw(abs_path cwd);
+use Cwd qw(abs_path cwd getcwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Temp qw(tempfile);
@@ -18,6 +20,24 @@ use Test::More tests => 13;
 BEGIN {
   use_ok('Bedrock::BedrockConfig');
 }
+
+########################################################################
+sub set_config_path {
+########################################################################
+  my $config_path = abs_path('../../../main/bedrock/config');
+
+  if ( !$config_path || !-d $config_path ) {
+    $config_path = cwd;
+  }
+
+  if ( !-e "$config_path/tagx.xml" ) {
+    BAIL_OUT("could not find $config_path/tagx.xml");
+  }
+
+  return $config_path;
+}
+
+########################################################################
 
 # read lines of file until '#'
 
@@ -156,14 +176,7 @@ subtest 'Read all types' => sub {
   }
 };
 
-my $config_path = abs_path('../../../main/bedrock/config');
-
-if ( !$config_path || !-d $config_path ) {
-  $config_path = cwd;
-}
-elsif ( !-e "$config_path/tagx.xml" ) {
-  BAIL_OUT("could not find $config_path/tagx.xml");
-}
+my $config_path = set_config_path();
 
 ########################################################################
 subtest 'CONFIG_PATH' => sub {
@@ -176,8 +189,8 @@ subtest 'CONFIG_PATH' => sub {
 
   isa_ok( $config, 'Bedrock::Config' ) or diag($config);
 
-  ok( $config->{_config_path} && $config->{_config_path} eq "$config_path/tagx.xml", 'config path' )
-    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  ok( $config->config_path && $config->config_path eq "$config_path/tagx.xml", 'config path' )
+    or diag( Dumper( [ $config_path, $config->config_path ] ) );
 };
 
 ########################################################################
@@ -191,22 +204,34 @@ subtest 'BEDROCK_CONFIG_PATH' => sub {
 
   isa_ok( $config, 'Bedrock::Config' ) or diag($config);
 
-  ok( $config->{_config_path} && $config->{_config_path} eq "$config_path/tagx.xml", 'config path' )
-    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  ok( $config->config_path && $config->config_path eq "$config_path/tagx.xml", 'config path' )
+    or diag( Dumper( [ $config_path, $config->config_path ] ) );
 };
 
 ########################################################################
-subtest '/usr/lib/bedrock/config' => sub {
+subtest 'default config path' => sub {
 ########################################################################
-  local $ENV{CONFIG_PATH} = undef
+  local $ENV{CONFIG_PATH} = undef;
 
-    local $ENV{BEDROCK_CONFIG_PATH} = undef;
+  local $ENV{BEDROCK_CONFIG_PATH} = undef;
 
-  my $config = Bedrock::Config->new('tagx.xml');
+  my $config;
 
-  isa_ok( $config, 'Bedrock::Config' ) or diag($config);
-  ok( $config->{_config_path} && $config->{_config_path} eq '/usr/lib/bedrock/config/tagx.xml', 'config path' )
-    or diag( Dumper( [ $config_path, $config->{_config_path} ] ) );
+  eval { $config = Bedrock::Config->new('tagx.xml'); };
+
+  SKIP: {
+    if ($EVAL_ERROR) {
+      skip 'no config file found.', 2;
+    }
+
+    isa_ok( $config, 'Bedrock::Config' )
+      or diag($config);
+
+    my (@default_paths) = map {"$_/tagx.xml"} ( getcwd, $DEFAULT_BEDROCK_CONFIG_PATH );
+
+    ok( ( $config->config_path && any { $config->config_path eq $_ } @default_paths ), 'default config path' )
+      or diag( Dumper( [ $config->config_path ] ) );
+  }
 };
 
 ########################################################################
@@ -233,7 +258,7 @@ subtest 'json' => sub {
 
   my $config = Bedrock::Config->new('tagx.xml');
 
-  delete $config->{_config_path};
+  $config->config_path(undef);
   isa_ok( $config, 'Bedrock::Config' );
 
   my $json = $config->to_json();
@@ -247,10 +272,10 @@ subtest 'json' => sub {
   is_deeply( $obj, $config, 'is_deeply' ) or diag($obj);
 
   my $json_config = Bedrock::Config->new( cwd . q{/} . $filename );
-  delete $json_config->{_config_path};
+  $json_config->config_path(undef);
   is_deeply( $json_config, $config );
 
-  unlink($filename);
+  unlink $filename;
 };
 
 ########################################################################
@@ -260,7 +285,7 @@ subtest 'yaml' => sub {
 
   isa_ok( $config, 'Bedrock::Config' );
 
-  delete $config->{_config_path};
+  $config->config_path(undef);
 
   my $yaml = $config->to_yaml();
 
@@ -274,7 +299,7 @@ subtest 'yaml' => sub {
   is_deeply( $obj, $config, 'is_deeply' ) or diag($obj);
 
   my $yaml_config = Bedrock::Config->new( cwd . q{/} . $filename );
-  delete $yaml_config->{_config_path};
+  $yaml_config->config_path(undef);
 
   is_deeply( $yaml_config, $config );
 
@@ -284,7 +309,7 @@ subtest 'yaml' => sub {
 ########################################################################
 subtest 'merge' => sub {
 ########################################################################
-  my $config_path = abs_path '../../../main/bedrock/config';
+  my $config_path = set_config_path();
 
   my $config = Bedrock::Config->new("$config_path/tagx.xml");
 
@@ -313,7 +338,7 @@ subtest 'merge' => sub {
 ########################################################################
 subtest 'get_module_config' => sub {
 ########################################################################
-  my $config_path = abs_path '../../../main/bedrock/config';
+  my $config_path = set_config_path();
 
   my $config = Bedrock::Config->new("$config_path/tagx.xml");
 

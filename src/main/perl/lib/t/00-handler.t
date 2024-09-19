@@ -25,25 +25,18 @@ plan tests => 1 + keys %TESTS;
 use_ok('Bedrock::Handler');
 
 ########################################################################
-
 my $request_handler = Bedrock::Test::RequestHandler->new;
 
 # we should be running tests from src/main/perl directory...
 my $cwd = abs_path(getcwd);
 
-my $test_path = 'src/main/perl/lib';
+my $repo_path = 'src/main/perl/lib';
+# if we are running from repo path, set source dir accordingly
 
-die "you must run these tests from 'src/main/perl/lib' directory, not $cwd"
-  if $cwd !~ /$test_path$/xsm;
-
-my $source_path = $cwd;
-
-$source_path =~ s/\A(.*)\/$test_path\z/$1/xsm;
-
-$source_path = "$source_path/src/main/bedrock/config";
+my $source_path = $cwd =~ /$repo_path/xsm ? '../../bedrock/config' : $cwd;
 
 my $config_path = create_temp_dir(
-  cleanup  => $TRUE,
+  cleanup  => $FALSE,
   dir      => 'config',
   manifest => [
     { source   => $source_path,
@@ -64,8 +57,6 @@ subtest 'config directory exists' => sub {
     or BAIL_OUT('could not create a temporary config directory');
 
   $config_path = "$config_path/config";
-
-  diag( 'using CONFIG_PATH: ' . $config_path );
 };
 
 ########################################################################
@@ -118,9 +109,17 @@ subtest 'get_module_config' => sub {
 ########################################################################
   my $config = $handler->config;
 
-  my $session_config = $config->get_module_config('usersession');
+  my $input_config = $config->get_module_config('input');
 
-  isa_ok( $session_config, 'Bedrock::Hash' );
+  isa_ok( $input_config, 'Bedrock::Hash' )
+    or diag(
+    Dumper(
+      [ config         => $config,
+        session_config => $input_config,
+      ]
+    )
+    );
+
 };
 
 ########################################################################

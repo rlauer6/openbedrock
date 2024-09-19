@@ -1,4 +1,7 @@
 #!/bin/bash
+# TBD: create an Ubuntu recipe
+# ** this certainly does not work ** 
+# ** use for reference only when recreating an Ubunut recipe **
 
 if ! [ "$(id -u)" = "0" ]; then
     echo "run as root!"

@@ -6,7 +6,11 @@ use Data::Dumper;
 use English qw{-no_match_vars};
 
 BEGIN {
-  use lib qw{ . Bedrock/Text };
+  use Bedrock;
+  use File::Basename qw(dirname basename);
+
+  my $path = dirname( $INC{'Bedrock.pm'} );
+  push @INC, "$path/Bedrock", "$path/Bedrock/Text";
 
   use_ok('TagX::Scalar');
 }
@@ -15,7 +19,9 @@ my $test_string = 'xyzabc';
 
 my $scalar = TagX::Scalar->new($test_string);
 
+########################################################################
 subtest 'align' => sub {
+########################################################################
   my $str = $scalar->align( 'center', 12 );
 
   ok( length $str == 12, 'length is 12' )
@@ -46,20 +52,18 @@ subtest 'align' => sub {
   ok( !$str && $EVAL_ERROR, 'bad args throws exception' );
 };
 
+########################################################################
 subtest 'base64' => sub {
+########################################################################
   require MIME::Base64;
 
   my $str = $scalar->base64_encode();
 
   ok( $str eq MIME::Base64::encode_base64($test_string), 'encode' )
-    or diag(
-    Dumper( [ $str, ${$scalar}, MIME::Base64::encode_base64($test_string) ] )
-    );
+    or diag( Dumper( [ $str, ${$scalar}, MIME::Base64::encode_base64($test_string) ] ) );
 
   ok( $scalar->base64_decode($str) eq $test_string, 'decode' )
-    or diag(
-    Dumper( [ $str, ${$scalar}, MIME::Base64::encode_base64($test_string) ] )
-    );
+    or diag( Dumper( [ $str, ${$scalar}, MIME::Base64::encode_base64($test_string) ] ) );
 
   $str = $scalar->base64_encode('abc');
   ok( $str ne $scalar->base64_encode, 'encode w/arg' )
@@ -72,11 +76,15 @@ subtest 'base64' => sub {
   ok( $new_scalar->base64_decode eq 'abc', 'decode wo/arg' );
 };
 
+########################################################################
 subtest 'length' => sub {
+########################################################################
   ok( $scalar->length == ( length ${$scalar} ), 'length is 6' );
 };
 
+########################################################################
 subtest 'tr' => sub {
+########################################################################
 
   my $str = $scalar->tr( 'xyz', 'abc' );
 
@@ -87,13 +95,18 @@ subtest 'tr' => sub {
     or diag( Dumper( [ $str, ${$scalar} ] ) );
 };
 
+########################################################################
 subtest 'sprintf' => sub {
-  ok(1);
+########################################################################
+  my $str = $scalar->new('%s %s %s');
 
-  my $str = $scalar->new("%s %s %s");
-  diag( Dumper( [ $str->sprintf( 1, 2, 3 ) ] ) );
-  diag( Dumper( [ $str->sprintf( [ 1, 2, 3 ] ) ] ) );
+  my $result = $str->sprintf( 1, 2, 3 );
+  ok( $result eq '1 2 3', 'sprintf(list)' )
+    or diag($result);
 
+  $result = $str->sprintf( 1, 2, 3 );
+  ok( $result eq '1 2 3', 'sprintf([array])' )
+    or diag($result);
 };
 
 1;
@@ -123,7 +136,7 @@ __DATA__
 [ ] replace
 [ ] rtrim
 [ ] sign
-[ ] sprintf
+[x] sprintf
 [ ] split
 [ ] toggle
 [ ] tr

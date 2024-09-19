@@ -45,8 +45,7 @@ subtest 'get' => sub {
 
   eval { $array->get('foo'); };
 
-  ok( $EVAL_ERROR && $EVAL_ERROR =~ /index\smust\sbe\sinteger/xsm,
-    'bad index' )
+  ok( $EVAL_ERROR && $EVAL_ERROR =~ /index\smust\sbe\sinteger/xsm, 'bad index' )
     or diag( Dumper( [$EVAL_ERROR] ) );
 };
 
@@ -57,11 +56,7 @@ subtest 'sort' => sub {
 
   my $sorted_array = $array->sort( 'desc', 'num' );
 
-  is_deeply(
-    $sorted_array,
-    [ ( reverse 0 .. 9 ) ],
-    'numeric sort - descending'
-  );
+  is_deeply( $sorted_array, [ ( reverse 0 .. 9 ) ], 'numeric sort - descending' );
 
   my $new_array = $array->new( reverse 0 .. 9 );
 
@@ -71,11 +66,7 @@ subtest 'sort' => sub {
 
   $array        = $array->new( 'a' .. 'z' );
   $sorted_array = $array->sort( 'desc', 'alpha' );
-  is_deeply(
-    $sorted_array,
-    [ reverse 'a' .. 'z' ],
-    'alpha sort - descending'
-  );
+  is_deeply( $sorted_array, [ reverse 'a' .. 'z' ], 'alpha sort - descending' );
 
   $array        = $array->new( reverse 'a' .. 'z' );
   $sorted_array = $array->sort( 'asc', 'alpha' );
@@ -127,8 +118,7 @@ subtest 'unshift' => sub {
 
   is( $array->unshift($foo), 21, 'add a reference to an array' );
 
-  is_deeply( $array, [ ( 0 .. 9 ), 'x', ( 0 .. 9 ) ],
-    'new array is correct' );
+  is_deeply( $array, [ ( 0 .. 9 ), 'x', ( 0 .. 9 ) ], 'new array is correct' );
 };
 
 ########################################################################
@@ -209,8 +199,7 @@ subtest 'grep' => sub {
 
   eval { $array->grep('qr/quick/*/xsm') };
 
-  ok( $EVAL_ERROR && $EVAL_ERROR =~ /invalid\spattern/ixsm,
-    'invalid pattern' )
+  ok( $EVAL_ERROR && $EVAL_ERROR =~ /invalid\spattern/ixsm, 'invalid pattern' )
     or diag( Dumper( [$EVAL_ERROR] ) );
 
   is_deeply( $array->grep('qr/^f/xsmi'), [qw{ fox fish }], 'qr//' )
@@ -257,17 +246,12 @@ subtest 'json' => sub {
 
   ok( $json, 'returned a json string' );
 
-  diag( Dumper( [ $json, length $json ] ) );
-
   like( $json, qr/\[.*\]/xsm, 'looks like JSON array' );
 
   require JSON::PP;
 
-  is_deeply(
-    $array,
-    eval { JSON::PP->new->decode($json) },
-    'is a JSON string'
-  ) or diag( Dumper( [ $json, $EVAL_ERROR ] ) );
+  is_deeply( $array, eval { JSON::PP->new->decode($json) }, 'is a JSON string' )
+    or diag( Dumper( [ $json, $EVAL_ERROR ] ) );
 };
 
 ########################################################################
@@ -356,8 +340,7 @@ subtest 'recordset' => sub {
 
   eval { $array->recordset; };
 
-  ok( $EVAL_ERROR && $EVAL_ERROR =~ /invalid\selement\stype/xsm,
-    'invalid element' );
+  ok( $EVAL_ERROR && $EVAL_ERROR =~ /invalid\selement\stype/xsm, 'invalid element' );
 
   eval { Bedrock::Array->new( {}, @records )->recordset; };
 
@@ -367,8 +350,7 @@ subtest 'recordset' => sub {
 
   eval { Bedrock::Array->new( { foo => 15 }, @records )->recordset; };
 
-  ok( $EVAL_ERROR && $EVAL_ERROR =~ /is\snot\sa\svalid\srecord/xsm,
-    'invalid record' )
+  ok( $EVAL_ERROR && $EVAL_ERROR =~ /is\snot\sa\svalid\srecord/xsm, 'invalid record' )
     or diag( Dumper( [$EVAL_ERROR] ) );
 
   $array = Bedrock::Array->new(@records)->recordset;
@@ -376,11 +358,7 @@ subtest 'recordset' => sub {
   my $new_recordset = $array->sort( 'id', 'desc', 'num' );
   isa_ok( $new_recordset, 'Bedrock::RecordSet' );
 
-  is_deeply(
-    [ map { $_->{id} } @{$new_recordset} ],
-    [ reverse 1 .. 4 ],
-    'sort a recordset'
-  );
+  is_deeply( [ map { $_->{id} } @{$new_recordset} ], [ reverse 1 .. 4 ], 'sort a recordset' );
 
   is_deeply(
     [ map { $_->{id} } @{ $new_recordset->sort( 'id', 'asc', 'num' ) } ],
@@ -402,8 +380,7 @@ subtest 'recordset' => sub {
 
   $array = Bedrock::Array->new(@records)->recordset;
 
-  my $sorted_array
-    = $array->sort( 'lname', 'asc', 'alpha', 'fname', 'desc', 'alpha' );
+  my $sorted_array = $array->sort( 'lname', 'asc', 'alpha', 'fname', 'desc', 'alpha' );
 
   is_deeply(
     [ map { $_->{lname} } @{$sorted_array} ],
@@ -415,8 +392,7 @@ subtest 'recordset' => sub {
     [qw{ Frank Robert Bob}], 'two field sort ascending/descending' )
     or diag( Dumper( [$array] ) );
 
-  is_deeply( [ map { $_->{lname} } @{ $array->sort('lname') } ],
-    [qw{ Anderson Smith Smith}], 'default' )
+  is_deeply( [ map { $_->{lname} } @{ $array->sort('lname') } ], [qw{ Anderson Smith Smith}], 'default' )
     or diag( Dumper( [$array] ) );
 
 };
@@ -443,8 +419,7 @@ subtest 'set' => sub {
 
   eval { $array->set( 'foo', 'bar' ); };
 
-  ok( $EVAL_ERROR && $EVAL_ERROR =~ /index\smust\sbe\sinteger/xsm,
-    'index must be integer' );
+  ok( $EVAL_ERROR && $EVAL_ERROR =~ /index\smust\sbe\sinteger/xsm, 'index must be integer' );
 };
 
 ########################################################################
@@ -458,14 +433,15 @@ subtest 'xml' => sub {
 };
 
 ########################################################################
-subtest 'dumper' => sub {
+subtest 'has Bedrock::Dumper methods' => sub {
 ########################################################################
   my $array = Bedrock::Array->new( 0 .. 9 );
 
-  ok(1);
+  my $regular = $array->regular();
+  ok( $regular, 'regular returns a string' );
 
-  diag( $array->regular() );
-  diag( $array->compact() );
+  my $compact = $array->compact();
+  ok( $compact, 'compact returns a stirng' );
 };
 
 1;

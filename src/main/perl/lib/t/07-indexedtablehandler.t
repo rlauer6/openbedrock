@@ -12,24 +12,19 @@ use English qw(-no_match_vars);
 ########################################################################
 use Bedrock::Test::Utils qw(connect_db create_db);
 
-my $dbi = eval {
-  my $dbh = connect_db();
-
-  create_db($dbh);
-
-  return $dbh;
-};
-
-diag($EVAL_ERROR);
+my $dbi = eval { return connect_db(); };
 
 if ( $EVAL_ERROR || !$dbi ) {
-  plan skip_all => 'could not create database';
+  plan skip_all => 'no database connection';
+}
 
-  diag($EVAL_ERROR);
+eval { return create_db($dbi); };
+
+if ($EVAL_ERROR) {
+  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
-else {
-  plan tests => 2;
-}
+
+plan tests => 2;
 
 use_ok('BLM::IndexedTableHandler')
   or BAIL_OUT($EVAL_ERROR);

@@ -39,7 +39,7 @@ use_ok('Bedrock::Model::Field');
 
 Bedrock::Model::Field->import(qw(:all));
 
-eval { return create_db( $dbi, 1 ); };
+eval { return create_db( $dbi, { no_table => 1 } ); };
 
 if ($EVAL_ERROR) {
   BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");

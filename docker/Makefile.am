@@ -1,7 +1,9 @@
 SUBDIRS = .
 
 DOCKERFILE = \
-    Dockerfile
+    Dockerfile.in
+
+GDOCKERFILE= $(DOCKERFILE:.in=)
 
 @do_subst_command@
 
@@ -43,12 +45,16 @@ APACHE_CONF = \
 GAPACHE_CONF = $(APACHE_CONF:.conf.in=.conf)
 
 BEDROCK_CONF = \
+  perl_bedrock.conf.in \
   bedrock.conf.in \
   bedrock-info.conf.in \
   bedrock-session-files.conf.in \
   bedrock-autocomplete.conf.in
 
 GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
+
+%: %.in
+	$(do_subst) $< > $@
 
 %.conf: %.conf.in
 	if test -n "$(STREAM_LOGS)"; then \
@@ -61,9 +67,13 @@ GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
 	else \
 	  access_log="/var/www/log/access_log"; \
 	fi; \
+	tmp=$$(mktemp); \
 	sed -e 's,@error_log@,'$$error_log',' \
 	    -e 's,@access_log@,'$$access_log',' \
-	    -e 's,\@PACKAGE_VERSION\@,'@PACKAGE_VERSION@',' < $< >$@
+	    -e 's,\@PACKAGE_VERSION\@,'@PACKAGE_VERSION@',' < $< >$$tmp; \
+	$(do_subst) $$tmp > $@; \
+	rm $$tmp;
+
 
 GXML_FILES = $(XML_FILES:.xml.in=.xml)
 
@@ -82,12 +92,15 @@ $(GXML_FILES): % : %.in
 	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
 	DBI_DB="$(DBI_DB)";\
 	DBI_DB=$${DBI_DB:-bedrock}; \
+	tmp=$$(mktemp); \
 	sed -e 's/@session@/'$$SESSION'/g' \
             -e 's/@dbi_user@/'$$DBI_USER'/g' \
 	    -e 's/@dbi_pass@/'$$DBI_PASS'/g' \
 	    -e 's/@dbi_db@/'$$DBI_DB'/g' \
 	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/g' \
-	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$@
+	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$$tmp; \
+	$(do_subst) $$tmp > $@; \
+	rm $$tmp;
 
 $(GYML_FILES): % : %.in
 	SESSION="$(SESSION)"; \
@@ -102,12 +115,15 @@ $(GYML_FILES): % : %.in
 	DBI_HOST=$${DBI_HOST:-docker_db_1}; \
 	DBI_DB="$(DBI_DB)"; \
 	DBI_DB=$${DBI_DB:-bedrock}; \
+	tmp=$$(mktemp); \
 	sed -e 's/@session@/'$$SESSION'/g' \
 	    -e 's/@dbi_user@/'$$DBI_USER'/g' \
 	    -e 's/@dbi_pass@/'$$DBI_PASS'/g' \
 	    -e 's/@dbi_db@/'$$DBI_DB'/g' \
 	    -e 's/@dbi_root_pass@/'$$DBI_ROOT_PASS'/g' \
-	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$@
+	    -e 's/@dbi_host@/'$$DBI_HOST'/g' < $< >$$tmp; \
+	$(do_subst) $$tmp > $@; \
+	rm $$tmp;
 
 CONFIG_FILES = \
     $(GXML_FILES) \
@@ -140,7 +156,9 @@ dist_noinst_DATA = \
 config: $(CONFIG_FILES)
 	echo $(GYML_FILES)
 
-docker-image: $(DOCKERFILE) $(REPOS) $(CONFIG_FILES)
+
+docker-image: $(GDOCKERFILE) $(REPOS) $(CONFIG_FILES) bedrock.env
+	echo $(GOCKERFILE); \
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build --no-cache -f $< . -t bedrock:latest | tee $$LOG; \

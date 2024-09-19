@@ -242,11 +242,14 @@ dnl |  Autotools Output.  |
 dnl +---------------------+
 ads_PERL_LIBDIR
 
-pkglibdir=${libdir}/${PACKAGE}
+pkglibdir=${datadir}/perl5
 AC_SUBST([pkglibdir])
 
-cgibindir=${pkglibdir}/cgi-bin
-AC_SUBST([cgibindir], ["\${pkglibdir}/cgi-bin"])
+pkgincludedir=${datadir}/${PACKAGE}/include
+AC_SUBST([pkgincludedir], ["\${datadir}/${PACKAGE}/include"])
+
+cgibindir=${datadir}/cgi-bin
+AC_SUBST([cgibindir], ["\${datadir}/${PACKAGE}/cgi-bin"])
 
 htdocsdir=${datadir}/${PACKAGE}/htdocs
 AC_SUBST([htdocsdir], ["\${datadir}/\${PACKAGE}/htdocs"])
@@ -263,15 +266,18 @@ AC_SUBST([bedrock_includedir], ["\${datadir}/\${PACKAGE}/include"])
 cssdir=${datadir}/${PACKAGE}/css
 AC_SUBST([cssdir], ["\${datadir}/\${PACKAGE}/css"])
 
-configdir=${libdir}/${PACKAGE}/config
-AC_SUBST([configdir], ["\${libdir}/\${PACKAGE}/config"])
+configdir=${datadir}/${PACKAGE}/config
+AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config"])
+
+configddir=${datadir}/${PACKAGE}/config.d
+AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config.d"])
 
 
 # FIXME: These are not general, so won't be correct in all
 #        circumstances. They'll work correctly once we have full Perl
 #        support.
 AC_SUBST([perl5_pkgdatadir], ["\${datadir}/${PACKAGE}/perl5"])
-AC_SUBST([perl5_pkglibdir],  ["\${libdir}/${PACKAGE}/perl5"])
+AC_SUBST([perl5_pkglibdir],  ["\${datadir}/perl5"])
 AC_SUBST([perl5_pkgvdatadir], ["\${datadir}/${PACKAGE}-${VERSION}/perl5"])
 AC_SUBST([perl5_pkgvlibdir],  ["\${libdir}/${PACKAGE}-${VERSION}/perl5"])
 
@@ -337,6 +343,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]cssdir[@],$(cssdir),g'"'"' \
   -e '"'"'s,[@]configdir[@],$(configdir),g'"'"' \
   -e '"'"'s,[@]pkglibdir[@],$(pkglibdir),g'"'"' \
+  -e '"'"'s,[@]pkgincludedir[@],$(pkgincludedir),g'"'"' \
   \
   -e '"'"'s,[@]perlrun[@],$(perlrun),g'"'"' \
   -e '"'"'s,[@]co[@],$(co),g'"'"' \

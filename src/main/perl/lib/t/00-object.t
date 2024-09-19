@@ -71,7 +71,6 @@ subtest 'not an object' => sub {
   is( create_object($not_an_object), $not_an_object, 'not a ref' );
 
   $not_an_object = sub {1};
-  diag( Dumper($not_an_object) );
 
   is( create_object($not_an_object), $not_an_object, 'CODE ref' );
 
