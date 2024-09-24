@@ -62,11 +62,11 @@ bedrock.cgi.1: bedrock.cgi.in
 	    --section=1 > $@
 
 install-data-hook:
-	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
-	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
-	cp $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(libdir)/bedrock/cgi-bin//bedrock-autocomplete.cgi || true;
+	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
+	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
+	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin//bedrock-autocomplete.cgi || true;
 
 uninstall-hook:
-	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
-	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-docs.cgi || true;
-	rm -f $(DESTDIR)$(libdir)/bedrock/cgi-bin/bedrock-autocomplete.cgi || true;
+	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
+	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-docs.cgi || true;
+	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-autocomplete.cgi || true;

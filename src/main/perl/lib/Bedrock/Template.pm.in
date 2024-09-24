@@ -70,31 +70,34 @@ package Bedrock::Template;
 use strict;
 use warnings;
 
-use parent qw/Class::Accessor/;
+use parent qw(Class::Accessor);
 
 __PACKAGE__->follow_best_practice();
-__PACKAGE__->mk_accessors(qw/text param config/);
+__PACKAGE__->mk_accessors(qw(text param config file include_path));
 
-use Bedrock qw{:booleans};
+use Bedrock qw(:booleans slurp_file);
 use Bedrock::Array;
 use Bedrock::Hash;
 use Bedrock::BedrockConfig;
-use Bedrock::Constants qw{:chars :booleans};
-
+use Bedrock::Constants qw(:chars :booleans);
+use Cwd;
 use Text::TagX;
 
 use IO::Scalar;
-use Scalar::Util qw/reftype blessed/;
+use Scalar::Util qw(reftype blessed);
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 
 ########################################################################
 sub new {
 ########################################################################
   my ( $class, @args ) = @_;
 
+  my $include_path;
+
   my $self = eval {
     if ( is_hash( $args[0] ) ) {
+      $include_path = delete $args[0]->{INCLUDE_PATH};
       $class->SUPER::new( $args[0] );
     }
     else {
@@ -112,7 +115,55 @@ sub new {
     $self->config( Bedrock::Config->new('tagx.xml') );
   }
 
+  if ($include_path) {
+    my @path_list = split /\s*[:,]\s*/xsm, $include_path;
+    @path_list = grep { defined && -d $_ } @path_list, cwd;
+
+    $self->set_include_path( \@path_list );
+  }
+
+  if ( $self->get_file ) {
+    $self->file( $self->get_file );
+  }
+
   return $self;
+}
+
+########################################################################
+sub _find_file {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  return $file
+    if $file =~ /^\//xsm;  # absolute path
+
+  my @include_path = @{ $self->get_include_path // [cwd] };
+
+  foreach (@include_path) {
+    return "$_/$file"
+      if -f "$_/$file";
+  }
+
+  return;
+}
+
+########################################################################
+sub file {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  if ( $file !~ /[.][^.]+$/xsm ) {
+    $file = "$file.roc";
+  }
+
+  my $template_file = $self->_find_file($file);
+
+  die "could not find [$file]\n"
+    if !$template_file || !-f $template_file;
+
+  $self->text( scalar slurp_file($template_file) );
+
+  return $self->set_file($template_file);
 }
 
 ########################################################################
@@ -173,8 +224,7 @@ sub parse {
 
   my $output = $EMPTY;
 
-  my $ctx = Faux::Context->new( IO::Scalar->new( \$output ),
-    CONFIG => $self->config );
+  my $ctx = Faux::Context->new( IO::Scalar->new( \$output ), CONFIG => $self->config );
 
   my $fh = IO::Scalar->new( $self->text() );
 
@@ -218,44 +268,37 @@ C<Bedrock::Template> - Bedrock templating with Perl
 
 =head1 DESCRIPTION
 
-Provides a OO Perl interface to Bedrock templating.  Although you
+Provides an OO Perl interface to Bedrock templating.  Although you
 might not get all the "goodies" of Bedrock on the web or Bedrock
-shell, you get enough to make templating tempting and fun!
+shell, you get enough to make templating using Bedrock tags possible.
 
 WeE<039>ve all wanted to be able to do this...
 
- my $message;
+ my $customer = {
+    email => 'somebody@example.org',
+    from => 'me@example.org',
+    name => 'Fred Flinstone',
+    address => '123 Stonybrook Drive',
+    city => 'Bedrock',
+    state => 'Pangea',
+ };
 
- open my $fh, '<', 'email_template.roc";
-   or die "could not open email template";
- {
-  local $/ = undef;
-  $message = <$fh>;
- }
-
- close $message;
-
- my $customer = $sth->fetchrow_hashref;
-
- my $bedrock_template = Bedrock::Template->new($message, customer => $customer;
-
- $message = $bedrock_template->parse;
+ my $bedrock = Bedrock::Template->new(file => 'email_template', customer => $customer;
 
  my $msg = MIME::Lite->new(
                            From     => 'your_programmer@some_company.com',
                            To       =>  $customer->{email},
 			   Subject  => "A notification of some sort...",
 			   Type     => 'text/html',
-			   Data     => $message
+			   Data     => $bedrock->parse(),
 			  );
 
  $msg->send('smtp', 'localhost');
  
-
 =head1 DETAILS
 
 The C<Bedrock::Template> class gives you access to Bedrock templating.
-You can do ammost everything using this class that the using Bedrock on
+You can do almost everything using this class that the using Bedrock on
 the web or the Bedrock shell environments can do, including using
 plugins.  To configure the Bedrock templating environment you can use
 the default F<tagx.xml> file or provide a C<Bedrock::Config> object

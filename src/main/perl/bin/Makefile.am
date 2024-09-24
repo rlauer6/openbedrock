@@ -20,7 +20,8 @@ PERLSCRIPTS = \
     bedrock-model.pl.in \
     bedrock-model-importer.pl.in \
     bedrock-cache.pl.in \
-    brxml2json.pl.in
+    brxml2json.pl.in \
+    install-site.pl.in
 
 GPERLSCRIPTS = $(PERLSCRIPTS:.pl.in=.pl)
 

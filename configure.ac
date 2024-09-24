@@ -248,7 +248,7 @@ AC_SUBST([pkglibdir])
 pkgincludedir=${datadir}/${PACKAGE}/include
 AC_SUBST([pkgincludedir], ["\${datadir}/${PACKAGE}/include"])
 
-cgibindir=${datadir}/cgi-bin
+cgibindir=${datadir}/${PACKAGE}/cgi-bin
 AC_SUBST([cgibindir], ["\${datadir}/${PACKAGE}/cgi-bin"])
 
 htdocsdir=${datadir}/${PACKAGE}/htdocs
@@ -270,7 +270,7 @@ configdir=${datadir}/${PACKAGE}/config
 AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config"])
 
 configddir=${datadir}/${PACKAGE}/config.d
-AC_SUBST([configdir], ["\${datadir}/\${PACKAGE}/config.d"])
+AC_SUBST([configddir], ["\${datadir}/\${PACKAGE}/config.d"])
 
 
 # FIXME: These are not general, so won't be correct in all

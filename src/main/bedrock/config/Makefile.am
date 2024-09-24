@@ -4,6 +4,13 @@ ax_perl5_extra_includes = @ax_perl5_extra_includes@
 
 VERSION = @VERSION@
 
+EXTRA_FILES = \
+    bedrock.users \
+    apache24-env-debian \
+    apache22-env-debian \
+    site-config.inc \
+    httpd-bedrock.conf.roc
+
 @do_subst_command@
 
 CONFIG = \
@@ -29,9 +36,9 @@ GCONFIG = $(CONFIG:.in=)
 $(GCONFIG): % : %.in
 	$(do_subst) $< > $@
 
-config_DATA = $(GCONFIG)
+config_DATA = $(GCONFIG) $(EXTRA_FILES)
 
-dist_config_DATA = bedrock.users $(CONFFILES)
+dist_config_DATA = $(EXTRA_FILES) $(CONFFILES)
 
 dist_noinst_DATA = $(CONFIG)
 

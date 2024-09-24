@@ -1,0 +1,143 @@
+#!/usr/bin/env perl
+# configure the httpd-bedrock.conf file
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::BedrockConfig;
+use Bedrock::Template;
+use Bedrock::Constants qw(:booleans);
+use Cwd;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(fileparse);
+use File::Copy qw(cp);
+use File::ShareDir qw(dist_dir);
+use File::Temp qw(tempfile);
+use Getopt::Long;
+
+########################################################################
+sub install_web_site {
+########################################################################
+  my ($manifest) = @_;
+
+  print {*STDOUT} $manifest;
+
+  return;
+}
+
+########################################################################
+sub add_env_vars {
+########################################################################
+  my ($file) = @_;
+
+  die "env file $file not found"
+    if !-f $file;
+
+  my @env = slurp_file $file;
+
+  foreach (@env) {
+    next if /^[#]/xsm;
+
+    my ( $k, $v ) = split /\s*=\s*/xms;
+    $ENV{$k} = $v;
+  }
+
+  return;
+}
+
+########################################################################
+sub create_httpd_bedrock_conf {
+########################################################################
+  my ($conf) = @_;
+
+  my ( $fh, $filename ) = tempfile(
+    UNLINK   => $TRUE,
+    TEMPLATE => 'XXXXXX',
+    SUFFIX   => '.roc',
+    TMPDIR   => $TRUE,
+  );
+
+  die "could not open tempfile\n"
+    if !$fh;
+
+  print {$fh} $conf;
+
+  close $fh;
+
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+  $path ||= cwd;
+
+  return "$path$name$ext";
+}
+
+########################################################################
+sub main {
+########################################################################
+  my %options;
+
+  my @option_specs = qw(
+    env|e=s
+    distdir|d=s
+  );
+
+  GetOptions( \%options, @option_specs );
+
+  if ( $options{env} ) {
+    add_env_vars( $options{env} );
+  }
+
+  my $dist_dir   = $options{distdir} // dist_dir('Bedrock');
+  my $config_dir = sprintf '%s/config', $dist_dir;
+
+  my $config = Bedrock::Config->new( sprintf '%s/tagx.xml', $config_dir );
+  $config->{BEDROCK_INCLUDE_DIR} = $config_dir;
+  $config->{BEDROCK_CONFIG_PATH} = $config_dir;
+  $config->{DIST_DIR}            = $dist_dir;
+
+  my $outfile = $options{outfile};
+
+  my $template = Bedrock::Template->new(
+    { file  => "$config_dir/httpd-bedrock.conf.roc",
+      param => {
+        config => $config,
+        env    => \%ENV,
+      },
+      INCLUDE_PATH => $config_dir,
+    }
+  );
+
+  my $tmpfile = create_httpd_bedrock_conf( $template->parse() );
+
+  $config->{httpd_bedrock_conf} = sprintf '%s/httpd_bedrock.conf', $config_dir;
+  cp $tmpfile, $config->{httpd_bedrock_conf};
+
+  $template->file('bedrock-manifest');
+
+  install_web_site( $template->parse() );
+
+  return 0;
+}
+
+exit main();
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+=head1 USAGE
+
+=head1 AUTHOR
+
+=head1 SEE ALSO
+
+=cut

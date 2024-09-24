@@ -115,11 +115,25 @@ sub install {
         my $group = $dir->{group} // $defaults->{group};
         my $owner = $dir->{owner} // $defaults->{owner};
 
+        my $uid = $owner =~ /\D/xsm ? ( getpwnam $owner )[2] : $owner;
+        my $gid = $group =~ /\D/xsm ? ( getgrnam $group )[2] : $group;
+
+        $self->get_logger->debug(
+          Dumper(
+            [ uid  => $uid,
+              gid  => $gid,
+              mode => sprintf '%s',
+              $mode,
+            ]
+          )
+        );
+
         make_path(
           "$destdir$name",
-          { mode => $mode,
-            defined $owner ? ( owner => $owner ) : (),
-            defined $group ? ( group => $group ) : (),
+          { mode => sprintf '%s',
+            oct($mode),
+            defined $uid ? ( owner => $uid ) : (),
+            defined $gid ? ( group => $gid ) : (),
           }
         );
       }
@@ -127,6 +141,7 @@ sub install {
 
     my $files = $dir->{files};
 
+    # if no specific file list, then fetch all files from source
     if ( !$files ) {
       $files = [ $self->fetch_file_list( $dir->{source} ) ];
     }
@@ -141,7 +156,8 @@ sub install {
             },
             defaults => $defaults,
             dir      => $dir,
-            dryrun   => $dryrun
+            dryrun   => $dryrun,
+            exclude  => $dir->{exclude},
           );
         }
       }
@@ -170,15 +186,19 @@ sub _install {
 ########################################################################
   my ( $self, %args ) = @_;
 
-  my ( $file, $dir, $dryrun, $defaults ) = @args{qw( file dir dryrun defaults)};
+  my ( $file, $dir, $dryrun, $defaults, $exclude ) = @args{qw( file dir dryrun defaults exclude)};
 
   my @files;
+  my %sources;
+
+  $self->get_logger->info( Dumper [ file => $file ] );
 
   if ( !ref $file->{name} ) {
     push @files, $file->{name} // basename $file->{source};
   }
   else {
-    @files = @{ $file->{name} };
+    @files   = @{ $file->{name} };
+    %sources = map { ( $_ => $file->{source} ) } @files;
   }
 
   my $destdir = $file->{destdir} // $EMPTY;
@@ -190,12 +210,41 @@ sub _install {
   my $group = _default( 'group', $file, $dir, $defaults );
   my $owner = _default( 'owner', $file, $dir, $defaults );
 
+  my $uid = $owner =~ /\D/xsm ? ( getpwnam $owner )[2] : $owner;
+  my $gid = $group =~ /\D/xsm ? ( getgrnam $owner )[2] : $group;
+
   foreach my $file_name (@files) {
+
+    if ($exclude) {
+      my $skip = $FALSE;
+
+      foreach my $pattern ( @{$exclude} ) {
+        if ( $pattern =~ /^qr\/([^\/]+)\/(i)?$/xsm ) {
+          my $regex = $2 ? qr/$1/xsmi : qr/$1/xsm;
+          if ( $file_name =~ $regex ) {
+            $self->get_logger->warn( sprintf 'excluding %s by rule %s', $file_name, $regex );
+            $skip = $TRUE;
+            last;
+          }
+        }
+        else {
+          if ( $pattern eq $file_name ) {
+            $self->get_logger->warn( sprintf 'excluding %s by rule = %s', $file_name, $pattern );
+            $skip = $TRUE;
+            last;
+          }
+        }
+      }
+      next if $skip;
+    }
+
     my $dest = sprintf '%s%s/%s', $destdir, $dir->{name}, $file_name;
 
-    my $source = $file->{source} ? $file->{source} : sprintf '%s/%s', $dir->{source}, $file_name;
+    # local source => group source => directory source
+    my $source = $sources{$file_name} // $file->{source};
+    $source = $source ? $source : sprintf '%s/%s', $dir->{source}, $file_name;
 
-    if ( !-e $source ) {
+    if ( !-f $source ) {
       $self->get_logger->warn( sprintf '%s%s does not exist...skipping', $dryrun, $source );
       return;
     }
@@ -226,13 +275,15 @@ sub _install {
       }
     }
 
-    if ( $group && $owner ) {
-      my ( $uid, $gid ) = ( getpwnam $owner )[ 2, 3 ];
-      $self->get_logger->info( sprintf '%ssetting owner %s:%s for %s', $dryrun, $uid, $gid, $dest );
+    $self->get_logger->info(
+      sprintf '%ssetting owner [%s]:[%s] for %s',
+      $dryrun,
+      ( $uid // 'undef' ),
+      ( $gid // 'undef' ), $dest
+    );
 
-      if ( !$dryrun ) {
-        chown $uid, $gid, $dest;
-      }
+    if ( !$dryrun && ( defined $uid && defined $gid ) ) {
+      chown $uid, $gid, $dest;
     }
 
     $self->get_logger->info( sprintf '%ssetting mode %s for %s', $dryrun, $mode, $dest );
@@ -273,10 +324,7 @@ sub main {
 ########################################################################
   local $ENV{LogLevel} = 'debug';
 
-  my $app = Bedrock::Install->new(
-    option_specs => [qw( manifest=s destdir=s )],
-    mk_accessors => [qw(destdir)]
-  );
+  my $app = Bedrock::Install->new( option_specs => [qw( manifest=s destdir=s )], );
 
   $app->get_logger->debug( Dumper( [ options => $app->get_options ] ) );
 
@@ -296,6 +344,9 @@ sub _resolve_condition {
     $test_val //= $EMPTY;
 
     return defined $ENV{$env_var} && $ENV{$env_var} eq $test_val;
+  }
+  else {
+
   }
 
   return $FALSE;
