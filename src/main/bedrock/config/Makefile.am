@@ -8,6 +8,8 @@ EXTRA_FILES = \
     bedrock.users \
     apache24-env-debian \
     apache22-env-debian \
+    apache24-env-redhat \
+    apache22-env-redhat \
     site-config.inc \
     httpd-bedrock.conf.roc
 

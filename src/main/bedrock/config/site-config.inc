@@ -4,13 +4,14 @@
 </if>
 
 <null $config.set('BEDROCK_CONFIG_PATH', ($config.DIST_DIR + '/config'))>
+<null:site_root ($env.APACHE_SITE_ROOT --or $env.APACHE_ROOT)>
 
 <hash:site 
-   APACHE_ROOT           $env.APACHE_ROOT
-   DOCUMENT_ROOT         ($env.APACHE_DOCUMENT_ROOT --or ( $env.APACHE_ROOT + '/htdocs') ) 
-   CGI_BIN               ($env.APACHE_CGI_BIN --or ( $env.APACHE_ROOT + '/cgi-bin' ) )
+   APACHE_ROOT           ($env.APACHE_ROOT)
+   DOCUMENT_ROOT         ($env.APACHE_DOCUMENT_ROOT --or ( $site_root + '/htdocs') ) 
+   CGI_BIN               ($env.APACHE_CGI_BIN --or ( $site_root + '/cgi-bin' ) )
    CONF_DIR       	 ($env.APACHE_CONF_DIR --or ($env.APACHE_ROOT + '/conf' ) )
-   BEDROCK_SESSION_DIR   $env.BEDROCK_SESSION_DIR
+   BEDROCK_SESSION_DIR   ($env.BEDROCK_SESSION_DIR)
    APACHE_MOD_PERL       ($env.APACHE_MOD_PERL --or 'no')
    APACHE_VERSION        ($env.APACHE_VERSION --or '2.4')
    BEDROCK_CACHE_ENABLED ($env.BEDROCK_CACHE_ENABLED --or 'Off')
@@ -20,7 +21,7 @@
    group                 ($env.GROUP --or 'apache' )
 >
 
-<null:destdir ($env.DESTDIR --or '/var/www')>
+<null:destdir ($env.DESTDIR --or $site_root)>
 <null:srcdir $config.DIST_DIR>
 
 <hash:source

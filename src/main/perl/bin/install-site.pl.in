@@ -1,28 +1,55 @@
 #!/usr/bin/env perl
-# configure the httpd-bedrock.conf file
+# configure and install httpd-bedrock.conf file
+
+package Bedrock::SiteInstall;
 
 use strict;
 use warnings;
 
+BEGIN {
+  use File::ShareDir qw(dist_dir);
+  $ENV{BEDROCK_CONFIG_PATH} //= sprintf '%s/config', dist_dir('Bedrock');
+}
+
 use Bedrock qw(slurp_file);
 use Bedrock::BedrockConfig;
+use Bedrock::Constants qw(:booleans :log_levels);
+use Bedrock::Install;
 use Bedrock::Template;
-use Bedrock::Constants qw(:booleans);
 use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename qw(fileparse);
 use File::Copy qw(cp);
-use File::ShareDir qw(dist_dir);
 use File::Temp qw(tempfile);
 use Getopt::Long;
+use List::Util qw(none);
+use Readonly;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+Readonly::Scalar our $HTTPD_CONF => 'httpd-bedrock.conf';
+
+use parent qw(Bedrock::Application);
+
+# File Description
+# -----------------
+#   bedrock-manifest.roc => Manifest of files to install (templated)
+#   apache2x-env-debian  => Debian layout for Apache 2.2/2.4
+#   apache2x-env-redhat  => RedHat layout for Apache 2.2/2.4
+#   site-config.inc      => configuration assigned from environment files above
+
+__PACKAGE__->main();
 
 ########################################################################
 sub install_web_site {
 ########################################################################
-  my ($manifest) = @_;
+  my ( $self, $manifest ) = @_;
 
-  print {*STDOUT} $manifest;
+  my $install = Bedrock::Install->new( %{ $self->get_options }, manifest => \$manifest, );
+
+  $install->install();
 
   return;
 }
@@ -30,7 +57,9 @@ sub install_web_site {
 ########################################################################
 sub add_env_vars {
 ########################################################################
-  my ($file) = @_;
+  my ($self) = @_;
+
+  my $file = $self->get_env;
 
   die "env file $file not found"
     if !-f $file;
@@ -50,7 +79,7 @@ sub add_env_vars {
 ########################################################################
 sub create_httpd_bedrock_conf {
 ########################################################################
-  my ($conf) = @_;
+  my ( $self, $conf ) = @_;
 
   my ( $fh, $filename ) = tempfile(
     UNLINK   => $TRUE,
@@ -73,33 +102,104 @@ sub create_httpd_bedrock_conf {
 }
 
 ########################################################################
-sub main {
+sub set_defaults {
 ########################################################################
-  my %options;
+  my ($self) = @_;
 
-  my @option_specs = qw(
-    env|e=s
-    distdir|d=s
+  my %options = (
+    loglevel         => 'info',
+    distdir          => dist_dir('Bedrock'),
+    'apache-version' => '2.4',
+    distro           => 'redhat',
   );
 
-  GetOptions( \%options, @option_specs );
+  $self->set_options( \%options );
 
-  if ( $options{env} ) {
-    add_env_vars( $options{env} );
+  return $self;
+}
+
+########################################################################
+sub help {
+########################################################################
+  print {*STDOUT} <<'END_OF_HELP';
+install-site.pl options
+
+Create a Bedrock enabled Apache web site.  Assumes you have already installed Apache.
+
+See perldoc install-site.pl for more details.
+
+Options
+-------
+--distro, -D          distribution (Redhat, Debian), default: Redhat
+--env, -e             environment file if not using the distro files
+--distdir, -d         location where Bedrock assets are installed
+--apache-version, -v  Apache version (2.2, 2.4), default: 2.4
+--loglevel, -l        Log:Log4perl log level (error, warn, info, debug, trac), default: info
+--destdir             prefix for installation (used for testing installation)
+--dryrun              dryrun mode
+--help, -h            this
+END_OF_HELP
+
+  return;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my $app = Bedrock::SiteInstall->new(
+    option_specs => [
+      qw(
+        distro|D=s
+        env|e=s
+        distdir|d=s
+        apache-version|v=s
+        loglevel=s
+        destdir=s
+        dryrun
+        help|h
+      )
+    ]
+  );
+
+  if ( $app->get_help ) {
+    $app->help();
+    exit 0;
   }
 
-  my $dist_dir   = $options{distdir} // dist_dir('Bedrock');
+  my $dist_dir = $app->get_distdir;
+
   my $config_dir = sprintf '%s/config', $dist_dir;
 
-  my $config = Bedrock::Config->new( sprintf '%s/tagx.xml', $config_dir );
+  my $config = eval { return Bedrock::Config->new( sprintf '%s/tagx.xml', $config_dir ); };
+
+  if ( !$config || $EVAL_ERROR ) {
+    print {*STDERR} sprintf "unable to read tagx.xml. Are your sure Bedrock is installed here: [%s]\n",
+      $config_dir;
+    exit 1;
+  }
+
+  if ( !$app->get_env ) {
+    my $apache_version = $app->get_apache_version;
+
+    $apache_version =~ s/\D//xsmg;
+
+    die "Apache version ($apache_version) must be 2.2 or 2.4\n"
+      if none { $apache_version eq $_ } qw(22 24);
+
+    die "distro must be one of 'redhat' or 'debian'\n"
+      if none { lc $app->get_distro eq $_ } qw(redhat debian);
+
+    $app->set_env( sprintf '%s/apache%s-env-%s', $config_dir, $apache_version, lc $app->get_distro );
+  }
+
+  $app->add_env_vars();
+
   $config->{BEDROCK_INCLUDE_DIR} = $config_dir;
   $config->{BEDROCK_CONFIG_PATH} = $config_dir;
   $config->{DIST_DIR}            = $dist_dir;
 
-  my $outfile = $options{outfile};
-
   my $template = Bedrock::Template->new(
-    { file  => "$config_dir/httpd-bedrock.conf.roc",
+    { file  => ( sprintf '%s/%s.roc', $config_dir, $HTTPD_CONF ),
       param => {
         config => $config,
         env    => \%ENV,
@@ -108,19 +208,17 @@ sub main {
     }
   );
 
-  my $tmpfile = create_httpd_bedrock_conf( $template->parse() );
+  my $tmpfile = $app->create_httpd_bedrock_conf( $template->parse() );
 
-  $config->{httpd_bedrock_conf} = sprintf '%s/httpd_bedrock.conf', $config_dir;
+  $config->{httpd_bedrock_conf} = sprintf '%s/%s', $config_dir, $HTTPD_CONF;
   cp $tmpfile, $config->{httpd_bedrock_conf};
 
   $template->file('bedrock-manifest');
 
-  install_web_site( $template->parse() );
+  $app->install_web_site( $template->parse() );
 
   return 0;
 }
-
-exit main();
 
 1;
 

@@ -5,7 +5,7 @@ use warnings;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Bedrock::Constants qw(:booleans :chars);
+use Bedrock::Constants qw(:booleans :chars :log_levels);
 use Bedrock qw(slurp_file);
 use JSON;
 use File::Find;
@@ -15,6 +15,9 @@ use File::Path qw(make_path);
 use Scalar::Util qw(reftype);
 
 use parent qw(Bedrock::Application);
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(qw(manifest destdir dryrun loglevel));
 
 caller or __PACKAGE__->main();
 
@@ -84,6 +87,8 @@ sub fetch_directories {
 sub install {
 ########################################################################
   my ($self) = @_;
+
+  $self->get_logger->debug( Dumper( [ dryrun => $self->get_dryrun ] ) );
 
   my $manifest = $self->get_manifest;
 
@@ -191,7 +196,7 @@ sub _install {
   my @files;
   my %sources;
 
-  $self->get_logger->info( Dumper [ file => $file ] );
+  $self->get_logger->trace( "installing: \n", Dumper( [ file => $file ] ) );
 
   if ( !ref $file->{name} ) {
     push @files, $file->{name} // basename $file->{source};
@@ -244,7 +249,7 @@ sub _install {
     my $source = $sources{$file_name} // $file->{source};
     $source = $source ? $source : sprintf '%s/%s', $dir->{source}, $file_name;
 
-    if ( !-f $source ) {
+    if ( !-e $source ) {
       $self->get_logger->warn( sprintf '%s%s does not exist...skipping', $dryrun, $source );
       return;
     }
@@ -301,17 +306,30 @@ sub init {
 ########################################################################
   my ($self) = @_;
 
-  my $manifest_file = $self->get_manifest;
+  my $loglevel = $self->get_loglevel;
 
-  die "--manifest is a required argument\n"
-    if !$manifest_file;
+  $self->get_logger->level( $LOG4PERL_LOG_LEVELS{$loglevel} // $LOG4PERL_LOG_LEVELS{info} );
 
-  die "$manifest_file not found\n"
-    if !-e $manifest_file;
+  my $manifest = $self->get_manifest;
 
-  my $manifest = eval { JSON->new->decode( scalar slurp_file($manifest_file) ); };
+  die "manifest is a required argument\n"
+    if !$manifest;
 
-  die "could not read $manifest_file\n$EVAL_ERROR"
+  if ( !ref $manifest ) {
+    my $manifest_file = $manifest;
+
+    die "$manifest_file not found\n"
+      if !-e $manifest_file;
+
+    $manifest = slurp_file($manifest_file);
+
+    die "could not read $manifest_file\n$EVAL_ERROR"
+      if !$manifest || $EVAL_ERROR;
+  }
+
+  $manifest = eval { return JSON->new->decode( ref $manifest ? ${$manifest} : $manifest ); };
+
+  die "unable to decode manifest file ($EVAL_ERROR)\n"
     if !$manifest || $EVAL_ERROR;
 
   $self->set_manifest($manifest);
@@ -322,8 +340,6 @@ sub init {
 ########################################################################
 sub main {
 ########################################################################
-  local $ENV{LogLevel} = 'debug';
-
   my $app = Bedrock::Install->new( option_specs => [qw( manifest=s destdir=s )], );
 
   $app->get_logger->debug( Dumper( [ options => $app->get_options ] ) );
