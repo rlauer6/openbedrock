@@ -146,7 +146,7 @@ AC_ARG_WITH(
 AC_SUBST([apache_sessiondir])
 
 AC_PATH_PROG([PERL],
-	[perl], [/usr/bin/perl], [/usr/bin:/usr/local/bin:$PATH])
+	[perl], [/usr/bin/env perl], [/usr/local/bin:/usr/bin:$PATH])
 
 if test -z "$PERL" ; then 
   AC_MSG_ERROR([perl not found?])
