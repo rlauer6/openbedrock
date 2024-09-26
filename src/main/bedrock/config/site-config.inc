@@ -3,8 +3,12 @@
 <null $config.set('DIST_DIR', $ShareDir.dist_dir('Bedrock'))>
 </if>
 
-<null $config.set('BEDROCK_CONFIG_PATH', ($config.DIST_DIR + '/config'))>
 <null:site_root ($env.APACHE_SITE_ROOT --or $env.APACHE_ROOT)>
+
+<null:dest_dir ($env.DEST_DIR --or $site_root)>
+<null:src_dir $config.DIST_DIR>
+
+<null $config.set('BEDROCK_CONFIG_PATH', ($dest_dir + '/config'))>
 
 <hash:site 
    APACHE_ROOT           ($env.APACHE_ROOT)
@@ -21,25 +25,23 @@
    group                 ($env.GROUP --or 'apache' )
 >
 
-<null:destdir ($env.DESTDIR --or $site_root)>
-<null:srcdir $config.DIST_DIR>
 
 <hash:source
-   apache_config_extra ( $srcdir + '/config' )
-   cgibin              ( $srcdir + '/cgi-bin' )
-   config              ( $srcdir + '/config' )
-   css                 ( $srcdir + '/css' )
-   htdocs              ( $srcdir + '/htdocs' )
-   img                 ( $srcdir + '/img' )
-   include             ( $srcdir + '/include')
+   apache_config_extra ( $src_dir + '/config' )
+   cgibin              ( $src_dir + '/cgi-bin' )
+   config              ( $src_dir + '/config' )
+   css                 ( $src_dir + '/css' )
+   htdocs              ( $src_dir + '/htdocs' )
+   img                 ( $src_dir + '/img' )
+   include             ( $src_dir + '/include')
 >
 
 <hash:dest
-   config               ( $destdir + '/config' )
-   configd              ( $destdir + '/config.d' ) 
-   include              ( $destdir + '/include' )
-   pebbles              ( $destdir + '/pebbles' )
-   startup              ( $destdir + '/startup' )
+   config               ( $dest_dir + '/config' )
+   configd              ( $dest_dir + '/config.d' ) 
+   include              ( $dest_dir + '/include' )
+   pebbles              ( $dest_dir + '/pebbles' )
+   startup              ( $dest_dir + '/startup' )
    cgibin               ( $site.CGI_BIN )
    htdocs               ( $site.DOCUMENT_ROOT ) 
    css                  ( $site.DOCUMENT_ROOT + '/css' )

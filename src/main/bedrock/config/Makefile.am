@@ -11,7 +11,8 @@ EXTRA_FILES = \
     apache24-env-redhat \
     apache22-env-redhat \
     site-config.inc \
-    bedrock.conf.roc
+    bedrock.conf.roc \
+    tagx.xml.roc
 
 @do_subst_command@
 
@@ -24,6 +25,7 @@ CONFIG = \
     redis-cache.xml.in \
     redis-session.xml.in \
     rest.xml.in \
+    s3.xml.in \
     pod_paths.xml.in \
     markdown_paths.xml.in \
     startup.pl.in \

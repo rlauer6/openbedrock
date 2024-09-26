@@ -1,4 +1,4 @@
-<sink><include --file=site-config --dir-prefix=$config.BEDROCK_CONFIG_PATH></sink>
+<sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 {
   "defaults" : {
     "mode" : "0755",
@@ -34,8 +34,9 @@
           "tagx.xml",
           "tagx_apps.xml",
           "pod_paths.xml",
-          "rest.xml",
-          "markdown_paths.xml"
+          "markdown_paths.xml",
+          "log4perl.conf",
+          "bedrock.users"
           ]
       }
       ]
@@ -46,6 +47,7 @@
         {
           "source" : "<var $source.config>",
           "name" : [
+             "data-sources.xml"
           ]
         }
       ]
@@ -56,7 +58,11 @@
         {
           "source" : "<var $source.config>",
           "name" : [
-            "session.xml"
+            "mysql-session.xml",
+            "redis-session.xml",
+            "s3.xml",
+            "rest.xml",
+            "redis-cache.xml"
            ]
         }
       ]

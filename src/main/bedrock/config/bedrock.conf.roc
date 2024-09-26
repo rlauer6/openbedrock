@@ -1,9 +1,10 @@
 #-*- mode: conf; -*-
 # -- Apache configuration for Bedrock enabled sites
-<sink><include --file=site-config --dir-prefix=$config.BEDROCK_CONFIG_PATH></sink>
+<sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 
 SetEnv BEDROCK_INCLUDE_DIR   <var $config.DIST_DIR>/include
 SetEnv BEDROCK_PEBBLE_DIR    <var $config.DIST_DIR>/pebbles
+SetEnv BEDROCK_IMAGE_DIR     <var $config.DIST_DIR>/img
 SetEnv BEDROCK_CONFIG_PATH   <var $config.BEDROCK_CONFIG_PATH>
 SetEnv BEDROCK_CACHE_ENABLED <var $site.BEDROCK_CACHE_ENABLED>
 SetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
@@ -16,6 +17,7 @@ SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
 
   PerlPassEnv BEDROCK_INCLUDE_DIR
   PerlPassEnv BEDROCK_PEBBLE_DIR
+  PerlPassEnv BEDROCK_IMAGE_DIR
   PerlPassEnv BEDROCK_CONFIG_PATH
   PerlPassEnv BEDROCK_CACHE_ENABLED
   PerlPassEnv BEDROCK_BENCHMARK
@@ -56,7 +58,7 @@ AddHandler    bedrock-cgi .rock .jrock
 
 # Bedrock - mod-perl for .roc (if mod_perl)
 <IfModule mod_perl.c>
-  PerlRequire <var $config.BEDROCK_CONFIG_PATH>/startup.pl
+  PerlRequire <var $config.DIST_DIR>/config/startup.pl
   AddHandler  perl-script .roc .jroc
   PerlHandler Apache::Bedrock
 </IfModule>
