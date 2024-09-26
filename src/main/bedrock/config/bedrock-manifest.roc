@@ -14,13 +14,13 @@
       "file_mode" : "0700",
       "files" : [
         {
-          "source" : "<var $source.cgibin>",
+          "source" : "<var $source.cgibin>/bedrock.cgi",
           "name" : [
             "bedrock.cgi", 
             "bedrock-session-files.cgi",
-            "bedrock-docs", 
-            "bedrock-autocomplete", 
-            "bedrock-briefcase"
+            "bedrock-docs.cgi", 
+            "bedrock-autocomplete.cgi", 
+            "bedrock-briefcase.cgi"
           ]
         }
       ]
@@ -76,8 +76,8 @@
       "name" : "<var $dest.apache_config_extra>",
       "files" : [ 
         {
-          "source": "<var $config.httpd_bedrock_conf>",
-          "name" : [ "httpd_bedrock_conf" ]
+          "source": "<var $config.bedrock_conf>",
+          "name" : [ "bedrock.conf" ]
         }
       ]
     }

@@ -1,29 +1,42 @@
 #-*- mode: conf; -*-
-# bedrock -e apache24-env-debian httpd-bedrock.conf.roc > httpd-bedrock.roc
+# -- Apache configuration for Bedrock enabled sites
 <sink><include --file=site-config --dir-prefix=$config.BEDROCK_CONFIG_PATH></sink>
-<if $site.APACHE_MOD_PERL --eq yes >
-<IfModule !perl_module>
-LoadModule perl_module modules/mod_perl.so
-</IfModule>
-</if>
 
-# These may have already been loaded
-<IfModule !cgi_module>
- LoadModule cgi_module modules/mod_cgi.so
-</IfModule>
-
-<IfModule !actions_module>
-LoadModule actions_module modules/mod_actions.so
-</IfModule>
-
-<IfModule !alias_module>
-LoadModule alias_module modules/mod_alias.so
-</IfModule>
-
+SetEnv BEDROCK_INCLUDE_DIR   <var $config.DIST_DIR>/include
+SetEnv BEDROCK_PEBBLE_DIR    <var $config.DIST_DIR>/pebbles
 SetEnv BEDROCK_CONFIG_PATH   <var $config.BEDROCK_CONFIG_PATH>
 SetEnv BEDROCK_CACHE_ENABLED <var $site.BEDROCK_CACHE_ENABLED>
 SetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
 SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
+
+<if $site.APACHE_MOD_PERL --eq yes >
+
+<IfModule !perl_module>
+  LoadModule perl_module modules/mod_perl.so
+
+  PerlPassEnv BEDROCK_INCLUDE_DIR
+  PerlPassEnv BEDROCK_PEBBLE_DIR
+  PerlPassEnv BEDROCK_CONFIG_PATH
+  PerlPassEnv BEDROCK_CACHE_ENABLED
+  PerlPassEnv BEDROCK_BENCHMARK
+  PerlPassEnv BedrockLogLevel
+</IfModule>
+
+</if>
+
+# These may have already been loaded
+<IfModule !cgi_module>
+  LoadModule cgi_module modules/mod_cgi.so
+</IfModule>
+
+<IfModule !actions_module>
+  LoadModule actions_module modules/mod_actions.so
+</IfModule>
+
+<IfModule !alias_module>
+  LoadModule alias_module modules/mod_alias.so
+</IfModule>
+
 
 DirectoryIndex index.roc index.rock
 
@@ -37,6 +50,10 @@ Action        bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
 
 AddHandler    bedrock-cgi .rock .jrock
 
+<Directory "<var $site_root>/cgi-bin">
+  Options +SymLinksIfOwnerMatch
+</Directory>
+
 # Bedrock - mod-perl for .roc (if mod_perl)
 <IfModule mod_perl.c>
   PerlRequire <var $config.BEDROCK_CONFIG_PATH>/startup.pl
@@ -45,7 +62,7 @@ AddHandler    bedrock-cgi .rock .jrock
 </IfModule>
 
 <IfModule !mod_perl.c>
-  AddHandler  bedrock-cgi .roc .jroc
+  AddHandler bedrock-cgi .roc .jroc
 </IfModule>
 
 Alias /bedrock/img <var $config.DIST_DIR>/img

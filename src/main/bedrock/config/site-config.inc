@@ -8,7 +8,7 @@
 
 <hash:site 
    APACHE_ROOT           ($env.APACHE_ROOT)
-   DOCUMENT_ROOT         ($env.APACHE_DOCUMENT_ROOT --or ( $site_root + '/htdocs') ) 
+   DOCUMENT_ROOT         ($env.APACHE_DOCUMENT_ROOT --or ( $site_root + '/html') ) 
    CGI_BIN               ($env.APACHE_CGI_BIN --or ( $site_root + '/cgi-bin' ) )
    CONF_DIR       	 ($env.APACHE_CONF_DIR --or ($env.APACHE_ROOT + '/conf' ) )
    BEDROCK_SESSION_DIR   ($env.BEDROCK_SESSION_DIR)

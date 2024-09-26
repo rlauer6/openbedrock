@@ -1,11 +1,25 @@
 # README
 
-Makefile for creating a Docker image for Bedrock.
+Makefile for creating Docker images for Bedrock.
 
-# Building the Image
+# Building the Image from RPMs
 
-The Bedrock Docker image is built by installing the *Bedrock rpms* from the
-Bedrock repo to an Amazon Linux 2 image.
+> Note: Using RPMs for installing Bedrock on Amazon Linux 2023 is
+>currently broken primariky due to missing Perl module
+>dependencies. This may be corrected in the future by forcing the RPM
+>build process to ignore module dependencies and either create an
+>install process that loads the requirements from CPAN or requires a
+>separate process for satisfying Bedrock module requirements.
+
+## TBD
+
+* [ ] fix the RPM build process for AL2023
+* [ ] create a CPAN distribution tarball downloadable from the Bedrock
+      site.
+* [ ] Document image build for RedHat, Debian using the distribution tarball
+
+The Bedrock Docker image can be built by installing the *Bedrock rpms* from the
+Bedrock repo to an Amazon Linux image.
 
 > Let me repeat that ...__from the Bedrock repo__...did you re-build
 > Bedrock and create the rpms? If you've forgotten how to do that 

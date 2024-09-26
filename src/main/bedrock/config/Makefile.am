@@ -11,7 +11,7 @@ EXTRA_FILES = \
     apache24-env-redhat \
     apache22-env-redhat \
     site-config.inc \
-    httpd-bedrock.conf.roc
+    bedrock.conf.roc
 
 @do_subst_command@
 
