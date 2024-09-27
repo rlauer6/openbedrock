@@ -2,10 +2,18 @@ This is the README file for the `bedrock` project.
 
 * See the NEWS file for changes and updates to Bedrock
 
+| Documentation | Description |
+| ------------- | ----------- |
+| [README.md](README.md) | Overview of Bedrock and this repository \
+| [README-CI.md](README-CI.md) | Info on the GitHub Actions build system |
+| [README-Apache.md](README-Apache.md) | Info on running Bedrock as an Apache application |
+| [README-LOGS.md](README-LOGS.md) | Guide to Bedrock logging |
+
 # Build and Test Status
+
 ![build badge](https://github.com/rlauer6/openbedrock/actions/workflows/build.yml/badge.svg)
 
-# RPM Build Status
+# RPM Build Status (master branch)
 
 ![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
@@ -60,11 +68,11 @@ echo 'Bedrock says <var $input.text>' | bedrock text='Hello World!'
 
 To install Bedrock from rpm, visit http://repo.openbedrock.net.
 
-## Manual Install
+## Manual Installation
 
 You'll need a few Perl modules installed on your system before you
-start, but `configure` will look for them before and let you know if you can build
-Bedrock.
+start, but `configure` will look for them and let you know if you're
+ready to build Bedrock.
 
 See the [Prerequisites](#prerequisites) section below for other programs that must be
 installed and configured on your system before you can install the Bedrock
@@ -75,8 +83,7 @@ git clone https://github.com/rlauer6/openbedrock.git
 cd openbedrock
 ./bootstrap
 ./configure --prefix=/usr
-make
-sudo install
+make && sudo make install
 bedrock --version
 ```
 
@@ -84,7 +91,7 @@ bedrock --version
 
 _Experimental_
 
->>Bedrock is not and may never be uploaded to CPAN, however it is
+>>Bedrock is not and may never be, uploaded to CPAN, however it is
 >possible to create a distribution tarball capable of being installed
 >using `cpanm`.
 
@@ -93,7 +100,6 @@ _Experimental_
 In addition to the prerequistes for manually installing Bedrock you
 will also need the artifacts listed below.
 
-* `Pod::Checker`
 * [`make-cpan-dist`](https://github.com/rlauer/make-cpan-dist.git)
 
 Follow the instructions below to create a distribution tarball.
@@ -104,6 +110,7 @@ Follow the instructions below to create a distribution tarball.
 cd cpan
 make cpan
 ```
+
 After running the above recipe you should have a tarball in the `cpan`
 directory.
 
@@ -116,7 +123,7 @@ make && make install
 
 ### Differences Between the CPAN Distribution and Manual Installation
 
-The manual installation method assumes you are trying install all of
+The manual installation method assumes you are trying to install all of
 the components of Bedrock in order to create a web application.
 Accordingly, a manual install will by default, install an Apache
 virtual host and all of the necessary Apache configuration files
@@ -126,30 +133,30 @@ templating engine programmatically (using Perl modules) or using the
 command line (`bedrock.pl`).
 
 Additional files that make up the web framework are included in the
-distribution but are not installed into your web application
+distribution but are not automatically installed into your web application
 hierarchy.
 
 A separate utility is included for configuring your web environment
 that should be run after installing Bedrock from the distribution
 tarball.
 
-See `man bedrock-web` for more details.
+See `man bedrock-site-install` for more details.
 
 ### Why Isn't Bedrock on CPAN
 
 There are many good templating modules (e.g. Template::Toolkit,
 Mason, HTML::Template) that are well supported by the Perl
 community. Newer web application frameworks like Mojolicious are
-rapidly eplacing the use of templating packages as a web development
+rapidly replacing the use of templating packages alone as a web development
 framework. Bedrock was born in the late 90's when other solutions
-were being born as well.  It was used and is still used today) by the
+were being born as well.  It was used (and is still used today) by the
 company that funded its development.
 
 ## Testing the Installation
 
 There are some tests you can run that will exercise Bedrock tags and
-other Perl modules.  After installing all of the pre-requisites and
-installing Bedrock, try:
+other Perl modules if you've installed Bedrock manually.  After
+installing all of the pre-requisites and installing Bedrock, try:
 
 ```
 cd src/main/perl
@@ -195,7 +202,8 @@ need to install:
 # Ubuntu/Debian
 
 _Ubuntu support via Debian packages will likely never happen, however we
-believe Bedrock will run on Ubuntu using the manual installation methods._
+believe Bedrock will run on Ubuntu using the manual installation
+method or as a CPAN distribution._
 
 At one time a Debian package was available for Bedrock, however the
 packaging scripts have gone out of maintenance.  Volunteers welcome.

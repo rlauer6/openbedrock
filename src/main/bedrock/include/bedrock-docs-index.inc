@@ -22,7 +22,12 @@
   <h1>Bedrock Log Configuration</h1>
   <h2><var $config.LOG4PERL></h2>
   <pre>
-    <var $log4perl>
+<var $log4perl>
   </pre>
-  </body>
+
+  <h1>Bedock Internal Documentation</h1>
+  <var $bedrock_internal_docs>
+  <hr/>
+
+</body>
 </html>

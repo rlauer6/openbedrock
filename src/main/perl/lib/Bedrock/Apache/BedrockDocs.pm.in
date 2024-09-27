@@ -139,7 +139,11 @@ sub handler {
       };
 
       /system\/?(.*?)\/?$/xsm && do {
-        return system_docs( $bedrock_handler, $1 );
+        return system_docs( $bedrock_handler, module => $1, type => 'system' );
+      };
+
+      /bedrock-internal\/?(.*?)\/?$/xsm && do {
+        return system_docs( $bedrock_handler, module => $1, type => 'bedrock-internal' );
       };
 
       /pod\/?(.*?)\/?$/xsm && do {
@@ -190,8 +194,13 @@ sub handler {
     ####################################################################
     # system modules
     ####################################################################
-
     $parameters{system_docs} = ul_links( $config, system => 'System Modules' );
+
+    ####################################################################
+    # Bedrock internal modules
+    ####################################################################
+    $parameters{bedrock_internal_docs}
+      = ul_links( $config, 'bedrock-internal' => 'Bedrock Internal Documentation' );
 
     ####################################################################
     # user modules
@@ -484,11 +493,14 @@ sub get_all_modules {
     my $dir;
 
     my $filter;
+    my $filter_type;
 
     if ( is_hash($path) ) {
       $dir = $path->{dir};
 
-      $filter = $path->{filter};
+      $filter      = $path->{filter};
+      $filter_type = $path->{filter_type} // 'exclude';
+
       $filter = qr/$filter/xsm;
     }
     else {
@@ -498,11 +510,35 @@ sub get_all_modules {
     my @modules = get_modules( $dir, $no_blms );
 
     foreach my $file (@modules) {
-      next if !has_pod("$file.pm");
+      if ( !has_pod("$file.pm") ) {
+        $LOGGER->error( 'no pod, rejecting: ' . $file );
+        next;
+      }
 
       my $module = get_module_name( $file, $dir );
 
-      next if $filter && $module !~ $filter;
+      next if !$module;
+
+      if ($filter) {
+        if ( $filter_type eq 'exclude' ) {
+          if ( $module =~ $filter ) {
+            $LOGGER->debug("excluding $module based on exclude filter ($filter)");
+            next;
+          }
+        }
+        elsif ( $filter_type eq 'include' ) {
+          if ( $module =~ $filter ) {
+            $LOGGER->debug("including $module based on include filter ($filter)");
+          }
+          else {
+            $LOGGER->debug("excluding $module based on include filter ($filter)");
+            next;
+          }
+        }
+        else {
+          die "unknown filter type: $filter_type\n";
+        }
+      }
 
       $module_map{$module} = $file;
     }
@@ -761,23 +797,33 @@ sub plugin_docs {
 ########################################################################
 sub system_docs {
 ########################################################################
-  my ( $bedrock_handler, $module ) = @_;
+  my ( $bedrock_handler, %args ) = @_;
 
-  my $pod_paths = [$DEFAULT_BEDROCK_PERL5LIBDIR];
+  my ( $module, $type ) = @args{qw(module type)};
+
+  my $cache_key = sprintf '%s_POD_LISTING', uc $type;
 
   # get non-public modules
-  my $module_listing = $BEDROCK_CONFIG_CACHE{SYSTEM_POD_LISTING};
+  my $module_listing = $BEDROCK_CONFIG_CACHE{$cache_key};
+
+  my $path = [
+    { filter      => '(^[bB]edrock|^TagX|::[bB]edrock)',
+      filter_type => $type eq 'system' ? 'exclude' : 'include',
+      dir         => $DEFAULT_BEDROCK_PERL5LIBDIR,
+    }
+  ];
 
   if ( !$module_listing ) {
     $LOGGER->trace('no system listing in cache');
 
-    $module_listing = get_all_modules( $pod_paths, $FALSE );
-    $BEDROCK_CONFIG_CACHE{SYSTEM_POD_LISTING} = $module_listing;
+    $module_listing = get_all_modules( $path, $FALSE );
+    $BEDROCK_CONFIG_CACHE{$cache_key} = $module_listing;
   }
   else {
     $LOGGER->trace('retrieving system pod listing from cache');
   }
 
+  # [ ] TBD: we can do something a bit more graceful here
   return $NOT_FOUND
     if !$module_listing || !keys %{$module_listing};
 
@@ -791,23 +837,22 @@ sub system_docs {
     return show_pod( $bedrock_handler, $path, 'system', $module );
   }
 
-  my $modules = get_all_modules( $pod_paths, 0, 1 );
+  my $url_prefix = sprintf '/bedrock/%s', $type;
 
-  my $url_prefix = '/bedrock/system';
   my $anchor_tag = '<a href="%s/%s">%s</a>';
 
   my @system_listing;
 
-  foreach my $module ( sort keys %{$modules} ) {
-    next if $module =~ /Bedrock::Text|Filter/xsm;
-
+  foreach my $module ( sort keys %{$module_listing} ) {
     my $path = $module;
     $path =~ s/\:\:/\//xsmg;
 
     push @system_listing, sprintf $anchor_tag, $url_prefix, $path, $module;
   }
 
-  my $html = listing( $bedrock_handler, 'System Documentation Listing', @system_listing );
+  my $title = $type eq 'system' ? 'System' : 'Bedrock Internal';
+
+  my $html = listing( $bedrock_handler, "$title Documentation Listing", @system_listing );
 
   output( $bedrock_handler->request_handler, $html );
 

@@ -26,7 +26,6 @@ use Data::Dumper;
 use File::Basename qw(fileparse);
 use File::Copy qw(cp);
 use File::Temp qw(tempfile);
-use Getopt::Long;
 use List::Util qw(none);
 use Readonly;
 
@@ -74,7 +73,7 @@ sub add_env_vars {
     next if /^[#]/xsm;
 
     my ( $k, $v ) = split /\s*=\s*/xms;
-    $ENV{$k} = $v;
+    $ENV{$k} //= $v;
   }
 
   return;
@@ -126,11 +125,9 @@ sub set_defaults {
 sub help {
 ########################################################################
   print {*STDOUT} <<'END_OF_HELP';
-install-site.pl options
+bedrock-site-install.pl options
 
 Create a Bedrock enabled Apache web site.  Assumes you have already installed Apache.
-
-See perldoc install-site.pl for more details.
 
 Options
 -------
@@ -142,6 +139,11 @@ Options
 --destdir             prefix for installation (used for testing installation)
 --dryrun              dryrun mode
 --help, -h            this
+
+See man bedrock-site-install.pl for more information.
+
+(c) 2024 TBC Development Group, LLC
+All rights reserved.
 END_OF_HELP
 
   return;
@@ -230,6 +232,12 @@ sub main {
   $template->file('bedrock-manifest');
 
   $app->install_web_site( $template->parse() );
+  my $document_root = $ENV{APACHE_DOCUMENT_ROOT};
+  $document_root //= sprintf '%s/html', $ENV{APACHE_SITE_ROOT} // $ENV{APACHE_ROOT};
+
+  if ( -d $document_root && !-d "$document_root/bedrock" ) {
+    mkdir "$document_root/bedrock";
+  }
 
   return 0;
 }
@@ -242,14 +250,202 @@ __END__
 
 =head1 NAME
 
+bedrock-site-install.pl - create a Bedrock enabled web site
+
 =head1 SYNOPSIS
+
+ bedrock-site-install.pl --distro RedHat --apache-version 2.2 --loglevel debug --dryrun
 
 =head1 DESCRIPTION
 
+Configures an Apache web site for Bedrock. The installation process
+performs the following actions:
+
+=over 5
+
+=item 1. Using pre-defined configurations creates a manifest of files to be installed
+
+The configurations are files that are interpretted to be environment
+variables. The files used to configure the Bedrock installation are:
+
+=over 10
+
+=item apache22-env-debian
+
+=item apache24-env-debian
+
+=item apache22-env-redhat
+
+=item apache24-env-debian
+
+=back
+
+Each will look similar to the file below:
+
+ # Apache 2.2/Debian
+ APACHE_ROOT=/usr/local/apache2
+ APACHE_SITE_ROOT=/usr/local/apache2
+ APACHE_DOCUMENT_ROOT=/usr/local/apache/html
+ APACHE_MOD_PERL=yes
+ APACHE_CONF_DIR=/usr/local/apache2/conf/extra
+ APACHE_VERSION=2.2
+ BEDROCK_SESSION_DIR=/var/lib/session
+ DEST_DIR=/usr/local/apache2/bedrock
+ OWNER=www-data
+ GROUP=www-data
+
+You can customize any of these files based on your own
+configuration. Some defaults are defined below:
+
+ APACHE_SITE_ROOT = APACHE_ROOT
+ APACHE_DOCUMENT_ROOT = APACHE_SITE_ROOT/html
+
+=over 10
+
+=item APACHE_ROOT
+
+Directory where apache was installed.
+
+=item APACHE_SITE_ROOT
+
+Directory that contains the Apache website.
+
+=item APACHE_DOCUMENT_ROOT
+
+Directory that contains documents to be served by Apache.
+
+=item APACHE_MOD_PERL=yes
+
+Whether to use mod_perl or not (yes/no).
+
+=item APACHE_CONF_DIR
+
+Directory that will contain the Apache directives to enable Bedrock.
+
+=item APACHE_VERSION
+
+The version of Apache. Because of small differences between 2.2 and
+2.4 the Bedrock configuration for Apache will be customized based on
+the Apache version.
+
+=item BEDROCK_SESSION_DIR
+
+If you are using sessions, this directory can be used for session specific files.
+
+=item DEST_DIR
+
+Destination directory for Bedrock's file for use with Apache. This
+directory should always be outside fo the document root.  It will
+contain, among other artifacts configuration files.
+
+=item OWNER
+
+Owner of the files to be installed. This is normally the owner that
+runs Apache (either www-data for debian based distros or apache for
+RedHat based distros).
+
+=item GROUP
+
+Group owner of the files to be installed. This is normally the group that
+runs Apache (either 'www-data' for debian based distros or 'apache' for
+RedHat based distros).
+
+=back
+
+=item 2. Installs the files included in the manifest to your web site
+
+=item 3. Installs an Apache configuration file in Apache's configuration directory
+
+=back
+
+=head1 INSTALLATION DETAILS
+
+There are several files that are used during the installation
+process. The installation script essentially resolves source and
+destination locations using the environment files described above.
+
+It uses the F<site-config.inc> file to provide the parameters for
+creating the final manifest (F<bedrock-manifest.roc>), the Apache
+configuration file (F<bedrock.conf>) and Bedrock's configuration file
+(F<tagx.xl.roc>).
+
+The script then copies files from Bedrock's distribution directory to
+their target locations as specified in the manifest.
+
+As noted above, you can customize the environment files as needed. You
+can also provide environment varialbes on the command line instead of
+editing any of the environment files.
+
+ APACHE_VERSION=2.4 APACHE_DOCUMENT_ROOT=/var/www/vhosts/html bedrock-site-install.pl 
+
+=head2 Installation Artifacts
+
+=over 5
+
+=item bedrock-manifest.roc
+
+Manifest of source and destination. The format of the file is
+described in L<Bedrock::Install>.
+
+=item apache22-env-debian
+
+Environment file for Apache 2.2 running on debian.
+
+=item apache24-env-debian
+
+Environment file for Apache 2.4 running on debian.
+
+=item apache22-env-redhat
+
+Environment file for Apache 2.2 running on RedHat.
+
+=item apache24-env-redhat
+
+Environment file for Apache 2.4 running on RedHat.
+
+=item site-config.inc
+
+Bedrock file that creates the parameters used for the installation
+process.
+
+=item bedrock.conf.roc
+
+Apache directives for creating a Bedrock enabled site.
+
+=item tagx.xml.roc
+
+Bedrock's configuration file.
+
+=back
+
 =head1 USAGE
+
+ bedrock-site-install options
+ 
+ Create a Bedrock enabled Apache web site.  Assumes you have already installed Apache.
+ 
+ Options
+ -------
+ --distro, -D          distribution (Redhat, Debian), default: Redhat
+ --env, -e             environment file if not using the distro files
+ --distdir, -d         location where Bedrock assets are installed
+ --apache-version, -v  Apache version (2.2, 2.4), default: 2.4
+ --loglevel, -l        Log:Log4perl log level (error, warn, info, debug, trac), default: info
+ --destdir             prefix for installation (used for testing installation)
+ --dryrun              dryrun mode
+ --help, -h            this
+ 
+ See man bedrock-site-install.pl for more information.
+ 
+ (c) 2024 TBC Development Group, LLC
+ All rights reserved.
 
 =head1 AUTHOR
 
+Rob Lauer - <rclauer@gmail.com>
+
 =head1 SEE ALSO
+
+L<Bedrock::Install>
 
 =cut
