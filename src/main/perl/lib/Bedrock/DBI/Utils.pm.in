@@ -1,0 +1,166 @@
+package Bedrock::DBI::Utils;
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:chars);
+use Bedrock::XML;
+use JSON;
+use English qw(-no_match_vars);
+use Data::Dumper;
+
+use Readonly;
+
+Readonly::Scalar our $DEFAULT_HOST     => 'localhost';
+Readonly::Scalar our $DEFAULT_DRIVER   => 'mysql';
+Readonly::Scalar our $DEFAULT_DATABASE => 'bedrock';
+
+use parent qw(Exporter);
+
+our @EXPORT_OK = qw(load_dsn_from_config create_dsn_file);
+
+our $DATA_POSITION //= tell *DATA;
+
+# config => filename
+# config => { name => { DBI_DSN => } }
+# config => { data_source => "" }
+# config => { data_source => { } };
+
+########################################################################
+sub load_dsn_from_config {
+########################################################################
+  my ($config) = @_;
+
+  # data-source file can be JSON or Bedrock XML
+  $config = eval {
+    return $config
+      if ref $config;
+
+    die "config [$config] not found\n"
+      if !-f $config;
+
+    my $content = slurp_file($config);
+
+    $config = eval { return Bedrock::XML->newFromString($content); };
+
+    return $config ? $config : JSON->new->decode($content);
+  };
+
+  die "could not read $config:\n$EVAL_ERROR"
+    if !$config || $EVAL_ERROR;
+
+  my $dsn;
+
+  if ( $config->{data_source} ) {
+    $dsn = $config->{data_source};
+  }
+  elsif ( $config->{DBI_DSN} ) {
+    $dsn = $config;
+  }
+  else {
+    my ($dsn_name) = keys %{$config};
+
+    $dsn = delete $config->{$dsn_name};
+  }
+
+  $dsn = ( ref $dsn && $dsn->{DBI_DSN} ) ? $dsn->{DBI_DSN} : $dsn;
+
+  return $dsn
+    if !ref $dsn;
+
+  my %dsn_spec = %{$dsn};
+
+  my $driver   = delete $dsn_spec{driver};
+  my $database = delete $dsn_spec{database};
+  my $host     = delete $dsn_spec{host};
+
+  $driver   //= $DEFAULT_DRIVER;
+  $host     //= $DEFAULT_HOST;
+  $database //= $DEFAULT_DATABASE;
+
+  my $options = join $SEMICOLON, map { sprintf '%s=%s', $_, $dsn_spec{$_} } keys %dsn_spec;
+  $options = $options ? ";$options" : $EMPTY;
+
+  return sprintf 'dbi:%s:%s:%s%s', $driver, $database, $host, $options;
+}
+
+########################################################################
+sub create_dsn_file {
+########################################################################
+  my (%args) = @_;
+
+  my $fh = *DATA;
+
+  seek $fh, $DATA_POSITION, 0;
+  local $RS = undef;
+
+  my $content = <$fh>;
+  $content =~ s/^[\-].*\z//xsm;
+
+  my $config   = Bedrock::XML->newFromString($content);
+  my $filename = $args{filename};
+  my $type     = $args{type}     // 'xml';
+  my $dsn_name = $args{dsn_name} // 'bedrock';
+
+  delete $args{type};
+  delete $args{filename};
+  delete $args{dsn_name};
+
+  $config->{$dsn_name} = $config->{bedrock};
+
+  my $data_source = $config->{bedrock};
+  delete $config->{bedrock};
+
+  foreach (qw(driver host username password database)) {
+    $data_source->{$_} //= $args{$_};
+  }
+
+  return $data_source
+    if !$filename;
+
+  {
+    open my $fh, '>', $filename
+      or die "could not open $filename for writing\n";
+
+    if ( $type eq 'xml' ) {
+      Bedrock::XML::writeXML( { $dsn_name => $data_source }, $fh );
+    }
+    else {
+      my %content = %{$data_source};
+
+      print {$fh} JSON->new->allow_blessed->convert_blessed->pretty->encode( { $dsn_name => \%content } );
+    }
+
+    close $fh;
+  }
+
+  return $filename;
+}
+
+########################################################################
+
+1;
+
+__DATA__
+<object>
+  <object name="bedrock">
+    <scalar name="driver">mysql</scalar>
+    <scalar name="username">fred</scalar>
+    <scalar name="password">Fl1nt$t0ne</scalar>
+    <scalar name="host">localhost</scalar>
+    <scalar name="database">bedrock</scalar>
+    <scalar name="mysql_ssl">1</scalar>
+  </object>
+</object>
+---
+{
+  "bedrock" : {
+     "driver" : "mysql",
+     "host" : "locahost",
+     "database" : "bedrock",
+     "username" : "fred",
+     "password" : "Fl1nt$t0ne",
+     "mysql_ssl" : "1"
+  }
+}

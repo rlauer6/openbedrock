@@ -55,6 +55,7 @@ install-data-hook: installdirs
 	test -e $(DESTDIR)/bin || mkdir $(DESTDIR)/bin
 	ln -f -s @bindir@/bedrock.pl  $(DESTDIR)/bin/bedrock
 	ln -f -s @bindir@/bedrock-model.pl  $(DESTDIR)/$(bindir)/bedrock-model
+	ln -f -s @bindir@/bedrock-site-install.pl  $(DESTDIR)/$(bindir)/bedrock-site-install
 	ln -f -s @bindir@/bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
 	ln -f -s @bindir@/bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
 endif

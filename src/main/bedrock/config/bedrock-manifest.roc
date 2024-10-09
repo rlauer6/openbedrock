@@ -42,6 +42,19 @@
       ]
     },
     {
+      "name" : "<var $dest.config/admin>",
+      "files": [
+        {
+        "source" : "<var $source.config/admin>",
+        "name" : [
+          "index.rock",
+          "bedrock.css",
+          "bedrock.js"
+          ]
+      }
+      ]
+    },
+    {
       "name" : "<var $dest.configd>",
       "files": [
         {
@@ -53,13 +66,13 @@
       ]
     },
     {
-      "name" : "<var $dest.startup>",
+      "name" : "<var $dest.configd>/startup",
       "files": [
         {
           "source" : "<var $source.config>",
           "name" : [
+            "bedock.xml",
             "mysql-session.xml",
-            "redis-session.xml",
             "s3.xml",
             "rest.xml",
             "redis-cache.xml"

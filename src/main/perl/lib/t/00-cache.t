@@ -1,17 +1,22 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
 
 use lib qw(. ..);
 
-use Cwd qw{abs_path};
+use Cwd qw(abs_path);
+
 use Data::Dumper;
 use Bedrock::BedrockJSON;
+use Bedrock::Constants qw(:booleans);
+
 use Bedrock::Test::RequestHandler;
+use English qw(-no_match_vars);
 use IPC::Shareable;
 use Test::More;
 use Test::Output;
+use Test::Deep;
 
 ########################################################################
 BEGIN {
@@ -59,6 +64,7 @@ sub main {
   };
 
   my %CACHE;
+  my $cache_key = $PROGRAM_NAME;
 
 ########################################################################
   subtest 'read cache' => sub {
@@ -69,7 +75,11 @@ sub main {
     ok( keys %CACHE, 'caching' )
       or diag( Dumper [ keys => keys %CACHE ] );
 
-    is_deeply( $CACHE{'t/00-cache.t'}, $config, 'config and cached config equal' );
+    # the cache will contain _config_files_processed which preserves
+    # the original config file list that was processed to create the
+    # config object. It is removed from the config object itself when
+    # the config object is restored from the cache.
+    cmp_deeply( $CACHE{'t/00-cache.t'}, superhashof($config), 'config and cached config equal' );
   };
 
 ########################################################################
@@ -87,7 +97,7 @@ sub main {
           };
       }
       else {
-        is( $cache_config->{$_}, $config->{$_}, 'scalars are equal' )
+        is( $cache_config->{$_}, $config->{$_}, "scalars [$_] are equal" )
           or BAIL_OUT("scalars not equal");
       }
     }

@@ -25,10 +25,11 @@ use strict;
 use warnings;
 
 use Bedrock::Constants qw(:magic_numbers :booleans :chars);
+use Bedrock::DBI::Utils qw(load_dsn_from_config);
 use Bedrock::Dump;
 use DBI;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use File::Path;
 
 use Role::Tiny::With;
@@ -281,9 +282,7 @@ sub _do_select_set {
 sub CONNECT {
   my ( $self, %options ) = @_;
 
-  my %config = %{ $options{config} };
-
-  my $dsn = $config{data_source};
+  my $dsn = load_dsn_from_config( $options{config} );
 
   # Get the required database params
   die sprintf $NO_DATASOURCE, ref $self
@@ -292,7 +291,7 @@ sub CONNECT {
   $self->{dbh} = eval {
     return DBI->connect(
       $dsn,
-      @config{qw(username password)},
+      @{ $options{config} }{qw(username password)},
       { RaiseError => $TRUE,
         AutoCommit => $TRUE
       }
@@ -466,12 +465,15 @@ sub SESSION_CLEANUP {
     $self->remove_expired_session_dirs(%options);
   }
 
+  my $cleanup_login_sessions = $options{config}->{cleanup_login_sessions};
+  $cleanup_login_sessions //= 'no';
+
   # remove data from login sessions
-  if ( exists $options{config}->{cleanup_login_sessions}
-    && $options{config}->{cleanup_login_sessions} =~ /y/xsmi ) {
+  if ( $cleanup_login_sessions =~ /^y/xsmi ) {
     $self->do_sql( 'LOGIN_SESSION_SANITIZE', %options );
   }
   else {
+    $self->get_logger->debug('cleaning login sessions');
     $self->do_sql( 'LOGIN_SESSION_CLEANUP', %options );
   }
 
@@ -704,9 +706,134 @@ sub defined_or_undef {
 ########################################################################
   my (@args) = @_;
 
-  return map { defined $_ || '<undef>' } @args;
+  return map { defined $_ ? $_ : '<undef>' } @args;
 }
 
 1;
 
 __END__
+
+=pod
+
+=head1 NAME
+
+BLM::Startup::SQLSession - Base class for creating SQL based session managers
+
+=head1 SYNOPSIS
+
+ use parent qw(BLM::Startup::SQLSession)
+
+=head1 DESCRIPTION
+
+A base class for creating SQL based session managers. Parent classes
+are expected to provide SQL statements that are executed by the
+various generic methods in this class. However, parent classes can
+override methods if necessary.
+
+In general, a parent class should provide a package global named
+C<%BLM::Startup::SQLSession::SQL> with keys that correspond to the
+method names below. The value of each of the hash members is a has
+that contains two keys, C<sql> and <args>.  For example:
+
+   FETCH_SESSION => {
+     sql => <<'END_OF_SQL',
+ select username,
+        firstname,
+        lastname,
+        email,
+        prefs
+   from %s
+   where session = ? and expires > now()
+ END_OF_SQL
+     , args => [qw(session)]
+   },
+
+The SQL statement is formatted using C<sprintf> with an argument of
+the table name, which is passed as C<table> in the C<args> hash.
+C<args> here contains the names of keys that will be used to populate
+the bind values in the query. The C<BLM::Startup::SessionManager>
+class implements all of the methods necessary for session
+management. It calls the methods here with the appropriate arguments
+that are used in the queries.
+
+For example, the C<change_password()> method in the session manager
+calls UPDATE_LOGIN_PASSWORD like this:
+
+   $self->UPDATE_LOGIN_PASSWORD(
+    table    => $config->{table_name},
+    username => $username,
+    password => [ $npasswd, $opasswd ],
+    session  => $self->{session},
+  );
+
+...and in the MySQL implementation of a session manager,
+UPDATE_LOGIN_PASSWORD is defined like this:
+
+   UPDATE_LOGIN_PASSWORD => {
+     sql => <<'END_OF_SQL',
+ update %s
+   set password = sha2(?, 256)
+   where username = ?
+ END_OF_SQL
+     , args => [qw(password username)]
+   },
+
+=over 5
+
+=item sql
+
+The SQL statement for the function to be implemented.
+
+=item args
+
+An array of arguments to use as bind variables.
+
+=back
+
+=head1 METHODS AND SUBROUTINES
+
+These methods are documented in L<BLM::Startup::SessionManager>.
+
+=head2 CONNECT 
+
+=head2 DISCONNECT 
+
+=head2 FETCH_EXPIRED_SESSIONS 
+
+=head2 FETCH_LOGIN_SESSION 
+
+=head2 FETCH_LOGIN_SESSION_BY_USERNAME 
+
+=head2 FETCH_SESSION 
+
+=head2 KILL_SESSION 
+
+=head2 LOGIN 
+
+=head2 LOGOUT 
+
+=head2 REGISTER 
+
+=head2 REMOVE_USER 
+
+=head2 SESSION_CLEANUP 
+
+=head2 STORE_LOGIN_SESSION 
+
+=head2 STORE_SESSION 
+
+=head2 UPDATE_LOGIN_PASSWORD 
+
+=head2 UPDATE_LOGIN_SESSION 
+
+=head2 VERSION 
+
+=head1 SEE ALSO
+
+L<BLM::Startup::SessionManager>
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut

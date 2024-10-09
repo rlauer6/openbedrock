@@ -19,6 +19,7 @@ perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
+perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
 
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
@@ -47,6 +48,9 @@ perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 
 perl5bedrockloglib_DATA = \
    Bedrock/Log/Spooler.pm
+
+perl5bedrockdbilib_DATA = \
+   Bedrock/DBI/Utils.pm
 
 perl5lib_DATA = \
     Bedrock.pm \
@@ -98,6 +102,8 @@ perl5bedrocktemplatelib_DATA = \
 BEDROCK_TEMPLATE=$(perl5bedrocktemplatelib_DATA:.pm=.pm.in)
 
 BEDROCK_LOG=$(perl5bedrockloglib_DATA:.pm=.pm.in)
+
+BEDROCK_DBI=$(perl5bedrockdbilib_DATA:.pm=.pm.in)
 
 BEDROCK_POD=$(perl5bedrockpodlib_DATA:.pm=.pm.in)
 
@@ -336,6 +342,7 @@ PERL_PM = \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
+    $(BEDROCK_DBI) \
     $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
@@ -406,7 +413,8 @@ test: Bedrock/Test.pm Bedrock/Test/Utils.pm
 	  DBI_SOCKET=/tmp/mysqld/mysqld.sock; \
 	  DBI_PASS=$${DBI_PASS:-bedrock}; \
 	fi; \
-	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" \
+	DBI_USER="$${DBI_USER:-root}"; \
+	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" DBI_USER="$$DBI_USER" \
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
 	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $$TEST
 

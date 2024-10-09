@@ -29,6 +29,8 @@ use strict;
 use warnings;
 
 use Bedrock qw(:booleans slurp_file);
+use Bedrock::Array;
+use Bedrock::Hash;
 use Bedrock::PodWriter qw(pod2html);
 use Bedrock::Apache::Constants qw(:http);
 use Bedrock::BedrockConfig;
@@ -47,6 +49,7 @@ use English qw(-no_match_vars );
 use File::Basename;
 use File::Temp;
 use File::Find;
+use JSON;
 use Markdown::Render;
 use Scalar::Util qw(reftype blessed);
 use List::Util qw(any pairs none);
@@ -89,12 +92,13 @@ sub handler {
     init_log4perl_logger();
   }
 
+  my %headers = %{ $r->headers_in };
+
   $LOGGER = get_logger(__PACKAGE__);
 
   $SESSION = eval { return get_session($bedrock_handler); };
 
   if ($SESSION) {
-    my %headers = %{ $r->headers_in };
 
     $SESSION->set( 'Referer', $headers{Referer} );
   }
@@ -169,6 +173,13 @@ sub handler {
 
       /^\/clear\-cache/xsm && do {
         %BEDROCK_CONFIG_CACHE = ();
+        return $OK;
+      };
+
+      /^\/session/xsm && do {
+        my $users = $SESSION->lookup_users();
+        output( $r, { users => $users, session => $SESSION } );
+        return $OK;
       };
     }
 
@@ -282,13 +293,20 @@ sub is_available_on_metacpan {
 ########################################################################
   my ($module) = @_;
 
+  $module =~ s/\//::/xsmg;
   my $ua = LWP::UserAgent->new;
 
-  my $url = 'https://metacpan.org/pod/' . $module;
+  # do a search
+  my $req = HTTP::Request->new( 'GET' => 'https://fastapi.metacpan.org/v1/pod/' . $module );
+  my $rsp = $ua->request($req);
 
-  my $res = $ua->head($url);
+  return
+    if $rsp->code ne $HTTP_OK;
 
-  return $res->code eq $HTTP_OK ? $url : $EMPTY;
+  my $content = $rsp->content;
+  $content =~ s/^<nav>(.*)<\/nav>/$1/xsm;
+
+  return $content;
 }
 
 ########################################################################
@@ -296,19 +314,25 @@ sub show_pod {
 ########################################################################
   my ( $bedrock_handler, $file, $back_url, $module ) = @_;
 
-  my $request = $bedrock_handler->request_handler;
+  my $r = $bedrock_handler->request_handler;
 
-  my %headers = %{ $request->headers_in };
-
-  my $html = _show_pod( $bedrock_handler, $file, '/bedrock', $module );
+  my $html = _show_pod(
+    $bedrock_handler,
+    file     => $file,
+    uri_root => '/bedrock',
+    module   => $module,
+  );
 
   # most of the time the module we are looking for is in our path or
   # inside the webserver hosting this application...occassionally
   # we'll be following a link within the pod itself...and those
   # modules may not be installed on our server, thus we might not be
   # able to show pod...but wait! Let's see if we can find some pod on Metacpan!
+  my $source = 'local';
 
   if ( !$html ) {
+    $source = $EMPTY;
+
     # see if this is on metacpan
     my $module_listing = $BEDROCK_CONFIG_CACHE{METACPAN};
 
@@ -320,24 +344,21 @@ sub show_pod {
     # cache availability...no need checking for this more than once
     if ( !exists $module_listing->{$module} ) {
       $module_listing->{$module} = is_available_on_metacpan($module);
+      $source = 'metacpan';
     }
 
-    my $url = $module_listing->{$module};
-
-    if ( !$url ) {
-
-      $url = $headers{Referer} || sprintf 'http://%s/%s/%s',
-        $ENV{HTTP_HOST},
-        $bedrock_handler->get_bedrock_admin_dir,
-        $back_url;
-    }
-
-    $bedrock_handler->request_handler->header_out( 'Location', $url );
-
-    return $REDIRECT;
+    $html = $module_listing->{$module};
   }
 
-  output( $bedrock_handler->request_handler, $html );
+  if ( is_api($r) ) {
+    output( $r, { html => $html, source => $source } );
+  }
+  elsif ($html) {
+    output( $r, $html );
+  }
+  else {
+    return $NOT_FOUND;
+  }
 
   return $OK;
 }
@@ -345,7 +366,11 @@ sub show_pod {
 ########################################################################
 sub _show_pod {
 ########################################################################
-  my ( $bedrock_handler, $file, $back_url, $module ) = @_;
+  my ( $bedrock_handler, %args ) = @_;
+
+  my $r = $bedrock_handler->request_handler;
+
+  my ( $file, $back_url, $module ) = @args{qw(file back_url module headers)};
 
   my $config = $bedrock_handler->config();
 
@@ -374,9 +399,21 @@ sub _show_pod {
 
   $module =~ s/\//::/xsmg;
 
-  my $top_section = header( $config, back_url => $back_url, module => $module );
+  if ( is_api($r) ) {
+    # strip body, just want pod
+    print {*STDERR} $html;
+    $html =~ s/^.*<body([^>]*)>(.*?)<\/body>/$2/xsm;
+    print {*STDERR} $html;
 
-  $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
+    # fix pod links
+    $html
+      =~ s/<a\s+href="\/bedrock\/pod\/([^<"]+)"[^>]*>([^<]+)<\/a>/<span class="pod-link" bedrock-data="$1">$2<\/span>/xsmg;
+  }
+  else {
+    my $top_section = header( $config, back_url => $back_url, module => $module );
+
+    $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
+  }
 
   return $html;
 }
@@ -392,11 +429,11 @@ sub create_pod_file {
     '--infile'   => $file,
     '--outfile'  => $pod,
     '--cachedir' => File::Spec->tmpdir(),
-    $css_url ? ( '--css' => $css_url ) : (),
+    ( $css_url && !is_api($bedrock_handler) ) ? ( '--css' => $css_url ) : (),
   );
 
   my $html = eval {
-    pod2html( '--backlink', map { "$_=" . $options{$_} } keys %options );
+    pod2html( map { $options{$_} ? "$_=" . $options{$_} : $options{$_} } keys %options );
 
     return slurp_file $pod;
   };
@@ -716,8 +753,13 @@ sub template {
 sub output {
 ########################################################################
   my ( $r, $content ) = @_;
-
-  $r->content_type('text/html');
+  if ( ref $content ) {
+    $r->content_type('application/json');
+    $content = JSON->new->allow_blessed->convert_blessed->encode($content);
+  }
+  else {
+    $r->content_type('text/html');
+  }
 
   $r->send_http_header;
 
@@ -789,7 +831,35 @@ sub plugin_docs {
     plugins  => \@plugins
   );
 
-  output( $bedrock_handler->request_handler, $html );
+  if ( is_api($r) ) {
+    my %plugin_map;
+
+    foreach ( keys %sections ) {
+      my $section = $_;
+      $section =~ s/\s/-/xsmg;
+      $plugin_map{$_} = lc $section;
+    }
+
+    my $links = {};
+    my $names = {};
+
+    foreach my $s ( keys %sections ) {
+      $links->{$s} = { map { $_ => sprintf '/bedrock/plugins/%s', $_ } @{ $sections{$s} } };
+      $names->{$s} = { map { $_ => ( split /\//xsm )[-1] } @{ $sections{$s} } };
+    }
+
+    output(
+      $r,
+      { links      => $links,
+        names      => $names,
+        plugins    => \%sections,
+        plugin_map => \%plugin_map,
+      }
+    );
+  }
+  else {
+    output( $bedrock_handler->request_handler, $html );
+  }
 
   return $OK;
 }
@@ -799,6 +869,8 @@ sub system_docs {
 ########################################################################
   my ( $bedrock_handler, %args ) = @_;
 
+  my $r = $bedrock_handler->request_handler;
+
   my ( $module, $type ) = @args{qw(module type)};
 
   my $cache_key = sprintf '%s_POD_LISTING', uc $type;
@@ -807,7 +879,7 @@ sub system_docs {
   my $module_listing = $BEDROCK_CONFIG_CACHE{$cache_key};
 
   my $path = [
-    { filter      => '(^[bB]edrock|^TagX|::[bB]edrock)',
+    { filter      => '(^[bB]edrock|^TagX|::[bB]edrock|^BLM)',
       filter_type => $type eq 'system' ? 'exclude' : 'include',
       dir         => $DEFAULT_BEDROCK_PERL5LIBDIR,
     }
@@ -835,6 +907,11 @@ sub system_docs {
     $path = $path ? "$path.pm" : $EMPTY;
 
     return show_pod( $bedrock_handler, $path, 'system', $module );
+  }
+
+  if ( is_api($r) ) {
+    output( $r, { modules => [ sort keys %{$module_listing} ] } );
+    return $OK;
   }
 
   my $url_prefix = sprintf '/bedrock/%s', $type;
@@ -1083,6 +1160,18 @@ sub env_docs {
 }
 
 ########################################################################
+sub is_api {
+########################################################################
+  my ($r) = @_;
+
+  $r = ref($r) =~ /Bedrock::Handler/xsm ? $r->request_handler : $r;
+
+  my %headers = %{ $r->header_in };
+
+  return $headers{Accept} && $headers{Accept} =~ /json/xsm;
+}
+
+########################################################################
 sub config_docs {
 ########################################################################
   my ($bedrock_handler) = @_;
@@ -1090,10 +1179,18 @@ sub config_docs {
   my $config       = $bedrock_handler->config;
   my $allow_config = $config->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
 
-  $config
-    = $allow_config =~ /^y/xsmi
-    ? $config
-    : { ALLOW_BEDROCK_CONFIG_INFO => $allow_config };
+  $config = $allow_config =~ /^y/xsmi ? $config : { ALLOW_BEDROCK_CONFIG_INFO => $allow_config };
+
+  if ( is_api($bedrock_handler) ) {
+    output(
+      $bedrock_handler->request_handler,
+      { config => $config,
+        files  => [ $bedrock_handler->config_files_processed ]
+      }
+    );
+
+    return $OK;
+  }
 
   return hash_docs( $bedrock_handler, 'Configuration', $config );
 }
@@ -1183,6 +1280,8 @@ sub tag_docs {
 ########################################################################
   my ( $bedrock_handler, $tag ) = @_;
 
+  my $r = $bedrock_handler->request_handler;
+
   if ($tag) {
     my $tag_file = find_tag_file($tag);
 
@@ -1196,13 +1295,19 @@ sub tag_docs {
 
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
 
-  my $tag_link = q{<a href="%s/tag/%s">%s</a>};
+  if ( is_api($r) ) {
+    output( $r, { uri_root => $bedrock_admin_dir, tags => \@TAG_LIST } );
+  }
+  else {
 
-  my @tag_listing = map { sprintf $tag_link, $bedrock_admin_dir, $_, $_ } @TAG_LIST;
+    my $tag_link = q{<a href="%s/tag/%s">%s</a>};
 
-  my $html = listing( $bedrock_handler, 'Bedrock Tag Listing', @tag_listing );
+    my @tag_listing = map { sprintf $tag_link, $bedrock_admin_dir, $_, $_ } @TAG_LIST;
 
-  output( $bedrock_handler->request_handler, $html );
+    my $html = listing( $bedrock_handler, 'Bedrock Tag Listing', @tag_listing );
+
+    output( $r, $html );
+  }
 
   return $OK;
 }
@@ -1303,6 +1408,10 @@ sub internal_server_error {
   my ( $r, $error ) = @_;
 
   $error = Text::URLEncode::Htmlencode $error;
+  if ( is_api($r) ) {
+    output( $r, { error => $error } );
+    return $OK;
+  }
 
   my $html = <<"END_OF_HTML";
 <html>
@@ -1379,7 +1488,7 @@ Bedrock::Apache::BedrockDocs - Provides Bedrock and user documentation as HTML
    AuthType Basic
    AuthName Bedrock
    AuthBasicProvider file
-   AuthUserFile @configdir@/bedrock.users
+   AuthUserFile /usr/local/share/bedrock/config/bedrock.users
 
    require valid-user
  

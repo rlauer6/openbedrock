@@ -174,10 +174,10 @@ sub easy_connect {
 
   my $options = force_hash(@args);
 
-  my ( $host, $user, $password, $database, $dsn )
-    = @{$options}{qw(host user password $database dsn)};
+  my ( $host, $user, $password, $database, $dsn, $socket, $auto_commit, $raise_error, $print_error )
+    = @{$options}{qw(host user password database dsn socket AutoCommit RaiseError PrintError)};
 
-  for (qw(host user password database)) {
+  for (qw(host user password database dsn socket AutoCommit RaiseError PrintError)) {
     delete $options->{$_};
   }
 
@@ -186,10 +186,11 @@ sub easy_connect {
   $password //= $ENV{DBI_PASS};
   $database //= $ENV{DBI_DB} // $EMPTY;
   $dsn      //= $ENV{DBI_DSN};
+  $socket   //= $ENV{DBI_SOCKET};
 
-  $options->{AutoCommit} //= $TRUE;
-  $options->{RaiseError} //= $TRUE;
-  $options->{PrintError} //= $TRUE;
+  $auto_commit //= $TRUE;
+  $raise_error //= $TRUE;
+  $print_error //= $TRUE;
 
   die "no host - set DBI_HOST or DSN\n"
     if !$host && !$dsn;
@@ -197,9 +198,21 @@ sub easy_connect {
   die "no user - set DB_USER\n"
     if !$user;
 
-  $dsn //= sprintf 'dbi:mysql:%s:%s', $database, $host;
+  if ($socket) {
+    $options->{mysql_socket} = $socket;
+  }
 
-  return DBI->connect( $dsn, $user, $password, $options );
+  $dsn //= sprintf 'dbi:mysql:%s:%s', $database, $host;
+  $dsn = join $SEMICOLON, $dsn, map { sprintf '%s=%s', $_, $options->{$_} } keys %{$options};
+
+  return DBI->connect(
+    $dsn, $user,
+    $password,
+    { AutoCommit => $auto_commit,
+      RaiseError => $raise_error,
+      PrintError => $print_error
+    }
+  );
 }
 
 ########################################################################
@@ -1556,7 +1569,6 @@ exported.
 It's easy because it will use your environment variables to create a
 database connection if they are available. It will use the following environment variables:
 
-
 =over 5
 
 =item  DBI_HOST
@@ -1578,6 +1590,10 @@ default: none
 You can provide the full DSN instead of C<DBI_HOST> and C<DBI_DB>. Example:
 
  dbi:mysql:customers:localhost
+
+=item DBI_SOCKET
+
+Path to the socket file.
 
 =back
 
@@ -1601,15 +1617,33 @@ default: localhost
 
 =item * dsn
 
+=item * socket
+
+=item * AutoCommit
+
+=item * PrintError
+
+=item * RaiseError
+
 =back
 
-Any additional keys are considered options that will be passed to C<DBI::connect>.
+Any keys other than those above are considered options that will be
+appended to the DSN. For example:
 
  use BLM::DBHandler qw(easy_connect);
 
  my $dbi = easy_connect();
 
- my $dbi = easy_connect(user => 'fred', password => 'fl1ntst0ne', AutoCommit => 0);
+ my $dbi = easy_connect(
+   user       => 'fred',
+   password   => 'fl1ntst0ne',
+   AutoCommit => 0,
+   mysql_ssl  => 1
+ );
+
+...would result in a DSN of:
+
+ dbi:mysql::locahost;mysql_ssl=1
 
 =head3 flush_history
 
@@ -1621,7 +1655,7 @@ Empties the history queue.
 
 Returns a formatted list of history objects.
 
-=over 5
+=over 10
 
 =item format
 

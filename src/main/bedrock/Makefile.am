@@ -5,4 +5,5 @@ SUBDIRS = . pebbles img htdocs css config include
 sqldir = $(datadir)/bedrock
 
 dist_sql_DATA = \
-    create-session.sql
+    create-session.sql \
+    sqlite-session.sql

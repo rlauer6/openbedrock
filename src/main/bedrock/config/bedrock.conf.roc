@@ -2,6 +2,16 @@
 # -- Apache configuration for Bedrock enabled sites
 <sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 
+<if $config.DISTRO --eq 'redhat' >
+<IfModule !actions_module>
+  LoadModule actions_module modules/mod_actions.so
+</IfModule>
+
+<IfModule !alias_module>
+  LoadModule alias_module modules/mod_alias.so
+</IfModule>
+</if>
+
 SetEnv BEDROCK_INCLUDE_DIR   <var $config.DIST_DIR>/include
 SetEnv BEDROCK_PEBBLE_DIR    <var $config.DIST_DIR>/pebbles
 SetEnv BEDROCK_IMAGE_DIR     <var $config.DIST_DIR>/img
@@ -11,10 +21,6 @@ SetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
 SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
 
 <if $site.APACHE_MOD_PERL --eq yes >
-
-<IfModule !perl_module>
-  LoadModule perl_module modules/mod_perl.so
-
   PerlPassEnv BEDROCK_INCLUDE_DIR
   PerlPassEnv BEDROCK_PEBBLE_DIR
   PerlPassEnv BEDROCK_IMAGE_DIR
@@ -22,23 +28,7 @@ SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
   PerlPassEnv BEDROCK_CACHE_ENABLED
   PerlPassEnv BEDROCK_BENCHMARK
   PerlPassEnv BedrockLogLevel
-</IfModule>
-
 </if>
-
-# These may have already been loaded
-<IfModule !cgi_module>
-  LoadModule cgi_module modules/mod_cgi.so
-</IfModule>
-
-<IfModule !actions_module>
-  LoadModule actions_module modules/mod_actions.so
-</IfModule>
-
-<IfModule !alias_module>
-  LoadModule alias_module modules/mod_alias.so
-</IfModule>
-
 
 DirectoryIndex index.roc index.rock
 
@@ -52,7 +42,7 @@ Action        bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
 
 AddHandler    bedrock-cgi .rock .jrock
 
-<Directory "<var $site_root>/cgi-bin">
+<Directory "<var $site.CGI_BIN>/cgi-bin">
   Options +SymLinksIfOwnerMatch
 </Directory>
 
@@ -77,6 +67,21 @@ Alias /bedrock/img <var $config.DIST_DIR>/img
    <else>
    require all granted
    </if>
+</Directory>
+
+Alias /bedrock/admin /usr/local/share/perl/5.36.0/auto/share/dist/Bedrock/admin
+<Directory  /usr/local/share/perl/5.36.0/auto/share/dist/Bedrock/admin >
+
+   AcceptPathInfo On
+   Options -Indexes
+   AllowOverride None
+
+  AuthType Basic
+  AuthName Bedrock
+  AuthBasicProvider file
+  AuthUserFile /var/www/bedrock/config/bedrock.users
+  require valid-user
+
 </Directory>
 
 Alias /bedrock/doc <var $config.DIST_DIR>/doc/bedrock-<var $config.version()>

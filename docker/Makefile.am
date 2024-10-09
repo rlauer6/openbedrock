@@ -156,12 +156,60 @@ dist_noinst_DATA = \
 config: $(CONFIG_FILES)
 	echo $(GYML_FILES)
 
+# -------------------------------------
+# MySQL server certificates for Docker
+# -------------------------------------
+CA_KEY  = /tmp/mysql-certs/mysqld-ca-key.pem
+KEY     = /tmp/mysql-certs/mysqld-server-key.pem
+CERT    = /tmp/mysql-certs/mysqld-server-cert.pem
+CA_CERT = /tmp/mysql-certs/mysqld-ca-cert.pem
+CSR     = /tmp/mysql-certs/mysqld-server-req.pem
 
-docker-image: $(GDOCKERFILE) $(REPOS) $(CONFIG_FILES) bedrock.env
-	echo $(GOCKERFILE); \
+.PHONY: certs
+certs:
+	if ! [ "$$(id -u)" = "0" ]; then \
+	  echo "ERROR: must be root"; \
+	  false; \
+	fi
+	test -d /tmp/mysql-certs || mkdir /tmp/mysql-certs
+	chown 999:999 /tmp/mysql-certs
+	openssl genrsa 2048 > $(CA_KEY)
+	openssl req -sha1 -new -x509 -nodes -days 3650 -key $(CA_KEY) -subj "/C=FR/ST=/L=/O=mysqld/CN=mysqld-CA" > $(CA_CERT)
+	openssl req -sha1 -newkey rsa:2048 -days 3650 -nodes -keyout $(KEY) -subj "/C=FR/ST=/L=/O=mysqld/CN=mysqld-server" > $(CSR)
+	openssl rsa -in $(KEY) -out $(KEY)
+	openssl x509 -sha1 -req -in $(CSR) -days 3650 -CA $(CA_CERT) -CAkey $(CA_KEY) -set_serial 01 > $(CERT)
+	chown 999:999 /tmp/mysql-certs/*
+	chmod 0600 /tmp/mysql-certs/*
+
+# -------------------------------------
+# MySQL client certificate for Docker
+# -------------------------------------
+CLIENT_KEY  = /tmp/mysql-client-cert/mysql-client-key.pem
+CLIENT_CSR  = /tmp/mysql-client-cert/mysql-client-req.pem
+CLIENT_CERT = /tmp/mysql-client-cert/mysql-client-cert.pem
+
+.PHONY: client-cert
+client-cert: certs
+	test -d /tmp/mysql-client-cert || mkdir /tmp/mysql-client-cert
+	openssl req -sha1 -newkey rsa:2048 -days 3650 -nodes -keyout $(CLIENT_KEY) > $(CLIENT_CSR) -subj "/C=FR/ST=/L=/O=mysql-client/CN=mysql-client"
+	openssl rsa -in $(CLIENT_KEY) -out $(CLIENT_KEY)
+	openssl x509 -sha1 -req -in $(CLIENT_CSR) -days 3650 -CA $(CA_CERT) -CAkey $(CA_KEY) -set_serial 01 > $(CLIENT_CERT)
+
+DOCKERFILE_DEBIAN = Dockerfile.debian
+DOCKERFILE_AL2023 = Dockerfile.al2023
+DOCKERFILE_FEDORA = Dockerfile.fedora
+
+bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
-	docker build --no-cache -f $< . -t bedrock:latest | tee $$LOG; \
+	docker build -f $< . -t $@:latest | tee $$LOG; \
+	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
+	rm $$LOG;
+
+bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock.tar.gz
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
