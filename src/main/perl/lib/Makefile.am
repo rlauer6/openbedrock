@@ -369,7 +369,7 @@ PERL_PM = \
     $(BLM_STARTUP)
 
 dist_noinst_DATA = \
-    $(PERL_PM)
+    $(PERL_PM) $(shell ls $(srcdir)/t/*)
 
 @do_subst_command@
 
@@ -416,10 +416,10 @@ test: Bedrock/Test.pm Bedrock/Test/Utils.pm
 	DBI_USER="$${DBI_USER:-root}"; \
 	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" DBI_USER="$$DBI_USER" \
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
-	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $$TEST
+	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $(srcdir)/$$TEST
 
 prove.sh: Bedrock/Test.pm
-	echo "BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config $(PROVE) -v -I . -I Bedrock -I Bedrock/Text t" > prove.sh
+	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $(srcdir)/t" > prove.sh
 	chmod 755 prove.sh
 
 CLEANFILES = \

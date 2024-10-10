@@ -4,15 +4,17 @@ use strict;
 use warnings;
 
 use File::Basename;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use Cwd;
 
-use Bedrock::Test qw{run config};
+use Bedrock::Test qw(run config);
 
 ########################################################################
 my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
 
-my $test_file = sprintf 't/%s.yml', $name;
+my $test_path = $ENV{TEST_PATH} // cwd;
+
+my $test_file = sprintf '%s/t/%s.yml', $test_path, $name;
 
 my $config = config( getcwd . '/t/config' );
 

@@ -18,10 +18,6 @@ BEGIN {
   use Bedrock::BedrockCGI;
 
   Bedrock::CGI->import(qw(:all));
-
-  if ( !$ENV{BEDROCK_CONFIG_PATH} ) {
-    $ENV{BEDROCK_CONFIG_PATH} = cwd;
-  }
 }
 
 my $cgi = Bedrock::CGI->new;

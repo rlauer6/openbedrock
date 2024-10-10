@@ -198,6 +198,7 @@ client-cert: certs
 DOCKERFILE_DEBIAN = Dockerfile.debian
 DOCKERFILE_AL2023 = Dockerfile.al2023
 DOCKERFILE_FEDORA = Dockerfile.fedora
+DOCKERFILE_GITHUB = Dockerfile.github
 
 bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz
 	set -x; LOG=$$(mktemp); \
@@ -212,6 +213,16 @@ bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock.tar.gz
 	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
+
+bedrock-test: $(DOCKERFILE_GITHUB)
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build -f $< . -t $@:latest | tee $$LOG; \
+	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
+	rm $$LOG;
+	cat ~/.ssh/github.token | docker login ghcr.io -u rlauer6 --password-stdin
+	docker build -f $< . -t ghcr.io/rlauer6/bedrock-test
+	docker push ghcr.io/rlauer6/bedrock-test:latest
 
 clean-local:
 	set -x; \

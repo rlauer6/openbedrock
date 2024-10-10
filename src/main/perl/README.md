@@ -158,25 +158,25 @@ For more information regarding how to construct test descriptions, see
 
 ## Running One or More Tests
 
-You can run a single test by setting the environment variable `TESTS`
+You can run a single test by setting the environment variable `TEST`
 to the test name (if it is unique) or the test file name. Note as
 indicated earlier, tests are designed to run in specific sequence so
 you may not be able to run some tests indepdently.
 
 ```
-make test TESTS=sqlconnect
-make test TESTS=12-sqlconnect.yml
+make test TEST=sqlconnect
+make test TEST=12-sqlconnect.yml
 ```
 
 Similarly, you can a test a set of tests by setting `TESTS` to one
 or more test names.
 
-make test TESTS="12-sqlconnect 13-sql 21-sqlselect"
+make test TEST="12-sqlconnect 13-sql 21-sqlselect"
 
 ## Running Just the SQL Tests
 
 ```
-make test TESTS=sql
+make test TEST=sql
 ```
 
 # Test Logs
@@ -334,7 +334,7 @@ below to add a new test to the project.
    ```
 1. Run the test to ensure it does what you expect
    ```
-   make test TESTS=include
+   make test TEST=include
    ```
 1. Add the test to the git repository, update the ChangeLog, etc, etc
    ```
@@ -438,7 +438,7 @@ password=`flintstone`.
    ```
 1. Run the tests.
    ```
-   TESTS=all make test
+   TEST=all make test
    ```
    To run *only* the SQL tests:
 

@@ -2,6 +2,10 @@
 
 SUBDIRS = lib bin cgi-bin .
 
+check_SCRIPTS = bedrock-test
+
+TESTS = $(check_SCRIPTS)
+
 TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
               $(top_srcdir)/autotools/tap-driver.sh
 
@@ -33,7 +37,8 @@ BEDROCK_MAIL_TESTS = \
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \
     t/13-sql.yml \
-    t/21-sqlselect.yml
+    t/21-sqlselect.yml \
+    t/30-sql-session.yml
 
 BEDROCK_TEST_HARNESS = \
     lib/Bedrock/Test.pm.in \
@@ -61,53 +66,52 @@ GBEDROCK_TEST_HARNESS = $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 
 harness: $(GBEDROCK_TEST_HARNESS)
 
-#.PHONY: test
-test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS)
-	cd lib;
-	$(MAKE)
-	if test -z "$$DBI_SOCKET"; then \
-	  if test -e '/tmp/mysqld/mysqld.sock'; then \
-	     DBI_SOCKET=/tmp/mysqld/mysqld.sock; \
-	  fi; \
-	fi; \
-	TESTS=$$TESTS; \
-	if test -z "$$TESTS"; then \
-	  TESTS="$(BEDROCK_TESTS)"; \
-	elif [ "$$TESTS" = "all" ]; then \
-	  TESTS="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS) $(BEDROCK_MAIL_TESTS)"; \
-	elif [ "$$TESTS" = "mail" ]; then \
-	  TESTS="$(BEDROCK_MAIL_TESTS)"; \
-	elif [ "$$TESTS" = "sql" ]; then \
-	  TESTS="$(BEDROCK_SQL_TESTS)"; \
+.PHONY: test
+test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS) bedrock-test
+	set -x; \
+	TEST=$$TEST ./bedrock-test
+
+test-list:
+	set -x; \
+	echo $$TEST; \
+	TEST=$$TEST; \
+	if test -z "$$TEST"; then \
+	  TEST="$(BEDROCK_TESTS)"; \
+	elif [ "$$TEST" = "all" ]; then \
+	  TEST="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS) $(BEDROCK_MAIL_TESTS)"; \
+	elif [ "$$TEST" = "mail" ]; then \
+	  TEST="$(BEDROCK_MAIL_TESTS)"; \
+	elif [ "$$TEST" = "sql" ]; then \
+	  TEST="$(BEDROCK_SQL_TESTS)"; \
 	else \
-	  echo "TESTS: $$TESTS"; \
-	  if ! test -e "$TESTS"; then \
+	  if ! test -e "$$TEST"; then \
 	    set -x; \
-	    TEST_LIST=$$TESTS; \
-	    TESTS=""; \
+	    TEST_LIST="$$TEST"; \
+	    TEST=""; \
 	    for a in $$TEST_LIST; do \
 	      echo "a = $$a"; \
-	      T=$$(find t/ -name "*$${a}.yml" -print -quit 2>/dev/null); \
-	      test -n "$$T" && TESTS="$$TESTS $$T"; \
+	      T=$$(find $(srcdir)/t/ -name "*$${a}.yml" -print -quit 2>/dev/null); \
+	      test -n "$$T" && TEST="$$TEST $$T"; \
 	    done; \
-	    if test -z "$$TESTS"; then \
+	    if test -z "$$TEST"; then \
 	      >&2 echo "no such test"; \
 	      exit 1; \
 	    fi; \
 	  fi; \
 	fi; \
-	test_dir=$$(mktemp -d); \
-	mkdir $$test_dir/t; \
-	for a in $$TESTS; do \
-	  test_file=$$(basename $$a .yml); \
-	  ln -s $(abs_srcdir)/test-tag.pl $$test_dir/t/$$test_file.t; \
-	done; \
-	DBI_SOCKET="$$DBI_SOCKET" CONFIG_PATH=t/config:.:$(top_srcdir)/src/main/bedrock/config:t/config $(PROVE) -v -I lib/ -I lib/Bedrock -I lib/Bedrock/Text $$test_dir/t; \
-	test -n "$$test_dir" && rm -rf "$$test_dir"
-	rm -f foo.roc foo.inc foo.csv
+	echo $$TEST > $@
+
+.PHONY: bedrock-test
+bedrock-test: test-list
+	$(MAKE)
+	echo "$(srcdir)/run-tests test-list $(srcdir) $(builddir)" > bedrock-test
+	chmod 755 bedrock-test
+
+dist_noinst_DATA = $(BEDROCK_TESTS) test-tag.pl run-tests
 
 CLEANFILES = \
     foo.inc \
     foo.txt \
-    bedrock-page-log.txt
-
+    bedrock-page-log.txt \
+    test-list \
+    bedrock-test

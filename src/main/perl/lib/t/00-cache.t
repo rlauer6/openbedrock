@@ -79,13 +79,14 @@ sub main {
     # the original config file list that was processed to create the
     # config object. It is removed from the config object itself when
     # the config object is restored from the cache.
-    cmp_deeply( $CACHE{'t/00-cache.t'}, superhashof($config), 'config and cached config equal' );
+    cmp_deeply( $CACHE{$cache_key}, superhashof($config), 'config and cached config equal' )
+      or diag( Dumper( [ CACHE => \%CACHE, config => $config ] ) );
   };
 
 ########################################################################
   subtest 'compare object elements' => sub {
 ########################################################################
-    my $cache_config = $CACHE{'t/00-cache.t'};
+    my $cache_config = $CACHE{$cache_key};
 
     for ( keys %{$config} ) {
       if ( ref $config->{$_} ) {
