@@ -1,75 +1,113 @@
 # README
 
-Makefile for creating Docker images for Bedrock.
+This the README file for describing how to create Docker images
+and run a Bedrock enabled Apache server inside a Docker container.
 
-# Building the Image from RPMs
+# Overview
 
-> Note: Using RPMs for installing Bedrock on Amazon Linux 2023 is
->currently broken primariky due to missing Perl module
->dependencies. This may be corrected in the future by forcing the RPM
->build process to ignore module dependencies and either create an
->install process that loads the requirements from CPAN or requires a
->separate process for satisfying Bedrock module requirements.
+This directory contains Docker build and supporting files for building
+Docker images based on several distributions described below.
 
-## TBD
+| Distribution | Dockerfile | Description |
+| ------------ | ---------- | ----------- |
+| Debian | Dockerfile.debian | Debian distribution (`bookworm`) |
+| Fedora | Dockerfile.fedora | Fedora distribution (40) |
+| Amazon Linux | Dockerfile.al2023 | Amazon Linux 2023 |
 
-* [ ] fix the RPM build process for AL2023
-* [ ] create a CPAN distribution tarball downloadable from the Bedrock
-      site.
-* [ ] Document image build for RedHat, Debian using the distribution tarball
+Each of these Dockerfiles will create a base image that includes the
+latest verison of Bedrock built specifically for that distribution.
 
-The Bedrock Docker image can be built by installing the *Bedrock rpms* from the
-Bedrock repo to an Amazon Linux image.
+See [README-github.md](docker/README-github.md) for details regarding
+how to create the Docker image used for continuous integration when
+new branches are pushed to GitHub.
 
-> Let me repeat that ...__from the Bedrock repo__...did you re-build
-> Bedrock and create the rpms? If you've forgotten how to do that 
-> try running `./build -h`  in the project root directory.
+# Building the Bedrock Images
 
-The image implements an Apache based web server environment you can
-use for development.
-
-Before you build the image take a look at these files as they have
-been customized for the Docker environment:
-
-* `perl_bedrock.conf.in`
-   * basic Bedrock Apache configuration
-   * to stream logs to STDOUT (console) set the environment variable
-     STREAM_LOGS to any value - example `STREAM_LOGS=1 make docker-image`
-* `mysql-session.xml.in`
-  * configuration for `BLM::User::Session`
-  * to specify a database other than `bedrock` set the environment
-    variable DBI_DB
-  * to specify a user other than `fred` set the environment variable
-    DB_USER 
-  * to specify a password other than `flintstone` set the environment variable
-    DB_PASS 
-  * to specify a host other than `docker_db_1` set the environment variable
-    DB_DB
-* `data-sources.xml.in`
-  * data source configuration used by `<sqlconnect>`
-  * set environment variables as describe above to
-    `mysql-session.xml.in`
-* `httpd.conf.in`
-  * basic Apache configuration
-* `tagx.xml.in`
-  * Bedrock configuration
-
-To build the image:
+A `Makefile` is included in the `docker` directory that will create
+Docker images based on various distros described above.  The build
+process will run `make` from the root of the repository creating the
+distribution tarball and a CPAN distribution that is then used to
+create the Docker image. The image implements an Apache based web
+server environment you can use for developing Bedrock applications or
+for exploring Bedrock.  To build an image based on one of these
+distributions:
 
 ```
-make realclean
-make docker-image
+make {target}
 ```
 
-# Running the Server
+Where `{target}` is one of:
 
-A `docker-compose.yml` file will bring up the web server listening on
-port 80. It will also bring up a MySQL server running on
-port 3306. Disable the service and update `mysql-session.xml` and
-`data-sources.xml` to use a different database server.
+* `bedrock-debian`
+* `bedrock-fedora`
+* `bedrock-al2023`
+
+| Image | Description |
+| ----- | ----------- |
+| `bedrock-debian` | image based on `debian:bookworm`  |
+| `bedrock-fedora` | image based on `fedora:40`        |
+| `bedrock-al2023` | image based on `amazonlinux:2023` |
+
+After building and running a Docker container from one of the
+images you created, verify that Bedrock is installed working properly.
 
 ```
-BEDROCK=~/git/openbedrock docker-compose up
+docker run --rm -it bedrock-debian /bin/bash
+curl http:://localhost
+```
+
+There is a `.env` file for each distribution for use with
+`docker-compose`.  To bring up the Bedrock server using
+`docker-compose`:
+
+```
+docker-compose --env debian.env up
+```
+
+Visit the Bedrock documentation at http://localhost/bedrock to
+learn more about Bedrock.
+
+See [Bedrock Documenation](#bedrock-documentation) for more details
+regarding how to enable the documentation server. 
+
+# Bedrock Configuration
+
+## `bedrock.conf`
+
+An Apache configuration file (`bedrock.conf`) is added to your Apache
+configuration directory.  There you will find the directives that
+enable Bedrock on your site. Other Bedrock configuration files control
+various aspects of your Bedrock server.
+
+## `tagx.xml`
+
+TBD:
+
+* allowing environment, configuration, documentation
+* protecting the documentation sitee
+* snippets
+* sessions
+
+## `mysqlsession.xml`
+
+## `data-sources.xml`
+
+## Bedrock Documentation
+
+The page is protected
+by a basic auth challenge (usename: fred, password: bedrock). The page
+is protected by default because it might expose configuration
+information if you enabled that in your `tagx.xml` file.
+
+# Running the Server Using `docker-compose`
+
+A `docker-compose.yml` file is include that will launch the container
+and bring up an Apache webserver listening on port 80. It will also
+bring up a MySQL server running on port 3306.
+
+```
+cd docker
+docker-compose --env bedrock-debian up
 ```
 
 ## Localstack & Redis
@@ -228,3 +266,60 @@ _or use the `web-tunnel` script in this directory._
 ./web-tunnel -O cancel -u ec2-user -i 10.1.4.191 -b 50.17.129.75 -p 80 -l 8080 up
 ```
 
+# Installing from RPMs
+
+> Note: Using RPMs for installing Bedrock is currently broken
+>primarily due to missing Perl module dependencies. This may be
+>corrected in the future by forcing the RPM build process to ignore
+>module dependencies and either create an install process that loads
+>the requirements from CPAN or requires a separate process for
+>satisfying Bedrock module requirements. The comments below will only
+>be relevant once the RPM dependency issue has been corrected!
+
+The Bedrock Docker image can be built by installing the *Bedrock rpms*
+from the Bedrock repo to an Amazon Linux image.
+
+> Let me repeat that ...__from the Bedrock repo__...did you re-build
+> Bedrock and create the rpms? If you've forgotten how to do that 
+> try running `./build -h`  in the project root directory.
+
+Add the Bedrock repository configuration shown below to `/etc/yum.repos.d`.
+
+ curl -fO http://repo.openbedrock.net/bedrock.repo
+ 
+or add it manually
+
+```
+[bedrock]
+name=bedrock
+enabled=1
+gpgcheck=1
+gpgkey=http://repo.openbedrock.net/RPM-GPG-KEY-openbedrock.org
+baseurl=http://repo.openbedrock.net
+```
+
+## Bedrock RPM Listing
+
+>> Note that some modules are dependent on other modules and will be
+>> installed automatically by `yum` or `dnf`.
+
+| RPM | Description |
+| openbedrock | virtual package that will multiple RPMs |
+| bedrock.noarch | all of Bedrock |
+| bedrock-cloud.noarch | Bedrock modules for use with AWS S3 |
+| bedrock-core.noarch | Core Bedrock |
+| bedrock-docs.noarch | Bedrock documentation |
+| bedrock-mysql-session.noarch | MySQL session manager |
+| bedrock-objects.noarch | Berock::Hash, Bedrock::Array, etc. |
+| bedrock-orm.noarch | Bedrock::Model for MySQL |
+| bedrock-plugins.noarch | Bedrock plugins |
+| bedrock-plugins-oauth2.noarch | OAuth2 applictation plugin |
+| bedrock-postgres-session.noarch | Postgres session manager |
+| bedrock-redis-session.noarch | Redis session manager |
+| bedrock-server.noarch | Web server components for enabling Bedrock as a request handler |
+| bedrock-session.noarch | Base classes for implementing persistent sessions |
+| bedrock-shell.noarch | Command line access to Bedrock |
+| bedrock-template.noarch | Bedrock classes for templating in scripts |
+| bedrock-test.noarch | Bedrock testing |
+| bedrock-utils.noarch | Miscellaneous utilities |
+| bedrock-website.noarch | Configuration files for Apache, etc. |

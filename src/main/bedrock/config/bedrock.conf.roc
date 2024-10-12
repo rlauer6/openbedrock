@@ -21,13 +21,13 @@ SetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
 SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
 
 <if $site.APACHE_MOD_PERL --eq yes >
-  PerlPassEnv BEDROCK_INCLUDE_DIR
-  PerlPassEnv BEDROCK_PEBBLE_DIR
-  PerlPassEnv BEDROCK_IMAGE_DIR
-  PerlPassEnv BEDROCK_CONFIG_PATH
-  PerlPassEnv BEDROCK_CACHE_ENABLED
-  PerlPassEnv BEDROCK_BENCHMARK
-  PerlPassEnv BedrockLogLevel
+PerlPassEnv BEDROCK_INCLUDE_DIR
+PerlPassEnv BEDROCK_PEBBLE_DIR
+PerlPassEnv BEDROCK_IMAGE_DIR
+PerlPassEnv BEDROCK_CONFIG_PATH
+PerlPassEnv BEDROCK_CACHE_ENABLED
+PerlPassEnv BEDROCK_BENCHMARK
+PerlPassEnv BedrockLogLevel
 </if>
 
 DirectoryIndex index.roc index.rock
@@ -42,7 +42,7 @@ Action        bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
 
 AddHandler    bedrock-cgi .rock .jrock
 
-<Directory "<var $site.CGI_BIN>/cgi-bin">
+<Directory "<var $site.CGI_BIN>">
   Options +SymLinksIfOwnerMatch
 </Directory>
 
@@ -119,12 +119,6 @@ Alias /bedrock <var $site.DOCUMENT_ROOT>/bedrock
    AcceptPathInfo On
    Options -Indexes
    AllowOverride None
-   <if $site.APACHE_VERSION --eq '2.2'>
-   Order allow,deny
-   Allow from all
-   <else>
-   require all granted
-   </if>
 
   <IfModule mod_perl.c>
     SetHandler perl-script 

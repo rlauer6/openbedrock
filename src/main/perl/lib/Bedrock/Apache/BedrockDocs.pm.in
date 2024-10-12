@@ -47,7 +47,7 @@ use CGI;
 use Data::Dumper;
 use English qw(-no_match_vars );
 use File::Basename;
-use File::Temp;
+use File::Temp qw(tmpnam tempfile);
 use File::Find;
 use JSON;
 use Markdown::Render;
@@ -297,16 +297,21 @@ sub is_available_on_metacpan {
   my $ua = LWP::UserAgent->new;
 
   # do a search
-  my $req = HTTP::Request->new( 'GET' => 'https://fastapi.metacpan.org/v1/pod/' . $module );
+  my $req = HTTP::Request->new(
+    'GET' => 'https://fastapi.metacpan.org/v1/pod/' . $module . '?content-type=text/x-pod' );
+
   my $rsp = $ua->request($req);
 
   return
     if $rsp->code ne $HTTP_OK;
 
   my $content = $rsp->content;
-  $content =~ s/^<nav>(.*)<\/nav>/$1/xsm;
+  my ( $fh, $filename ) = tempfile( 'metacpan-XXXXX', TMPDIR => 1 );
 
-  return $content;
+  print {$fh} $content;
+
+  return $filename;
+
 }
 
 ########################################################################
@@ -342,12 +347,26 @@ sub show_pod {
     }
 
     # cache availability...no need checking for this more than once
-    if ( !exists $module_listing->{$module} ) {
-      $module_listing->{$module} = is_available_on_metacpan($module);
+    $html = $module_listing->{$module};
+
+    if ( !$html ) {
+      my $file = is_available_on_metacpan($module);
+
+      if ($file) {
+        $html = _show_pod(
+          $bedrock_handler,
+          file     => $file,
+          uri_root => '/bedrock',
+          module   => $module,
+        );
+
+        unlink $file;
+
+        $module_listing->{$module} = $html;
+      }
+
       $source = 'metacpan';
     }
-
-    $html = $module_listing->{$module};
   }
 
   if ( is_api($r) ) {
@@ -370,7 +389,7 @@ sub _show_pod {
 
   my $r = $bedrock_handler->request_handler;
 
-  my ( $file, $back_url, $module ) = @args{qw(file back_url module headers)};
+  my ( $file, $back_url, $module ) = @args{qw(file back_url module)};
 
   my $config = $bedrock_handler->config();
 
@@ -401,9 +420,8 @@ sub _show_pod {
 
   if ( is_api($r) ) {
     # strip body, just want pod
-    print {*STDERR} $html;
+
     $html =~ s/^.*<body([^>]*)>(.*?)<\/body>/$2/xsm;
-    print {*STDERR} $html;
 
     # fix pod links
     $html

@@ -200,7 +200,27 @@ DOCKERFILE_AL2023 = Dockerfile.al2023
 DOCKERFILE_FEDORA = Dockerfile.fedora
 DOCKERFILE_GITHUB = Dockerfile.github
 
+BEDROCK_VERSION = $(shell cat $(top_srcdir)/VERSION)
+
+$(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz:
+	cd $(top_srcdir); \
+	$(MAKE) distcheck
+
+cpan/Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz
+	cd $(top_srcdir)/cpan; \
+	make cpan
+
+Bedrock.tar.gz: cpan/Bedrock-$(BEDROCK_VERSION).tar.gz
+	cp $(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz Bedrock.tar.gz
+
 bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build -f $< . -t $@:latest | tee $$LOG; \
+	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
+	rm $$LOG;
+
+bedrock-fedora: $(DOCKERFILE_FEDORA) Bedrock.tar.gz
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build -f $< . -t $@:latest | tee $$LOG; \

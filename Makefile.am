@@ -39,3 +39,8 @@ MAINTAINERCLEANFILES = config.status \
                        *~
 
 DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
+
+clean-local:
+	for a in $$(ls bedrock*.tar.gz); do \
+	  rm -f $$a; \
+	done
