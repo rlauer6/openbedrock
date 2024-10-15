@@ -410,6 +410,8 @@ function api_modules(module_type) {
 // -------------------------------------------------
 $(function () {
 // -------------------------------------------------
+  var container_top = document.getElementById('tags-container').offsetTop;
+  $('#tags-container').css('height', document.innerHeight - container_top);
 
   $('#module-search').on('click', function(e) {
     e.preventDefault();

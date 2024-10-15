@@ -1,103 +1,205 @@
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 package Bedrock::Template::Email;
 
 use strict;
 use warnings;
 
-use parent qw/Bedrock::Template/;
-  
+use parent qw(Bedrock::Template);
+
 use MIME::Lite;
+use English qw(-no_match_vars);
+
+########################################################################
+sub email_message {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $message;
+  my %options;
+
+  if ( ref $args[0] ) {
+    %options = %{ $args[0] };
+  }
+  else {
+    $message = shift @args;
+    %options = @args;
+  }
+
+  my ( $to, $from, $cc, $bcc, $subject ) = @options{qw(to from cc bcc subject)};
+  $to //= $options{email};
+
+  die "no recipients\n"
+    if !$to;
+
+  die "no from address\n"
+    if !$from;
+
+  die "no subject\n"
+    if !$subject;
+
+  $message //= fetch_message( $options{template} );
+
+  die "no message\n"
+    if !$message;
+
+  my ( $mime_type, $smtp_host ) = @options{qw(mime_type smtp_host)};
+
+  my %params = ( %options, %{ $options{parms} // $options{params} // {} } );
+
+  $mime_type //= 'text/html';
+  $smtp_host //= 'localhost';
+
+  my $msg = MIME::Lite->new(
+    From    => $from,
+    To      => $to,
+    Subject => $subject,
+    Type    => $mime_type,
+    Data    => $self->parse( $message, %params ),
+    $cc  ? ( Cc  => $cc )  : (),
+    $bcc ? ( Bcc => $bcc ) : (),
+  );
+
+  return $msg->send( 'smtp', $smtp_host );
+}
+
+########################################################################
+sub fetch_template {
+########################################################################
+  my ($template) = @_;
+
+  return
+    if !$template;
+
+  local $RS = undef;
+
+  open my $fh, '<', $template
+    or die sprintf "could not open email template: [%s]\n", $template;
+
+  my $message = <$fh>;
+
+  close $fh;
+
+  return $message;
+}
+
+1;
+
+__END__
 
 =pod
+
+=head1 NAME
+
+Bedrock::Template::Email - simple template based email sender
+
+=head1 SYNOPSIS
+
+ my $emailer = Bedrock::Template::Email->new;
+
+ $emailer->email_message(
+   $message,
+   params => $params,
+   to     => 'fred@openbedrock.net',
+   from   => 'mrslate@openbedrock.net',
+  );
+
+=head1 DESCRIPTION
+
+Simple class to send an email using a Bedrock template as the body of
+the email.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+C<Bedrock::Template::Email> is sub-class of L<Bedrock::Template> and
+accepts the same arguments in it's C<new> method.
 
 =head2 email_message
 
  email_message( message, options) 
+ email_message( options-ref )
 
-Send an HTML/Bedrock template message.
+Sends an HTML/Bedrock template message.
 
 =over 5
 
 =item message
 
+A text string representing a Bedrock template which will be parsed and
+processed with the parameters you send in the options object.
+
 =item options
+
+A list of key/value pairs described below.
+
+The C<to>, C<from>, and C<subject> parameters are required.
 
 =over 5
 
-=item * email | to
+=item * email | to (required)
 
-Email address of recipient. Defaults to: C<support@treasurersbriefcase.com>
+Email address of recipient.
 
-=item * from
+=item * from (required)
 
-Email sender. Defaults to: C<do-not-reply@treasurersbriefcase.com>
+Email sender.
 
 =item * cc
 
-CC list
+Semicolon separated list additional recipients.
+
+=item * bcc
+
+Semicolon separated list additional recipients.
+
+=item * message
+
+A text string representing a Bedrock template which will be parsed and
+processed with the parameters you send in the options object.
 
 =item * template
 
-Name of a template to read instead of using the C<message> parameter.
+Name of a template file. Either C<template> or the C<message> parameter must be provided.
 
-=item * subject
+=item * subject (required)
 
-Message subject
+Message subject.
 
-=item * parms
+=item * params
 
-Hash ref of template parameters.
+Hash reference of template parameters.
+
+=back
 
 =back
 
-=back
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=head1 SEE ALSO
+
+L<Bedrock::Template>
 
 =cut
-
-sub email_message {
-  my $self = shift;
-  
-  my $message = shift;
-  my %options = @_;
-
-  my $to = $options{email} || $options{to};
-
-  unless ( $to ) {
-    die "no recipients\n";
-  }
-
-  unless ( $options{from} ) {
-    die "no from address\n";
-  }
-
-  unless ( $options{subject} ) {
-    die "no subject\n";
-  }
-
-  my $mime_type = $options{mime_type} || 'text/html';
-  my $smtp_host = $options{smtp_host} || 'localhost';
-			  
-  if ( $options{template} ) {
-    open MESSAGE, "<" . $options{template}
-      or die "could not open email template: [" . $options{template} . "]";
-    {
-      local $/;
-      $message = <MESSAGE>;
-    }
-    
-    close MESSAGE;
-  }
-
-   my $msg = MIME::Lite->new(
-                             From     => $options{from},
-                             Cc       => $options{cc},
-                             $options{bcc} ? (Bcc => $options{bcc}) : (),
-                             To       => $to,
-                             Subject  => $options{subject},
-                             Type     => $mime_type,
-                             Data     => $self->parse($message, %{$options{parms}})
-                            );
-  
-  $msg->send( 'smtp', $smtp_host);
-}
-
-1;

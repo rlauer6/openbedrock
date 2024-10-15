@@ -1,16 +1,30 @@
+use strict;
+use warnings;
+
 package MyApp::Users;
 
-use strict;
-use warnings;
+use parent qw(Bedrock::Model::Handler);
 
-use parent qw/Bedrock::Model::Handler/;
-
+########################################################################
 package main;
+########################################################################
 
-use strict;
-use warnings;
+BEGIN {
+  use lib qw(.);
+}
 
-my $model_def = <<'EOT';
+use Bedrock::Test::Utils qw(connect_db create_db);
+use Bedrock::Model::Field qw(varchar_field);
+use DBI;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Test::More;
+
+########################################################################
+sub create_model_file {
+########################################################################
+
+  my $model_def = <<'END_OF_MODEL';
 our $MODEL = Bedrock::Hash->new(
     id => Bedrock::Model::Field->new(
         {
@@ -44,23 +58,19 @@ our $MODEL = Bedrock::Hash->new(
         }
     )
 );
-EOT
+END_OF_MODEL
 
-open my $fh, '>', 'users.mdl'
-  or die 'could not open users.mdl';
+  open my $fh, '>', 'users.mdl'
+    or die 'could not open users.mdl';
 
-print {$fh} $model_def;
+  print {$fh} $model_def;
 
-close $fh;
+  close $fh;
+
+  return;
+}
 
 ########################################################################
-use Bedrock::Test::Utils qw(connect_db create_db);
-
-use Test::More;
-
-use DBI;
-use Data::Dumper;
-use English qw{-no_match_vars};
 
 my $dbi = eval { return connect_db(); };
 
@@ -68,7 +78,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 8;
+  plan tests => 3;
 }
 
 use_ok('Bedrock::Model::Handler');
@@ -81,68 +91,83 @@ eval {
 if ($EVAL_ERROR) {
   BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
 }
+
 ########################################################################
+subtest 'create a table and handler' => sub {
+########################################################################
+  create_model_file();
 
-eval { MyApp::Users->_create_model($dbi); };
+  my $handler = eval { return MyApp::Users->create_model($dbi); };
 
-ok( !$EVAL_ERROR, 'create table with .mdl file' )
-  or do {
-  diag($EVAL_ERROR);
-  BAIL_OUT(q{could not create table 'users'});
-  };
+  isa_ok( $handler, 'Bedrock::Model::Handler', 'create a model handler' );
 
-my $rows = $dbi->do('describe users');
-is( $rows, 4, 'table looks sane' )
-  or BAIL_OUT(q{could not create table 'users'});
+  ok( !$EVAL_ERROR, 'create table with .mdl file' )
+    or do {
+    diag("ERROR: $EVAL_ERROR");
+    BAIL_OUT(q{could not create table 'users'});
+    };
 
-my $model = MyApp::Users->_add_field(
-  $dbi,
-  field => 'address',
-  type  => 'varchar(100)',
-  null  => 'yes'
-);
+  my $rows = $dbi->do('describe users');
 
-my $migration = Bedrock::Model::Migration->new( { model => $model } );
+  is( $rows, 4, 'table looks sane' )
+    or BAIL_OUT(q{could not create table 'users'});
+};
 
-is( $migration->should_migrate(), 1, 'should migrate' )
-  or diag( Dumper $migration->get_migration );
+########################################################################
+subtest 'model migration' => sub {
+########################################################################
+  # this adds a field to the model, not the table
+  local $Bedrock::Model::Field::RETURN_FIELDS = 1;
+  my $model = MyApp::Users->add_field( $dbi, varchar_field( 'address', 100 ), );
 
-eval { $migration->execute(); };
+  #  my $migration = Bedrock::Model::Migration->new( { model => $model } );
+  #
+  #  is( $migration->should_migrate(), 1, 'should migrate' )
+  #    or diag( Dumper $migration->get_migration );
 
-ok( !$EVAL_ERROR, 'execute migration' )
-  or do {
-  diag(
-    Dumper(
-      [
-        EVAL_ERROR =>  [ $EVAL_ERROR ],
-        migration => [ $migration->get_migration() ]
-      ]
-    )
-  );
-  BAIL_OUT('migration failed');
-  };
+  # but I didn't need to create the migration object...
+  my $migration = $model->get_migration;
 
-is( $dbi->do('describe users'), 5, 'add new column to table' );
+  isa_ok( $migration, 'Bedrock::Model::Migration', 'migration object created automagically?' )
+    or BAIL_OUT('no migration object');
 
-my $users = bless $model, 'MyApp::Users';
-$users = $users->new($dbi);
+  is( $migration->should_migrate(), 1, 'should migrate' )
+    or diag( Dumper $migration->get_migration );
 
-$users->set( email   => 'someuser@example.com' );
-$users->set( fname   => 'fred' );
-$users->set( lname   => 'flintstone' );
-$users->set( address => '123 Rockaway Drive' );
+  eval { return $migration->execute(); };
 
-my $id = $users->save();
+  ok( !$EVAL_ERROR, 'execute migration' )
+    or do {
+    diag(
+      Dumper(
+        [ EVAL_ERROR => [$EVAL_ERROR],
+          migration  => [ $migration->get_migration() ]
+        ]
+      )
+    );
+    BAIL_OUT('migration failed');
+    };
 
-like( $id, qr/\d+/xsm, 'save a record' )
-  or BAIL_OUT('could not write record');
+  is( $dbi->do('describe users'), 5, 'add new column to table' );
 
-subtest 'read record' => sub {
+  my $users = bless $model, 'MyApp::Users';
+  $users = $users->new($dbi);
+
+  $users->set( email   => 'someuser@example.com' );
+  $users->set( fname   => 'fred' );
+  $users->set( lname   => 'flintstone' );
+  $users->set( address => '123 Rockaway Drive' );
+
+  my $id = $users->save();
+
+  like( $id, qr/\d+/xsm, 'save a record' )
+    or BAIL_OUT('could not write record');
+
   my $new_user = $users->new( $dbi, $id );
-  is( $new_user->get('email'),   'someuser@example.com' );
-  is( $new_user->get('fname'),   'fred' );
-  is( $new_user->get('lname'),   'flintstone' );
-  is( $new_user->get('address'), '123 Rockaway Drive' );
+  is( $new_user->get('email'),   'someuser@example.com', 'email correct' );
+  is( $new_user->get('fname'),   'fred',                 'fname correct' );
+  is( $new_user->get('lname'),   'flintstone',           'lname correct' );
+  is( $new_user->get('address'), '123 Rockaway Drive',   'address correct' );
 };
 
 END {

@@ -29,12 +29,20 @@ use Bedrock::Constants qw(:chars);
 use Data::Dumper;
 use Carp;
 use Scalar::Util qw(reftype);
+use List::Util qw(pairs);
+
+use Readonly;
+
+Readonly::Scalar our $STATES =>
+  'AL|AK|AZ|AR|CA|CZ|CO|CT|DE|DC|FL|GA|GU|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|PR|RI|SC|SD|TN|TX|UT|VT|VI|VA|WA|WV|WI|WY';
 
 use parent qw(Exporter Class::Accessor::Fast);
 
 our @EXPORT_OK = qw(
   auto_increment_field
+  boolean_field
   create_field_type
+  create_model_fields
   date_field
   date_inserted_field
   datenow_field
@@ -46,14 +54,26 @@ our @EXPORT_OK = qw(
   json_field
   last_updated_field
   money_field
+  state_field
   text_field
   time_field
   timenow_field
   varchar_field
   zip_field
+  %Id
+  %City
+  %State
+  %Zip
+  %Phone
+  %Email
+  %Address
+  %Timestampable
 );
 
-our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
+our %EXPORT_TAGS = (
+  all    => [@EXPORT_OK],
+  fields => [qw(%Id %City %State %Zip %Phone %Email %Address %Timestampable)],
+);
 
 our $RETURN_FIELDS;
 
@@ -213,8 +233,6 @@ sub json_field {
 ########################################################################
   my ( $name, $null ) = @_;
 
-  local $RETURN_FIELDS = 1;  ## no critic (ProhibitLocalVars)
-
   my $field = text_field( $name, $null );
 
   $field->{set} = sub {
@@ -235,7 +253,7 @@ sub json_field {
     return JSON->new->decode($v);
   };
 
-  return $field;
+  return $RETURN_FIELDS ? $field : ( $name => $field );
 }
 
 ########################################################################
@@ -297,7 +315,7 @@ sub int_field {
   return create_field_type(
     name   => $name,
     type   => 'int',
-    length => $length,
+    length => $length // 11,
     null   => $null
   );
 }
@@ -388,6 +406,67 @@ sub date_inserted_field {
     null    => 'yes',
     default => 'current_timestamp',
   );
+}
+
+########################################################################
+sub create_model_fields {
+########################################################################
+  my (@args) = @_;
+
+  my $fields = ref $args[0] ? $args[0] : \@args;
+
+  my @model;
+
+  my %type_map = (
+    auto_increment => sub { return autoincrement_field(@_); },
+    boolean        => sub { return boolean_field(@_); },
+    bigint         => sub { return bigint_field(@_); },
+    date           => sub { return date_field(@_); },
+    date_inserted  => sub { return date_inserted_field(@_); },
+    datenow        => sub { return datenow_field(@_); },
+    decimal        => sub { return decimal_field(@_); },
+    email          => sub { return email_field(@_); },
+    enum           => sub { return enum_field(@_); },
+    id             => sub { return id_field(@_); },
+    int            => sub { return int_field(@_); },
+    json           => sub { return json_field(@_); },
+    last_updated   => sub { return last_updated_field(@_); },
+    money          => sub { return money_field(@_); },
+    state          => sub { return state_field(@_); },
+    text           => sub { return text_field(@_); },
+    time           => sub { return time_field(@_); },
+    timenow        => sub { return timenow_field(@_); },
+    varchar        => sub { return varchar_field(@_); },
+    zip            => sub { return zip_field(@_); },
+  );
+
+  foreach my $p ( pairs @{$fields} ) {
+    my ( $name, $field_type ) = @{$p};
+    my $type;
+    my $length;
+    my $null;
+
+    if ( ref $field_type ) {
+      if ( reftype($field_type) eq 'HASH' ) {
+        ( $type, $length, $null ) = @{$field_type}{qw(type length null)};
+      }
+      elsif ( reftype($field_type) eq 'ARRAY' ) {
+        $type   = 'enum';
+        $length = $field_type;
+      }
+    }
+    else {
+      $type   = 'varchar';
+      $length = $field_type;
+    }
+
+    die "invalid type: $type\n"
+      if !$type_map{$type};
+
+    push @model, $type_map{$type}->( $name, $length, $null );
+  }
+
+  return @model;
 }
 
 ########################################################################
@@ -518,7 +597,7 @@ sub as_string {
     $type = 'int';
   }
 
-  return lc sprintf '%s %s %s', $self->get_field(), $type, join q{ }, @options;
+  return sprintf '%s %s %s', lc $self->get_field(), $type, lc join q{ }, @options;
 }
 
 ########################################################################
@@ -534,14 +613,31 @@ sub phone_field {
 }
 
 ########################################################################
+sub state_field {
+########################################################################
+  my ($state_field) = @_;
+
+  return enum_field( $state_field // 'state', [ split /[|]/xsm, $STATES ] );
+}
+
+########################################################################
 sub email_field {
 ########################################################################
-  my ($email_field) = @_;
+  my ( $name, $length, $null ) = @_;
 
-  my %email = %Email;
-  $email{field} = $email_field;
+  $null //= 'no';
 
-  return %email;
+  my $type = defined $length ? "varchar($length)" : 'varchar(64)';
+
+  my %email = (
+    field => $name // 'email',
+    type  => $type,
+    null  => $null,
+  );
+
+  my $field = Bedrock::Model::Field->new( \%email );
+
+  return $RETURN_FIELDS ? $field : ( $name => $field );
 }
 
 ########################################################################
@@ -557,7 +653,17 @@ sub zip_field {
 ########################################################################
   my ($name) = @_;
 
-  return _field( $name, 'zip' );
+  return _create_field( $name, 'zip' );
+}
+
+########################################################################
+sub _create_field {
+########################################################################
+  my ( $name, $type ) = @_;
+
+  my $field = _field( $name, $type );
+
+  return $RETURN_FIELDS ? $field : ( $name => $field );
 }
 
 ########################################################################
@@ -569,7 +675,7 @@ sub _field {
   my $field;
 
   {
-    no strict 'refs';  ## no critic (ProhibitNoStrict ProhibitProlongedStrictureOverride)
+    no strict 'refs';
 
     my $model_field = *{ 'Bedrock::Model::Field::' . ucfirst $type };
 
@@ -835,6 +941,75 @@ Key type.  Valid values are 'pri' or 'uniq'.
 
 =back
 
+=head2 create_model_fields
+
+ create_model_fields(fields)
+
+Create the model's field definitions. Return a list of key/value pairs
+where the key is the field name or returns a list of fields
+definitions when C<$Bedrock::Model::RETURN_FIELDS> is set to 1.
+
+Typically used like this to create new table:
+
+ my @fields = create_model_fields(
+   id    => { type => id },
+   name  => 32,
+   email => 32
+ );
+ 
+ my $model = Bedrock::Model->create( $dbi, model => \@fields, table => 'users' );
+
+C<fields> is a list of field specfications.  This list should be a
+series of key/value pairs where the key represents the field name and
+the value is either:
+
+=over 5
+
+=item ...an integer that indicates the length of a varchar type
+
+=item ...a reference to an array of strings indicating an enum type
+
+=item ...a hash of options that describe the field type
+
+=over 10
+
+=item type
+
+One of the logical field types defined by this class.
+
+ boolean
+ date
+ date_inserted
+ date_now
+ decimal
+ email
+ enum
+ id
+ int
+ json
+ last_updated
+ money
+ state
+ text
+ timenow
+ timestamp
+ varchar
+ zip
+
+=item length
+
+Length of the field. For decimal fields you should include the number
+of decimal points (Example: '5.2').
+
+=item null
+
+Set to 'yes' or 'no' to specify whether the field must be populated
+for inserts or updates.
+
+=back
+
+=back
+
 =head2 date_field
 
  date_field(name)
@@ -953,6 +1128,8 @@ Creates a zip code field.
 Rob Lauer - <rlauer6@comcast.net>
 
 =head1 SEE OTHER
+
+L<Bedrock::Model>, L<Bedrock::Model::Maker>
 
 =cut
 

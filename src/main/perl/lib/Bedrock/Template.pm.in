@@ -1,7 +1,7 @@
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2024, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -70,10 +70,10 @@ package Bedrock::Template;
 use strict;
 use warnings;
 
-use parent qw(Class::Accessor);
+use parent qw(Class::Accessor::Fast);
 
 __PACKAGE__->follow_best_practice();
-__PACKAGE__->mk_accessors(qw(text param config file include_path));
+__PACKAGE__->mk_accessors(qw(text params config file template include_path));
 
 use Bedrock qw(:booleans slurp_file);
 use Bedrock::Array;
@@ -84,7 +84,7 @@ use Cwd;
 use Text::TagX;
 
 use IO::Scalar;
-use Scalar::Util qw(reftype blessed);
+use Scalar::Util qw(reftype blessed openhandle);
 use Data::Dumper;
 use English qw(-no_match_vars);
 
@@ -98,14 +98,15 @@ sub new {
   my $self = eval {
     if ( is_hash( $args[0] ) ) {
       $include_path = delete $args[0]->{INCLUDE_PATH};
+      $args[0]->{params} //= delete $args[0]->{param};
       $class->SUPER::new( $args[0] );
     }
     else {
       my $text = shift @args;
 
-      $class->SUPER::new(
-        { text  => \$text,
-          param => {@args}
+      $class->new(
+        { text   => \$text,
+          params => {@args}
         }
       );
     }
@@ -116,14 +117,22 @@ sub new {
   }
 
   if ($include_path) {
-    my @path_list = split /\s*[:,]\s*/xsm, $include_path;
-    @path_list = grep { defined && -d $_ } @path_list, cwd;
+    if ( !ref $include_path ) {
+      $include_path = [ split /\s*[:,]\s*/xsm, $include_path ];
+    }
+    elsif ( reftype($include_path) ne 'ARRAY' ) {
+      die "INCLUDE_PATH must be scalar or array\n";
+    }
 
-    $self->set_include_path( \@path_list );
+    $include_path = [ grep { defined && $_ && -d $_ } @{$include_path}, cwd ];
+
+    $self->set_include_path($include_path);
   }
 
-  if ( $self->get_file ) {
-    $self->file( $self->get_file );
+  my $template = $self->get_file() // $self->get_template();
+
+  if ($template) {
+    $self->file($template);
   }
 
   return $self;
@@ -151,6 +160,11 @@ sub _find_file {
 sub file {
 ########################################################################
   my ( $self, $file ) = @_;
+
+  if ( openhandle $file ) {
+    $self->text( scalar slurp_file $file);
+    return;
+  }
 
   if ( $file !~ /[.][^.]+$/xsm ) {
     $file = "$file.roc";
@@ -180,6 +194,8 @@ sub config {
 }
 
 ########################################################################
+sub params { goto &param }
+
 sub param {
 ########################################################################
   my ( $self, @args ) = @_;
@@ -187,10 +203,10 @@ sub param {
   if (@args) {
     my $param = is_hash( $args[0] ) ? $args[0] : {@args};
 
-    return $self->set_param(@args);
+    return $self->set_params(@args);
   }
   else {
-    return $self->get_param();
+    return $self->get_params();
   }
 }
 
@@ -199,12 +215,17 @@ sub text {
 ########################################################################
   my ( $self, @args ) = @_;
 
+  my $text;
+
   if (@args) {
-    my $text = shift @args;
+    $text = shift @args;
     $self->set_text( ref $text ? $text : \$text );
   }
+  else {
+    $text = $self->get_text();
+  }
 
-  return $self->get_text();
+  return ref $text ? $text : \$text;
 }
 
 ########################################################################
@@ -216,11 +237,13 @@ sub parse {
     $self->text($text);
   }
 
-  # merge parameters with those passed
-  my $param = $self->param();
-  $param //= {};
+  $text = $self->text();
 
-  map { $param->{$_} = $args{$_} } keys %args;
+  # merge parameters with those passed
+  my $params = $self->params();
+  $params //= {};
+
+  map { $params->{$_} = $args{$_} } keys %args;
 
   my $output = $EMPTY;
 
@@ -231,14 +254,14 @@ sub parse {
   my $tx = Text::TagX->new( $fh, $ctx );
 
   # give hash, array super powers...
-  foreach ( values %{$param} ) {
+  foreach ( values %{$params} ) {
     next if !ref $_ || blessed $_;
 
     my $class = is_hash($_) ? 'Bedrock::Hash' : 'Bedrock::Array';
     bless $_, $class;
   }
 
-  $tx->param( %{$param} );
+  $tx->param( %{$params} );
 
   my $error = eval { $tx->output; };
 
@@ -298,11 +321,21 @@ WeE<039>ve all wanted to be able to do this...
 =head1 DETAILS
 
 The C<Bedrock::Template> class gives you access to Bedrock templating.
-You can do almost everything using this class that the using Bedrock on
-the web or the Bedrock shell environments can do, including using
+You can do almost everything using this class that you can do with
+Bedrock when running in a shell or web environment, including using
 plugins.  To configure the Bedrock templating environment you can use
 the default F<tagx.xml> file or provide a C<Bedrock::Config> object
 when you instantiate the class.
+
+=head2 What you can't do with Bedrock::Template
+
+When running Bedrock in a shell of the web environment, Bedrock's
+handler is first invoked that prepares the environment for parsing
+your Bedrock pages. This includes setting up logging and instantiating
+the startup plugins like C<$input>, C<$header>, C<$config> and a
+C<$session> object if you have one defined in your configuration
+paths. C<Bedrock::Template> does not do any of those things, so
+startup plugins are not available for use in your templates.
 
 =head2 Errors
 
@@ -323,8 +356,14 @@ determine the error.
 =head2 new
 
  new( text, key => value, ...) 
+ new( text, { key => value, ...)
+ new({ text => text, params => { key => value, ...}, config => config, INCLUDE_PATH => include-path)
 
-Instantiates a Bedrock templating object.
+Instantiates a Bedrock templating object. If you need to pass the
+configuration object or a path for including other templates using the
+C<include> tag then pass a hash reference with the appropriate
+arguments.
+
 
 =over 5
 
@@ -338,7 +377,7 @@ A list of parameters to use for templating.  They can be scalars, object, or arr
 
 =back
 
- new( { text => text, param => parameters, config => config } )
+ new( { text => text, params => parameters, config => config } )
 
 Pass a hash reference with the keys listed below.
 
@@ -348,7 +387,15 @@ Pass a hash reference with the keys listed below.
 
 Bedrock template to parse.
 
-=item param
+=item template
+
+Path to a Bedrock template or a file handle.
+
+=item file
+
+Path to a Bedorck template.
+
+=item params
 
 Hash reference of objects used by your template.
 
@@ -356,6 +403,11 @@ Hash reference of objects used by your template.
 
 This should be a Bedrock configuration object.  The system
 configuration object is provided by default (F<tagx.xml>).
+
+=item INCLUDE_PATH
+
+C<INCLUDE_PATH> is a colon or comma separated list or an array
+reference of paths to search for additional templates.
 
 =back
 

@@ -32,6 +32,7 @@
         "source" : "<var $source.config>",
         "name" : [
           "tagx.xml",
+          "tagx.xml.roc",
           "tagx_apps.xml",
           "pod_paths.xml",
           "markdown_paths.xml",

@@ -34,10 +34,10 @@ use Data::Dumper;
 use English qw(-no_match_vars);
 use Scalar::Util qw(reftype blessed);
 
-use parent qw(Class::Accessor::Fast);
-
 use Role::Tiny::With;
 with 'Bedrock::Model::Role';
+
+use parent qw(Class::Accessor::Fast);
 
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(
@@ -62,6 +62,9 @@ sub _check_model {
   my ($self) = @_;
 
   my $model = $self->get_model;
+
+  return
+    if !$model;
 
   carp "model must be an array or hash ref\n"
     if !is_hash($model) && !is_array($model);
@@ -89,6 +92,8 @@ sub new {
   my $options = ref $args[0] ? $args[0] : {@args};
 
   $options->{engine} = 'MySQL' || $options->{engine};
+  $options->{dry_run} //= delete $options->{'dry-run'};
+  $options->{dry_run} //= delete $options->{dryrun};
 
   my $self = $class->SUPER::new($options);
 
@@ -97,6 +102,11 @@ sub new {
   my $serializer = _init_serializer( $self->get_dbi, $self->get_table, $self->get_engine );
 
   $self->set_serializer($serializer);
+
+  if ( $self->get_dbi ) {
+    my $migration = $self->verify_model;
+    $self->set_migration($migration);
+  }
 
   return $self;
 }
@@ -238,7 +248,8 @@ sub create {
     }
   }
   else {
-    my $stmnt = eval { $self->create_table( dbi => $dbi, table => $table, model => $model->get_model ); };
+    my $stmnt
+      = eval { return $self->create_table( dbi => $dbi, table => $table, model => $model->get_model ); };
 
     croak "error creating table: $table\n$EVAL_ERROR\n"
       if $EVAL_ERROR;
@@ -291,12 +302,38 @@ sub verify_model {
 
   my $self = ref $class ? $class : $class->new( { dbi => $dbi } );
 
+  return
+    if !$self->table_exists( $self->get_table );
+
   return Bedrock::Model::Migration->new(
     { model   => $self,
       dry_run => $TRUE,
       %args,
     }
   );
+}
+
+########################################################################
+sub table_exists {
+########################################################################
+  my ( $self, $table ) = @_;
+
+  my $dbi = $self->get_dbi;
+  $table //= $self->get_table;
+
+  my $database = $dbi->selectall_arrayref('select database()');
+  $database = $database->[0]->[0];
+
+  my $sql = <<'END_OF_SQL';
+CALL sys.table_exists('%s', '%s', @exists);
+END_OF_SQL
+
+  my $sth = $dbi->prepare( sprintf $sql, $database, $table );
+  $sth->execute();
+
+  my $exists = $dbi->selectall_arrayref('SELECT  @exists');
+
+  return $exists && $exists->[0]->[0] eq 'BASE TABLE';
 }
 
 ########################################################################
@@ -529,7 +566,7 @@ definitons.
 =item table (optional)
 
 The name of the table to create. If you don't pass the table name, the
-table name will be derived as from the last segment of the class if
+table name will be derived from the suffix of the class name if
 the class subclasses C<Bedrock::Model>.
 
 =item no_warnings
@@ -537,11 +574,6 @@ the class subclasses C<Bedrock::Model>.
 If true will suppress warning messages when the table exists or needs migration.
 
 =back
-
-Example:
-
- my @fields = (Bedrock::Model::Field->
- Bedrock::Model->create($dbi, 
 
 =head2 fetch_model
 

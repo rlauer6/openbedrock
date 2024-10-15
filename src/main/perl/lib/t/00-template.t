@@ -2,65 +2,104 @@ use strict;
 use warnings;
 
 use Data::Dumper;
-
-use Test::More tests => 6;
-use English qw{-no_match_vars};
+use Test::More;
+use English qw(-no_match_vars);
 
 BEGIN {
   use_ok('Bedrock::Template');
 }
 
-my $text = <<'EOT';
+my $template;
+
+my $text = <<'END_OF_TEMPLATE';
 <null:foo "Hello World!">
 <var $foo>
-EOT
+END_OF_TEMPLATE
 
-my $template = Bedrock::Template->new;
-isa_ok( $template, 'Bedrock::Template' );
+########################################################################
+subtest 'new' => sub {
+########################################################################
 
-$template->text($text);
-is( $text, ${ $template->text() }, 'Bedrock::Template->text()' )
-  or diag( "text: $text, " . ${ $template->text() } );
+  $template = Bedrock::Template->new;
+  isa_ok( $template, 'Bedrock::Template' );
+};
 
-like( $template->parse(), qr/Hello\sWorld/xsm, 'parse()' )
-  or diag(
-  "$EVAL_ERROR "
-    . Dumper [
-         ref($EVAL_ERROR)
-      && $EVAL_ERROR->can('mesg')
-      && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line )
-    ]
-  );
+########################################################################
+subtest 'text' => sub {
+########################################################################
+  $template->text($text);
 
-like( $template->parse($text), qr/Hello\sWorld/xsm, q{'parse($text)} )
-  or diag(
-  "$EVAL_ERROR "
-    . Dumper [
-         ref($EVAL_ERROR)
-      && $EVAL_ERROR->can('mesg')
-      && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line )
-    ]
-  );
+  is( $text, ${ $template->text() }, 'Bedrock::Template->text()' )
+    or diag( "text: $text, " . ${ $template->text() } );
+};
 
-# create a class with method foo()
-my $foo = bless {}, 'Foo';
+########################################################################
+subtest 'parse' => sub {
+########################################################################
 
-{
-  no strict 'refs';  ## no critic (ProhibitNoStrict)
+  like( $template->parse(), qr/Hello\sWorld/xsm, 'parse()' )
+    or diag( "$EVAL_ERROR "
+      . Dumper [ ref($EVAL_ERROR) && $EVAL_ERROR->can('mesg') && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line ) ] );
 
-  *{'Foo::bar'} = sub { return "bar" };
-}
+  like( $template->parse($text), qr/Hello\sWorld/xsm, q{'parse($text)} )
+    or diag( "$EVAL_ERROR "
+      . Dumper [ ref($EVAL_ERROR) && $EVAL_ERROR->can('mesg') && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line ) ] );
+};
 
-$text = q{<var $foo.bar()>};  ## no critic (RequireInterpolationOfMetachars)
+########################################################################
+subtest 'invoke a method on a class' => sub {
+########################################################################
+  # create a class with method foo()
+  my $foo = bless {}, 'Foo';
 
-is( $template->parse( $text, foo => $foo ),
-  'bar', q{parse($text) - method call} )  ## no critic (RequireInterpolationOfMetachars)
-  or diag(
-  "$EVAL_ERROR "
-    . Dumper [
-         ref($EVAL_ERROR)
-      && $EVAL_ERROR->can('mesg')
-      && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line )
-    ]
-  );
+  {
+    no strict 'refs';  ## no critic (ProhibitNoStrict)
 
+    *{'Foo::bar'} = sub { return "bar" };
+  }
+
+  $text = q{<var $foo.bar()>};  ## no critic (RequireInterpolationOfMetachars)
+
+  is( $template->parse( $text, foo => $foo ), 'bar', q{parse($text) - method call} )  ## no critic (RequireInterpolationOfMetachars)
+    or diag( "$EVAL_ERROR "
+      . Dumper [ ref($EVAL_ERROR) && $EVAL_ERROR->can('mesg') && ( $EVAL_ERROR->mesg . $EVAL_ERROR->line ) ] );
+};
+
+########################################################################
+subtest 'new w/options' => sub {
+########################################################################
+  my $text = <<'END_OF_TEMPLATE';
+<var $bar>
+END_OF_TEMPLATE
+
+  $template = Bedrock::Template->new( $text, bar => 'foo' );
+
+  isa_ok( $template, 'Bedrock::Template' );
+
+  my $result = $template->parse();
+  ok( $result eq "foo\n", 'template, key/value' )
+    or diag($result);
+
+  $template = Bedrock::Template->new( { text => $text, params => { bar => 'foo' } } );
+  isa_ok( $template, 'Bedrock::Template' );
+
+  $result = $template->parse();
+
+  ok( $result eq "foo\n", 'template, key/value' )
+    or diag( Dumper( [ result => $result ] ) );
+
+  $template = Bedrock::Template->new( { template => *DATA, params => { bar => 'foo' } } );
+  isa_ok( $template, 'Bedrock::Template' );
+
+  $result = $template->parse();
+
+  ok( $result eq "foo\n", 'template, key/value' )
+    or diag( Dumper( [ result => $result ] ) );
+};
+
+done_testing;
+
+1;
+
+__DATA__
+<var $bar>

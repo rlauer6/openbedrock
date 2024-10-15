@@ -69,8 +69,8 @@ Alias /bedrock/img <var $config.DIST_DIR>/img
    </if>
 </Directory>
 
-Alias /bedrock/admin /usr/local/share/perl/5.36.0/auto/share/dist/Bedrock/admin
-<Directory  /usr/local/share/perl/5.36.0/auto/share/dist/Bedrock/admin >
+Alias /bedrock/admin <var $config.DIST_DIR>/config/admin
+<Directory  <var $config.DIST_DIR>/config/admin >
 
    AcceptPathInfo On
    Options -Indexes
