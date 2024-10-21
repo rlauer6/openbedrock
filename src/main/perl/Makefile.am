@@ -70,6 +70,7 @@ harness: $(GBEDROCK_TEST_HARNESS)
 test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS) bedrock-test
 	set -x; \
 	TEST=$$TEST ./bedrock-test
+	rm -f test-list
 
 test-list:
 	set -x; \

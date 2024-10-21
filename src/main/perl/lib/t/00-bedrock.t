@@ -14,6 +14,7 @@ use English qw{-no_match_vars};
 use File::Touch qw{touch};
 use File::chdir;
 use Test::More;
+use Scalar::Util qw(reftype);
 
 our %TESTS = fetch_test_descriptions(*DATA);
 
@@ -117,9 +118,30 @@ subtest 'find_in_path' => sub {
     local $CWD = $temp_dir;  ## no critic (ProhibitLocalVars)
 
     @found = find_in_path( file => 'foo.bar' );
-    ok( @found == 2,
-      qq{fond two "foo.bar"s in current working directory($temp_dir)} );
+    ok( @found == 2, qq{fond two "foo.bar"s in current working directory($temp_dir)} );
   }
+
+};
+
+########################################################################
+subtest 'to_regexp' => sub {
+########################################################################
+  my $regexp = to_regexp('qr/^#/');
+
+  ok( reftype($regexp) eq 'REGEXP', 'qr/^#/' );
+
+  my @lines = split /\n/, "#list of 3 element\na\nb\nc\n";
+
+  @lines = grep { $_ !~ /$regexp/xsm } @lines;
+
+  is( @lines, 3, 'filtered out comments using "^#" regexp' )
+    or diag( Dumper( [ re => $regexp ] ) );
+
+  $regexp = to_regexp('^a');
+
+  ok( reftype($regexp) eq 'REGEXP', '^a' );
+
+  @lines = grep { $_ !~ /$regexp/xsm } @lines;
 
 };
 
@@ -130,4 +152,5 @@ is_hash => isa hash ref
 is_array => isa array ref
 is_regexp => isa regexp
 find_in_path => find files in path list
+to_regexp => convert a string to compiled regexp
 END_OF_PLAN

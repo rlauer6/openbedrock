@@ -24,8 +24,7 @@ package Bedrock::Handler;
 use strict;
 use warnings;
 
-our @EXPORT_OK = qw( %BEDROCK_CONFIG_CACHE );
-
+our @EXPORT_OK = qw( %BEDROCK_CONFIG_CACHE mlogger);
 use parent qw( Exporter );
 
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
@@ -566,6 +565,12 @@ sub merge_module_configs {
 
   $r //= $self->request_handler;
 
+  mlogger(
+    $r,
+    level   => 'debug',
+    message => Dumper( [ module_paths => $module_paths ] )
+  );
+
   foreach my $path ( @{$module_paths} ) {
 
     foreach my $file ( _list_xml_files($path) ) {
@@ -647,9 +652,14 @@ sub get_config_paths {
   my @config_paths;
 
   if ( $ENV{CONFIG_PATH} ) {
-    @config_paths = split /:/xsm, $ENV{CONFIG_PATH};
 
-    @config_paths = uniq map { realpath($_) } @config_paths;
+    if ( $ENV{CONFIG_PATH} =~ /^:/xsm ) {
+      @config_paths = $bedrock_config_path;
+    }
+
+    @config_paths = ( @config_paths, split /[:]/xsm, $ENV{CONFIG_PATH} );
+
+    @config_paths = uniq map { realpath($_) } grep { $_ && -d $_ } @config_paths;
   }
   elsif ($bedrock_config_path) {
 
@@ -660,7 +670,7 @@ sub get_config_paths {
     $r->log->error('No CONFIG_PATH or BEDROCK_CONFIG_PATH. You probably have a misconfigured system.');
   }
 
-  return grep {$_} @config_paths;
+  return @config_paths;
 }
 
 ########################################################################
@@ -706,6 +716,8 @@ END_OF_MESSAGE
   # -- look for module configs
   my @module_paths = $self->get_module_paths( paths => \@paths );
 
+  mlogger( $r, level => 'debug', message => Dumper( [ \@module_paths ] ) );
+
   $self->merge_module_configs(
     config       => $config,
     module_paths => \@module_paths,
@@ -742,6 +754,11 @@ sub get_tagx_config {
 
   # it's probably okay, not to find this...
   my $config = $self->read_config( $bedrock_config_path, 'tagx' );
+
+  # remove the path, since we just read the file
+  if ($config) {
+    $config_paths = [ grep { $_ ne $bedrock_config_path } @{$config_paths} ];
+  }
 
   # RULE: tagx.xml must exist in root of the configuration path
   # RULE: the default tagx.xml should always have REPLACE_CONFIG eq 'yes'

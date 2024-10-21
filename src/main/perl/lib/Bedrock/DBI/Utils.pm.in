@@ -8,13 +8,17 @@ use Bedrock::Constants qw(:chars);
 use Bedrock::XML;
 use JSON;
 use English qw(-no_match_vars);
+use File::Basename qw(fileparse);
+
 use Data::Dumper;
+use Scalar::Util qw(reftype openhandle);
 
 use Readonly;
 
 Readonly::Scalar our $DEFAULT_HOST     => 'localhost';
+Readonly::Scalar our $LOOPBACK         => '127.0.0.1';
 Readonly::Scalar our $DEFAULT_DRIVER   => 'mysql';
-Readonly::Scalar our $DEFAULT_DATABASE => 'bedrock';
+Readonly::Scalar our $DEFAULT_DATABASE => $EMPTY;
 
 use parent qw(Exporter);
 
@@ -22,29 +26,45 @@ our @EXPORT_OK = qw(load_dsn_from_config create_dsn_file);
 
 our $DATA_POSITION //= tell *DATA;
 
-# config => filename
-# config => { name => { DBI_DSN => } }
-# config => { data_source => "" }
-# config => { data_source => { } };
+#
+# config: filename
+# config: filehandle
+# config: { name => { DBI_DSN => } }
+# config: { data_source => "" }
+# config: { data_source => filehandle
+# config: { data_source => { } };
 
 ########################################################################
 sub load_dsn_from_config {
 ########################################################################
-  my ($config) = @_;
+  my ( $config, $options ) = @_;
+
+  die "options must be a hash ref\n"
+    if $options && ( !ref $options || reftype($options) ne 'HASH' );
+
+  my ( $use_env, $name ) = @{$options}{qw(env name)};
+
+  my $default_name = $name;
 
   # data-source file can be JSON or Bedrock XML
   $config = eval {
     return $config
-      if ref $config;
+      if ref $config && !openhandle $config;
 
     die "config [$config] not found\n"
       if !-f $config;
 
     my $content = slurp_file($config);
 
-    $config = eval { return Bedrock::XML->newFromString($content); };
+    my ( $filename, $path, $ext ) = fileparse( $config, qr/[.][^.]+$/xsm );
+    $default_name = $name // $filename;
 
-    return $config ? $config : JSON->new->decode($content);
+    if ( $content =~ /^\s*</xsm ) {
+      return Bedrock::XML->newFromString($content);
+    }
+    else {
+      return JSON->new->decode($content);
+    }
   };
 
   die "could not read $config:\n$EVAL_ERROR"
@@ -58,54 +78,105 @@ sub load_dsn_from_config {
   elsif ( $config->{DBI_DSN} ) {
     $dsn = $config;
   }
-  else {
-    my ($dsn_name) = keys %{$config};
+  elsif ($config) {
+    my @data_sources = keys %{$config};
+
+    my $dsn_name = $name // $default_name;
+
+    if ( !$dsn_name || !exists $config->{$dsn_name} || @data_sources == 1 ) {
+      $dsn_name = $data_sources[0];
+    }
+
+    die "$dsn_name not found in config object\n"
+      if !$config->{$dsn_name};
 
     $dsn = delete $config->{$dsn_name};
   }
 
-  $dsn = ( ref $dsn && $dsn->{DBI_DSN} ) ? $dsn->{DBI_DSN} : $dsn;
+  if ($use_env) {
+    $dsn = _override_config($dsn);
+  }
+
+  $dsn = ( ref $dsn && $dsn->{DBI_DSN} )     ? $dsn->{DBI_DSN}     : $dsn;
+  $dsn = ( ref $dsn && $dsn->{data_source} ) ? $dsn->{data_source} : $dsn;
 
   return $dsn
     if !ref $dsn;
 
   my %dsn_spec = %{$dsn};
 
-  my $driver   = delete $dsn_spec{driver};
+  my $driver = delete $dsn_spec{driver};
+
   my $database = delete $dsn_spec{database};
-  my $host     = delete $dsn_spec{host};
+  $database //= delete $dsn_spec{DBI_DB};
+
+  my $host = delete $dsn_spec{host};
+  $host //= delete $dsn_spec{DBI_HOST};
 
   $driver   //= $DEFAULT_DRIVER;
   $host     //= $DEFAULT_HOST;
   $database //= $DEFAULT_DATABASE;
 
-  my $options = join $SEMICOLON, map { sprintf '%s=%s', $_, $dsn_spec{$_} } keys %dsn_spec;
-  $options = $options ? ";$options" : $EMPTY;
+  my $username = $dsn_spec{username} // $ENV{DBI_USER};
+  my $password = $dsn_spec{password} // $ENV{DBI_PASS};
 
-  return sprintf 'dbi:%s:%s:%s%s', $driver, $database, $host, $options;
+  foreach (qw(username password DBI_USER DBI_PASS)) {
+    delete $dsn_spec{$_};
+  }
+
+  my $extra_options = join $SEMICOLON, map { sprintf '%s=%s', $_, $dsn_spec{$_} } keys %dsn_spec;
+  $extra_options = $extra_options ? ";$extra_options" : $EMPTY;
+
+  $host = lc $host eq 'localhost' ? $LOOPBACK : $host;
+
+  $dsn = sprintf 'dbi:%s:%s:%s%s', $driver, $database, $host, $extra_options;
+
+  my @connect_params = ( $dsn, $username, $password, $database, $host, $extra_options );
+
+  return wantarray ? @connect_params : $dsn;
+}
+
+########################################################################
+sub _override_config {
+########################################################################
+  my ($config) = @_;
+
+  # override config if env true
+  foreach (qw(DB USER PASS HOST DSN)) {
+    next
+      if !$ENV{"DBI_$_"};
+
+    $config->{"DBI_$_"} = $ENV{"DBI_$_"};
+  }
+
+  return $config;
 }
 
 ########################################################################
 sub create_dsn_file {
 ########################################################################
-  my (%args) = @_;
+  my (@args) = @_;
+
+  my %options = ref $args[0] ? %{ $args[0] } : @args;
 
   my $fh = *DATA;
 
   seek $fh, $DATA_POSITION, 0;
+
   local $RS = undef;
 
   my $content = <$fh>;
+  $content =~ s/\n=pod.*\z//xsm;  # remove pod
+
   $content =~ s/^[\-].*\z//xsm;
 
   my $config   = Bedrock::XML->newFromString($content);
-  my $filename = $args{filename};
-  my $type     = $args{type}     // 'xml';
-  my $dsn_name = $args{dsn_name} // 'bedrock';
+  my $filename = delete $options{filename};
+  my $type     = $options{type}     // 'xml';
+  my $dsn_name = $options{dsn_name} // 'bedrock';
 
-  delete $args{type};
-  delete $args{filename};
-  delete $args{dsn_name};
+  delete $options{type};
+  delete $options{dsn_name};
 
   $config->{$dsn_name} = $config->{bedrock};
 
@@ -113,10 +184,10 @@ sub create_dsn_file {
   delete $config->{bedrock};
 
   foreach (qw(driver host username password database)) {
-    $data_source->{$_} //= $args{$_};
+    $data_source->{$_} //= $options{$_};
   }
 
-  return $data_source
+  return \%options
     if !$filename;
 
   {
@@ -124,12 +195,10 @@ sub create_dsn_file {
       or die "could not open $filename for writing\n";
 
     if ( $type eq 'xml' ) {
-      Bedrock::XML::writeXML( { $dsn_name => $data_source }, $fh );
+      Bedrock::XML::writeXML( { $dsn_name => \%options }, $fh );
     }
     else {
-      my %content = %{$data_source};
-
-      print {$fh} JSON->new->allow_blessed->convert_blessed->pretty->encode( { $dsn_name => \%content } );
+      print {$fh} JSON->new->allow_blessed->convert_blessed->pretty->encode( { $dsn_name => \%options } );
     }
 
     close $fh;
@@ -164,3 +233,182 @@ __DATA__
      "mysql_ssl" : "1"
   }
 }
+
+=pod
+
+=head1 NAME
+
+Bedrock::DBI::Utils - miscellaneous utilities for managing database configurations
+
+=head1 SYNOPSIS
+
+ use Bedrock::DBI::Utils qw(load_dsn_from_config);
+
+=head1 DESCRIPTION
+
+Provides two methods for managing database configurations. Typically
+an application will store the connection parameters, possibly
+credentials and other options needed to connect to a database in a
+configuration file. These methods read and write configuration files
+for you that can later be turned into connection strings compatible
+with DBI. Your configuration files can be a Bedrock XML or JSON
+file. You can store several different configurations in the same file
+by creating named sub-objects as shown in the example below. You must
+create at least one sub-object with the name of the configuration
+(typically the name of the database).
+
+  <object>
+    <object name="bedrock">
+      <scalar name="driver">mysql</scalar>
+      <scalar name="username">fred</scalar>
+      <scalar name="password">Fl1nt$t0ne</scalar>
+      <scalar name="host">localhost</scalar>
+      <scalar name="database">bedrock</scalar>
+      <scalar name="mysql_ssl">1</scalar>
+    </object>
+  </object>
+
+The options you can use to create your connection string are described
+below.
+
+=over 5
+
+=item data-source, DBI_DSN
+
+The fully specified connection string.
+
+Example:
+
+  dbi:mysql:bedrock:localhost
+
+If you specify C<data-source> or C<DBI_DSN> then none of the other
+options are used.
+
+=item driver
+
+The DBD driver to use.
+
+default: mysql
+
+=item username, DBI_USER
+
+The database username for connecting to the database.
+
+=item password
+
+The database password associated with the specified user for
+connection to the database.
+
+=item database, DBI_DB
+
+The database name.
+
+default: bedrock
+
+=item host, DBI_HOST
+
+The host name.
+
+default: localhost
+
+=back
+
+You can force C<load_dsn_from_config()> to use environment variables
+to override values in the configuration when creating the connection
+string. Any of the C<DBI_*> values in the configuration can be overridden by
+environment variables by the same name.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 load_dsn_from_config
+
+ load_dsn_from_config(config, options)
+
+Create a connection string from a configuration object or
+configuration file. Returns a connection string of the form:
+
+ dbi:driver:database:host;opt1=value;...
+
+=over 5
+
+=item config
+
+The name of a configuration file, a file handle or a hash reference
+containing the connection options. See the L</DESCRIPTION> for details
+on the format of the configuration specification.
+
+=item options
+
+A hash reference containing options describe below:
+
+=over 5
+
+=item name
+
+Name of the sub-object within the configuration object that represents
+the connection parameters. You can have multiple connection
+configurations, each with a different name. For example:
+
+  <object>
+    <object name="bedrock">
+      <scalar name="driver">mysql</scalar>
+      <scalar name="username">fred</scalar>
+      <scalar name="password">Fl1nt$t0ne</scalar>
+      <scalar name="database">bedrock</scalar>
+      <scalar name="mysql_ssl">1</scalar>
+    </object>
+    <object name="sqllite">
+      <scalar name="data-source">dbi:SQLite:dbname=/tmp/test.db</scalar>
+    </object>
+  </object>
+ 
+ my $dsn = load_dsn_from_config('data-sources.xml', { name => 'sqllite' };
+
+=back
+
+=back
+
+=head2 create_dsn_file
+
+ create_dsn_file(options)
+
+Create a connection configuration file from a list of
+options. C<options> is a key/value list or a hash reference.  It
+should contain the values that will be populated in a connection
+configuration file. Additionally, add C<dsn_name> element to name the
+configuration.
+
+Example:
+
+ create_dsn_file( dsn_name => 'myapp',
+  database => 'myapp',
+  username => 'myapp',
+  password => '$ecur1ty',
+ );
+
+Note that you do not need to include all parameters if the default
+values for the missing parameters are appropriate.
+
+In addition to the normal connection values these options are available.
+
+=over 5
+
+=item type
+
+The type of output when writing a file. Valid values are C<xml> and C<json>.
+
+=item filename
+
+Name of the file to create. If the C<filename> option is omitted a connection string
+
+=back
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=head1 SEE ALSO
+
+L<DBI>, <DBD::mysql>
+
+=cut

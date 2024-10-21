@@ -7,20 +7,30 @@ BEGIN {
   use lib qw(.);
 }
 
-use English qw(-no_match_vars);
 use Data::Dumper;
-use Test::More tests => 5;
+use English qw(-no_match_vars);
+use File::Temp qw(tempfile);
+use IO::Handle;
+use JSON;
+use Scalar::Util qw(openhandle);
+use Test::More;
 
-BEGIN {
-  use_ok('BLM::DBHandler');
-}
+plan skip_all => 'no DBI_USER set'
+  if !$ENV{DBI_USER} || !$ENV{DBI_PASS};
 
-like( $BLM::DBHandler::VERSION, qr/\A[\d.]+\z/xsm, 'version' );
+use_ok('BLM::DBHandler');
 
-SKIP: {
-  skip 'no DBI_USER set', 3
-    if !$ENV{DBI_USER} || !$ENV{DBI_PASS};
+our $DATA_POSITION = tell *DATA;
 
+########################################################################
+subtest 'version' => sub {
+########################################################################
+  like( $BLM::DBHandler::VERSION, qr/\A[\d.]+\z/xsm, 'version' );
+};
+
+########################################################################
+subtest 'environment variables' => sub {
+########################################################################
   BLM::DBHandler->import(qw(easy_connect is_dbi));
 
   my $dbi = eval {
@@ -50,6 +60,65 @@ SKIP: {
   };
 
   ok( is_dbi($dbi) && !$EVAL_ERROR, 'BLM::DBHandler->easy_connect()' );
-}
+
+  $dbi->disconnect;
+};
+
+########################################################################
+subtest 'file handle' => sub {
+########################################################################
+  local %ENV = ();
+
+  my $fh = *DATA;
+  seek $fh, $DATA_POSITION, 0;
+
+  ok( openhandle($fh), 'is an open file handle' );
+
+  my $dbi = easy_connect($fh);
+
+  ok( is_dbi($dbi) && !$EVAL_ERROR, 'file handle, no name' );
+
+  $dbi->disconnect;
+
+  seek $fh, $DATA_POSITION, 0;
+
+  $dbi = easy_connect( $fh, 'sqlite' );
+
+  ok( is_dbi($dbi) && !$EVAL_ERROR, 'file handle, with name' );
+};
+
+########################################################################
+subtest 'configuration file' => sub {
+########################################################################
+  my $fh = *DATA;
+
+  seek $fh, $DATA_POSITION, 0;
+
+  my $obj = Bedrock::XML->new($fh);
+
+  my ( $fd, $filename ) = tempfile( 'jsonXXXXX', UNLINK => 1, TMPDIR => 1 );
+
+  print {$fd} JSON->new->pretty->encode( $obj->devolve );
+
+  close $fd;
+
+  my $dbi = easy_connect( data_source => $filename, name => 'bedrock' );
+
+  ok( is_dbi($dbi) && !$EVAL_ERROR, 'JSON file, with name' );
+};
+
+done_testing;
 
 1;
+
+__DATA__
+<object>
+  <object name="bedrock">
+    <scalar name="username">fred</scalar>
+    <scalar name="password">flintstone</scalar>
+    <scalar name="database">bedrock</scalar>
+  </object>
+  <object name="sqlite">
+    <scalar name="data_source">dbi:SQLite:dbname=:memory</scalar>
+  </object>
+</object>
