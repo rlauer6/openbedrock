@@ -318,14 +318,14 @@ function api_plugins() {
 
     var section_ids = [];
 
-    var ul = '';
-
     for (const s in plugin_map ) {
       var id = `#${plugin_map[s]} .accordion-body`;
 
       var items = plugins[s];
       var links = plugin_links[s];
       var names = plugin_names[s];
+
+      var ul = '';
 
       items.forEach((item) => {
         ul += `<li class="ul-link-item" bedrock-data="${s}">${names[item]}</li>\n`;
@@ -411,7 +411,7 @@ function api_modules(module_type) {
 $(function () {
 // -------------------------------------------------
   var container_top = document.getElementById('tags-container').offsetTop;
-  $('#tags-container').css('height', document.innerHeight - container_top);
+  $('#tags-container').css('height', $(document).height() - container_top);
 
   $('#module-search').on('click', function(e) {
     e.preventDefault();

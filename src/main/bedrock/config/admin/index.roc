@@ -125,7 +125,7 @@
       <div class="container" id="login-container">
         <div class="row mt-4">
           <div class="col-12">
-            <form id='login-form' action="session.roc" method="post">
+            <form id='login-form' action="index.roc" method="post">
               <div class="row m-2">
                 <div class="col-4">
                   <span id="username-label"><a href="#" class="m-0" data-bs-toggle="tooltip" data-bs-title="Enter your username, not your email!">Username</a></span>
@@ -175,7 +175,7 @@
                     <a href="#" class="link-opacity-0 m-0"  data-bs-toggle="tooltip" data-bs-title="Passwords should contain at least 1 digit, special character, number, lower and uppercase letter">Password</a></span>
                   </div>
                 <div class="col-4">
-                  <input id="register-password" type="text" name="register-password" size="16" maxlength="30" tabindex="201">
+                  <input id="register-password" type="password" name="register-password" size="16" maxlength="30" tabindex="201">
                 </div>
               </div>
               

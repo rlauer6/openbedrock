@@ -7,6 +7,7 @@ BEGIN {
   use lib qw(.);
 }
 
+use Bedrock::Constants qw(:booleans);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Temp qw(tempfile);
@@ -96,7 +97,7 @@ subtest 'configuration file' => sub {
 
   my $obj = Bedrock::XML->new($fh);
 
-  my ( $fd, $filename ) = tempfile( 'jsonXXXXX', UNLINK => 1, TMPDIR => 1 );
+  my ( $fd, $filename ) = tempfile( 'jsonXXXXX', UNLINK => $TRUE, TMPDIR => $TRUE );
 
   print {$fd} JSON->new->pretty->encode( $obj->devolve );
 

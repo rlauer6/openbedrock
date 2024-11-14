@@ -195,7 +195,7 @@ subtest 'create JSON config' => sub {
   my ( $fh, $filename ) = tempfile(
     'data-source-XXXX',
     tmpdir => $TRUE,
-    #    UNLINK => $TRUE,
+    UNLINK => $TRUE,
   );
 
   create_dsn_file(
@@ -215,10 +215,6 @@ subtest 'create JSON config' => sub {
   my $dsn = load_dsn_from_config($filename);
 
   check_dsn($dsn);
-
-  diag($dsn);
-
-  rename $filename, 'customers.json';
 };
 
 ########################################################################
