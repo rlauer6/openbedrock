@@ -11,8 +11,9 @@ BEGIN {
 
 use DBI;
 use Data::Dumper;
-use English    qw{-no_match_vars};
-use List::Util qw{none};
+use English qw(-no_match_vars);
+use List::Util qw(none);
+use Scalar::Util qw(reftype);
 use Test::More;
 use Time::Local;
 
@@ -505,6 +506,34 @@ subtest 'commit/rollback' => sub {
 
   $result = $dbh->select('select count(*) foo_count from foo');
   is( $result->{foo_count}, 0, 'commit successful' );
+};
+
+########################################################################
+subtest 'database' => sub {
+########################################################################
+  is( BLM::DBHandler->new($dbi)->database, 'foo', 'database = foo' );
+};
+
+########################################################################
+subtest 'get_table_definition' => sub {
+########################################################################
+
+  # create table foo (
+  #  id             int auto_increment primary key,
+  #  name           varchar(100) not null default '',
+  #  foo            varchar(100) not null,
+  #  bar_phone      varchar(10) not null default '',
+  #  colors         enum('red', 'green', 'blue'),
+  #  expires_time   timestamp,
+  #  expires_date   date,
+  #  active         boolean
+  # )
+
+  my @table_def = BLM::DBHandler->new($dbi)->get_table_definition('foo');
+
+  ok( scalar(@table_def) == 8, 'eight rows' );
+
+  ok( ( none { reftype($_) ne 'HASH' } @table_def ), 'all hash refs' );
 };
 
 done_testing;

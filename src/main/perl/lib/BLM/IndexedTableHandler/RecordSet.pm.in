@@ -24,19 +24,27 @@ use strict;
 use warnings;
 
 use Bedrock::Array;
-use Bedrock::Constants qw{:chars};
+use Bedrock::Constants qw(:chars :booleans);
+use Data::Dumper;
+use Scalar::Util qw(reftype);
 
-use parent -norequire => qw/Bedrock::RecordSet/;
+use parent -norequire => qw(Bedrock::RecordSet);
 
-use Bedrock::HTML::Helper qw( create_html_element
+use Bedrock::HTML::Helper qw(
+  create_html_element
   create_label_name
   create_xhtml_element
+  create_xhtml_element_header
   create_radio_buttons
   create_select_list
+  tidy
 );
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
+########################################################################
+sub as_ref { goto &asref; }
+########################################################################
 ########################################################################
 sub asref {
 ########################################################################
@@ -51,14 +59,18 @@ sub html_form_header {
   my ( $self, $attributes ) = @_;
 
   $attributes //= {};
+  my %form_attributes = %{$attributes};
 
-  my $table_name = $self->[0]->{_table};
+  my $action = delete $form_attributes{action};
+  $action //= $ENV{REQUEST_URI};
 
-  my $element = create_html_element(
+  my $table_name = $self->[0]->get_table_name;
+
+  my $element = create_xhtml_element_header(
     'form',
     ( name   => $table_name . '_set',
-      method => 'post',
-      action => $ENV{REQUEST_URI}
+      method => 'POST',
+      $action ? ( action => $action ) : (),
     ),
     %{$attributes}
   );
@@ -68,38 +80,57 @@ sub html_form_header {
 ########################################################################
 sub html_form_footer {
 ########################################################################
-  my ( $self, $attributes ) = @_;
+  my ( $self, $attributes, $buttons ) = @_;
 
-  $attributes //= {};
+  if ( !$buttons || !ref $buttons ) {
+    $buttons = [qw(Edit Delete)];
+  }
 
-  my $table_name = $self->[0]->{_table};
+  my %button_attributes = %{ $attributes // {} };
 
-  my $action_element = create_html_element(
+  my $div_attributes = delete $button_attributes{div};
+
+  my $table_name = $self->[0]->get_table_name;
+
+  my @elements = create_html_element(
     'input',
     type  => 'hidden',
     name  => 'action',
-    value => 'edit',
-
+    value => $EMPTY,
   );
 
-  my $table_element = create_html_element(
+  push @elements,
+    create_html_element(
     'input',
     type  => 'hidden',
     name  => 'table',
     value => $table_name,
-  );
+    );
 
-  my $submit_element = create_html_element(
-    'button',
-    type  => 'submit',
-    value => 'Edit',
-    %{$attributes},
-  );
+  foreach my $button ( @{$buttons} ) {
+    my $id = sprintf '%s-%s', map {lc} $table_name, $button;
+    push @elements, create_xhtml_element( 'button', $button, %button_attributes, id => $id );
+  }
 
-  my $element = sprintf "%s\n%s\n%s\n</form>\n", $action_element,
-    $table_element, $submit_element;
+  my $div = create_xhtml_element( 'div', ( join "\n", @elements ), %{ $div_attributes // {} } );
 
-  return $element;
+  return sprintf "%s\n</form>\n", $div;
+}
+
+########################################################################
+sub html_form {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $labels, $attributes, $fields, $buttons ) = @args{qw(labels attributes fields buttons)};
+
+  my $header = $self->html_form_header( $attributes->{form} );
+
+  my $form = $self->html_form_body( $labels, $attributes, $fields );
+
+  my $footer = $self->html_form_footer( $attributes, $buttons );
+
+  return $header . $form . $footer;
 }
 
 ########################################################################
@@ -109,98 +140,128 @@ sub html_form_body {
 
   $labels     //= {};
   $attributes //= {};
+  $fields     //= $self->[0]->fields();
 
-  my $table_element
-    = create_html_element( 'table', %{ $attributes->{table} } );
-  my $row_element = create_html_element( 'tr', %{ $attributes->{tr} } );
+  my @columns = @{$fields};
 
-  my @html = sprintf '%s%s', $table_element, $row_element;
+  my @label_names = grep { $_ ne 'id' } ( '&nbsp;', @columns );
 
-  my @columns;
+  @label_names = map { $labels->{$_} ? $labels->{$_} : create_label_name($_) } @label_names;
 
-  if ($fields) {
-    @columns = @{$fields};
-  }
-  else {
-    @columns = @{ $self->[0]->fields() };
-  }
+  my $headings = join "\n", map { create_xhtml_element( 'th', $_, %{ $attributes->{th} } ) } @label_names;
 
-  foreach my $column ( '&nbsp;', @columns ) {
-    next if $column eq 'id';
-
-    my $th_element = create_html_element( 'th', %{ $attributes->{th} } );
-    my $label_name = $labels->{$_} || create_label_name($column);
-
-    push @html, sprintf '%s%s</th>', $th_element, $label_name;
-  }
-
-  push @html, '</tr>';
+  my $headings_row = create_xhtml_element( 'tr', $headings, %{ $attributes->{tr} } );
+  my @rows         = $headings_row;
 
   foreach my $rec ( @{$self} ) {
+    my @td_elements;
 
-    my $row_element = create_html_element( 'tr', %{ $attributes->{tr} } );
+    foreach my $column (@columns) {
+      my $value = $rec->get($column);
 
-    push @html, sprintf ' %s', $row_element;
-
-    foreach my $column ( 'idx', @columns ) {
-      next if $column eq 'id';
-
-      if ( $column eq 'idx' ) {
-
-        my $td_element = create_html_element( 'td', %{ $attributes->{td} } );
-
-        my $radio_element = create_html_element(
+      if ( $column eq 'id' ) {
+        push @td_elements,
+          create_html_element(
           'input',
           type  => 'radio',
           name  => 'id',
-          value => $rec->{id},
-          %{ $attributes->{input} },
-        );
-
-        push @html, sprintf '%s%s</td>', $td_element, $radio_element;
+          value => $value,
+          %{ $attributes->{input} }
+          );
       }
       else {
-        my $td_element = create_html_element( 'td', %{ $attributes->{td} } );
-        push @html, printf '%s%s</td>', $td_element, $rec->get($column);
+        push @td_elements, $value;
       }
     }
 
-    push @html, '</tr>';
+    my $row = join "\n", map { create_xhtml_element( 'td', $_, %{ $attributes->{td} } ) } @td_elements;
+    push @rows, create_xhtml_element( 'tr', $row, %{ $attributes->{tr} } );
   }
 
-  push @html, '</table>';
+  my $data = join "\n", @rows;
 
-  return join $EMPTY, @html;
+  return create_xhtml_element( 'table', $data, %{ $attributes->{table} } );
 }
 
 ########################################################################
-sub html_result_list {
+sub html_ordered_list {
 ########################################################################
-  my ( $self, $attributes ) = @_;
+  my ( $self, %args ) = @_;
+
+  my ( $attributes, $column ) = @args{qw(attributes column)};
+
+  my @column_names = @{ $self->[0]->fields() };
+  $column //= $column_names[1];  # assuming that id is always field 0?
+
+  my $callback = _create_callback($column);
+
+  $callback //= sub { return shift->{$column}; };
 
   $attributes //= {};
 
-  my @html = create_html_element( 'ol', %{ $attributes->{ol} } );
+  my @items;
 
-  my $first_field = $self->[0]->fields()->[1];
+  foreach my $row ( @{$self} ) {
+    my $link
+      = create_xhtml_element( 'a', $callback->($row), ( href => '?id=' . $row->{id} ), %{ $attributes->{a} }, );
 
-  foreach ( @{$self} ) {
-    my $anchor_element = create_html_element(
-      'a',
-      href => '?id=' . $_->{id},
-      %{ $attributes->{a} },
-    );
-
-    my $link = sprintf '%s%s</a>', $anchor_element, $_->{$first_field};
-
-    my $li_element = create_html_element( 'li', %{ $attributes->{li} } );
-
-    push @html, sprintf '%s%s</li>', $li_element, $link;
+    push @items, create_xhtml_element( 'li', $link, %{ $attributes->{li} } );
   }
 
-  push @html, '</ol>';
+  return tidy( create_xhtml_element( 'ol', join( "\n", @items ), %{ $attributes->{ol} } ) );
+}
 
-  return join $EMPTY, @html;
+########################################################################
+sub _create_callback {
+########################################################################
+  my ($column) = @_;
+
+  my $callback;
+
+  if ( ref $column ) {
+    if ( reftype($column) eq 'ARRAY' ) {
+      $callback = sub {
+        my $row = shift;
+        return join $SPACE, @{$row}{ @{$column} };
+      };
+    }
+    elsif ( reftype($column) eq 'CODE' ) {
+      $callback = $column;
+    }
+    else {
+      die "invalid column type\n";
+    }
+  }
+
+  $callback //= sub {
+    return shift->{$column};
+  };
+
+  return $callback;
+}
+
+########################################################################
+sub html_select_list {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $attributes, $column ) = @args{qw(attributes column)};
+
+  my @column_names = @{ $self->[0]->fields() };
+  $column //= $column_names[1];  # assuming that id is always field 0?
+
+  my $callback = _create_callback($column);
+
+  $attributes //= {};
+
+  my @options;
+
+  foreach my $row ( @{$self} ) {
+    push @options,
+      create_xhtml_element( 'option', $callback->($row), ( value => $row->{id} ), %{ $attributes->{a} }, );
+  }
+
+  return create_xhtml_element( 'select', join( "\n", @options ), %{ $attributes->{select} } );
 }
 
 1;
@@ -211,40 +272,94 @@ __END__
 
 =head1 PUBLIC
 
-BLM::IndexedTableHandler::RecordSet
+BLM::IndexedTableHandler::RecordSet - a collection of BLM::IndexedTableHandler objects
 
 =head1 SYNOPSIS
 
-    my $record_set = BLM::IndexedTableHandler::RecordSet->new(@list);
+  my $ith = BLM::IndexedTableHandler->new( $dbi, { table_name => 'foo' } );
 
-    my $ith = new BLM::IndexedTableHandler( $dbi, { id => $id, table_name => 'foo' } );
+  # return all record in table as a record set
+  my $record_set = $ith->find();
 
-    # return all record in table as a record set
-    my $record_set = $ith->find();
+  <sqlconnect --data-source=dbi:mysql:bedrock --username=fred --password=flintstone --db=dbi>
+  <plugin:IndexedTablehander --define-plugin=ith $dbi 0 foo>
+  <null:record_set $ith.find()>
 
 =head1 DESCRIPTION
 
-Creates an object which represents a set of rows from a MySQL table.
-Each element of the record set is a C<BLM::IndexedTableHandler>
-object.
+Represents a set of rows from a MySQL table. Each element of the
+record set is a C<BLM::IndexedTableHandler> object.
 
 =head1 METHODS AND SUBROUTINES
 
 =head2 asref
+
+=head2 as_ref
 
  asref()
 
 Returns an array of hashes from the record set (as opposed to an array
 of C<BLM::IndexedTableHandler>) objects).
 
-=head2 html_result_list
+=head1 HTML HELPER METHODS
+
+These methods can be used or overridden to create an HTML form or HTML
+snippets consisting of the records from the record set.
+
+=head2 html_form
+
+ html_form(options)
+
+Creates a complete HTML form from the record set. Each row contains a
+radio button and the columns you specify arranged in a table.  A div
+with buttons can be rendered under the table.
+
+ <plugin:IndexedTableHandler $dbi 0 foo>
+ <null:list $foo.find()>
+
+ <var $list.html_form()>
+
+
+=over 5
+
+=item labels
+
+A hash the contains the column headings to be used for each column you specify.
+
+=item attributes
+
+A hash of attributes for the various HTML elements being rendered.
+Each element of the hash is a hash of attributes. The elements
+rendered include table, th, td, button, div, form and button.
+
+Create hashes the elements for which you want to apply attributes:
+
+ <hash:form_attributes action '/foo' class foo>
+ <hash:button_attributes class 'foo bs-button'>
+
+ <hash:attributes form $form_attributes button $button_attributes>
+
+ <var $list.html_form(attributes, $attributes)>
+
+=items fields
+
+Array of column names to include in the form. Defaults to all columns
+in the table.
+
+=items buttons
+
+An array of button labels. Defaults to 'Edit', 'Delete'.
+
+=back
 
 =head2 html_form_header
 
 =head2 html_form_footer
 
+=head2 html_ordered_list
+
 =head1 AUTHOR
 
-rlauer6@comcast.net
+bigfoot@cpan.org
 
 =cut

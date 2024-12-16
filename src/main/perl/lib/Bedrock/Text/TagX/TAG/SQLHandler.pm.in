@@ -28,7 +28,7 @@ use parent qw(Exporter TagX::TAG::SQLConnector);
 use Bedrock::Constants qw(:chars :booleans);
 use DBI;
 use Data::Dumper;
-use English      qw( -no_match_vars );
+use English qw( -no_match_vars );
 use Scalar::Util qw(reftype);
 
 use Role::Tiny::With;
@@ -58,29 +58,28 @@ sub get_db_handle {
 ########################################################################
   my ( $self, $tx, %options ) = @_;
 
-  my $name = $options{'dbname'};
+  my $name = $options{dbname};
 
   if ($name) {
     $self->get_logger->warn('Use of deprecated option --dbname. Use --db instead.');
   }
 
-  my $dbh;
+  $name //= $options{db};
 
-  if ( $options{'db'} ) {
-    $dbh = $tx->{DB}->{ $options{'db'} };
+  if ($name) {
+    my $dbh = ref $name ? $name : $tx->{DB}->{$name};
 
-    if ( !ref($dbh) || ref($dbh) !~ /DBI::db/xsm ) {
-      die $options{'db'} . " is not a DBI handle\n";
-    }
-  }
-  elsif ($name) {
-    $dbh = $tx->{'DB'}->{$name};
-    die "Unknown database connection named `$name'.\n"
+    die "unknown database handle $name\n"
       if !$dbh;
+
+    die "$name is not a DBI handle\n"
+      if !ref $dbh || ref($dbh) !~ /^DBI::db/xsm;
+
+    return $dbh;
   }
-  else {
-    $dbh = $tx->{'DB'}->{ $self->ANONYMOUS };
-  }
+
+  ($name) = grep { $tx->{DB}->{$_} } ( $self->ANONYMOUS, keys %{ $tx->{DB} // {} } );
+  my $dbh = $tx->{DB}->{ $name // $EMPTY };
 
   if ( !$dbh || !ref $dbh ) {
     no warnings 'uninitialized';
@@ -112,15 +111,13 @@ sub get_db_handle {
       }
     );
 
-    my $name = $self->ANONYMOUS();
-
     $dbh = eval {
       DBI->connect(
         $dsn, $user, $pass,
-        { AutoCommit => $TRUE,
-          PrintError => $TRUE,
-          RaiseError => $TRUE,
-          ChopBlanks => $TRUE,
+        { AutoCommit => $options{AutoCommit} // $TRUE,
+          PrintError => $options{PrintError} // $TRUE,
+          RaiseError => $options{RaiseError} // $TRUE,
+          ChopBlanks => $options{ChopBlanks} // $TRUE,
         }
       );
     };
@@ -137,9 +134,8 @@ sub get_db_handle {
     $tx->{'DB'}->{$name} = $dbh;
   }
 
-  if ( !$dbh->ping ) {
-    die "database is not pingable\n";
-  }
+  die "database is not pingable\n"
+    if !$dbh->ping;
 
   return $dbh;
 }
