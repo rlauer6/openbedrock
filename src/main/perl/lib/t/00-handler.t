@@ -3,15 +3,13 @@
 use strict;
 use warnings;
 
-use lib qw( . .. );
+use Bedrock qw(create_temp_dir);
+use Bedrock::Constants qw(:defaults);
+use Bedrock::Test::Utils qw(:all);
 
-use Bedrock qw{create_temp_dir};
-use Bedrock::Constants qw{:defaults};
-use Bedrock::Test::Utils qw{:all};
-
-use Cwd qw{abs_path getcwd};
+use Cwd qw(abs_path getcwd);
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use Bedrock::Test::RequestHandler;
 
 use Test::More;

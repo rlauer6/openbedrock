@@ -207,12 +207,11 @@ sub max_history {
   return defined $max_history ? $max_history : $MAX_HISTORY;
 }
 
+# easy_connect(filehandle,
 ########################################################################
 sub easy_connect {
 ########################################################################
   my (@args) = @_;
-
-  # Foo::Bar->easy_connect
 
   if ( openhandle $args[0] ) {
     @args = ( data_source => $args[0], name => $args[1] );
@@ -227,28 +226,34 @@ sub easy_connect {
 
   my $dsn = eval {
 
-    my $options = force_hash(@args);
+    my %options = %{ force_hash(@args) };
+    $user     = delete $options{user};
+    $password = delete $options{password};
 
-    return $options->{dsn}
-      if $options->{dsn};
+    $auto_commit = delete $options{AutoCommit};
+    $raise_error = delete $options{RaiseError};
+    $print_error = delete $options{PrintError};
 
-    if ( $options->{data_source} ) {
-      my @connect_params = load_dsn_from_config( $options->{data_source}, { name => $options->{name} } );
+    if ( $options{dsn} ) {
+      my ( $scheme, $driver, $attr_string, $attr_hash, $driver_dsn ) = DBI->parse_dsn( $options{dsn} );
+
+      my ( $database, $host ) = split /:/xsm, $driver_dsn;
+
+      $host     //= $options{host}     // $EMPTY;
+      $database //= $options{database} // $EMPTY;
+
+      return sprintf 'dbi:%s:%s:%s;%s', $driver, $database, $host, $attr_string // $EMPTY;
+    }
+
+    if ( $options{data_source} ) {
+      my @connect_params = load_dsn_from_config( $options{data_source}, { name => $options{name} } );
       ( $user, $password ) = @connect_params[ ( 1, 2 ) ];
       return $connect_params[0];
     }
 
-    my ( $host, $database, $socket )
-      = @{$options}{qw(host database)};
+    my ( $host, $database, $socket ) = @options{qw(host database)};
 
-    $user     = delete $options->{user};
-    $password = delete $options->{password};
-
-    $auto_commit = delete $options->{AutoCommit};
-    $raise_error = delete $options->{RaiseError};
-    $print_error = delete $options->{PrintError};
-
-    return load_dsn_from_config( { default => $options }, { name => 'default', env => $TRUE } );
+    return load_dsn_from_config( { default => \%options }, { name => 'default', env => $TRUE } );
   };
 
   $auto_commit //= $TRUE;
@@ -1610,23 +1615,13 @@ Number of rows affected by the last execute statement.
 
 =head1 EASY CONNECT
 
-=head2 easy_connect
-
-  easy_connect(user => 'root');
-
-A convenience routine for connecting to a database using DBI and
-returning an open database handle. This is a class method (not an
-instance method) and can be exported.
-
- easy_connect(key => value, ...)
-
-Keys are options used to connect to a DBI supported database,
-typically C<user>, C<password>, C<driver>, C<database>, C<host>, etc.
-
- easy_connect(filehandle, [name]);
-
-C<filehandle> is an opened filehandle to a database configuration
-file.
+Typically one uses the C<DBI::connect> method to connect to a database
+by providing the necessary connection parameters. These parameters
+contain user, password and other settings you might store in the
+environment, configuration files or the environment.  The
+C<easy_connect()> method attempts to simplify the process of
+connecting by providing various ways to retrieve and use connection
+parameters.
 
 It's easy because:
 
@@ -1635,11 +1630,95 @@ It's easy because:
 =item * ...it will use intelligent defaults if some options are missing
 
 =item * ...it will use your environment variables to create a database
-connection if they are available
+connection string if they are available
 
 =item * ...it can use the parameters you pass as key/value pairs to construct a connection string
 
 =item * ...it will use a file handle to an open database configuration file if you pass that as the key C<data_source> and optionally the key C<name> as the database configuration to use.
+
+=head2 easy_connect
+
+  easy_connect(user => 'root');
+
+A convenience routine for connecting to a database using DBI and
+returning an open database handle. This can be called as class or
+instance method.
+
+Send the connection parameters as key/value pairs...
+
+ easy_connect(key => value, ...)
+
+Keys are options used to connect to a DBI supported database,
+typically C<user>, C<password>, C<driver>, C<database>, C<host>, etc.
+
+...or use a database configuration file.
+
+ easy_connect(filehandle, [name]);
+
+C<filehandle> is a filehandle to a B<database configuration file>. If
+C<name> ommitted the first database configuration will be used.
+
+A B<database configuration file> is a Bedrock XML file that represents
+a Perl object containing one or more named configurations.  In the
+example below, two database configurations are defined (I<bedrock> and
+I<sqlite>).
+
+ <object>
+   <object name="bedrock">
+     <scalar name="username">fred</scalar>
+     <scalar name="password">flintstone</scalar>
+     <scalar name="database">bedrock</scalar>
+   </object>
+   <object name="sqlite">
+     <scalar name="data_source">dbi:SQLite:dbname=:memory</scalar>
+   </object>
+ </object>
+
+The members of each configuration represent values that will be used
+to connect to the database.
+
+=over 5
+
+=item username, DBI_USER
+
+Database username.
+
+default: root
+
+=item password, DBI_PASS
+
+Database password (if required).
+
+=item database, DBI_DB
+
+Name of the database (if not provided in the data_source string).
+
+=item data_source, DBI_DSN
+
+If provided must have at least the scheme and driver portions
+(example: dbi:mysql).
+
+=item host, DBI_HOST
+
+default: localhost
+
+=item AutoCommit
+
+default: true
+
+=item PrintError
+
+default: true
+
+=item RaiseError
+
+default: true
+
+=back
+
+Any other options you include in your configuration will be appended
+to the data source name passed to DBI.
+
 
 (see L<Bedrock::DBI::Utils> for a description of database configuration files)
 

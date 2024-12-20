@@ -2,6 +2,7 @@ use strict;
 use warnings;
 
 use Test::More;
+use Data::Dumper;
 
 use_ok('BLM::IndexedTableHandler::Common');
 

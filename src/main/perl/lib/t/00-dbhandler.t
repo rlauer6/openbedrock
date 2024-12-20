@@ -30,7 +30,7 @@ subtest 'version' => sub {
 };
 
 ########################################################################
-subtest 'environment variables' => sub {
+subtest 'easy_connect: environment variables' => sub {
 ########################################################################
   BLM::DBHandler->import(qw(easy_connect is_dbi));
 
@@ -66,7 +66,7 @@ subtest 'environment variables' => sub {
 };
 
 ########################################################################
-subtest 'file handle' => sub {
+subtest 'easy_connect: file handle' => sub {
 ########################################################################
   local %ENV = ();
 
@@ -89,7 +89,7 @@ subtest 'file handle' => sub {
 };
 
 ########################################################################
-subtest 'configuration file' => sub {
+subtest 'easy_connect: configuration file' => sub {
 ########################################################################
   my $fh = *DATA;
 

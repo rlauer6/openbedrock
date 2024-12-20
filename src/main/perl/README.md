@@ -88,7 +88,7 @@ cat ../bedrock/config/create-session.sql | \
 
 ```
 cd src/main/perl
-TESTS=all make test
+DBI_SOCKET=/tmp/mysqld/mysqld.sock TEST=all make test
 ```
 
 # MySQL Docker Images

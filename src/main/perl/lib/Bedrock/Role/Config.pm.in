@@ -1,0 +1,107 @@
+package Bedrock::Role::Config;
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file :booleans);
+use Bedrock::Constants qw(:chars :booleans);
+use Bedrock::XML;
+use Carp;
+use English qw(-no_match_vars);
+use JSON;
+use List::Util qw(none);
+use Scalar::Util qw(openhandle);
+use YAML qw(Load);
+use Role::Tiny;
+
+########################################################################
+sub tagx_config {
+########################################################################
+  my ( $self, $tagx ) = @_;
+
+  my $config_path = sprintf '%s/tagx.xml', $self->{BEDROCK_CONFIG_PATH};
+
+  if ( is_hash($tagx) ) {
+    rename $config_path, sprintf '%s/tagx.xml~', $self->{BEDROCK_CONFIG_PATH};
+
+    return Bedrock::XML::writeXML( $tagx, $config_path );
+  }
+  else {
+    return Bedrock::XML->new($config_path);
+  }
+}
+
+########################################################################
+sub site_config {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] && !openhandle $args[0] ) {
+    shift @args;
+  }
+
+  my $fh;
+  my $ext;
+
+  if ( openhandle $args[0] ) {
+    $fh = $args[0];
+  }
+  else {
+    my $config_name = ref $args[0] ? $args[1] : $args[0];
+
+    my $name;
+    ( $name, $ext ) = $config_name =~ /^([^.]+)[.]?(.*)$/xsm;
+    $ext //= 'xml';
+
+    croak "config type must be xml, json or yml\n"
+      if none { $_ eq $ext } qw(xml json yml);
+
+    $ENV{CONFIG_PATH} //= $ENV{BEDROCK_CONFIG_PATH};
+
+    my @paths = map { $ENV{CONFIG_PATH} . $_ } ( $EMPTY, '.d', '.d/startup', '.d/plugin' );
+    push @paths, $ENV{BEDROCK_CONFIG_PATH};
+
+    my ($path) = grep { -e $_ } map { sprintf '%s/%s.%s', $_, $name, $ext } @paths;
+
+    return
+      if !-e $path;
+
+    open $fh, '<', $path
+      or croak "could not open $path\n";
+  }
+
+  local $RS = undef;
+  my $content = <$fh>;
+  close $fh;
+
+  # let's guess?
+  if ( !$ext ) {
+    if ( $content =~ /^\s*</xsm ) {
+      $ext = 'xml';
+    }
+    elsif ( $content =~ /^\s*{/xsm ) {
+      $ext = 'json';
+    }
+    else {
+      $ext = 'yml';
+    }
+  }
+
+  my %readers = (
+    xml => sub {
+      return Bedrock::XML->newFromString(shift);
+    },
+    yml => sub {
+      Load(shift)->[0];
+    },
+    json => sub {
+      return JSON->new->decode(shift);
+    },
+  );
+
+  my $config = $readers{$ext}->($content);
+
+  return $config;
+}
+
+1;
