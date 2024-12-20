@@ -26,6 +26,7 @@ perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Seriali
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
 
 perl5bedrockredisclientlibdir    	  = $(perl5libdir)/Bedrock/RedisClient
+perl5bedrockrolelibdir    	          = $(perl5libdir)/Bedrock/Role
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
@@ -236,6 +237,11 @@ perl5bedrockxmllib_DATA = \
 
 BEDROCK_XML=$(perl5bedrockxmllib_DATA:.pm=.pm.in)
 
+BEDROCK_ROLE=$(perl5bedrockrolelib_DATA:.pm=.pm.in)
+
+perl5bedrockrolelib_DATA = \
+    Bedrock/Role/Config.pm
+
 perl5bedrockserializerlib_DATA = \
     Bedrock/Serializer/CSV.pm         \
     Bedrock/Serializer/BedrockXML.pm  \
@@ -351,6 +357,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_POD) \
     $(BEDROCK_REDIS) \
+    $(BEDROCK_ROLE) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \

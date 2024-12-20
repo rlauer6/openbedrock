@@ -51,6 +51,7 @@ use Symbol;
 ## no critic (RequireInterpolationOfMetachars)
 
 our $VERSION = '@PACKAGE_VERSION@';
+our $RELEASE = '@BEDROCK_RELEASE@';
 
 if ($Bedrock::Handler::BEDROCK_BENCHMARK) {
   require Benchmark;
@@ -59,7 +60,7 @@ if ($Bedrock::Handler::BEDROCK_BENCHMARK) {
   Benchmark->import(qw(:all :hireswallclock));
 }
 
-our @ISA = qw(Exporter);  ## no critic (ProhibitExplicitISA)
+use parent qw(Exporter);
 
 our @EXPORT_OK = qw(
   load_startup_modules
@@ -224,33 +225,27 @@ sub handler {
   # --- benchmark
   $benchmarks = report_time( $r, 'context object created', @{$benchmarks} );
 
-  my $tx = Text::TagX->new( $file, $ctx );
-
-  $tx->options(
-    INCLUDE_DIR       => $conf->get_include_dir(),
-    ALLOW_SNIPPET_TAG => $conf->{ALLOW_SNIPPET_TAG},
-    CONFIG            => $conf,
-  );
-
-  $tx->param( '_request' => $r );
-  $tx->param( '_version' => '@VERSION@-@BEDROCK_RELEASE@' );
-
   # --- benchmark
   $benchmarks = report_time( $r, 'TagX object creation complete', @{$benchmarks} );
 
   # this needs to be done before load_startup_modules()
   $conf->init_plugin_path();
 
-  # load generic startup BLMs
+  # load module config
   my $modules = $conf->get_module_config();
 
   if ( !$modules ) {
     display_init_error( $r, 'error in config file: MODULES is not defined.' );
 
-    $tx->close();
-
     return $OK;
   }
+
+  my $tx = init_tagx(
+    file            => $file,
+    config          => $conf,
+    request_handler => $r,
+    context         => $ctx
+  );
 
   # load startup modules
   my $pre_bound = eval { return load_startup_modules( $modules, $ctx, $tx ) };
@@ -324,6 +319,27 @@ sub handler {
   }
 
   return $OK;
+}
+
+########################################################################
+sub init_tagx {
+########################################################################
+  my (%args) = @_;
+
+  my ( $file, $config, $ctx, $r ) = @args{qw(file config context request_handler)};
+
+  my $tx = Text::TagX->new( $file, $ctx );
+
+  $tx->options(
+    INCLUDE_DIR       => $config->get_include_dir(),
+    ALLOW_SNIPPET_TAG => $config->{ALLOW_SNIPPET_TAG},
+    CONFIG            => $config,
+  );
+
+  $tx->param( '_request' => $r );
+  $tx->param( '_version' => sprintf '%s-%', $VERSION, $RELEASE );
+
+  return $tx;
 }
 
 ########################################################################
@@ -410,6 +426,7 @@ sub bind_module {
   my (%args) = @_;
 
   my ( $module, $context, $config ) = @args{qw(module context config)};
+  $args{type} //= 'hash';
 
   my $type = $args{type} eq 'object' ? 'hash' : $args{type};
 
@@ -449,33 +466,25 @@ sub pre_bind_module {
 ########################################################################
   my (%args) = @_;
 
-  my $module = $args{module};
+  my ( $module, $pre_bound_type, $context, $tagx ) = @args{qw(module pre_bound_type context tagx)};
 
-  my $class = $module->{module};
-
-  my $pre_bound_type = $args{pre_bound_type};
+  my ( $class, $type, $config, $binding ) = @{$module}{qw(module type config binding)};
 
   # Bind the module
-  my $obj = eval {
-    bind_module(
-      module  => $class,
-      type    => $module->{type} || 'hash',
-      context => $args{context},
-      config  => $module->{config},
-    );
-  };
+  my $obj = eval { bind_module( module => $class, type => $type || 'hash', context => $context,
+      config => $config, ); };
 
-  die sprintf q{could not bind module (%s) as '%s': %s}, $class, $module->{binding}, $EVAL_ERROR
+  die sprintf q{could not bind module (%s) as '%s': %s}, $class, $binding, $EVAL_ERROR
     if !$obj || $EVAL_ERROR;
 
   # add the object to Bedrock' top frame (symbol table)
-  $args{tagx}->param( $module->{binding} => $obj );
+  $tagx->param( $binding => $obj );
 
   # tagX wants to know who the header and session object are
-  $args{tagx}->options( $pre_bound_type => $obj );
+  $tagx->options( $pre_bound_type => $obj );
 
   # ...so does the context object which can be used by Bedrock::CGI
-  $args{context}->{$pre_bound_type} = $obj;
+  $context->{$pre_bound_type} = $obj;
 
   return $TRUE;
 }

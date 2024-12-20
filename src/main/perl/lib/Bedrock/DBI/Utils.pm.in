@@ -71,14 +71,18 @@ sub load_dsn_from_config {
     if !$config || $EVAL_ERROR;
 
   my $dsn;
+  my %dsn_spec;
 
   if ( $config->{data_source} ) {
     $dsn = $config->{data_source};
   }
   elsif ( $config->{DBI_DSN} ) {
-    $dsn = $config;
+    $dsn = $config->{DBI_DSN};
   }
-  elsif ($config) {
+  elsif ( $use_env && $ENV{DBI_DSN} ) {
+    $dsn = $ENV{DBI_DSN};
+  }
+  elsif ( ref $config ) {
     my @data_sources = keys %{$config};
 
     my $dsn_name = $name // $default_name;
@@ -90,20 +94,32 @@ sub load_dsn_from_config {
     die "$dsn_name not found in config object\n"
       if !$config->{$dsn_name};
 
-    $dsn = delete $config->{$dsn_name};
+    %dsn_spec = %{ $config->{$dsn_name} };
+
+    $dsn = delete $dsn_spec{data_source};
+  }
+  else {
+    die "config must be ref not ($config)\n";
   }
 
+  if ($dsn) {
+    my ( $scheme, $driver, $attr_string, $attr_hash, $driver_dsn ) = DBI->parse_dsn($dsn);
+    $dsn_spec{driver} = $driver;
+    my @dsn_parts = split /:/xsm, $driver_dsn;
+    @dsn_spec{qw(database host)} = @dsn_parts;
+    %dsn_spec = ( %dsn_spec, %{ $attr_hash || {} } );
+  }
+
+  # if use_env set, then replace elements of config with values from
+  # environment
   if ($use_env) {
-    $dsn = _override_config($dsn);
+    foreach (qw(DBI_DB DBI_USER DBI_PASS DBI_HOST DBI_DSN)) {
+      next
+        if !$ENV{$_};
+
+      $dsn_spec{$_} = $ENV{$_};
+    }
   }
-
-  $dsn = ( ref $dsn && $dsn->{DBI_DSN} )     ? $dsn->{DBI_DSN}     : $dsn;
-  $dsn = ( ref $dsn && $dsn->{data_source} ) ? $dsn->{data_source} : $dsn;
-
-  return $dsn
-    if !ref $dsn;
-
-  my %dsn_spec = %{$dsn};
 
   my $driver = delete $dsn_spec{driver};
 
@@ -134,22 +150,6 @@ sub load_dsn_from_config {
   my @connect_params = ( $dsn, $username, $password, $database, $host, $extra_options );
 
   return wantarray ? @connect_params : $dsn;
-}
-
-########################################################################
-sub _override_config {
-########################################################################
-  my ($config) = @_;
-
-  # override config if env true
-  foreach (qw(DB USER PASS HOST DSN)) {
-    next
-      if !$ENV{"DBI_$_"};
-
-    $config->{"DBI_$_"} = $ENV{"DBI_$_"};
-  }
-
-  return $config;
 }
 
 ########################################################################

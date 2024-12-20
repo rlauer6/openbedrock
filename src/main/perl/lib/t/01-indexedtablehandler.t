@@ -13,9 +13,10 @@ use DBI;
 use Time::HiRes;
 
 use BLM::DBHandler;
+use Cwd;
 use Data::Dumper;
-use English    qw{-no_match_vars};
-use List::Util qw{none};
+use English qw(-no_match_vars);
+use List::Util qw(none);
 
 use Text::ASCIITable;
 
@@ -33,7 +34,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 16;
+  plan tests => 17;
 }
 
 use_ok('BLM::IndexedTableHandler')
@@ -235,7 +236,28 @@ subtest 'new({}) - query (or)' => sub {
 
   is( $ith->{foo}, 'bar', 'read record from query' );
 
-  $ith->select_list('select * from foo');
+  my $list = $ith->select_list('select * from foo');
+};
+
+########################################################################
+subtest 'new()' => sub {
+########################################################################
+  my $ith = ITH::Foo->new();
+
+  isa_ok( $ith, 'ITH::Foo' )
+    or do {
+    diag($EVAL_ERROR);
+    bail_out('could not create BLM::IndexedTableHandler instance');
+    };
+
+  my $new_ith = eval { return $ith->load_config(*DATA); };
+
+  isa_ok( $new_ith->dbi, 'DBI::db' );
+
+  isa_ok( $new_ith, 'BLM::IndexedTableHandler' )
+    or diag($EVAL_ERROR);
+
+  my $list = $new_ith->select_list('select * from foo');
 };
 
 ########################################################################
@@ -313,3 +335,18 @@ END {
 }
 
 1;
+
+__DATA__
+{
+  "tables": {
+    "foo" : {
+    }
+  },
+  "database": {
+     "dsn": "dbi:mysql:bedrock",
+     "user": "fred",
+     "password": "flintstone",
+     "hostname": "127.0.0.1"
+   },
+  "title": "Test"
+}

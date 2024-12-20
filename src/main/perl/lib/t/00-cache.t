@@ -3,20 +3,18 @@
 use strict;
 use warnings;
 
-use lib qw(. ..);
-
-use Cwd qw(abs_path);
-
-use Data::Dumper;
+use Bedrock;
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw(:booleans);
-
 use Bedrock::Test::RequestHandler;
+use Carp::Always;
+use Cwd qw(abs_path cwd);
+use Data::Dumper;
 use English qw(-no_match_vars);
 use IPC::Shareable;
+use Test::Deep;
 use Test::More;
 use Test::Output;
-use Test::Deep;
 
 ########################################################################
 BEGIN {
