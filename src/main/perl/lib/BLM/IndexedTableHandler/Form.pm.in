@@ -1,0 +1,202 @@
+package BLM::IndexedTableHandler::Form;
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:booleans :chars);
+use BLM::IndexedTableHandler::Common qw(create_xhtml_element create_html_element);
+
+use Data::Dumper;
+use English qw(-no_match_vars);
+use BLM::IndexedTableHandler;
+use JSON;
+
+use Carp;
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw(
+    config_path
+    config
+    form_name
+    handler
+    javascript
+    link
+    title
+    meta
+    default_config
+  )
+);
+
+use parent qw(Class::Accessor::Fast);
+
+#######################################################################
+sub new {
+#######################################################################
+  my ( $class, @args ) = @_;
+
+  my $options = ref $args[0] ? $args[0] : {@args};
+
+  my $default_config_path = $ENV{CONFIG_PATH} // $ENV{BEDROCK_CONFIG_PATH};
+
+  $options->{config_path} //= "$default_config_path/forms";
+
+  my $self = $class->SUPER::new($options);
+
+  if ( !$self->get_form_name ) {
+    $self->set_form_name( $self->create_form_name );
+  }
+
+  $self->init_default_config();
+
+  $self->init();
+
+  return $self;
+}
+
+########################################################################
+sub init_default_config {
+########################################################################
+  my ($self) = @_;
+
+  my $default_config = $self->get_default_config;
+
+  my $table_name = $self->get_form_name;
+
+  return $default_config
+    if $default_config;
+
+  my $default_config_file = sprintf '%s/default_form_config.json', $self->get_config_path;
+
+  if ( -d $self->get_config_path && -e $default_config_file ) {
+    my $content = slurp_file $default_config_file;
+
+    $default_config = eval { return JSON->new->decode($content); };
+
+    $default_config->{tables}->{$table_name} = {};
+    $default_config->{title} = uc $table_name;
+  }
+
+  return $default_config
+    if $default_config;
+
+  $default_config = {
+    tables     => { $table_name => {}, },
+    javascript => [ { src => '/bedrock/javascript/indexed-table-handler.js' }, ],
+    link       => [
+      { rel  => 'stylesheet',
+        href => '/bedrock/css/indexed-table-handler.css'
+      }
+    ],
+    title => uc $self->get_form_name,
+  };
+
+  $self->set_default_config($default_config);
+
+  return $default_config;
+}
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  return $self
+    if $self->get_config;
+
+  my $config_path = $self->get_config_path;
+
+  my $handler = eval {
+    if ($config_path) {
+      local $ENV{CONFIG_PATH} = $config_path;
+      my $form_name = $self->get_form_name;
+
+      my ($ext) = grep { -e sprintf '%s/%s.%s', $config_path, $form_name, $_ } qw(json xml yml);
+
+      return BLM::IndexedTableHandler->new()->load_config( sprintf '%s.%s', $form_name, $ext )
+        if $ext;
+    }
+
+    # use a default configuration - but this will only work if the DBI
+    # environment variables have been properly set
+    my $config = $self->get_default_config();
+
+    return BLM::IndexedTableHandler->new()->load_config($config);
+  };
+
+  croak "could not initialize handler\n$EVAL_ERROR"
+    if !$handler || $EVAL_ERROR;
+
+  $self->set_handler($handler);
+
+  my $config = $handler->get_config();
+
+  $self->set_config($config);
+
+  foreach (qw(javascript link meta title)) {
+
+    next
+      if !$config->{$_};
+
+    $self->set( $_, $config->{$_} );
+  }
+
+  return $self;
+}
+
+########################################################################
+sub create_head_tag {
+########################################################################
+  my ($self) = @_;
+  #meta, title link, script
+
+  my $title     = $self->get_title // $self->get_form_name;
+  my $title_tag = create_xhtml_element( 'title', $title );
+
+  my $meta_tag = $EMPTY;
+  $meta_tag .= join "\n", map { create_html_element( 'meta', $_ ) } @{ $self->get_meta || [] };
+
+  my $link_tag = $EMPTY;
+  $link_tag .= join "\n", map { create_html_element( 'link', $_ ) } @{ $self->get_link || [] };
+
+  my $script_tag = $EMPTY;
+  $script_tag .= join "\n",
+    map { create_xhtml_element( 'script', $EMPTY, %{$_} ) } @{ $self->get_javascript || [] };
+
+  return create_xhtml_element( 'head' => join "\n", $title_tag, $meta_tag, $link_tag, $script_tag );
+}
+
+########################################################################
+sub render_page {
+########################################################################
+  my ($self) = @_;
+
+  my $handler = $self->get_handler;
+
+  my $html = $self->create_head_tag;
+
+  $html .= join "\n", $handler->html_form_header(), $handler->html_form_body(), $handler->html_form_footer();
+
+  $html = join "\n", '<!doctype html>', create_xhtml_element( 'html', $html, lang => 'en' );
+
+  return $handler->tidy( 0, $html );
+}
+
+########################################################################
+sub create_form_name {
+########################################################################
+  my ($self) = @_;
+
+  my $class = ref $self;
+
+  croak "Either subclass $class or pass a form name\n"
+    if $class eq __PACKAGE__;
+
+  my ($form_name) = lc reverse $class =~ /(::)?([^:]+)$/xsm;
+
+  return $form_name;
+}
+
+1;
+

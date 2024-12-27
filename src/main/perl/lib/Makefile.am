@@ -127,6 +127,7 @@ BEDROCK_APACHE = \
     Bedrock/Apache/BedrockDocs.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in \
     Bedrock/Apache/Constants.pm.in \
+    Bedrock/Apache/Form.pm.in \
     Bedrock/Apache/HandlerUtils.pm.in \
     Bedrock/Apache/RedisSessionHandler.pm.in
 
@@ -263,10 +264,10 @@ BEDROCK_XML_CONTAINER=$(perl5bedrockxmlcontainerlib_DATA:.pm=.pm.in)
 
 perl5blmindexedtablehandlerlib_DATA = \
     BLM/IndexedTableHandler/RecordSet.pm \
+    BLM/IndexedTableHandler/Form.pm \
     BLM/IndexedTableHandler/Common.pm
 
 BLM_INDEXEDTABLEHANDLER=$(perl5blmindexedtablehandlerlib_DATA:.pm=.pm.in)
-
 
 # Bedrock/Model
 perl5bedrockmodellib_DATA = \

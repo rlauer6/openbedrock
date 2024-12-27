@@ -1,6 +1,6 @@
 ## Process this file with automake to produce Makefile.in   -*-Makefile-*-
 
-SUBDIRS = . pebbles img htdocs css config include
+SUBDIRS = . pebbles img htdocs css config include javascript
 
 sqldir = $(datadir)/bedrock
 

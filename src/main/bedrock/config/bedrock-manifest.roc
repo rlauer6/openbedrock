@@ -43,14 +43,25 @@
       ]
     },
     {
-      "name" : "<var $dest.config/admin>",
+      "name" : "<var $dest.config>/admin",
       "files": [
         {
-        "source" : "<var $source.config/admin>",
+        "source" : "<var $source.config>/admin",
         "name" : [
-          "index.rock",
+          "index.roc",
           "bedrock.css",
           "bedrock.js"
+          ]
+      }
+      ]
+    },
+    {
+      "name" : "<var $dest.config>/forms",
+      "files": [
+        {
+        "source" : "<var $source.config>",
+        "name" : [
+          "default_form_config.json"
           ]
       }
       ]
@@ -72,7 +83,6 @@
         {
           "source" : "<var $source.config>",
           "name" : [
-            "bedock.xml",
             "mysql-session.xml",
             "s3.xml",
             "rest.xml",
@@ -82,9 +92,15 @@
       ]
     },
     {
-      "recurse" : 1,  
+      "recurse" : 0,  
       "name" : "<var $dest.htdocs>",
       "source" : "<var $source.htdocs>",
+      "exclude" : [ "qr/Makefile.*/" ]
+    },
+    {
+      "recurse" : 0,  
+      "name" : "<var $dest.javascript>",
+      "source" : "<var $source.javascript>",
       "exclude" : [ "qr/Makefile.*/" ]
     },
     {
@@ -96,8 +112,11 @@
       "name" : "<var $dest.apache_config_extra>",
       "files" : [ 
         {
-          "source": "<var $config.bedrock_conf>",
-          "name" : [ "bedrock.conf" ]
+          "source": "<var $source.config>",
+          "name" : [
+              "bedrock.conf",
+              "dbi.conf"
+          ]
         }
       ]
     }

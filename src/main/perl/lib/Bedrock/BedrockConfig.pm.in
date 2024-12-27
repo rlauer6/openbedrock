@@ -21,14 +21,14 @@ package Bedrock::Config;
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-# note we do not use Bedrock::Logger here since Bedrock::Config is used
-# to gather config files which later are used to initialize
-# logging...use carp, croak;
-
 use strict;
 use warnings;
 
 BEGIN {
+
+  # Note we do not use Bedrock::Logger here since Bedrock::Config is
+  # used load configuration information for Bedock::Logger
+  # (Log::Log4perl). Instead we use carp & croak.
 
   use Carp;
 
@@ -63,6 +63,7 @@ sub new {
   $class = ref $class || $class;
 
   my $self = $file ? _load_config($file) : {};
+
   $self = bless $self, $class;
 
   return $self;
@@ -165,11 +166,11 @@ sub merge_config {
   my ( $self, $config ) = @_;
 
   return
-    if !$config;
+    if !$config || !ref $config;
 
-  # merge source-config with master
   foreach my $key ( keys %{$config} ) {
-    next if $key eq 'MODULES';
+    next
+      if $key eq 'MODULES';
 
     $self->{$key} = $config->{$key};
   }
@@ -242,10 +243,10 @@ sub merge_modules {
 
   my $config_modules = $config->{MODULES};
 
-  my $modules = $self->{MODULES};
-
   return $self
     if !is_array($config_modules) || !@{$config_modules};
+
+  my $modules = $self->{MODULES};
 
   if ( !is_array($modules) || !@{$modules} ) {
     $self->{MODULES} = $config_modules;
@@ -253,25 +254,31 @@ sub merge_modules {
     return $self;
   }
 
-  # use the binding names to create a merged hash of modules
-  my %merged_modules = map { ( $_->{binding}, $_ ); } @{$modules};
+  # use the binding names to convenient hashes to merge
+  my %merged_modules  = map { ( $_->{binding} => $_ ); } @{$modules};
+  my %source_bindings = map { $_->{binding} => $_ } @{$config_modules};
 
-  MODULE:
-  foreach my $m ( @{$config_modules} ) {
+  foreach my $binding ( keys %source_bindings ) {
+    if ( $merged_modules{$binding} ) {
 
-    if ( exists $merged_modules{ $m->{binding} } ) {
-      my $overwrite = $merged_modules{ $m->{binding} }->{overwrite};
+      my $dest_overwrite = to_boolean( $merged_modules{$binding} // 'no' );
 
-      # if no overwrite in first binding found, then assume it
-      # should be the bound module UNLESS this other module's overwrite is
-      # yes
-      next MODULE if $overwrite && $overwrite =~ /^y/xsmi;
+      # If the current config has the overwrite flag set for this
+      # binding, we assume it should take precendence over the config
+      # to be merged. I believe the thought here is that the base
+      # config should never set overwrite unless is plans to block
+      # other configs from getting merged into the base configuration.
 
-      die sprintf 'duplicate binding name for modules (%s)', $m->{binding}
-        if !$m->{overwrite} || $m->{overwrite} !~ /^y/ixsm;
+      next
+        if $dest_overwrite;
+
+      my $src_overwrite = to_boolean( $source_bindings{$binding}->{overwrite} // 'no' );
+
+      die sprintf 'duplicate binding name for modules (%s)', $binding
+        if !$src_overwrite;
     }
 
-    $merged_modules{ $m->{binding} } = $m;
+    $merged_modules{$binding} = $source_bindings{$binding};
   }
 
   $self->{MODULES} = [ values %merged_modules ];
@@ -583,12 +590,14 @@ Return the C<dbnames> object from the configuration object.
 
   merge(fh|file)
 
-Merge the contents of the config file with the current config object.
+Merge the contents of the read from a file handle or file the current
+configuration object.
 
 You can set a MERGE_CONFIG element to 'no' to avoid merging the
-configuration object.  This is useful if you want to drop a F<.xml>
-file in Bedrock's configuration directory but don't want it merged
-into Bedrock's global config.
+configuration object. Normally and F<.xml> file found in Bedrock's
+configuration directory will be merged in the Bedrock's
+configuration. If don't want that file merged, set MERGE_CONFIG to
+'no'.
 
 See L</merge_config>
 
@@ -598,8 +607,8 @@ See L</merge_config>
 
 Merges the passed hash into the current configuration overwriting any
 keys that might have existed in the current configuration. The
-C<MODULES> key will be skipped since merging module configurations can
-be configured to avoid overwriting previously defined modules.
+C<MODULES> element will will be merged respecting the 'overwrite' flag
+in the module's configuration.
 
 =head2 merge_modules
 
@@ -608,7 +617,7 @@ be configured to avoid overwriting previously defined modules.
 Merges the array of modules passed into the C<MODULES> element of the
 configuration object. The module can set a key C<overwrite> to 'yes'
 to indicate that this module should overwrite any other module with
-the same binding name.
+the same binding name. This method is called by C<merge_config()>
 
 =head2 newFromString
 

@@ -6,9 +6,8 @@ use warnings;
 
 use Test::More;
 
-use DBI;
 use Data::Dumper;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 use Readonly;
 
 Readonly my $TRUE  => 1;
@@ -23,7 +22,7 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 16;
+  plan tests => 11;
 }
 
 use_ok('BLM::IndexedTableHandler');
@@ -65,44 +64,64 @@ my @not_id = $ith->not_id();
 ok( !( grep {/id/xsm} @not_id ), 'not id' )
   or diag( Dumper( [ not_id => \@not_id ] ) );
 
-is( $ith->get_upsert_mode(), $FALSE, 'upsert default 0?' )
-  or diag( $ith->get_upsert_mode );
+########################################################################
+subtest 'upsert' => sub {
+########################################################################
+  is( $ith->get_upsert_mode(), $FALSE, 'default upsert mode = false' )
+    or diag( $ith->get_upsert_mode );
 
-$ith->set_upsert_mode($TRUE);
+  $ith->set_upsert_mode($TRUE);
 
-is( $ith->get_upsert_mode(), $TRUE, 'set_upsert_mode' )
-  or diag( $ith->get_upsert_mode );
+  is( $ith->get_upsert_mode(), $TRUE, 'set_upsert_mode' )
+    or diag( $ith->get_upsert_mode );
 
-my $id = eval {
-  $ith->set( biz => 'bizzzz' );
-  $ith->save();
-};
+########################################################################
+  # biz & buz are NOT NULL columns & buz has a DEFAULT...so
+  #
+  # if upsert mode is true:
+  #   only columns set will be included in the insert statement
+  #   since biz is set and buz is not, the default value will be stored for buz
+  #
+  # if upsert mode is false & we don't set buz to a value
+  #   all columns will be included in the insert statement we'll get an
+  #   NOT NULL exception because 'buz' was included in the insert
+  #   statement but we provided no value for 1buz'
+  #
+########################################################################
 
-ok( !$EVAL_ERROR && defined $id, 'upsert' )
-  or do {
-  diag( Dumper( [$ith] ) );
-  BAIL_OUT($EVAL_ERROR);
+  my $id = eval {
+    $ith->set( biz => 'bizzzz' );
+    $ith->save();
   };
 
-like( $id, qr/^\d+$/xsm, 'upsert' )
-  or diag("id not returned ($id): $EVAL_ERROR");
+  ok( !$EVAL_ERROR && defined $id, 'upsert' )
+    or do {
+    diag( Dumper( [$ith] ) );
+    BAIL_OUT($EVAL_ERROR);
+    };
 
-$id = eval {
-  $ith->reset($TRUE);
-  $ith->set_upsert_mode($FALSE);
-  $ith->set( 'biz', 'bizzz' );
-  $ith->save();
+  like( $id, qr/^\d+$/xsm, 'upsert' )
+    or diag("id not returned ($id): $EVAL_ERROR");
+
+  $id = eval {
+    $ith->reset($TRUE);
+    $ith->set_upsert_mode($FALSE);
+    $ith->set( 'biz', 'bizzz' );
+    $ith->save();
+  };
+
+  like( $EVAL_ERROR, qr/cannot be null/smi, 'null exception' )
+    or diag("$EVAL_ERROR");
+
+  diag( Dumper( [ error => $EVAL_ERROR ] ) );
+
+  $id = eval {
+    $ith->set( 'buz', 'buzzz' );
+    $ith->save();
+  };
+
+  ok( !$EVAL_ERROR && $id =~ /^\d+$/xsm, 'insert all columns' );
 };
-
-like( $EVAL_ERROR, qr/cannot be null/smi, 'null exception' )
-  or diag("$EVAL_ERROR");
-
-$id = eval {
-  $ith->set( 'buz', 'buzzz' );
-  $ith->save();
-};
-
-ok( !$EVAL_ERROR && $id =~ /^\d+$/xsm, 'insert all columns' );
 
 ########################################################################
 subtest 'select' => sub {

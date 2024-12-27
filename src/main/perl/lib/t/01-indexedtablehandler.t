@@ -252,10 +252,17 @@ subtest 'new()' => sub {
 
   my $new_ith = eval { return $ith->load_config(*DATA); };
 
-  isa_ok( $new_ith->dbi, 'DBI::db' );
+  ok( !$EVAL_ERROR, 'loaded config and create new handler' )
+    or BAIL_OUT( Dumper( [ error => $EVAL_ERROR ] ) );
 
   isa_ok( $new_ith, 'BLM::IndexedTableHandler' )
     or diag($EVAL_ERROR);
+
+  my $config = $ith->get_config;
+
+  ok( exists $config->{tables}, 'loaded a table definition' );
+
+  isa_ok( $new_ith->dbi, 'DBI::db' );
 
   my $list = $new_ith->select_list('select * from foo');
 };

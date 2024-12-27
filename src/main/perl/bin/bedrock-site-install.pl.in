@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# configure and install httpd-bedrock.conf file
+# configure and install a Bedrock enabled Apache web server
 
 package Bedrock::SiteInstall;
 
@@ -80,9 +80,9 @@ sub add_env_vars {
 }
 
 ########################################################################
-sub create_httpd_bedrock_conf {
+sub write_temp_file {
 ########################################################################
-  my ( $self, $conf ) = @_;
+  my ( $self, $content ) = @_;
 
   my ( $fh, $filename ) = tempfile(
     UNLINK   => $TRUE,
@@ -94,7 +94,7 @@ sub create_httpd_bedrock_conf {
   die "could not open tempfile\n"
     if !$fh;
 
-  print {$fh} $conf;
+  print {$fh} $content;
 
   close $fh;
 
@@ -206,8 +206,7 @@ sub main {
   $config->{DISTRO}              = lc $app->get_distro;
 
   my $template = Bedrock::Template->new(
-    { file  => ( sprintf '%s/%s.roc', $config_dir, $HTTPD_CONF ),
-      param => {
+    { param => {
         config => $config,
         env    => \%ENV,
       },
@@ -215,20 +214,24 @@ sub main {
     }
   );
 
-  my $tmpfile = $app->create_httpd_bedrock_conf( $template->parse() );
+  foreach my $file (qw(bedrock.conf dbi.conf default_form_config.json)) {
+    $template->file( sprintf '%s.roc', $file );
 
-  $config->{bedrock_conf} = sprintf '%s/%s', $config_dir, $HTTPD_CONF;
-  cp $tmpfile, $config->{bedrock_conf};
+    my $tmpfile = $app->write_temp_file( $template->parse() );
+    cp $tmpfile, sprintf '%s/%s', $config_dir, $file;
+  }
 
-  # create a site specific tagx.xml file
-  $template->file('tagx.xml.roc');
+  foreach my $template_file (qw(tagx.xml mysql-session.xml)) {
 
-  open my $fh, '>', sprintf '%s/tagx.xml', $config_dir
-    or die 'could not open tagx.xml for writing';
+    $template->file( $template_file . '.roc' );
 
-  print {$fh} decode_entities( $template->parse() );
+    open my $fh, '>', sprintf '%s/%s', $config_dir, $template_file
+      or die sprintf 'could not open %s for writing', $template_file . '.roc';
 
-  close $fh;
+    print {$fh} decode_entities( $template->parse() );
+
+    close $fh;
+  }
 
   $template->file('bedrock-manifest');
 

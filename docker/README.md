@@ -1,18 +1,4 @@
-# README
-
-This the README file for describing how to create Docker images
-and run a Bedrock enabled Apache server inside a Docker container.
-
-# Overview
-
-This directory contains Docker build and supporting files for building
-Docker images based on several distributions described below.
-
-| Distribution | Dockerfile | Description |
-| ------------ | ---------- | ----------- |
-| Debian | Dockerfile.debian | Debian distribution (`bookworm`) |
-| Fedora | Dockerfile.fedora | Fedora distribution (40) |
-| Amazon Linux | Dockerfile.al2023 | Amazon Linux 2023 |
+ | Dockerfile.al2023 | Amazon Linux 2023 |
 
 Each of these Dockerfiles will create a base image that includes the
 latest verison of Bedrock built specifically for that distribution.
@@ -24,13 +10,23 @@ new branches are pushed to GitHub.
 # Building the Bedrock Images
 
 A `Makefile` is included in the `docker` directory that will create
-Docker images based on various distros described above.  The build
-process will run `make` from the root of the repository creating the
-distribution tarball and a CPAN distribution that is then used to
-create the Docker image. The image implements an Apache based web
-server environment you can use for developing Bedrock applications or
-for exploring Bedrock.  To build an image based on one of these
-distributions:
+Docker images based on various distros described above.  The
+Dockerfiles for each of these flavors attempts to build the
+dependencies for that environment, each of which have their own way of
+building some of them.  Installing the dependencies for the image can
+be a lengthy process. You can shortcut building the image and just
+install Bedrock or website updates manually inside your container. See
+[Bedrock Enabled Apache Website](#bedrock-enabled-apache-website).
+
+The build process will first run `make` from the root of the
+repository creating the distribution tarball and a CPAN distribution
+that is then used to install Bedrock. Once all of the dependencies are
+installed, the make process installs Bedrock. Finally, the
+`bedrock-site-install` script is run which installs the Bedrock
+enabled Apache website. You can this use this site for developing
+Bedrock applications or for exploring Bedrock.
+
+To build an image based on one of these distributions:
 
 ```
 make {target}
@@ -63,6 +59,11 @@ There is a `.env` file for each distribution for use with
 ```
 docker-compose --env debian.env up
 ```
+or 
+
+```
+DOCKERFILE=Dockerfile.fedora DOCKERIMAGE=bedrock-fedora docker-compose up
+```
 
 Visit the Bedrock documentation at http://localhost/bedrock to
 learn more about Bedrock.
@@ -70,34 +71,93 @@ learn more about Bedrock.
 See [Bedrock Documenation](#bedrock-documentation) for more details
 regarding how to enable the documentation server. 
 
-# Bedrock Configuration
+# Bedrock Enabled Apache Website
+
+After all of the dependencies have been installed during the make
+process, the last step to complete the image is to install Bedrock and
+the Apache web site. This is done when `cpanm` is run followed by
+`bedrock-site-install`.
+
+```
+cpanm -n -v Bedrock.tar.gz
+bedrock-site-install --distro=redhat
+```
+
+TBD: bedrock-site-install help
+The install script will use the environment file for the version of
+Apache (default 2.4) and the distribution (redhat or debian) chosen to
+configure the installation process using the Bedrock `site-config.inc`
+file.
+
+| File | Description | Configured By |
+| ---- | ----------- | ------------- |
+| apache22-env-debian | Apache 2.2 for Debian configuration | manually |
+| apache24-env-debian | Apache 2.4 for Debian configuration | manually |
+| apache22-env-redhat | Apache 2.2 for Redhat configuration | manually |
+| apache24-env-redhat | Apache 2.4 for Redhat configuration | manually |
+| site-config.inc | Site configuration | `apache2x-env-{distro}` | 
+| bedrock.conf.roc | Bedrock's Apache configuration template | `site-config.inc` |
+| bedrock-manifest.roc | Files to be installed by the `bedrock-site-install` | `site-config.inc` |
+
+> Hint: If a change is made to Bedrock or the files to be installed
+> to enable the Apache website, you can shortcut the image creation
+> process. The `docker-compose.yml` file mounts `/tmp/scratch` for
+> you to allow transferring files back and forth from the container to
+> your host system.  Copy the new Bedrock distribution to the scratch
+> directory and install Bedrock using `cpanm`. If necessary run the
+> site installation script (`bedrock-site-install`). If new
+> dependencies are added you'll need to add those before restarting
+> the web server (`kill -HUP 1`).
+
+Using the distribution environment file (e.g. `apache24-env-debian`)
+and the site configuration (`site-config.inc`), the installation
+script customizes the configuration files described below.
 
 ## `bedrock.conf`
 
-An Apache configuration file (`bedrock.conf`) is added to your Apache
-configuration directory.  There you will find the directives that
-enable Bedrock on your site. Other Bedrock configuration files control
-various aspects of your Bedrock server.
+The `bedrock.conf` file is copied to your Apache configuration
+directory. This file essentially _Bedrock enables_ your site.  It uses
+the values in the `site-config.inc` file to configure the final
+`bedrock.conf` file from the `bedrock.conf.roc` file. If you make
+changes to this file while running your container, be sure to test
+your configuration before restarting the server.
+
+```
+httpd -t -f /etc/httpd/conf/http.conf && kill -HUP 1
+```
+
+> Warning: If you do not test the configuration first and an error
+> occurs the container will exit since Apache is run as process 1.
 
 ## `tagx.xml`
 
-TBD:
+This is Bedrock's configuration file.  It controls the various
+paths and features enabled for your Bedrock site.
 
-* allowing environment, configuration, documentation
-* protecting the documentation sitee
-* snippets
-* sessions
+## `mysql-session.xml`
 
-## `mysqlsession.xml`
+This file configures the `BLM::Startup::UserSession` plugin which
+implements persistent sessions based on a MySQL table. It
+contains the basic plugin configuration directives and the database
+configuration for the container environment.
 
 ## `data-sources.xml`
 
+Likewise this file contains a database configuration for the database
+running inside the container environment.
+
 ## Bedrock Documentation
 
-The page is protected
-by a basic auth challenge (usename: fred, password: bedrock). The page
-is protected by default because it might expose configuration
-information if you enabled that in your `tagx.xml` file.
+The Bedrock documentation page (`/bedrock`) is protected by a Basic
+Auth challenge (username: fred, password: bedrock). The page is
+protected by default because it might expose configuration information
+if you enabled that in your `tagx.xml` file.
+
+> The reference container is designed to be used in a _local
+> development environment_. For production sites, make sure you do not
+> include the directives in your Apache configuration which enable
+> this URI. One way to achieve that is to edit the environment files
+> described below that control the configuration of each image flavor.
 
 # Running the Server Using `docker-compose`
 
@@ -214,17 +274,19 @@ port 8080.  The setup Looks something like this...
 
 ```
 
->>Note: Chrome on your Chromebook is unable to access ports opened in
-your Linux container.  You must configure your Chromebook for port
-forwarding. Do this by going to the settings menu on your
-Chromebook. Access the "Advanced>Developers" settings.  There you can
-configure port forwarding for port 8080.
+>Note: By default Chrome on your Chromebook is unable to access ports
+>opened in your Linux container.  You must configure your Chromebook
+>for port forwarding. Do this by going to the settings menu on your
+>Chromebook. Access the "Advanced>Developers" settings.  There you can
+>configure port forwarding for port 8080.
 
 Additionally, all ports are normally blocked to my EC2 except 22. In this scenario
 we open port 80 of my EC2 to the bastion host as well as port 22. Keep
 in mind you still want to restrict port 22 on your bastion host to
 your local IP address __only__.
-To accomplish this I use the command below in Linux running on my Chromebook.
+
+To bring up the tunnel I use the command below in Linux running on my
+Chromebook.
 
 ```
 ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_BASTION -v 
@@ -241,6 +303,8 @@ ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_
 * $REMOTE_PORT - 80
 * $REMOTE_USER - remote user used to access bastion host
 * $REMOTE_BASTION - public IP of the bastion host
+
+Here's the help script that accomplishes the same thing:
 
 ```
 #!/bin/bash
@@ -281,7 +345,9 @@ from the Bedrock repo to an Amazon Linux image.
 
 > Let me repeat that ...__from the Bedrock repo__...did you re-build
 > Bedrock and create the rpms? If you've forgotten how to do that 
-> try running `./build -h`  in the project root directory.
+> try running `./build -h`  in the project root directory. __This is
+> only available to maintainers with access to the AWS resources that
+> implement the yum repo.__
 
 Add the Bedrock repository configuration shown below to `/etc/yum.repos.d`.
 

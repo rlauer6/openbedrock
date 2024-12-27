@@ -1,7 +1,7 @@
 package BLM::IndexedTableHandler;
 
 #
-#    This file is a part of Bedrock, a server-side web scripting tool.
+#    This file is a part of Bedrock, a server-sidse web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
 #    Copyright (C) 2023, TBC Development Group, LLC.
@@ -32,8 +32,10 @@ use Bedrock::Model::Field;
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use File::Basename qw(fileparse);
+use Hash::Merge qw(merge);
 use JSON;
-use List::Util qw( pairs any none mesh);
+use List::Util qw( pairs any none mesh uniq);
 use Scalar::Util qw( reftype );
 use Text::CSV_XS;
 
@@ -88,19 +90,44 @@ sub _new {
   return $self->_new_with_options(@args);
 }
 
+# filename or open handle
 ########################################################################
 sub load_config {
 ########################################################################
   my ( $self, $config_name ) = @_;
 
-  my $config = eval { return site_config($config_name); };
+  my $config = eval {
+
+    return $config_name
+      if ref $config_name;
+
+    return site_config($config_name);
+  };
 
   croak "error loading $config_name\n$EVAL_ERROR"
     if !$config || $EVAL_ERROR;
 
-  my $table_name = $self->create_table_name;
-  $self->set_table_name($table_name);
   $self->set_config($config);
+
+  croak q{no 'tables' element found, not a table definition file}
+    if !$config->{tables};
+
+  my %tables = %{ $config->{tables} };
+
+  my ($table_name) = eval {
+    return keys %tables
+      if scalar keys %tables == 1;
+
+    if ( !openhandle $config_name) {
+      return fileparse( $config_name, qr/[.][^.]+$/xsm )
+        if !openhandle $config_name;
+    }
+
+    return $self->create_table_name;
+  };
+
+  croak 'could not determine table name'
+    if !$table_name || $EVAL_ERROR;
 
   my %db_config = %{ $config->{database} || {} };
 
@@ -744,7 +771,7 @@ sub get_fields {
   if ( !@field_names ) {
     my $table_name = $self->get_table_name;
 
-    die sprintf "table [%s] does not exist\n", $table_name
+    croak sprintf "table [%s] does not exist\n", $table_name
       if !$self->table_exists($table_name);
 
     die "field list is empty\n";
@@ -1280,11 +1307,6 @@ sub create_date_field {
   $attributes //= {};
   $attributes->{input} //= {};
 
-  my $class = $attributes->{input}->{class} // $EMPTY;
-  $class = add_class( $class, 'ith-date' );
-
-  $attributes->{input}->{class} = $class;
-
   my $length = $self->get_field_length($field_name);
 
   my $value = $self->get_formatted_field($field_name) // $EMPTY;
@@ -1295,11 +1317,9 @@ sub create_date_field {
 
   return create_html_element(
     'input',
-    ( type      => 'text',
-      name      => $field_name,
-      value     => $value,
-      maxlength => $size,
-      size      => $size
+    ( type  => 'date',
+      name  => $field_name,
+      value => $value,
     ),
     $disabled ? ( disabled => undef ) : (),
     %{ $attributes->{input} }
@@ -1481,23 +1501,18 @@ sub create_int_field {
   my ( $self, $field_name, $attributes, $labels, $lists ) = @_;
 
   my $size = $self->get_field_length($field_name);
+  $attributes //= {};
 
   my $value = $self->get_formatted_field($field_name) // $EMPTY;
 
-  $size = $size >= length $value ? $size : length $value;
-
-  my $disabled = $self->get_display_only($field_name);
+  my %int_attributes = %{$attributes};
+  $int_attributes{disabled} = $self->get_display_only($field_name);
 
   return create_html_element(
     'input',
-    ( type      => 'text',
-      name      => $field_name,
-      value     => $value,
-      maxlength => $size,
-      size      => $size
-    ),
-    $disabled   ? ( disabled => undef )     : (),
-    $attributes ? %{ $attributes->{input} } : ()
+    type  => 'number',
+    name  => $field_name,
+    value => $value,
   );
 }
 
@@ -1576,8 +1591,7 @@ sub html_form_header {
 ########################################################################
   my ( $self, $attributes ) = @_;
 
-  $attributes //= $self->get_attributes;
-  $attributes //= {};
+  $attributes //= $self->get_attributes // {};
 
   my $table_name = $self->get_table_name;
 
@@ -1588,7 +1602,7 @@ sub html_form_header {
     $ENV{PATH_INFO} ? ( action => $ENV{PATH_INFO} ) : (),
   );
 
-  return create_xhtml_element_header( 'form', %defaults, %{$attributes}, );
+  return create_xhtml_element_header( 'form', %defaults, %{ $attributes->{form} }, );
 }
 
 ########################################################################
@@ -1596,60 +1610,71 @@ sub html_form_footer {
 ########################################################################
   my ( $self, $attributes, %hidden ) = @_;
 
-  $attributes //= $self->get_attributes;
-  $attributes //= {};
+  $attributes //= $self->get_attributes() // {};
+  my $table_name = $self->get_table_name;
 
-  my $form_name = delete $attributes->{name};
-  $form_name //= $self->get_table_name;
+  my $table_config = $self->get_table_config($table_name) // {};
 
-  my $form_element = sprintf 'document.%s', $form_name;
+  # default button list
 
-  my @buttons = qw( find save delete new);
+  my %button_config = %{ $table_config->{buttons} // {} };
+
+  my $default_button_attributes = delete $button_config{attributes} // {};
+
+  my @buttons = uniq( qw(save find new delete), keys %button_config );
 
   foreach (@buttons) {
-    next
-      if !exists $attributes->{$_};
-
-    $attributes->{$_} = {};
+    $button_config{$_} = merge( $button_config{$_} // {}, $default_button_attributes );
   }
 
   if ( !$self->{id} ) {
-    $attributes->{delete}->{disabled} = undef;
-    $attributes->{new}->{disabled}    = undef;
+    $button_config{delete}->{disabled} = undef;
   }
 
-  my @html;
+  my @button_group;
 
-  foreach my $button (qw(save delete find new )) {
+  foreach my $button (@buttons) {
 
     my %button_attributes = (
       value => $button,
-      id    => sprintf( '%s-%s-button', $form_name, $button ),
-      %{ $attributes->{$button} || {} },
+      id    => sprintf( '%s-%s-button', $table_name, $button ),
+      %{ $button_config{$button} },
     );
 
-    push @html, create_xhtml_element( 'button', ( ucfirst $button ), %button_attributes );
+    push @button_group, create_xhtml_element( 'button', ( ucfirst $button ), %button_attributes );
   }
 
-  push @html,
-    create_html_element(
+  my $buttons = join "\n", @button_group;
+
+  my @html = create_xhtml_element( 'div', $buttons, id => sprintf '%s-button-group', $table_name );
+
+  my @hidden_elements = create_html_element(
     'input',
     type  => 'hidden',
     name  => 'action',
     value => $EMPTY,
-    );
+  );
 
-  push @html,
+  push @hidden_elements,
     create_html_element(
     'input',
     type  => 'hidden',
     name  => 'table',
-    value => $self->get_table_name,
+    value => $table_name,
+    );
+
+  push @hidden_elements,
+    create_html_element(
+    'input',
+    type  => 'hidden',
+    value => $self->{id} // $EMPTY,
+    name  => 'id',
+    id    => 'id',
     );
 
   # add hidden fields
   foreach ( keys %hidden ) {
-    push @html,
+    push @hidden_elements,
       create_html_element(
       'input',
       type  => 'hidden',
@@ -1664,7 +1689,7 @@ sub html_form_footer {
   my @format_fields = grep { $self->get_format_mode($_) } @fields;
 
   foreach (@format_fields) {
-    push @html,
+    push @hidden_elements,
       create_html_element(
       'input',
       type  => 'hidden',
@@ -1673,7 +1698,7 @@ sub html_form_footer {
       );
   }
 
-  return sprintf "%s\n%s\n", join( "&nbsp;\n", @html ), "</form>\n";
+  return join "\n", @html, @hidden_elements, '</form>';
 }
 
 ########################################################################
@@ -1688,7 +1713,7 @@ sub html_form_body_with_class {
 
   my $class;
 
-  if ( ref($self) =~ /::(.*)$/xsm ) {
+  if ( ref($self) =~ /::([^:]+)$/xsm ) {
     $class = lc $1;
     $class =~ s/_/-/xsm;
   }
@@ -1702,9 +1727,9 @@ sub html_form_body_with_class {
 
     $attributes->{$name} //= {};
 
-    foreach my $form_type (qw(input select textarea)) {
-      $attributes->{$name}->{$form_type} = {
-        class => $class . $DASH . $form_type,
+    foreach my $element (qw(input select textarea)) {
+      $attributes->{$name}->{$element} = {
+        class => $class . $DASH . $element,
         id    => $hyphenated_name,
       };
     }
@@ -1728,8 +1753,7 @@ sub html_form_body {
   $lists          //= $self->get_lists;
   $exclude_fields //= [];
 
-  my $exclude_field_list = { id => 1 };
-  map { $exclude_field_list->{$_} = 1; } @{$exclude_fields};
+  my %exclude_field_list = map { $_ => 1 } ( 'id', @{ $exclude_fields // [] } );
 
   my $table_attributes = $attributes->{table} || {};
 
@@ -1754,22 +1778,26 @@ sub html_form_body {
 
   my $html = create_xhtml_element_header( 'table', %{ $attributes->{table} } ) . "\n";
 
-  foreach my $field ( $self->get_fields() ) {
-    my $field_type = $self->get_field_type($field);
+  my @fields = grep { !exists $exclude_field_list{$_} } $self->get_fields();
 
-    next
-      if exists $exclude_field_list->{$field};
-
-    my $input_attributes = $attributes->{$field}->{input};
+  foreach my $field (@fields) {
+    my $field_attributes = $attributes->{$field} // {};
 
     # if no "maxlength" is given for an input field and a "size" is
     # given, then use that as maxlength
-    if ($input_attributes) {
-
-      if ( $input_attributes->{size} && !exists $input_attributes->{maxlength} ) {
-        $input_attributes->{maxlength} = $input_attributes->{size};
-      }
+    if ( $field_attributes->{size} && !exists $field_attributes->{maxlength} ) {
+      $field_attributes->{maxlength} = $field_attributes->{size};
     }
+
+    my $tr_attributes = $field_attributes->{tr};
+    my $td_attributes = $field_attributes->{td};
+    my $th_attributes = $field_attributes->{th};
+
+    $tr_attributes //= $attributes->{tr} // {};
+    $th_attributes //= $attributes->{th} // {};
+    $td_attributes //= $attributes->{td} // {};
+
+    my $field_type = $self->get_field_type($field);
 
     # - first check to see if this is a pick list
     my $options;
@@ -1778,25 +1806,18 @@ sub html_form_body {
       $options = $self->_get_options( $lists->{$field}, $field_type );
     }
 
-    my $tr_attributes = $attributes->{$field}->{tr} || {};
-    my $th_attributes = $attributes->{$field}->{th} || {};
-    my $td_attributes = $attributes->{$field}->{td} || {};
-
     if ( $lists->{$field} ) {  ## no critic (ProhibitCascadingIfElse)
       if ( $options->{type} =~ /select|radio|checkbox/xsm ) {
         my $input_element;
 
         if ( $options->{type} eq 'select' ) {
-          $input_element
-            = $self->create_select_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $input_element = $self->create_select_field( $field, $field_attributes, $labels, $lists, $options );
         }
         elsif ( $options->{type} eq 'radio' ) {
-          $input_element
-            = $self->create_radio_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $input_element = $self->create_radio_field( $field, $field_attributes, $labels, $lists, $options );
         }
         elsif ( $options->{type} eq 'checkbox' ) {
-          $input_element
-            = $self->create_checkbox_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $input_element = $self->create_checkbox_field( $field, $field_attributes, $labels, $lists, $options );
         }
 
         $html .= sprintf
@@ -1817,18 +1838,16 @@ sub html_form_body {
           create_xhtml_element_header( 'th', %{$th_attributes} ),
           $labels->{$field} || create_label_name($field),
           create_xhtml_element_header( 'td', %{$td_attributes} ),
-          $self->create_select_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $self->create_select_field( $field, $field_attributes, $labels, $lists, $options );
       }
       else {
         my $input_element;
 
         if ( $field_type =~ /enum/xsm ) {
-          $input_element
-            = $self->create_radio_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $input_element = $self->create_radio_field( $field, $field_attributes, $labels, $lists, $options );
         }
         else {
-          $input_element
-            = $self->create_checkbox_field( $field, $attributes->{$field}, $labels, $lists, $options );
+          $input_element = $self->create_checkbox_field( $field, $field_attributes, $labels, $lists, $options );
         }
 
         $html .= sprintf
@@ -1847,7 +1866,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} // $EMPTY,
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_tinyint_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_tinyint_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /varchar/xsm ) {
       $html .= sprintf
@@ -1856,7 +1875,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_varchar_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_varchar_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /int/xsm ) {
       next if $field =~ /^id$/xsm;
@@ -1866,7 +1885,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_int_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_int_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /^char/xsm ) {
       $html .= sprintf
@@ -1875,7 +1894,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_char_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_char_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /date/xsm ) {
 
@@ -1885,7 +1904,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_date_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_date_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /timestamp/xsm ) {
       $html .= sprintf
@@ -1894,7 +1913,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_timestamp_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_timestamp_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /text/xsm ) {
       $html .= sprintf
@@ -1903,7 +1922,7 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_text_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_text_field( $field, $field_attributes, $labels, $lists );
     }
     elsif ( $field_type =~ /decimal/xsm ) {
       $html .= sprintf
@@ -1912,13 +1931,11 @@ sub html_form_body {
         create_xhtml_element_header( 'th', %{$th_attributes} ),
         $labels->{$field} || create_label_name($field),
         create_xhtml_element_header( 'td', %{$td_attributes} ),
-        $self->create_decimal_field( $field, $attributes->{$field}, $labels, $lists );
+        $self->create_decimal_field( $field, $field_attributes, $labels, $lists );
     }
   }
 
-  $html .= "</table>\n";
-
-  $html .= create_html_element( 'input', ( type => 'hidden', value => $self->{id}, name => 'id' ) );
+  $html .= '</table>';
 
   return $html;
 }
@@ -1928,8 +1945,7 @@ sub handler {
 ########################################################################
   my ( $self, $input ) = @_;
 
-  my $format_mode = $input->{format_mode};
-  my $action      = $input->{action};
+  my ( $format_mode, $action ) = @{$input}{qw(format_mode action)};
 
   if ($format_mode) {
     my @mode = ref $format_mode ? @{$format_mode} : $format_mode;
@@ -2888,7 +2904,7 @@ sub _get_table_dir {
 
   my $search_fields = $self->get_table_config->{$table_name}->{search_fields} // [];
 
-  $self->set_search_field($search_fields);
+  $self->set__search_fields($search_fields);
 
   return $self->get_table_dir;
 }
@@ -3898,6 +3914,8 @@ Example:
 
 =head2 get_upsert_mode
 
+=head2 set_upsert_mode
+
 Sets the mode for inserts.  If I<upsert_mode> is set to 0, then the
 C<save()> method attempts to save all columns (columns that are not
 set are assumed to be null).  If I<upsert_mode> is set to 1, then
@@ -3921,7 +3939,7 @@ Example: Insert a new record, setting only the 'biz' column.
  $record->set('biz');
  $record->save();
 
-Note that colum 'buz' is defined as 'not null' but has a default.  In
+Note that column 'buz' is defined as 'not null' but has a default.  In
 this case since we only insert column 'biz', the column will look this
 after insertion.
 

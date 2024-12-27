@@ -69,6 +69,18 @@ Alias /bedrock/img <var $config.DIST_DIR>/img
    </if>
 </Directory>
 
+Alias /bedrock/javascript <var $config.DIST_DIR>/javascript
+
+<Directory <var $config.DIST_DIR>/javascript>
+   Options -Indexes
+   <if $site.APACHE_VERSION --eq '2.2'>
+   Order allow,deny
+   Allow from all
+   <else>
+   require all granted
+   </if>
+</Directory>
+
 Alias /bedrock/admin <var $config.DIST_DIR>/config/admin
 <Directory  <var $config.DIST_DIR>/config/admin >
 
@@ -110,6 +122,29 @@ Alias /bedrock/css <var $config.DIST_DIR>/css
    </if>
 </Directory>
 
+<if $site.BEDROCK_FORMS_ENABLED --eq 'On'>
+Alias /form <var $site.DOCUMENT_ROOT>/form
+
+<Directory <var $site.DOCUMENT_ROOT>/form/>
+ 
+   <if $site.APACHE_VERSION --eq '2.4'>
+   IncludeOptional <var $site.CONF_DIR>/dbi.con[f]  
+   <else>
+   Include <var $site.CONF_DIR>/dbi.con[f]  
+   </if>
+
+   AcceptPathInfo On
+   Options -Indexes
+   AllowOverride None
+
+  <IfModule mod_perl.c>
+    SetHandler perl-script
+    PerlHandler Apache::Form
+  </IfModule>
+</Directory>
+</if>
+
+<if $site.BEDROCK_DOCS_ENABLED --eq 'On'>
 # Bedrock system directory, access to which is controlled
 #  by authentication: default username=admin, password=bedrock
 #  and by setting in tagx.xml ALLOW_BEDROCK_INFO (default=yes)
@@ -136,7 +171,9 @@ Alias /bedrock <var $site.DOCUMENT_ROOT>/bedrock
   require valid-user
 
 </Directory>
+</if>
 
+<if $site.BEDROCK_SESSIONS_ENABLED --eq 'On'>
 Alias /session <var $site.BEDROCK_SESSION_DIR>
 
 <Directory <var $site.BEDROCK_SESSION_DIR>>
@@ -153,3 +190,4 @@ Alias /session <var $site.BEDROCK_SESSION_DIR>
   </IfModule>
 
 </Directory>
+</if>
