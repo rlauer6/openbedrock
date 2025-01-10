@@ -24,7 +24,15 @@ package Bedrock::Handler;
 use strict;
 use warnings;
 
-our @EXPORT_OK = qw( %BEDROCK_CONFIG_CACHE mlogger);
+our @EXPORT_OK = qw(
+  %BEDROCK_CONFIG_CACHE
+  bind_blm_module
+  bind_module
+  get_blm_config
+  mlogger
+  require_module
+);
+
 use parent qw( Exporter );
 
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
@@ -54,6 +62,7 @@ use constant {  ## no critic (ValuesAndExpressions::ProhibitConstantPragma)
 };
 
 use Bedrock::Constants qw(:chars :defaults :booleans);
+use Bedrock::Context;
 use Carp;
 use Cwd qw(realpath fastcwd);
 use Data::Dumper;
@@ -61,6 +70,7 @@ use English qw(-no_match_vars);
 use File::Basename qw(fileparse);
 use File::Find;
 use List::Util qw( any uniq);
+use Symbol;
 
 # see pod for notes on caching...
 
@@ -297,6 +307,33 @@ sub read_config {
 }
 
 ########################################################################
+sub fetch_blm_config {
+########################################################################
+  my ( $self, $blm_config, @paths ) = @_;
+
+  if ( $blm_config !~ /[.]xml$/xsm ) {
+    $blm_config .= '.xml';
+  }
+
+  my $config = $self->get_config;
+
+  if ( !@paths ) {
+    push @paths, $self->get_config_paths;
+  }
+
+  push @paths, $self->get_module_paths( paths => \@paths );
+
+  my ($filename) = grep { -e $_ } map { sprintf '%s/%s', $_, $blm_config } @paths;
+
+  die "$blm_config does not exist\n"
+    if !$filename || !-e $filename;
+
+  push @{ $config->{MODULES} }, Bedrock::XML->new($filename);
+
+  return $config;
+}
+
+########################################################################
 sub is_mod_perl {
 ########################################################################
   return $ENV{MOD_PERL};
@@ -312,6 +349,7 @@ sub apache_handler {
 
 ########################################################################
 sub request_handler { goto &apache_handler; }
+sub request         { goto &apache_handler; }
 ########################################################################
 
 ########################################################################
@@ -557,6 +595,42 @@ sub get_module_paths {
 }
 
 ########################################################################
+sub get_blm_config {
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
+
+  return $self->{config};
+}
+
+########################################################################
+sub bind_blm_module {
+########################################################################
+  my ( $self, $blm_name ) = @_;
+
+  my $config = $self->get_config;
+
+  my $module_config = $config->get_module_config($blm_name);
+
+  die "could not find config for $blm_name\n"
+    if !$module_config;
+
+  my $ctx = Bedrock::Context->new(
+    REQUEST_HANDLER => $self->request_handler,
+    CONFIG          => $config,
+  );
+
+  my $blm = bind_module(
+    config  => $module_config,
+    module  => $blm_name,
+    context => $ctx
+  );
+
+  return $blm;
+}
+
+########################################################################
 sub merge_module_configs {
 ########################################################################
   my ( $self, %args ) = @_;
@@ -595,6 +669,61 @@ sub merge_module_configs {
   }
 
   return;
+}
+
+########################################################################
+sub require_module {
+########################################################################
+  my ($modfile) = @_;
+
+  $modfile =~ s/::/\//xsmg;
+
+  if ( $modfile !~ /[.]pm\z/xsm ) {
+    $modfile =~ s/\z/\.pm/xsm;
+  }
+
+  return require $modfile;
+}
+
+########################################################################
+sub bind_module {
+########################################################################
+  my (%args) = @_;
+
+  my ( $module, $context, $config ) = @args{qw(module context config)};
+  $args{type} //= 'hash';
+
+  my $type = $args{type} eq 'object' ? 'hash' : $args{type};
+
+  require_module $module;
+
+  my $obj;
+
+  ## no critic (ProhibitTies)
+  my %tie_subs = (
+    hash => sub {
+      $obj = bless {}, $module;
+      return tie %{$obj}, $module, $context, $config;
+    },
+    array => sub {
+      $obj = bless [], $module;
+      return tie @{$obj}, $module, $context, $config;
+    },
+    handle => sub {
+      $obj = bless gensym, $module;
+      return tie *{$obj}, $module, $context, $config;
+    },
+  );
+
+  my $func = $tie_subs{$type}->();
+
+  #my $func = tied %{$obj};
+
+  if ( $func->can('init_plugin') ) {
+    $func->init_plugin( $args{context}, $args{config} );
+  }
+
+  return $obj;
 }
 
 ########################################################################
@@ -662,7 +791,7 @@ sub get_config_paths {
     @config_paths = uniq map { realpath($_) } grep { $_ && -d $_ } @config_paths;
   }
   elsif ($bedrock_config_path) {
-
+    push @config_paths, $bedrock_config_path;
     $r->log->info( sprintf 'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
       $bedrock_config_path );
   }
@@ -917,7 +1046,6 @@ sub pwd {
   my (@args) = @_;
 
   return _set_get( '_pwd', @args );
-
 }
 
 ########################################################################
@@ -1006,15 +1134,6 @@ Creates a new instance of a Bedrock handler object.
 
 Set or get the Apache request handler.
 
-=head2 load_config
-
- load_config()
-
-Returns Bedrock's configuration object.  Note that the hash that is
-returned is the fully exploded configuration environment for Bedrock.
-The configuration (may) have come from the cache if caching has been
-enabled.  See L<CONFIGURATION CACHING>
-
 =head2 cache_enabled
 
 Returns boolean value indicating if the configuration caching is
@@ -1034,6 +1153,30 @@ Returns the fully merged Bedrock configuration object.
 
 Logs a message to the log file and restores the original directory.
 
+=head2 fetch_blm_config
+
+ fetch_blm_config(config-name, paths)
+
+Populates the main config file with a module's configuration. Returns
+the main configuration object. To access the specific module
+configuration use the C<get_module_config()> method.
+
+=over 5
+
+=item config-name
+
+Name of the configuration.
+
+Example: 'mysql-session'
+
+=item paths
+
+List of paths to search for module configs.
+
+Default: $ENV{BEDROCK_CONFIG_PATH}
+
+=back
+
 =head2 full_path
 
  full_path(path, filename, default-extension)
@@ -1044,7 +1187,20 @@ Returns a formatted fully qualified path to a file with a default extension
 
 Deprecated: use load_config()
 
+=head2 load_config
+
+ load_config()
+
+Returns Bedrock's configuration object.  Note that the hash that is
+returned is the fully exploded configuration environment for Bedrock.
+The configuration (may) have come from the cache if caching has been
+enabled.  See L<CONFIGURATION CACHING>
+
 =head1 GETTER/SETTER METHODS
+
+=head2 apache_handler (deprecated)
+
+ See L</request>
 
 =head2 get_bedrock_admin_dir
 
@@ -1054,11 +1210,14 @@ Returns the relative URI for the Bedrock documenation. Typically C</bedrock>.
 
 Returns the directory portion of URI parsed from the request object's C<uri()> method.
 
-=head2 request_handler
+=head2 request
 
 Returns the request object. Apache running with C<mod_perl> enabled will
 return an L<Apache2::RequestRec> object.  If Bedrock is running as a
 CGI this method will return an L<Apache::Bedrock::Request_cgi> object.
+=head2 request_handler (deprecated)
+
+See L</request>
 
 =head2 restore_dir
 
@@ -1069,21 +1228,15 @@ that this object was instantiated.
 
 See L</get_uri_dir>
 
-=head2 apache_handler (deprecated)
-
- apache_handler( [request-handler] )
-
-Use L</request_handler> instead.
-
 =head1 ENVIRONMENT METHODS
 
 =head2 is_mod_perl
 
-Boolean indicating whether C<mod_perl> is enabled.
+Returns the mod_perl version string if mod_perl is enabled, undef otherwise.
 
 =head2 pwd
 
-Returns the mod_perl version string if mod_perl is enabled.
+Set/get the current working directory. This does not alter the path!
 
 =head1 CONFIGURATION FILE METHODS
 

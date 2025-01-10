@@ -1,3 +1,5 @@
+package Apache::BedrockSessionFiles;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -17,49 +19,121 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package Apache::BedrockSessionFiles;
-
 use strict;
 use warnings;
 
 use Role::Tiny::With;
 with 'Bedrock::Apache::HandlerUtils';
 
-use Bedrock::Apache::Constants qw{:all};
-
-use English qw{-no_match_vars};
+use Bedrock::Apache::Constants qw(:all);
+use English qw(-no_match_vars);
+use List::Util qw(pairs);
 
 use Readonly;
 
 Readonly our $BUFFER_SIZE => 4 * 1024;
 
-use English qw{-no_match_vars};
+########################################################################
+sub send_file_with_ranges {
+########################################################################
+  my ( $r, $file, $ranges ) = @_;
+
+  my $byterange = check_byterange( $r, $ranges );
+
+  return $HTTP_BAD_REQUEST
+    if !$byterange;
+
+  $r->status($HTTP_PARTIAL_CONTENT);
+
+  # print other header info
+  my $boundary = 'multipart-boundary';
+
+  $r->headers_out( 'Accept-ranges' => 'bytes' );
+  $r->headers_out( 'Content-type'  => "multipart/x-byteranges; boundary=$boundary" );
+
+  $r->send_http_header();
+
+  open my $fh, '<', $file;
+
+  send_ranges(
+    $r,
+    byterange => $byterange,
+    boundary  => $boundary,
+    fh        => $fh,
+    size      => -s $file,
+  );
+
+  close $fh;
+
+  return $OK;
+}
 
 ########################################################################
-sub handler {
+sub send_ranges {
 ########################################################################
-  my ($r) = @_;
+  my ( $r, %args ) = @_;
 
-  my $file_info = eval { return get_file_info($r); };
-
-  if ( !$file_info || $EVAL_ERROR ) {
-    return set_error_status( $r, $EVAL_ERROR );
-  }
+  my ( $byterange, $boundary, $size, $fh ) = @args{qw(byterange boundary size fh)};
 
   my $buffer;
 
+  foreach my $range ( @{$byterange} ) {
+
+    my ( $first_byte, $last_byte ) = split /[\-]/xsm, $range;
+
+    my $i = index $range, q{-};
+
+    if ( !index $range, q{-} ) {
+      $first_byte = -1;
+    }
+
+    if ( $first_byte < 0 ) {
+      $first_byte = $size - $last_byte;
+      $last_byte  = $size;
+    }
+
+    my $nbytes = $last_byte - $first_byte + 1;
+
+    $r->print("\n--$boundary\n");
+
+    $r->print( sprintf "Content-type: %s\n", $r->content_type );
+
+    $r->print( sprintf "Content-Range: bytes %d-%d/%d\n\n", $first_byte, $last_byte, $size );
+
+    seek $fh, $first_byte, 0;
+    read $fh, $buffer, $nbytes;
+
+    $r->print($buffer);
+  }
+
+  $r->print("\n--$boundary--\n");
+
+  return;
+}
+
+########################################################################
+sub send_file {
+########################################################################
+  my ( $r, $file ) = @_;
+
+  my $size = -s $file;
+
+  my ( $name, $path, $ext ) = fileparse( $file, qr/[.][^.]+$/xsm );
+
+  # respond that we can do ranges (for next time possibly)
+
+  $r->headers_out( 'Accept-ranges'       => 'bytes' );
+  $r->headers_out( 'Content-Length'      => $size );
+  $r->headers_out( 'Content-Disposition' => sprintf 'inline; attachment; filename="%s.%s";', $name, $ext );
+
   $r->send_http_header;
 
-  my $filename = $file_info->{filename};
+  my $buffer;
 
-  open my $fh, '<', $filename  ## no critic (RequireBriefOpen)
-    or do {
-    $r->log->error( sprintf 'could not open file [%s] for reading', $filename );
-    return set_error_status('not found');
-    };
+  open my $fh, '<', $file;
 
   while ( read $fh, $buffer, $BUFFER_SIZE ) {
-    print $buffer;
+    $r->print($buffer);
   }
 
   close $fh;
@@ -67,9 +141,92 @@ sub handler {
   return $OK;
 }
 
-1;
+########################################################################
+sub check_byterange {
+########################################################################
+  my ( $r, $ranges ) = @_;
 
-## no critic (RequirePodSections)
+  $ranges =~ s/bytes=//xsm;
+
+  # check that the ranges are properly formatted
+  my @byterange_check = split /[\-,=]/xsm, $ranges;
+
+  foreach my $range ( pairs @byterange_check ) {
+    my ( $first_byte, $last_byte ) = @{$range};
+
+    if ( ( $first_byte > 0 && $last_byte < 0 )
+      || ( $first_byte < 0 && $last_byte > 0 )
+      || ( $first_byte > $last_byte ) ) {
+      $r->log->error( sprintf 'The query range (%s - %s ) is malformed.', $first_byte, $last_byte );
+      return;
+    }
+  }
+
+  return [ split /[,]/xsm, $ranges ];
+}
+
+########################################################################
+sub head {
+########################################################################
+  my ( $r, $filename ) = @_;
+
+  my $mtime = ( stat $filename )[9];
+
+  my $last_modified = time2str($mtime);
+
+  $r->headers_out( 'Content-length', -s $filename );
+  $r->headers_out( 'Last-Modified',  $last_modified );
+  $r->headers_out( 'Accept-Ranges',  'bytes' );
+
+  $r->send_http_header;
+
+  return $OK;
+}
+
+########################################################################
+sub handler {
+########################################################################
+  my ($r) = @_;
+
+  my $method = $r->method();
+
+  return $HTTP_BAD_REQUEST
+    if ( $method ne 'GET' ) && ( $method ne 'HEAD' );
+
+  my $file_info = eval { return get_session_file_info($r); };
+
+  if ( !$file_info || $EVAL_ERROR ) {
+    return set_error_status( $r, $EVAL_ERROR );
+  }
+
+  my $filename = $file_info->{filename};
+
+  # if this is mod_perl we should be running in the PerlFixupHandler
+  # phase. Setting the filename here just redirects Apache to serve up
+  # a file from the file system. In this case from the user's validate
+  # session directory. IOW, all we are doing is really resolving the
+  # real location of the file.
+
+  if ( is_mod_perl() ) {
+    $r->filename( $file_info->{filename} );
+
+    return $OK;
+  }
+
+  return head( $r, $filename )
+    if $method eq 'HEAD';
+
+  my $ranges = $r->headers_in->{'Range'};
+
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+
+  return send_file( $r, $filename )
+    if !$ranges;
+
+  return send_file_with_ranges( $r, $filename, $ranges );
+}
+
+1;
 
 __END__
 
@@ -78,6 +235,21 @@ __END__
 =head1 NAME
 
 Apache::BedrockSessionFiles - serve files from user sessions
+
+=head1 SYNOPSIS
+
+ Alias /session /var/www/session
+
+ <Directory /var/www/session/>
+   AcceptPathInfo On
+   Options -Indexes
+ 
+   <IfModule mod_perl.c>
+     SetHandler perl-script
+     PerlFixupHandler Apache::BedrockSessionFiles
+   </IfModule>
+   
+ </Directory>
 
 =head1 DESCRIPTION
 
@@ -92,6 +264,8 @@ of asset might look like:
 In other words, the asset would be protected since the same URL would
 not access the asset for anyone other than the requestor since it is
 specific to their session.
+
+=head1 METHODS AND SUBROUTINES
 
 =head1 NOTES
 
@@ -119,7 +293,7 @@ Setup the handler in your Apache configuration file as shown below:
   
     <IfModule mod_perl.c>
       SetHandler perl-script
-      PerlHandler Apache::BedrockSessionFiles
+      PerlFixupHandler Apache::BedrockSessionFiles
     </IfModule>
   
     <IfModule !mod_perl.c>

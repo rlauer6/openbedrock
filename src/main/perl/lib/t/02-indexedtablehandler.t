@@ -177,7 +177,22 @@ subtest 'find exact' => sub {
 subtest 'find wildcard' => sub {
 ########################################################################
   my $rows = $ith->find( 0, 'buz', 'buzzz' );
+  require JSON;
   is( @{$rows}, 2, 'found 2 records' );
+
+  my @as_array;
+
+  foreach my $r ( @{$rows} ) {
+    my %data;
+    foreach my $k ( @{ $r->fields } ) {
+      $data{$k} = $r->get($k);
+    }
+
+    push @as_array, \%data;
+  }
+  eval { JSON->new->encode( \@as_array ); };
+
+  ok( !$EVAL_ERROR, 'devolve recordset' );
 };
 
 END {

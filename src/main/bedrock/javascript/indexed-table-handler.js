@@ -20,6 +20,7 @@ function _invoke_ith_action() {
         method: "POST",
         data: formData,
         success: function (data) {
+            console.log(data);
             $('#ith-message').text('Successfully saved...id: ' + data.id);
 
             $('#ith-message').show();

@@ -98,12 +98,6 @@
       "exclude" : [ "qr/Makefile.*/" ]
     },
     {
-      "recurse" : 0,  
-      "name" : "<var $dest.javascript>",
-      "source" : "<var $source.javascript>",
-      "exclude" : [ "qr/Makefile.*/" ]
-    },
-    {
       "name" : "<var $dest.include>",
       "source" : "<var $source.include>",
       "exclude" : [ "qr/Makefile.*/" ]

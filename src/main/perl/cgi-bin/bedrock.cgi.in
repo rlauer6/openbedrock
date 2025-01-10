@@ -33,18 +33,25 @@ BEGIN {
   use Bedrock::Constants qw(:chars $DEFAULT_BEDROCK_CONFIG_PATH $DEFAULT_BEDROCK_PERL5LIBDIR);
 
   if ( !$COMPILING ) {
+
     if ( open my $fh, '<', 'perl.INC' ) {
-      unshift @INC, <$fh>;
+      while ( my $path = <$fh> ) {
+        chomp $path;
+        next if !-d $path;
+
+        unshift @INC, <$fh>;
+      }
       close $fh;
-      chomp @INC;
     }
 
-    push @INC, "$DEFAULT_BEDROCK_PERL5LIBDIR/Bedrock";
-    $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
+    if ( -d "$DEFAULT_BEDROCK_PERL5LIBDIR/Bedrock" ) {
+      push @INC, "$DEFAULT_BEDROCK_PERL5LIBDIR/Bedrock";
+      $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
+    }
   }
 }
 
-use CGI qw(:cgi);
+use CGI qw(:param);
 
 # 8<------------------- start of fix ---------------------------------
 #  fix for POSTs that are somewhat big, some servers will terminate
@@ -58,6 +65,26 @@ param;
 use Apache::Request_cgi;
 use Bedrock::Apache::Constants qw(:http);
 use Carp;
+
+our %ERROR_HANDLERS = (
+  $REDIRECT => sub {
+    shift->send_http_header;
+    return $REDIRECT;
+  },
+  $NOT_FOUND => sub {
+    return http_error( $NOT_FOUND, 'Not Found',
+      "The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server." );
+  },
+  $FORBIDDEN => sub {
+    return http_error( $FORBIDDEN, 'Forbidden',
+      q{You don\'t have permission to access the requested object. It is either read-protected or not readable by the server.}
+    );
+  },
+  $SERVER_ERROR => sub {
+    my ( $r, $code ) = @_;
+    return http_error( $code, 'Internal Server Error', "Unknown Bedrock error: [$code]" );
+  },
+);
 
 ########################################################################
 sub get_handler {
@@ -81,6 +108,8 @@ sub http_error {
 ########################################################################
   my ( $status, $status_name, $message ) = @_;
 
+  $message //= 'NO MESSAGE';
+
   my $html = <<"END_OF_HTML";
 Content-type: text/html
 Status: $status
@@ -99,80 +128,59 @@ Status: $status
 </html>
 END_OF_HTML
 
-  exit 1;
+  print $html;
+
+  return $status;
 }
 
-# +------------------------+
-# | MAIN SCRIPT START HERE |
-# +------------------------+
+########################################################################
+sub main {
+########################################################################
 
-local $SIG{TERM} = \&confess;
+  local $SIG{TERM} = \&confess;
 
-my $log_level = $ENV{BedrockLogLevel} // $ENV{LogLevel};
+  my $log_level = $ENV{BedrockLogLevel} // $ENV{LogLevel};
 
-my $r = Apache::Request_cgi->new( log_level => $log_level );
+  my $r = Apache::Request_cgi->new( log_level => $log_level );
 
-my $class = get_handler $PROGRAM_NAME;
+  my $class = get_handler $PROGRAM_NAME;
 
-$r->info("Bedrock CGI started with handler: [$class]");
+  $r->log->info( sprintf 'Bedrock CGI started with handler: [%s]', $class );
 
-my $code = eval {
-  my $file = $class;
-  $file =~ s/::/\//gxsm;
+  my $code = eval {
+    my $file = $class;
+    $file =~ s/::/\//gxsm;
 
-  require "$file.pm";
+    require "$file.pm";
 
-  my $handler = "${class}::handler";
+    my $handler = "${class}::handler";
 
-  no strict 'refs';  ## no critic (ProhibitNoStrict)
+    no strict 'refs';  ## no critic (ProhibitNoStrict)
 
-  return &{$handler}($r);
-};
+    return &{$handler}($r);
+  };
 
-if ($EVAL_ERROR) {
-  http_error( 500, "could not invoke handler\n" . $EVAL_ERROR );
+  if ($EVAL_ERROR) {
+    $r->log->error($EVAL_ERROR);
+    return http_error( $SERVER_ERROR, "could not invoke handler\n" . $EVAL_ERROR );
+  }
+
+  return $code
+    if $r->content_type =~ /json/xsm;
+
+  $r->log->debug( sprintf 'return code from handler: %s', $code );
+
+  return 0
+    if !$code;
+
+  my $error_handler = $ERROR_HANDLERS{$code} // $ERROR_HANDLERS{$SERVER_ERROR};
+
+  return $error_handler->( $r, $code );
 }
 
-if ( $r->content_type =~ /json/xsm ) {
-  exit $code;
-}
-
-$r->log->debug( "return code from handler: " . $code );
-
-my %error_handlers = (
-  $REDIRECT => sub {
-    $r->send_http_header;
-    return $REDIRECT;
-  },
-  $NOT_FOUND => sub {
-    http_error( $NOT_FOUND, 'Not Found',
-      "The requested URL $ENV{PATH_INFO} was not found on this <b>Bedrock Enabled</b> server." );
-    return $NOT_FOUND;
-  },
-  $FORBIDDEN => sub {
-    http_error( $FORBIDDEN, 'Forbidden',
-      q{You don\'t have permission to access the requested object. It is either read-protected or not readable by the server.}
-    );
-
-    return $FORBIDDEN;
-  },
-);
-
-if ( $error_handlers{$code} ) {
-  exit $error_handlers{$code}->();
-}
-else {
-  http_error( $code, 'Internal Server Error', "Unknown Bedrock error: [$code]" );
-
-  exit $code;
-}
-
-exit 0;
+exit main();
 
 1;
-
-__END__
-## no critic (RequirePodSections)
 
 __END__
 
@@ -184,29 +192,40 @@ bedrock.cgi - Apache Bedrock CGI handler
 
 =head1 SYNOPSIS
 
-  /cgi-bin/bedrock.cgi
+ AddType	text/html .roc .rock
+ AddType application/json .jroc .jrock
+
+ # CGI handlers
+ Action        bedrock-cgi  /cgi-bin/bedrock.cgi virtual
+
+ AddHandler    bedrock-cgi .rock .jrock
 
 =head1 DESCRIPTION
 
-C<bedrock.cgi> is part of the Bedrock project. It invokes various
-Apache handlers to implement portions of the Bedrock web application
-framework.  Its primary job is to serve up Bedrock pages by passing
-the request through the C<Apache::Bedrock> handler, but this Perl
-script can also be used to serve up Bedrock documentation
-(C<Apache::BedrockDocs>) as well as files located in a userE<039>s
-session directory (C<Apache::BedrockSessionFiles>).
+C<bedrock.cgi> implements the initialization and execution of a
+Bedrock web application by invoking an Apache handler designed to run
+in a CGI environment.
+
+Its primary job is to serve up Bedrock pages by passing the request
+through the C<Apache::Bedrock> handler. It does this by instantiating
+a request handler (C<Apache::Request_cgi), however this script is also
+used to instantiate other requests handlers like
+C<Apache:>BedrockDocs> or C<Apache::BedrockSessionFiles>.
 
 When C<bedrock.cgi> is invoked, it determines which handler to use by
-examing the script name.
+examing the script name. While the content of each named script is
+exactly the same, the script just uses the suffix portion of the
+script name to determine which request handler to invoke.
 
-This CGI can invoke any request handler whose name conforms to a
-certain pattern. The name of the request handler to invoke is
-derived from the suffix (portion after "bedrock-") of CGI's name
+Thus, this script can invoke any request handler whose name conforms
+to a certain pattern. The name of the request handler to invoke is
+derived from the suffix (portion after "bedrock-") of the script's name
 without the extension.
 
  bedrock /(bedrock)\-?(?<suffix>.*?)?[.]cgi$/
 
-Thus you can use this harness to invoke the handlers included in this project:
+You can therefore use this harness to invoke any of the handlers included in
+this project:
 
 =over 5
 
@@ -224,6 +243,12 @@ C<Apache::BedrockDocs> handler.
 
 If the script name is C<bedrock-session-files.cgi>, then the script invokes the
 C<Apache::BedrockSessionFiles> handler.
+
+=item C<Apache::BedrockAutocomplete>
+
+If the script name is C<bedrock-autocomplete.cgi>, then the script invokes the
+C<Apache::BedrockAutocomplete> handler.
+
 
 =item Custom Handlers
 
@@ -246,8 +271,8 @@ somewhere along C<perl>'s C<@INC> paths.
 
 =head2 ERROR HANDLING
 
-This CGI tries to do something intelligent with handler return codes
-understanding that the return code from this script which is run under
+The script attempts to do something intelligent with handler return
+codes, although the return code from a script which is run under
 C<mod_cgi> itself is pretty irrelevant.  C<mod_cgi> more or less
 ignores the return code, however this script expects to use the return
 code from the handler as a way to figure out what we should present to
@@ -261,13 +286,15 @@ C<mod_cgi> by examining the environment variable C<MOD_PERL>.
 =head1 LOGGING
 
 As of Bedrock 3.2.x, logging is done using L<Log::Log4perl> via the
-C<Bedrock::Logger> role. When the C<get_logger()> method of the
+L<Bedrock::Logger> role. When the C<get_logger()> method of the
 request object (L<Apache::Bedrock::Request_cgi> is called the first
 time to log a message, the C<Bedrock::Logger> will provision the
 default appender that writes to STDERR. 
 
-I<Note that that all log messages prior to your handler being called being called will be
-written to the log file defined in Apache's configuration file at the level defined by the environment variable C<LogLevel> or C<BedrockLogLevel> (See L</LOG LEVELS>).>
+I<Note that that all log messages prior to your handler being called
+being called will be written to the log file defined in Apache's
+configuration file at the level defined by the environment variable
+C<LogLevel> or C<BedrockLogLevel> (See L</LOG LEVELS>).>
 
 Once your handler method is invoked, the L<Bedrock::Context>
 constructor will attempt to find a F<log4perl.conf> file somewhere in
@@ -309,7 +336,7 @@ hosts have been defined.
 =head2 Determining Apache's Log Level
 
 In order to determine Bedrock's log level, we look in the
-environment for `BedrockLogLevel`.  The default level is `info`.
+environment for `BedrockLogLevel`.  The default level is C<info>
 We do this so that we are logging at the correct level upon entry to
 this script.  Reading the log level from the Bedrock configuration
 is too late if we want to log information regarding the process of
@@ -344,7 +371,7 @@ tag.
 
 Log at the C<$DEBUG> level...
 
- <var --versbose $foo.bar()>    
+ <var --verbose $foo.bar()>    
 
 Log at the C<$TRACE> level...
 
@@ -352,7 +379,7 @@ Log at the C<$TRACE> level...
 
 =head1 CONFIGURING APACHE
 
-C<bedrock.cgi> is invoked by Apache as the parser for Bedrock
+C<bedrock.cgi> is invoked by Apache as the handler for Bedrock
 content. This Apache handler is configured in the normal manner in
 which Apache handlers are configured.
 
@@ -398,7 +425,7 @@ Jay Sridhar
 
 =over 4
 
-=item Rob Lauer <rlauer6@comcast.net>
+=item Rob Lauer <bigfoot@cpan.org>
 
 =item Alan D. Salewski
 

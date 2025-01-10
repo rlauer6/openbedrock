@@ -3,6 +3,11 @@ package Faux::Context;
 use strict;
 use warnings;
 
+use Data::Dumper;
+use Carp;
+use Carp::Always;
+use Bedrock::Context qw(parse_cookie);
+
 ########################################################################
 sub new {
 ########################################################################
@@ -17,6 +22,7 @@ sub new {
 sub cgi_header_in    { }
 sub send_http_header { }
 sub cgi_header_out   { }
+sub headers_out      { }
 ########################################################################
 
 ########################################################################
@@ -24,7 +30,14 @@ sub getCookieValue {
 ########################################################################
   my ( $self, $name ) = @_;
 
-  return $ENV{$name};
+  my $cookie = $ENV{HTTP_COOKIE};
+
+  return
+    if !$cookie;
+
+  my $cookie_value = parse_cookie($cookie)->{$name};
+
+  return $cookie_value;
 }
 
 ########################################################################
@@ -32,24 +45,27 @@ sub getInputValue {
 ########################################################################
   my ( $self, $name ) = @_;
 
+  carp Dumper( [ name => $name, $ENV{$name} ] );
+
   return $ENV{$name};
 }
 
 ########################################################################
+package main;
+########################################################################
+
 use strict;
 use warnings;
 
-use lib qw{.};
-
-use Test::More tests => 10;
+use Test::More qw(no_plan);
 
 use Bedrock qw(slurp_file);
-use Bedrock::Constants qw(:defaults :chars);
 use Bedrock::BedrockConfig;
+use Bedrock::Constants qw(:defaults :chars :booleans);
 use Cwd;
 use Data::Dumper;
 use DBI;
-use English qw{-no_match_vars};
+use English qw(-no_match_vars);
 
 use_ok('BLM::Startup::UserSession');
 
@@ -58,7 +74,7 @@ sub bind_module {
 ########################################################################
   my ( $ctx, $config ) = @_;
 
-  my $module = q{BLM::Startup::UserSession};
+  my $module = q(BLM::Startup::UserSession);
 
   my $obj = bless {}, $module;
 
@@ -86,8 +102,9 @@ my $dbi_host = $ENV{DBI_HOST} // '127.0.0.1';
 
 my $session_config = $config->{config};
 $session_config->{data_source} .= ":$dbi_host";
-$session_config->{cookieless_sessions} = 1;
-$session_config->{verbose}             = 0;
+
+$session_config->{cookieless_sessions} = $FALSE;
+$session_config->{verbose}             = $FALSE;
 
 my $ctx = Faux::Context->new( CONFIG => { SESSION_DIR => '/tmp' } );
 
@@ -104,7 +121,11 @@ my $db_available = eval {
   return $ping;
 };
 
-my $session = $db_available ? bind_module( $ctx, $session_config ) : undef;
+my $session;
+
+if ($db_available) {
+  $session = bind_module( $ctx, $session_config );
+}
 
 SKIP: {
   skip 'no database available', 9
@@ -133,6 +154,7 @@ SKIP: {
 ########################################################################
   subtest 'create_session_dir' => sub {
 ########################################################################
+
     my $session_dir = $session->create_session_dir;
 
     ok( $session_dir, 'create_session_dir() - returns a directory' );
@@ -183,9 +205,10 @@ SKIP: {
 ########################################################################
   subtest 'save' => sub {
 ########################################################################
-    $ENV{session} = $session_id;
+    $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
 
     $session = eval { return bind_module( $ctx, $session_config ); };
+
     is( $session->{foo}, 'bar', 'session saved' )
       or diag( Dumper( [$session] ) );
   };
@@ -243,6 +266,8 @@ SKIP: {
     ok( $EVAL_ERROR, 'removed user cannot login' );
   };
 }
+
+done_testing;
 
 ########################################################################
 END {

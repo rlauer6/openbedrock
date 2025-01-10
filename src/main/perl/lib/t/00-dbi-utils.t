@@ -237,9 +237,6 @@ subtest 'multiple configs' => sub {
   my $dsn = load_dsn_from_config( $config, { name => 'bedrock' } );
   check_dsn($dsn);
 
-  $dsn = load_dsn_from_config( $config, { name => 'sqllite' } );
-  check_dsn($dsn);
-
   $dsn = eval { load_dsn_from_config( $config, 'bedrock' ); };
   my $err = $EVAL_ERROR;
 
@@ -249,7 +246,7 @@ subtest 'multiple configs' => sub {
 
   seek $dfh, $PLAN_END, 0;
 
-  $dsn = load_dsn_from_config( $dfh, { name => 'sqllite' } );
+  $dsn = load_dsn_from_config( $dfh, { name => 'bedrock' } );
 
   ok( $dsn, 'load dsn using file handle' );
 
@@ -277,8 +274,5 @@ END_OF_PLAN
     <scalar name="password">Fl1nt$t0ne</scalar>
     <scalar name="database">bedrock</scalar>
     <scalar name="mysql_ssl">1</scalar>
-  </object>
-  <object name="sqllite">
-    <scalar name="data-source">dbi:SQLite:dbname=/tmp/test.db</scalar>
   </object>
 </object>

@@ -336,7 +336,12 @@ sub remove_user {
 
   my ( $username, $password ) = @args;
 
-  if ( $self->{data}->{username} eq $username ) {
+  die "usage: remove_user(username, password)\n"
+    if !$username || !$password;
+
+  my $logged_in_user = $self->{data}->{username};
+
+  if ( $logged_in_user && $logged_in_user eq $username ) {
     $obj->logout();
   }
 
@@ -366,7 +371,7 @@ sub lookup_users {
 
   my $self = tied %{$obj};
 
-  return $self->do_select('LOOKUP_USERS');
+  return $self->do_select_set('LOOKUP_USERS');
 }
 
 ########################################################################
@@ -387,7 +392,11 @@ sub register {  ## no critic (ProhibitManyArgs)
     email     => $email
   );
 
-  $self->get_logger->debug("Registering user ($username, $firstname, $lastname, $email): rows = [$rows]");
+  $self->get_logger->debug(
+    sprintf 'Registering user (%s, %s, %s, %s)',
+    map { defined $_ // q{} } $username,
+    $firstname, $lastname, $email
+  );
 
   return $rows;
 }
@@ -686,23 +695,43 @@ sub create_temp_login_session {
 }
 
 ########################################################################
+sub context {
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj} || $obj;
+
+  return $self->{ctx};
+}
+
+########################################################################
+sub session_root {
+########################################################################
+  my ($obj) = @_;
+
+  return $obj->context->{CONFIG}->{SESSION_DIR};
+}
+
+########################################################################
 sub create_session_dir {
 ########################################################################
   my ( $obj, $sub_dir ) = @_;
 
-  $sub_dir //= $EMPTY;
+  my $self = tied %{$obj} || $obj;
 
-  my $self = tied %{$obj};
+  $sub_dir //= $EMPTY;
 
   my $session_id = $self->{session};
 
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
-  my $session_dir = $ctx->{CONFIG}->{SESSION_DIR};
+  my $session_dir = $self->session_root;
 
-  die "No SESSION_DIR defined.\n"
+  die "No SESSION_DIR defined in your configuration.\n"
     if !$session_dir;
 
-  $session_dir .= "/$session_id/$sub_dir";
+  die "no such directory ($session_dir)\n"
+    if !-d $session_dir;
+
+  $session_dir = sprintf '%s/%s/%s', $session_dir, $session_id, $sub_dir;
 
   if ( !-d $session_dir ) {
 
@@ -774,20 +803,89 @@ sub create_session_file {
 }
 
 ########################################################################
-sub create_session_tempfile {
+sub get_session_dir {
 ########################################################################
-  my ( $obj, $template, %options ) = @_;
+  my ( $obj, $verify ) = @_;
 
-  return Bedrock::Array->new(
-    tempfile(
-      $template,
-      DIR    => $obj->create_session_dir( $options{DIR} ),
-      SUFFIX => $options{SUFFIX}
-    )
-  );
+  $verify //= $TRUE;
+
+  my $self = tied %{$obj};
+
+  my $session_id = $self->{session};
+
+  my $session_dir = $self->{ctx}->{CONFIG}->{SESSION_DIR};
+
+  die "No SESSION_DIR defined in your configuration.\n"
+    if !$session_dir;
+
+  die "$session_dir does not exist\n"
+    if !-d $session_dir;
+
+  $session_dir = sprintf '%s/%s', $session_dir, $session_id;
+
+  die "$session_dir does not exist\n"
+    if $verify && !-d $session_dir;
+
+  return $session_dir;
 }
 
+########################################################################
+sub delete_session_file {
+########################################################################
+  my ( $obj, $name ) = @_;
+
+  my $session_dir = $obj->get_session_dir;
+
+  my $fqp_name = "$session_dir/$name";
+
+  return
+    if !-e $fqp_name;
+
+  return unlink $fqp_name;
+}
+
+########################################################################
+sub rename_session_file {
+########################################################################
+  my ( $obj, $old_name, $new_name ) = @_;
+
+  my $session_dir = $obj->get_session_dir;
+
+  my $old_fqp_name = "$session_dir/$old_name";
+
+  die "$old_name does not exist\n"
+    if !-e $old_fqp_name;
+
+  rename $old_fqp_name, "$session_dir/$new_name";
+
+  return $new_name;
+}
+
+########################################################################
+sub create_session_tempfile {
+########################################################################
+  my ( $self, $template, %options ) = @_;
+
+  my $name   = delete $options{NAME};
+  my $suffix = delete $options{SUFFIX};
+  my $dir    = $self->create_session_dir( $options{dir} );
+
+  my ( $fh, $filename ) = tempfile(
+    $template,
+    DIR    => $dir,
+    SUFFIX => $suffix,
+  );
+
+  if ($name) {
+    rename "$dir/$filename", "$dir/$name";
+  }
+
+  return Bedrock::Array( $fh, $name || $filename );
+}
+
+########################################################################
 sub version {
+########################################################################
   my ($obj) = @_;
 
   my $self = tied %{$obj};
@@ -839,9 +937,12 @@ sub config {
 ########################################################################
   my ( $obj, @args ) = @_;
 
-  my $self = tied %{$obj};
+  my $self = tied %{$obj} || $obj;
 
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
+  my $config = $self->{config};
+
+  return $config
+    if !@args;
 
   if ( @args > 1 ) {
     $config->{ $args[0] } = $args[1];
@@ -948,14 +1049,36 @@ sub send_cookie {
 ########################################################################
   my ( $self, $expires_in ) = @_;
 
-  return if !$self->{cookies};
+  return
+    if !$self->{cookies};
 
   my $cookie_config = $self->{config}->{cookie};
 
-  my $default_cookie_path = $cookie_config->{path} || q{/};
-  my $cookie_domain       = $cookie_config->{domain} // $EMPTY;
+  my @cookie_jar = $self->bake_cookies($expires_in);
 
-  my @headers;
+  foreach my $cookie (@cookie_jar) {
+    $self->{ctx}->headers_out( 'Set-Cookie', $cookie );
+    $self->get_logger->trace( sub { sprintf 'Set cookie header: [Set-Cookie => %s]', $cookie } );
+  }
+
+  return \@cookie_jar;
+}
+
+########################################################################
+sub bake_cookies {
+########################################################################
+  my ( $obj, $expires_in ) = @_;
+
+  my $self = tied %{$obj} // $obj;
+
+  my $cookie_config = $self->{config}->{cookie};
+
+  my ( $default_cookie_path, $cookie_domain ) = @{$cookie_config}{qw(path domain)};
+
+  $default_cookie_path //= $EMPTY;
+  $cookie_domain       //= $EMPTY;
+
+  my @cookie_jar;
 
   for my $name ( keys %{ $self->{cookies} } ) {
     my $cookie = $self->{cookies}->{$name};
@@ -964,27 +1087,28 @@ sub send_cookie {
     my $path           = $cookie->{path} || $default_cookie_path;
     my $value          = $cookie->{value};
 
-    my $header = sprintf '%s=%s; path=%s;', $name, $value, $path;
+    my $cookie_value = sprintf '%s=%s; path=%s;', $name, $value, $path;
 
     if ( length $cookie_domain ) {
-      $header .= sprintf ' domain=%s;', $cookie_domain;
+      $cookie_value .= sprintf ' domain=%s;', $cookie_domain;
     }
 
     if ($cookie_expires) {
-      my @expires_time = gmtime( time + $cookie_expires );
-      my $expiry       = POSIX::strftime( '%a, %d-%b-%Y %T GMT', @expires_time );
-
-      $header .= sprintf ' expires=%s;', $expiry;
+      $cookie_value .= sprintf ' expires=%s;', create_expiration_time($cookie_expires);
     }
 
-    $self->{ctx}->cgi_header_out( 'Set-Cookie', $header );
-
-    $self->get_logger->trace( sub {"Set cookie header: [Set-Cookie => $header]"} );
-
-    push @headers, $header;
+    push @cookie_jar, $cookie_value;
   }
 
-  return \@headers;
+  return @cookie_jar;
+}
+
+########################################################################
+sub create_expiration_time {
+########################################################################
+  my ($expires) = @_;
+
+  return POSIX::strftime( '%a, %d-%b-%Y %T GMT', gmtime( time + $expires ) );
 }
 
 ########################################################################
@@ -2013,13 +2137,13 @@ Return a 1 if the operation is successful.
 
  config    => configuration object        
  username  => username                    
- password  => [new-password, old-password 
+ password  => [ new-password, old-password ]
  session   => session-id
 
 Update password associated with the username given.  Return a 1 if the
 update is successful.
 
-=head1 METHODS AND SUBROUTINES PROVIDED
+=head1 METHODS AND SUBROUTINES
 
 These methods are provided for you by the base class but can be
 overwridden by your implementation.
@@ -2045,7 +2169,7 @@ root.
  create_session_dir([sub-dir])
 
 Creates a session directory with a corresponding subdirectory if
-requested. Session directories are subdirectories that are identified
+provided. Session directories are subdirectories that are identified
 by the session cookie value and typically used in conjunction with
 C<Apache::BedrockSessionFiles>.
 
@@ -2053,6 +2177,28 @@ Your F<tagx.xml> file should define a C<SESSION_DIR> value that
 provides the root for the session directory.
 
  <scalar name="SESSION_DIR">/var/www/vhosts/mydomain.com/session</scalar>
+
+I<NOTE: The session directory root (SESSION_DIR) should be outside the
+context of your DOCUMENT_ROOT. If you specify the root of session
+directories inside your DOCUMENT_ROOT you may be inadvertantly
+exposing a user's session directory to all users.>
+
+For stateless session directories the root of session directory could
+be, for example, an NFS mount available to a fleet of web servers. You
+could also create a custom C<mod_perl> handler for that directory that
+serves files from some other location (e.g. an external file storage
+system like Amazon S3, etc). However, if your session directory is not
+directly accessible by normal file access utilities then method's like
+C<create_session_dir()> will throw exceptions.
+
+Your handler would obviously need to manage session directories and
+serve files from your external file storage system.
+
+You could also sub-class this module and provide your own
+C<create_session_dir()>, C<create_session_tempfiel()>, and 
+
+See L<Apache::BedrockCloudSessionFiles> for an example of serving
+session files from S3.
 
 =head2 create_session_tempfile
 
@@ -2080,6 +2226,10 @@ Sub directory under the C<session> directory to create.
 
 Suffix (extension).
 
+=item NAME
+
+Creates a temporary file with this name.
+
 =back
 
 =back
@@ -2088,9 +2238,27 @@ Suffix (extension).
 
  create_session_file( filename, content )
 
-Writes the content the session directory using the filename specified.
+Writes the content to the session directory using the filename specified.
 If the C<content> parameter is a hash or array it will be deserialize
 as a JSON object.
+
+=head2 encrypt
+
+ encrypt( password, salt )
+
+This method is a cover of the Perl's C<crypt()> method. For storing
+passwords in a database previous versions of the MySQL implementation
+of a session manager used this function. Subsequent version used the
+C<password()> function of MySQL 5.7.  Starting with version 8 of
+MySQL, passwords are stored in the session table when the
+C<register()> function is called using the C<sha2()> function.
+
+=head2 rename_session_file
+
+ rename_session_file(old-name, new-name);
+
+Renames a file in a use session. Throws an exception if the file does
+not exist.
 
 =head1 SEE ALSO
 
@@ -2098,6 +2266,6 @@ L<BLM::Startup::UserSession>
 
 =head1 AUTHOR
 
-Rob Lauer <rlauer6@comcast.net>
+Rob Lauer <bigfoot@cpan.org>
 
 =cut

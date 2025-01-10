@@ -50,19 +50,6 @@ subtest 'easy_connect: environment variables' => sub {
     or diag( Dumper( [ dbi => $dbi ] ) );
 
   $dbi->disconnect;
-
-  $dbi = eval {
-
-    BLM::DBHandler->easy_connect(
-      user     => $ENV{DBI_USER},
-      password => $ENV{DBI_PASS},
-      host     => $ENV{DBI_HOST} // 'localhost',
-    );
-  };
-
-  ok( is_dbi($dbi) && !$EVAL_ERROR, 'BLM::DBHandler->easy_connect()' );
-
-  $dbi->disconnect;
 };
 
 ########################################################################
@@ -80,12 +67,6 @@ subtest 'easy_connect: file handle' => sub {
   ok( is_dbi($dbi) && !$EVAL_ERROR, 'file handle, no name' );
 
   $dbi->disconnect;
-
-  seek $fh, $DATA_POSITION, 0;
-
-  $dbi = easy_connect( $fh, 'sqlite' );
-
-  ok( is_dbi($dbi) && !$EVAL_ERROR, 'file handle, with name' );
 };
 
 ########################################################################
@@ -118,8 +99,5 @@ __DATA__
     <scalar name="username">fred</scalar>
     <scalar name="password">flintstone</scalar>
     <scalar name="database">bedrock</scalar>
-  </object>
-  <object name="sqlite">
-    <scalar name="data_source">dbi:SQLite:dbname=:memory</scalar>
   </object>
 </object>

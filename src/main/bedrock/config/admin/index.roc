@@ -13,7 +13,8 @@
   </head>
 
   <if $input.action --eq 'register'>
-    <null $session.register($input.username, $input.password,  $input.first_name, $input.last_name, $input.email)>
+    
+    <null $session.register($input.get('register-username', $input.get('register-password'),  $input.first_name, $input.last_name, $input.email))>
   <elsif $input.action --eq 'logout'>
     <null $session.logout()>
   <elsif $input.action --eq 'login'>
@@ -158,7 +159,7 @@
       <div class="container" id="register-container">
         <div class="row mt-4">
           <div class="col-12">
-            <form id='register-form' action="session.roc" method="post">
+            <form id='register-form' action="index.roc" method="post">
               
               <div class="row mt-4">
                 <div class="col-4">

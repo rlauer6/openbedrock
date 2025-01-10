@@ -1,0 +1,151 @@
+package Apache::BedrockAuthenticate;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+BEGIN {
+  if ( $ENV{MOD_PERL} ) {
+    require Apache2::compat;
+  }
+}
+
+use Bedrock::Apache::Constants qw(:http);
+
+use Bedrock;
+use Bedrock::BedrockConfig;
+use Bedrock::Context;
+use Bedrock::Handler qw(bind_module);
+use Carp;
+
+use JSON;
+use Data::Dumper;
+use English qw(-no_match_vars);
+
+########################################################################
+sub get_loglevel {
+########################################################################
+  my ($r) = @_;
+
+  if ( $ENV{MOD_PERL} ) {
+    return $r->server->loglevel();
+  }
+  else {
+    return $r->get_loglevel();
+  }
+}
+
+########################################################################
+sub handler {
+########################################################################
+  my ($r) = @_;
+
+  my $bedrock_handler = eval { return Bedrock::Handler->new($r); };
+
+  return $SERVER_ERROR
+    if !$bedrock_handler;
+
+  # check to see if we have a login session, if not try to redirect to the login page
+  my $session = get_session($bedrock_handler);
+
+  return $OK
+    if $session->{username};
+
+  if ( $session->config('login_url') ) {
+    $r->headers_out->{Location} = $session->config('login_url');
+    $r->send_http_headers();
+
+    return $REDIRECT;
+  }
+
+  return $HTTP_UNAUTHORIZED;
+}
+
+########################################################################
+sub get_session {
+########################################################################
+  my ($bedrock_handler) = @_;
+
+  my $r = $bedrock_handler->apache_handler;
+
+  my $ctx = Bedrock::Context->new(
+    REQUEST_HANDLER => $r,
+    CONFIG          => $bedrock_handler->get_config
+  );
+
+  my $module_config = $bedrock_handler->get_config->get_module_config('UserSession');
+
+  if ( !$module_config ) {
+    $r->log->error('unable to get UserSession configuration...check BEDROCK_CONFIG_PATH?');
+    return $HTTP_BAD_REQUEST;
+  }
+
+  my $obj = bind_module(
+    module  => 'BLM::Startup::UserSession',
+    config  => $module_config,
+    context => $ctx,
+  );
+
+  return $obj;
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Apache::Authenticate
+
+=head1 SYNOPSIS
+
+ <Directory /var/www/html/form/>
+ 
+    PerlSetEnv DBI_USER fred
+    PerlSetEnv DBI_PASS flintstone
+    PerlSetEnv DBI_DB bedrock
+    PerlSetEnv DBI_HOST docker_db_1
+ 
+    AcceptPathInfo On
+    Options -Indexes
+    AllowOverride None
+ 
+   <IfModule mod_perl.c>
+     SetHandler perl-script
+     PerlHeaderParserHandler Apache::BedrockAuthenticate
+   </IfModule>
+ </Directory>
+
+=head1 DESCRIPTION
+
+=head1 CONFIGURATION
+
+=head1 METHODS AND SUBROUTINES
+
+=head1 AUTHOR
+
+Rob Lauer - bigfoot@cpan.org
+
+=head1 SEE ALSO
+
+=cut

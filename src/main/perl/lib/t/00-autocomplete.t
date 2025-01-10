@@ -11,6 +11,22 @@ BEGIN {
   push @INC, "$path/Bedrock", "$path/Bedrock/Text";
 }
 
+########################################################################
+package FauxSession;
+########################################################################
+
+########################################################################
+sub get_session_dir {
+########################################################################
+  my ($self) = @_;
+
+  return sprintf '%s/%s', @{$self}{qw(dir session)};
+}
+
+########################################################################
+package main;
+########################################################################
+
 use Data::Dumper;
 use English qw(-no_match_vars);
 use Bedrock::Test::RequestHandler;
@@ -38,9 +54,9 @@ sub create_temp_file {
 
   close $fh;
 
-  my ( $dir, $session ) = $tmpdir =~ /^(.*)[\/]([^\/]+)$/xsm;
+  my ( $dir, $session_id ) = $tmpdir =~ /^(.*)[\/]([^\/]+)$/xsm;
 
-  return ( $dir, $session, basename($filename) );
+  return ( $dir, $session_id, basename($filename) );
 }
 
 ########################################################################
@@ -69,7 +85,7 @@ sub main {
 ########################################################################
   use_ok('Apache::BedrockAutocomplete');
 
-  my ( $dir, $session, $filename ) = create_temp_file;
+  my ( $dir, $session_id, $filename ) = create_temp_file;
 
   my $handler = Bedrock::Test::RequestHandler->new(
     content_type => 'application/json',
@@ -78,14 +94,16 @@ sub main {
     log_level    => 'trace',
   );
 
-  create_tagx_xml( $dir, $session );
+  create_tagx_xml( $dir, $session_id );
 
   local $ENV{BEDROCK_CONFIG_PATH} = $dir;
   {
     no strict 'refs';        ## no critic (ProhibitNoStrict)
     no warnings 'redefine';  ## no critic (ProhibitNoWarnings)
 
-    *{'Bedrock::Apache::HandlerUtils::check_session'} = sub { return $session; };
+    *{'Bedrock::Apache::HandlerUtils::check_session'} = sub {
+      return bless { session => $session_id, dir => $dir }, 'FauxSession';
+    };
 
   }
 

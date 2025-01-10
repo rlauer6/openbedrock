@@ -6,11 +6,10 @@ use warnings;
 use Bedrock qw(slurp_file);
 use Bedrock::Constants qw(:chars);
 use Bedrock::XML;
-use JSON;
+use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename qw(fileparse);
-
-use Data::Dumper;
+use JSON;
 use Scalar::Util qw(reftype openhandle);
 
 use Readonly;
@@ -112,10 +111,15 @@ sub load_dsn_from_config {
   if ($dsn) {
     my ( $scheme, $driver, $attr_string, $attr_hash, $driver_dsn ) = DBI->parse_dsn($dsn);
     $dsn_spec{driver} = $driver;
-    my @dsn_parts = split /:/xsm, $driver_dsn;
+
+    my @dsn_parts = $driver_dsn !~ /:memory:/xsm ? split /:/xsm, $driver_dsn : $driver_dsn;
+
     @dsn_spec{qw(database host)} = @dsn_parts;
+
     %dsn_spec = ( %dsn_spec, %{ $attr_hash || {} } );
   }
+
+  $dsn_spec{host} //= $config->{host};
 
   # if use_env set, then replace elements of config with values from
   # environment
@@ -136,8 +140,10 @@ sub load_dsn_from_config {
   my $host = delete $dsn_spec{host};
   $host //= delete $dsn_spec{DBI_HOST};
 
+  # if host is '' then special case (SQLite)
+  $host //= $config->{host};
+
   $driver   //= $DEFAULT_DRIVER;
-  $host     //= $DEFAULT_HOST;
   $database //= $DEFAULT_DATABASE;
 
   my $username = $dsn_spec{username} // $ENV{DBI_USER};
@@ -150,9 +156,12 @@ sub load_dsn_from_config {
   my $extra_options = join $SEMICOLON, map { sprintf '%s=%s', $_, $dsn_spec{$_} } keys %dsn_spec;
   $extra_options = $extra_options ? ";$extra_options" : $EMPTY;
 
+  $host //= $DEFAULT_HOST;
   $host = lc $host eq 'localhost' ? $LOOPBACK : $host;
 
-  $dsn = sprintf 'dbi:%s:%s:%s%s', $driver, $database, $host, $extra_options;
+  $host = $host ? ":$host" : q{};
+
+  $dsn = sprintf 'dbi:%s:%s%s%s', $driver, $database, $host, $extra_options;
 
   my @connect_params = ( $dsn, $username, $password, $database, $host, $extra_options );
 

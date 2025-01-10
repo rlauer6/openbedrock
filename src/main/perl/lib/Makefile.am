@@ -25,7 +25,6 @@ perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
 
-perl5bedrockredisclientlibdir    	  = $(perl5libdir)/Bedrock/RedisClient
 perl5bedrockrolelibdir    	          = $(perl5libdir)/Bedrock/Role
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
@@ -47,8 +46,7 @@ perl5blmindexedtablehandlerlibdir        = $(perl5libdir)/BLM/IndexedTableHandle
 perl5blmstartuplibdir 	                 = $(perl5libdir)/BLM/Startup
 perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 
-perl5bedrockloglib_DATA = \
-   Bedrock/Log/Spooler.pm
+perl5bedrockloglib_DATA =
 
 perl5bedrockdbilib_DATA = \
    Bedrock/DBI/Utils.pm
@@ -79,7 +77,6 @@ perl5bedrocklib_DATA = \
     Bedrock/Pager.pm \
     Bedrock/Plugin.pm \
     Bedrock/PodWriter.pm \
-    Bedrock/RedisCache.pm \
     Bedrock/RegExp.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
@@ -87,9 +84,6 @@ perl5bedrocklib_DATA = \
     Bedrock/Template.pm \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm
-
-perl5bedrockredisclientlib_DATA = \
-    Bedrock/RedisClient/Role.pm
 
 perl5bedrocktestlib_DATA = \
     Bedrock/Test/Utils.pm \
@@ -118,18 +112,16 @@ perl5bedrockapachelib_DATA = \
 
 BEDROCK_APACHE = \
     Bedrock/Apache/Bedrock.pm.in \
-    Bedrock/Apache/Request_cgi.pm.in \
-    Bedrock/Apache/Request_shell.pm.in \
+    Bedrock/Apache/BedrockAuthenticate.pm.in \
     Bedrock/Apache/BedrockAutocomplete.pm.in \
-    Bedrock/Apache/BedrockSessionFiles.pm.in \
-    Bedrock/Apache/BedrockS3Handler.pm.in \
-    Bedrock/Apache/BedrockCloudSessionFiles.pm.in \
     Bedrock/Apache/BedrockDocs.pm.in \
+    Bedrock/Apache/BedrockForm.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in \
+    Bedrock/Apache/BedrockSessionFiles.pm.in \
     Bedrock/Apache/Constants.pm.in \
-    Bedrock/Apache/Form.pm.in \
     Bedrock/Apache/HandlerUtils.pm.in \
-    Bedrock/Apache/RedisSessionHandler.pm.in
+    Bedrock/Apache/Request_cgi.pm.in \
+    Bedrock/Apache/Request_shell.pm.in
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
@@ -312,7 +304,6 @@ perl5blmlib_DATA = \
     BLM/Recycle.pm \
     BLM/FTP.pm \
     BLM/SMTP.pm \
-    BLM/Redis.pm \
     BLM/Session.pm \
     BLM/ShareDir.pm \
     BLM/Source.pm \
@@ -330,12 +321,8 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/Header.pm \
     BLM/Startup/Input.pm \
     BLM/Startup/MySQLSession.pm \
-    BLM/Startup/OAuth2.pm \
     BLM/Startup/PostgreSQLSession.pm \
-    BLM/Startup/RedisSession.pm \
     BLM/Startup/REST.pm \
-    BLM/Startup/S3.pm \
-    BLM/Startup/SQLiteSession.pm \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \
     BLM/Startup/SQLSession.pm \

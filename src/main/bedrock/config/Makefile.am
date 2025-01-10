@@ -32,11 +32,7 @@ CONFIG = \
     mysql-session.xml.in \
     perl_bedrock.conf22.in \
     perl_bedrock.conf24.in \
-    redis-cache.xml.in \
-    redis-session.xml.in \
     rest.xml.in \
-    sqlite.xml.in \
-    s3.xml.in \
     pod_paths.xml.in \
     markdown_paths.xml.in \
     startup.pl.in \
@@ -52,7 +48,6 @@ $(GCONFIG): % : %.in
 	$(do_subst) $< > $@
 
 config_DATA = $(GCONFIG) $(EXTRA_FILES)
-
 
 dist_config_DATA = $(EXTRA_FILES) $(CONFFILES)
 

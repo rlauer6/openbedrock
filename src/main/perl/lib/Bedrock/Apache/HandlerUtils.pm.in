@@ -1,5 +1,4 @@
 package Bedrock::Apache::HandlerUtils;
-# TODO: add pod
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -25,30 +24,43 @@ use warnings;
 
 use Role::Tiny;
 
-use Bedrock::Handler;
-use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Apache::Constants qw(:http);
+use Bedrock::Constants qw(:chars :booleans);
+use Bedrock::Context qw(parse_cookie);
+use Bedrock::Handler qw(bind_module);
+use BLM::DBHandler qw(easy_connect);
 
-use CGI::Cookie;
 use Data::Dumper;
 use DBI;
 use English qw(-no_match_vars);
 use File::Basename;
+use List::Util qw(pairs any);
 
 ########################################################################
 sub get_cookie {
 ########################################################################
-  my ( $r, $cookie ) = @_;
+  my ( $r, $cookie_name ) = @_;
 
-  my %cookies = eval { return CGI::Cookie->parse( $ENV{HTTP_COOKIE} ); };
+  my $cookie = $r->headers_in->{Cookie} || $ENV{HTTP_COOKIE};
+  $cookie //= $EMPTY;
+
+  my $cookies = eval { parse_cookie($cookie); };
 
   if ($EVAL_ERROR) {
-    $r->log->error( sprintf "ERROR parsing cookies: [%s]\n%s\n", $ENV{HTTP_COOKIE}, $EVAL_ERROR );
+    $r->log->error( sprintf "ERROR parsing cookies: [%s]\n%s\n", $cookie, $EVAL_ERROR );
+    die $EVAL_ERROR;
   }
 
-  my $cookie_value = $cookies{$cookie} ? $cookies{$cookie}->value : undef;
+  my $cookie_value = $cookies->{$cookie_name} ? $cookies->{$cookie_name} : undef;
 
-  $r->log->debug( 'Cookies: ' . Dumper [ \%cookies, $ENV{HTTP_COOKIE} ] );
+  $r->log->trace(
+    Dumper(
+      [ cookies     => $cookies,
+        cookie_name => $cookie_name,
+        cookie      => $cookie
+      ]
+    )
+  );
 
   return $cookie_value;
 }
@@ -66,58 +78,39 @@ sub check_session {
 ########################################################################
   my ($bedrock_handler) = @_;
 
-  my $r = $bedrock_handler->request_handler;
+  my $r = $bedrock_handler->request;
 
-  # get the session cookie so we know where to look for the file
-  my $session = get_session_cookie($r);
+  my $session_id = get_session_cookie($r);
 
-  if ( !$session ) {
+  if ( !$session_id ) {
     $r->log->error('no session cookie');
     die "no or expired session\n";
   }
 
-  return validate_session( $bedrock_handler, $session );
+  return validate_session($bedrock_handler);
 }
 
 ########################################################################
 sub validate_session {
 ########################################################################
-  my ( $handler, $session ) = @_;
+  my ($handler) = @_;
 
-  my $r = $handler->request_handler;
+  my $r = $handler->request;
 
   my $config = $handler->config->get_module_config('usersession');
 
-  die "no config available\n"
-    if !$config || !keys %{$config};
+  my $ctx = Bedrock::Context->new(
+    request => $handler->request,
+    config  => $handler->get_config,
+  );
 
-  my $dsn = $config->{data_source};
+  my $session
+    = eval { bind_module( config => $config, module => 'BLM::Startup::UserSession', context => $ctx, ); };
 
-  die "no data_source in configuration\n"
-    if !$dsn;
+  die "unable to bind BLM::Startup::Session module\n$EVAL_ERROR"
+    if !$session;
 
-  my ( $username, $password, $table_name )
-    = @{$config}{qw{username password table_name}};
-
-  my @user = eval {
-    my $dbi = DBI->connect( $dsn, $username, $password );
-
-    my $query = <<'END_OF_SQL';
-select *
-  from %s
-  where session = ? and expires > now()
-END_OF_SQL
-
-    $query = sprintf $query, $config->{table_name};
-
-    my @result = $dbi->selectrow_array( $query, undef, $session );
-
-    $dbi->disconnect;
-
-    return @result;
-  };
-
-  if ( !@user || $EVAL_ERROR ) {
+  if ( !$session->{username} ) {
     $r->log->error( sprintf 'invalid session or session timed out. error: [%s]', $EVAL_ERROR );
 
     die "no or expired session\n";
@@ -129,11 +122,13 @@ END_OF_SQL
 ########################################################################
 sub dump_session_info {
 ########################################################################
-  my ( $r, $filename, $session_dir, $session ) = @_;
+  my ( $bedrock_handler, $session ) = @_;
 
-  $r->log->debug( sprintf 'SESSION_DIR......[%s]', $session_dir );
+  my $r = $bedrock_handler->request;
+
+  $r->log->debug( sprintf 'SESSION_DIR......[%s]', $bedrock_handler->get_config->{SESSION_DIR} );
   $r->log->debug( sprintf 'session..........[%s]', $session );
-  $r->log->debug( sprintf 'filename.........[%s]', $filename );
+  $r->log->debug( sprintf 'filename.........[%s]', $r->filename );
 
   return;
 }
@@ -143,25 +138,26 @@ sub dump_request_info {
 ########################################################################
   my ($r) = @_;
 
-  my $path_info   = $ENV{PATH_INFO}       // $EMPTY;
-  my $path_xlated = $ENV{PATH_TRANSLATED} // $EMPTY;
-  my $http_cookie = $ENV{HTTP_COOKIE}     // $EMPTY;
-
   $r->log->debug( __PACKAGE__ . ' started.' );
 
-  $r->log->debug( sprintf 'request file.....[%s]', $r->filename );
+  $r->log->debug( sprintf 'filename.........[%s]', $r->filename );
   $r->log->debug( sprintf 'URI..............[%s]', $r->uri );
-  $r->log->debug( sprintf 'PATH_INFO........[%s]', $path_info );
-  $r->log->debug( sprintf 'PATH_TRANSLATED..[%s]', $path_xlated );
-  $r->log->debug( sprintf 'HTTP_COOKIE......[%s]', $http_cookie );
+  $r->log->debug( sprintf 'Cookie...........[%s]', $r->headers_in->{Cookie} // $EMPTY );
+  $r->log->debug( sprintf 'PATH_INFO........[%s]', $ENV{PATH_INFO}          // $EMPTY );
+  $r->log->debug( sprintf 'PATH_TRANSLATED..[%s]', $ENV{PATH_TRANSLATED}    // $EMPTY );
+  $r->log->debug( sprintf 'HTTP_COOKIE......[%s]', $ENV{HTTP_COOKIE}        // $EMPTY );
 
   return;
 }
 
 ########################################################################
+sub get_session_file_info { goto &get_file_info; }
+########################################################################
 sub get_file_info {
 ########################################################################
   my ( $r, $verify ) = @_;
+
+  $verify //= $TRUE;
 
   dump_request_info($r);
 
@@ -170,15 +166,13 @@ sub get_file_info {
 
   my $bedrock_handler = Bedrock::Handler->new($r);
 
-  my $config = $bedrock_handler->get_config();
-
   my $session = check_session($bedrock_handler);
 
-  my $session_dir = $config->{SESSION_DIR};
+  my $session_dir = $session->get_session_dir;
 
-  my $filename = sprintf '%s/%s/%s%s', $session_dir, $session, $name, $ext;
+  my $filename = sprintf '%s/%s%s', $session_dir, $name, $ext;
 
-  dump_session_info( $r, $filename, $session_dir, $session );
+  dump_session_info( $bedrock_handler, $session );
 
   my @finfo = stat $filename;
 
@@ -186,17 +180,14 @@ sub get_file_info {
     session     => $session,
     session_dir => $session_dir,
     filename    => $filename,
-    config      => $config,
+    config      => $bedrock_handler->get_config(),
     mtime       => $finfo[9],
   };
 
-  return $file_info
-    if defined $verify && !$verify;
+  return
+    if $verify && !verify_file( $r, $filename );
 
-  return $file_info
-    if verify_file( $r, $filename );
-
-  return;
+  return $file_info;
 }
 
 ########################################################################
@@ -225,33 +216,42 @@ sub is_mod_perl {
 }
 
 ########################################################################
+sub run_rules {
+########################################################################
+  my (%params) = @_;
+
+  my ( $rules, $args ) = @params{qw(rules args)};
+
+  foreach my $r ( pairs @{$rules} ) {
+    return $r->[0]
+      if $r->[1]->( @{$args} );
+  }
+
+  return;
+}
+
+########################################################################
 sub set_error_status {
 ########################################################################
   my ( $r, $err ) = @_;
 
-  my $status;
+  $r->log->error($err);
 
-  if ( $err =~ /not\sfound/xsm ) {
-    $status = $NOT_FOUND;
-  }
-  elsif ( $err =~ /not\sreadable/xsm ) {
-    $status = $FORBIDDEN;
-  }
-  elsif ( $err =~ /no\sor\sexpired\ssession/xsm ) {
-    $status = $HTTP_UNAUTHORIZED;
-  }
-  elsif ( $err =~ /server\serror/xsm ) {
-    $status = $SERVER_ERROR;
-  }
-  else {
-    $status = $SERVER_ERROR;
-  }
+  my @rules = (
+    $NOT_FOUND         => sub { return $_[0] =~ /not\sfound/xsm },
+    $FORBIDDEN         => sub { return $_[0] =~ /not\sreadable/xsm },
+    $HTTP_UNAUTHORIZED => sub { return $_[0] =~ /expired\ssession/xsm },
+    $SERVER_ERROR      => sub { return $_[0] =~ /server\serror/xsm },
+    $SERVER_ERROR      => sub { return 1; },
+  );
+
+  my $status = run_rules( rules => \@rules, args => [$err] );
 
   if ( is_mod_perl() ) {
     $r->status($status);
   }
   else {
-    $r->cgi_header_out( 'Status', '500' );
+    $r->cgi_header_out( 'Status', $status );
   }
 
   $r->send_http_header;
@@ -262,3 +262,84 @@ sub set_error_status {
 1;
 
 __END__
+
+=pod
+
+=head1 NAME
+
+Bedorck::Apache::HandlerUtils - role for providing some useful methods used by multiple handlers
+
+=head1 SYNOPSIS
+
+ use Role::Tiny::With;
+ with 'Bedrock::Apache::HanderUtils';
+
+=head1 DESCRIPTION
+
+A role for providing some methods used by multiple mod_perl handlers
+for implementing Bedrock based applications.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 check_session
+
+Checks for a session cookie and validates the cookie against the
+session table. This methods requires a properly configured
+L<BLM::Startup::UserSession> plugin.
+
+Throws an exception if the cookie is missing or expired.
+
+=head2 dump_session_info
+
+ dump_session_info($bedrock_handler, $session);
+
+Dumps the session information to the Apache log in debug mode.
+
+=head2 dump_request_info
+
+ dump_request_info($r)
+
+Dumps the request information to the Apache log in debug mode.
+
+=head2 get_cookie
+
+ get_cookie(cookie-name)
+
+Retrieves the value of a single cookie.
+
+=head2 get_file_info
+
+ get_file_info(request, verify)
+
+Retrieve
+=head2 get_session_cookie
+
+=head2 get_session_file_info
+
+=head2 verify_file
+
+=head2 is_mod_perl
+
+=head2 set_error_status
+
+=head2 validate_session
+
+This method is called for you by L</check_session> so you should not
+need to invoke this method. It will return a row from the session
+table if the user is authenticated and the session is valid.
+
+ [0]
+ [1]
+ [2]
+ [3]
+ [4]
+
+=head1 SEE ALSO
+
+L<Role::Tiny>, L<Role::Tiny::With>
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut

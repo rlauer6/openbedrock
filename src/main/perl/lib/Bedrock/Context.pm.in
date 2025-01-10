@@ -56,7 +56,7 @@ our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetacha
 
 use parent qw(Exporter);
 
-our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger);
+our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger parse_cookie);
 
 {
   no strict 'refs';  ## no critic
@@ -79,18 +79,22 @@ our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger);
 ########################################################################
 sub new {
 ########################################################################
-  my ( $class, %args ) = @_;
+  my ( $class, @args ) = @_;
 
-  if ( $args{APACHE_HANDLER} ) {
-    carp "$class: deprecated use of APACHE_HANDLER, use REQUEST_HANDLER\n";
+  my $options = ref $args[0] ? $args[0] : {@args};
 
-    $args{REQUEST_HANDLER} = $args{APACHE_HANDLER};
+  foreach ( keys %{$options} ) {
+    $options->{ lc $_ } = $options->{$_};  # just lc everything please
   }
 
-  die "usage: Bedrock::Context->new( CONFIG => config, REQUEST_HANDLER => handler\n"
-    if !$args{REQUEST_HANDLER} || !$args{CONFIG};
+  my ( $config, $config_file ) = @{$options}{qw(config config_file)};
 
-  $args{APACHE_HANDLER} = $args{REQUEST_HANDLER};  # until we scour for APACHE...
+  my ($request_name) = grep { $options->{$_} } qw(apache_handler request_handler request);
+
+  my $request = $options->{ $request_name // $EMPTY };
+
+  die "usage: Bedrock::Context->new( config => config, request => request )\n"
+    if !$request || !$config;
 
   my $self = bless {}, $class;
 
@@ -99,28 +103,29 @@ sub new {
   # merged Bedrock site configuration. There may not be a use case for
   # calling Bedrock::Context with anything but Bedrock's configuration
   # object.
-  my $config = eval {
-    if ( $args{CONFIG} ) {
-      return $self->config( $args{CONFIG} );
-    }
-    else {
-      return $self->config( Bedrock::Config->new( $args{CONFIG_FILE} ) );
-    }
+
+  $config = eval {
+    return $config
+      if $config;
+
+    return Bedrock::Config->new($config_file);
   };
 
   croak "ERROR: could not create a configuration object\n$EVAL_ERROR"
     if !$config || $EVAL_ERROR;
 
-  $self->request( $args{REQUEST_HANDLER} );
+  $self->config($config);
 
-  $self->redis( $args{REDIS} );
+  $self->request($request);
 
-  if ( $args{OUTPUT_HANDLER} ) {
-    $self->output_handler( $args{OUTPUT_HANDLER} );
-    $self->response( $args{OUTPUT_HANDLER} );
+  $self->redis( $options->{redis} );
+
+  if ( $options->{output_handler} ) {
+    $self->output_handler( $options->{output_handler} );
+    $self->response( $options->{output_handler} );
   }
   else {
-    $self->output_handler( $args{REQUEST_HANDLER} );
+    $self->output_handler($request);
     $self->response( $self->request );
   }
 
@@ -480,6 +485,8 @@ sub cgi_header_in {
   return %{$headers};
 }
 
+sub headers_out { goto &cgi_header_out; }
+
 ########################################################################
 sub cgi_header_out {
 ########################################################################
@@ -489,7 +496,7 @@ sub cgi_header_out {
 
   # mod_perl 1/2
   return ref($r) =~ /Apache2/xsm
-    ? $r->err_headers_out->add(@headers)
+    ? $r->headers_out->add(@headers)
     : $r->header_out(@headers);
 }
 
@@ -558,43 +565,58 @@ sub getConfigValue {  ## no critic (Capitalization)
   }
 }
 
+sub getCookieValue { goto &get_cookie_value; }
+
 ########################################################################
-sub getCookieValue {  ## no critic (Capitalization)
+sub get_cookie_value {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  return
-    if !exists $ENV{HTTP_COOKIE};
+  my $r = $self->apache_handler;
 
-  my $raw_cookie = $ENV{HTTP_COOKIE};
+  my $raw_cookie = $r->headers_in->{Cookie} // $ENV{HTTP_COOKIE};
+  $raw_cookie //= $EMPTY;
+
+  return
+    if !$raw_cookie;
 
   if ( !exists $self->{__cookies__} ) {
-
-    $self->{__cookies__} = {};
-
-    for my $cookie ( split /[;,]\s?/xsm, $raw_cookie ) {
-      $cookie =~ s/^\s*(.*?)\s*$/$1/xsm;
-
-      my ( $key, $value ) = split /=/xsm, $cookie;
-
-      $self->{__cookies__}->{$key} = Text::URLEncode::Decode($value);
-    }
+    $self->{__cookies__} = parse_cookie($raw_cookie);
   }
 
-  if ( @args == 1 ) {
-    return $self->{__cookies__}->{ $args[0] };
-  }
-  elsif ( @args > 1 ) {
-    my @values = map { $self->{__cookies__}->{$_} } @args;
-    return @values;
-  }
-  else {
-    return sort keys %{ $self->{__cookies__} };
-  }
+  my %cookie_jar = %{ $self->{__cookies__} };
+
+  return sort keys %cookie_jar
+    if !@args;
+
+  return $cookie_jar{ $args[0] }
+    if @args == 1;
+
+  return @cookie_jar{@args};
 }
 
 ########################################################################
-sub setCookieValue {  ## no critic (Capitalization)
+sub parse_cookie {
+########################################################################
+  my ($raw_cookie) = @_;
+
+  my %cookie_values;
+
+  for my $cookie ( split /[;]\s?/xsm, $raw_cookie ) {
+    $cookie =~ s/^\s*(.*?)\s*$/$1/xsm;
+
+    my ( $key, $value ) = split /=/xsm, $cookie;
+
+    $cookie_values{$key} = Text::URLEncode::Decode($value);
+  }
+
+  return \%cookie_values;
+}
+
+sub setCookieValue { goto &set_cookie_value; }
+
+########################################################################
+sub set_cookie_value {
 ########################################################################
   my ( $self, $cookie ) = @_;
 
@@ -783,9 +805,11 @@ object from the public.
 
 =head2 getCookieValue
 
- getCookieValue( cookie || cookie-list )
+See L</get_cookie_value>
 
-Method returns one or more cookies.
+=head2 get_cookie_value
+
+ get_cookie_value( cookie-name, [ cookie-name, ...] )
 
 =head2 getInputValue
 
@@ -819,6 +843,12 @@ Output handler object.
 
 Hash of output values.
 
+=head2 parse_cookie
+
+ parse_cookie(cookie-value)
+
+Returns a hash of key value pairs.
+
 =head2 session
 
 Session object if available.
@@ -829,7 +859,11 @@ Outputs the headers.
 
 =head2 setCookieValue
 
- setCookieValue( cookie )
+See L<set_cookie_value>
+
+=head2 set_cookie_value
+
+ set_cookie_value( cookie-name, value )
 
 Set a cookie.
 

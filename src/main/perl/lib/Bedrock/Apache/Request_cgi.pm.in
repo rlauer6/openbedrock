@@ -23,32 +23,17 @@ package Apache::Request_cgi;
 use strict;
 use warnings;
 
-use File::Basename;
-use Bedrock::Constants qw(:booleans :chars :log_levels);
+use Bedrock::Constants qw(:booleans :chars :log_levels :mime-types);
 use Bedrock::Context qw(init_log4perl_logger);
 use Data::Dumper;
-
-use List::Util qw(pairs none);
+use English qw(-no_match_vars);
+use File::Basename;
+use List::Util qw(pairs none pairkeys uniq);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
 use Readonly;
-
-Readonly::Hash our %MIME_TYPES => (
-  htm   => 'text/html',
-  html  => 'text/html',
-  jpeg  => 'image/jpeg',
-  jpg   => 'image/jpeg',
-  jroc  => 'application/json',
-  jrock => 'application/json',
-  pdf   => 'application/pdf',
-  png   => 'image/png',
-  roc   => 'text/html',
-  rock  => 'text/html',
-  tif   => 'image/tiff',
-  txt   => 'text/plain',
-);
 
 ########################################################################
 sub new {
@@ -65,18 +50,87 @@ sub new {
     if ( !ref $fh && ref \$fh ne 'GLOB' ) {
       no strict 'refs';  ## no critic (ProhibitNoStrict)
 
-      $fh = \*$fh;
+      $fh = \*{$fh};
 
       $self->{output_handle} = $fh;
     }
   }
 
-  $self->{LogLevel} = $ENV{LogLevel} || $ENV{BedrockLogLevel};
+  $self->{LogLevel} //= $ENV{LogLevel} || $ENV{BedrockLogLevel};
 
   $self->init_logger;
 
-  # set a default content type
-  $self->content_type( $self->content_type );
+  $ENV{PATH_TRANSLATED} //= $PROGRAM_NAME;
+
+  $self->_add_types_from_config();
+
+  $self->_set_default_mime_type();
+
+  $self->headers_in;
+
+  return $self;
+}
+
+########################################################################
+sub _add_types_from_config {
+########################################################################
+  my ($self) = @_;
+
+  my $config = eval {
+    require Apache::ConfigParser;
+
+    my $config_file = $ENV{APACHE_CONF_DIR} ? sprintf( '%s/httpd.conf', $ENV{APACHE_CONF_DIR} ) : q{};
+
+    return
+      if !$config_file || !-e $config_file;
+
+    return Apache::ConfigParser->new->parsefile($config_file);
+  };
+
+  return
+    if !$config || $EVAL_ERROR;
+
+  my @types = $config->find_down_directive_names('AddType');
+
+  foreach my $t (@types) {
+    my ( $mime_type, @extensions ) = $t->get_value_array;
+    @DEFAULT_MIME_TYPES{@extensions} = $mime_type;
+  }
+
+  return $self;
+}
+
+########################################################################
+sub _set_default_mime_type {
+########################################################################
+  my ($self) = @_;
+
+  my $filename = $self->filename();
+
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+  $ext //= '.html';
+
+  my $mime_type = eval {
+    return $DEFAULT_MIME_TYPES{$ext}
+      if $DEFAULT_MIME_TYPES{$ext};
+
+    require MIME::Types;
+
+    my $mt = MIME::Types->new(
+      only_complete   => $TRUE,
+      only_iana       => $TRUE,
+      skip_extensions => $TRUE
+    );
+
+    $ext =~ s/[.]//xsm;
+
+    return $mt->mimeTypeOf($ext);
+  };
+
+  return
+    if !$mime_type;
+
+  $self->content_type($mime_type);
 
   return $self;
 }
@@ -169,35 +223,19 @@ sub log {  ## no critic (ProhibitBuiltinHomonyms)
   return $logger;
 }
 
-# note: we probably don't want to pollute Bedrock with magic mime-type
-# checking, so we'll keep it simple
 ########################################################################
 sub content_type {
 ########################################################################
   my ( $self, $type ) = @_;
 
-  if ( defined $type ) {
-    $self->cgi_header_out( 'Content-type', $type );
+  return $self->{_content_type}
+    if !$type;
 
-    return $type;
-  }
-  elsif ( !defined $ENV{PATH_TRANSLATED} ) {
-    return 'application/octet-stream';
-  }
+  $self->{_content_type} = $type;
 
-  # try to determine the mimetype based on the extension of the request
-  my ( $name, $path, $ext )
-    = fileparse( $ENV{PATH_TRANSLATED}, qr/[.][^.]+$/xsm );
+  $self->headers_out( 'Content-type' => $type );
 
-  # if there is no extension it's probably text/html
-  return 'text/html'
-    if !$ext;
-
-  my ($mime_type) = grep { $ext =~ /$_/xsm } keys %MIME_TYPES;
-
-  $mime_type = $MIME_TYPES{$mime_type} // 'application/octet-stream';
-
-  return $mime_type;
+  return $type;
 }
 
 ########################################################################
@@ -250,7 +288,7 @@ sub finfo {
     }
   }
 
-  return;
+  return $ENV{PATH_TRANSLATED};
 }
 
 ########################################################################
@@ -262,29 +300,41 @@ sub uri {
 ########################################################################
 sub headers_in {
 ########################################################################
-  use CGI;
+  my ( $self, $header, $value ) = @_;
 
-  my $cgi = CGI->new;
+  if ( !$self->{_headers_in} ) {
 
-  my %http_vars = map { $_ => $cgi->http($_) } $cgi->http();
+    my @http_vars = map { $_ => $ENV{$_} } grep {/^HTTP_/xsm} keys %ENV;
 
-  foreach my $p ( pairs %http_vars ) {
-    my ( $key, $value ) = @{$p};
-    $key =~ s/^HTTP_//xsm;
+    my %headers;
 
-    $http_vars{$key} = $value;
+    foreach my $p ( pairs @http_vars ) {
+      my ( $key, $value ) = @{$p};
+      $key =~ s/^HTTP_//xsm;
 
-    delete $http_vars{ 'HTTP_' . $key };
+      $headers{ uc $key } = $value;
+    }
+
+    $self->{_headers_in} = \%headers;
   }
 
-  return \%http_vars;
+  if ( $header && $value ) {
+    $self->{_headers_in}->{$header} = $value;
+  }
+  elsif ($header) {
+    return $self->{_headers_in}->{ uc $header };
+  }
+
+  return $self->{_headers_in};
 }
 
 ########################################################################
 sub is_cgi          { return $TRUE }
+sub header_in       { goto &headers_in; }
 sub header_out      { goto &cgi_header_out; }
 sub headers_out     { goto &cgi_header_out; }
 sub err_headers_out { goto &cgi_header_out; }
+sub method          { return $ENV{REQUEST_METHOD}; }
 ########################################################################
 
 ########################################################################
@@ -292,21 +342,33 @@ sub cgi_header_out {
 ########################################################################
   my ( $self, @headers ) = @_;
 
-  $self->{headers} //= $EMPTY;
+  $self->{headers} //= [];
 
-  if (@headers) {
-    foreach my $p ( pairs @headers ) {
-      my ( $header, $value ) = @{$p};
+  push @{ $self->{headers} }, @headers;
 
-      if ( $header =~ /content-type/xsmi ) {
-        $self->{headers} =~ s/^content-type.*\n?$//xsmi;
-      }
+  return $self->_print_headers;
+}
 
-      $self->{headers} .= "$header: $value\r\n";
-    }
+########################################################################
+sub _print_headers {
+########################################################################
+  my ($self) = @_;
+
+  my $headers_out = $EMPTY;
+
+  # get uniq headers (preserve order)
+  my @headers = uniq pairkeys @{ $self->{headers} };
+
+  # last header wins...this ensures that if we replace a header it
+  # wins
+  my %final_headers_out = @{ $self->{headers} };
+
+  foreach my $header (@headers) {
+    my $value = $final_headers_out{$header};
+    $headers_out .= "$header: $value\r\n";
   }
 
-  return $self->{headers};
+  return $headers_out;
 }
 
 ########################################################################
@@ -315,7 +377,7 @@ sub send_http_header {
   my ($self) = @_;
 
   if ( $self->{headers} ) {
-    $self->print( $self->{headers}, "\r\n" );
+    $self->print( $self->_print_headers, "\r\n" );
   }
 
   $self->{headers} = undef;
@@ -343,15 +405,14 @@ sub print {  ## no critic (ProhibitBuiltinHomonyms)
 
 1;
 
-## no critic (RequirePodSections)
-
 __END__
 
 =pod
 
 =head1 NAME
 
-Apache::Bedrock::Request_cgi - A request object suitable for use by Bedrock when running under mod_cgi
+Apache::Bedrock::Request_cgi - A request object suitable for use by
+Bedrock when running under mod_cgi
 
 =head1 SYNOPSIS
 
@@ -376,7 +437,110 @@ Apache::Bedrock::Request_cgi - A request object suitable for use by Bedrock when
 Provides a request object suitable for use by
 L<Bedrock::Apache::Bedrock> when running under C<mod_cgi>. Implements
 enough of the the methods found in L<Apache2::RequestRec> to support
-Bedrock running under Apache as a CGI script (C<bedrock.cgi>)..
+Bedrock running under Apache as a CGI script (C<bedrock.cgi>).
+
+=head2 Why Run Bedrock as under C<mod_cgi>?
+
+Bedrock, like other web applications written in Perl can suffer
+unacceptable latency during startup due to the interpretted nature of
+Perl. Before Perl can run your script it needs to load modules used by
+your script and compile the code into its internal representation for
+execution.  This compilation stage, along with the loading of Perl
+modules, may make startup performance unacceptable. To mitigate the
+startup times associated with Perl code C<mod_perl> was introduced
+many years ago. By using C<mod_perl>, code is loaded once into the
+Apache child and remains there until that child is killed and
+replaced.  So why use C<mod_cgi>?
+
+While C<mod_perl> does mitigate performance issues associated with
+startup times, C<mod_perl> has some downsides.  Along with introducing
+some additional requirements and complexity to your Apache
+configuration, more seriously, memory consumption of Apache children
+can increase subtantially over the lifetime of an individual Apache
+process.  To combat that, when running under C<mod_perl> web
+administrators often set the "MaxRequestPerChild" value for Apache
+processes to a relatively low value to ensure that bloated processes get
+killed off and respawned periodically.
+
+Running under C<mod_cgi> ensures that all of the memory associated
+with a request is returned to the operating system immediately after
+the process exits.  Additionally, if you are developing an application
+where you might frequently modify Perl modules you should be
+aware that C<mod_perl> will not automatically reload your modules when
+they change. Once they have been loaded into the child process, they
+remain static until that process is killed and respawned.
+
+To summarize, you may want to run Bedrock under C<mod_cgi> if...
+
+=over 5
+
+=item You are developing your application and are making frequent
+changes to your Perl modules
+
+If you make changes to your Perl modules while running under
+C<mod_perl> you must do one of two things:
+
+=over 10
+
+=item 1. use Apache2::Reload
+
+See L<https://perl.apache.org/docs/2.0/api/Apache2/Reload.html>
+
+=item 2. Restart your server
+
+Restarting your server typically is done using a helper included with
+Apache although there are several ways to do this.
+
+ apachectl graceful
+
+ httpd -k graceful
+
+If Apache is running started a the root user, this may work for you.
+
+ kill -USR1 $(ps -ef | grep httpd | grep root | awk '{print $2}' | head -1)
+
+=back
+
+=item Your processes consume large amounts of memory on each request
+
+Set the C<MaxRequestsPerChild> to a relatively low value - for example
+1000. This will tell Apache to kill the child process after serving
+1000 requests and replace this child with a new process.
+
+You can monitor the usage of memory by the children using C<top>.
+
+ top -p `pgrep -d "," httpd`
+
+=item Your application needs to fork
+
+I<While it is possible to run and communicate with a process spawned
+from C<mod_perl> handlers use C<Apache2::SubProcess> it is not the
+same as forking from a CGI script running under C<mod_cgi>.>
+
+A typical use of forking with a Perl script involves a scenario where
+you may have a long running process and want to process the request
+asynchronously. Apache web servers typically are configured with a
+Timeout parameter that prevent long running processeses from
+potentially creating resource depletion on the server that may result
+in blocked connections.  This may can happen for example when the
+C<MaxRequestWorkers> limit is hit because processes have not completed
+and released the connection.
+
+This is the the strategy of many DDOS attacks if they can identify a
+long running process.  Sending multiple requests rapidly would
+overwhelm your server and prevent any new connections from being
+established.
+
+Using a CGI in this case would allow you to fork your process and
+immediately return a response to the client, freeing the
+connection.
+
+I<Of course, this does nothing from preventing multiple
+requests of this type that still may consume all of your server's
+resource, so a different strategy should be used for prevening too
+many simulataneous requests from the same client.>
+
+=back
 
 =head1 METHODS AND SUBROUTINES
 
@@ -390,45 +554,84 @@ Instantatiates a new request object.
 
 =item LogLevel
 
+Should be one of the log levels correspending to Apache's log levels:
+
+ error
+ warn
+ info
+ debug
+ trace
+
 =item output_handle
+
+File handle to which output will be directed.
+
+default: currently selected file handle (typically STDERR)
 
 =back
 
-=head2  print
-
 =head2  close
+
+Closes the output handle.
 
 =head2  filename
 
+ filename([filename])
+
+Sets and/or returns the absolute filename of the request.
+
+defautl: $ENV{PATH_TRANSLATED}
+
 =head2  finfo
+
+ Same as C<filename>.
 
 =head2  is_cgi
 
+Returns a 1 indicating you running under C<mod_cgi>.
+
+=head2 method
+
+Returns the HTTP method of the request ($ENV{REQUEST_METHOD}).
+
+=head2  print
+
+ print(content)
+
+Outputs to content to the current file handle defined by
+C<output_handle>.
+
 =head2  uri
+
+Returns the requested resources ($ENV{PATH_INFO}).
 
 =head1 HEADER METHODS
 
 =head2  content_type
 
-=head2  cgi_header_out
+Set or return the Content-type header.
 
- cgi_header_out( header, value, ...)
+=head2 cgi_header_out (deprecated)
 
- my $headers = cgi_header_out()
-
-Sets or returns the headers to be sent to client.
+See L</headers_out>
 
 =head2  headers_out
 
-See L</cgi_header_out>
+ headers_out( header, value, ...)
 
-=head2  header_out
+ my $headers = $r->headers_out();
 
-See L</cgi_header_out>
+ $headers_out->('Accept-Ranges' => 'bytes');
+
+Sets or returns the HTTP headers.
+
+=head2  header_out (deprecated)
+
+See L</headers_out>
 
 =head2  err_headers_out
 
-See C</cgi_header_out>
+See C</headers_out>
 
 =head2  headers_in
 
@@ -436,7 +639,7 @@ Returns the HTTP headers received from client.
 
 =head2  send_http_header
 
-Outputs the HTTP headers to STDOUT.
+Outputs the HTTP headers.
 
 =head1 LOGGING
 
@@ -473,20 +676,23 @@ default (C<warn>).
 =head2 Log::Log4perl Configuration
 
 As mentioned above, the log methods provided by the C<log> method are
-just covers to L<Log::Log4perl>'s methods. L<Log::Log4perl> is also
-used by Bedrock's internals for logging and is initialized by
-L<Bedrock::Context> during the startup phase. The context object tries
-to find a suitable F<log4perl.conf> file to initialize
-L<Log::Log4perl> if it has not been initialized already. Since
-L<Log::Log4perl> should really only be initialized once, this method
-will call C<Bedrock::Context::init_log4perl_logger> with the
-C<LogLevel> you have specified.
+just covers to L<Log::Log4perl>'s methods.
 
-The L<Log::Log4perl> configuration when logging from this class has
-been added to the default F<log4perl.conf> file. Note that the
-appender setup by the configuration below only logs the message using
-a minimal ConversionPattern since the log format for this phase is
-configured by Apache's C<LogFormat> directive.
+L<Log::Log4perl> is also used by Bedrock's internals for logging and
+is initialized by L<Bedrock::Context> during the startup phase. The
+context object tries to find a suitable F<log4perl.conf> file to
+initialize C<Log::Log4perl> if C<Log::Log4perl> has not been initialized
+already. Since C<Log::Log4perl> should really only be initialized
+once, this method will call C<Bedrock::Context::init_log4perl_logger>
+with the C<LogLevel> you have specified.
+
+The L<Log::Log4perl> configuration when logging from this class
+(C<Apache::Request_cgi>) has been added to the default
+F<log4perl.conf> file. Note that the appender setup by the
+configuration below only logs the message using a minimal
+ConversionPattern. The log format prior to C<Bedrock::Context>
+initializing C<Log::Log4perl> is configured by Apache's C<LogFormat>
+directive.
 
  log4perl.appender.BedrockCGI=Log::Log4perl::Appender::Screen
  log4perl.appender.BedrockCGI.autoflush=1
@@ -506,54 +712,70 @@ defined by the environment variable C<LogLevel>.
 
 Returns the logging level as a string.
 
+  trace
   debug
   info
   warn
   error
 
-=head2  log
+=head2 log
 
 Returns a L<Log::Log4perl> logger.
 
-=head2  debug
+=head2 trace
+
+ $r->trace('...')
+
+Write log message at C<trace> level.
+
+=head2 debug
 
  $r->debug('...')
 
 Write log message at C<debug> level.
 
-=head2  info
+=head2 info
 
  $r->info('...')
 
 Write log message at C<info> level.
 
-=head2  warn
+=head2 warn
 
  $r->warn('...')
 
 Write log message at C<warn> level.
 
-=head2  error
+=head2 error
 
  $r->error('...')
 
 Write log message at C<error> level.
 
-=head2  log_debug
+=head2 log_trace
+
+See L</trace>
+
+=head2 log_debug
 
 See L</debug>
 
-=head2  log_error
+=head2 log_error
 
 See L</error>
 
-=head2  log_info
+=head2 log_info
 
 See L</info>
 
-=head2  log_warn
+=head2 log_warn
 
 See L</warn>
 
 =cut
 
+=head1 AUTHOR
+
+Jay Sridhar
+
+Rob Lauer - <bigfoot@cpan.org>

@@ -1,3 +1,4 @@
+<sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 &lt;object &gt;
   &lt;!--
       

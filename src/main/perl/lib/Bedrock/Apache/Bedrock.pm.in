@@ -23,15 +23,13 @@ package Apache::Bedrock;
 use strict;
 use warnings;
 
+use Bedrock qw(slurp_file);
 use Bedrock::Apache::Constants qw(:http);
 use Bedrock::Constants qw(:chars :defaults :booleans);
-
-use Bedrock qw(slurp_file);
-
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
 use Bedrock::Dump;
-use Bedrock::Handler qw(mlogger);
+use Bedrock::Handler qw(mlogger require_module bind_module);
 
 use Text::TagX;
 
@@ -45,8 +43,6 @@ use Scalar::Util qw(blessed);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
-
-use Symbol;
 
 ## no critic (RequireInterpolationOfMetachars)
 
@@ -64,15 +60,13 @@ use parent qw(Exporter);
 
 our @EXPORT_OK = qw(
   load_startup_modules
-  bind_module
   pre_bind_module
-  require_module
 );
 
 our %EXPORT_TAGS = (
   bind => [
-    qw( load_startup_modules
-      bind_module
+    qw(
+      load_startup_modules
       pre_bind_module
     )
   ]
@@ -81,9 +75,13 @@ our %EXPORT_TAGS = (
 our $REDIS;
 
 if ( $ENV{REDIS_CONFIG} ) {
-  require Bedrock::RedisCache;
 
-  $REDIS = eval { Bedrock::RedisCache->new( config => $ENV{REDIS_CONFIG} ); };
+  $REDIS = eval {
+
+    require Bedrock::RedisCache;
+
+    return Bedrock::RedisCache->new( config => $ENV{REDIS_CONFIG} );
+  };
 
   if ( !$REDIS || $EVAL_ERROR ) {
     warn "WARNING: could not initialize Bedrock::RedisCache object:\n$EVAL_ERROR";
@@ -126,9 +124,19 @@ sub handler {
 
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;  # typically /bedrock
 
-  my $file         = $bedrock_handler->{file};
+  my $file = $bedrock_handler->{file};
+
+  # if mod_perl or Apache::Request_cgi has done their jobs, there
+  # should already be a content type set...but just in case?
   my $content_type = $r->content_type;
 
+  if ( !$content_type ) {
+    $r->log->warn('somebody forgot to set content type?');
+    $content_type = 'text/html';
+  }
+
+  # might want to revisit this, but the point is that this handler
+  # should only be serving HTML, JSON or plain text files?
   if ($file) {
 
     # check mime-type
@@ -343,20 +351,6 @@ sub init_tagx {
 }
 
 ########################################################################
-sub require_module {
-########################################################################
-  my ($modfile) = @_;
-
-  $modfile =~ s/::/\//xsmg;
-
-  if ( $modfile !~ /[.]pm\z/xsm ) {
-    $modfile =~ s/\z/\.pm/xsm;
-  }
-
-  return require $modfile;
-}
-
-########################################################################
 sub load_startup_modules {
 ########################################################################
   my ( $modules, $context, $tx ) = @_;
@@ -418,47 +412,6 @@ sub load_startup_modules {
   }
 
   return \%pre_bound_modules;
-}
-
-########################################################################
-sub bind_module {
-########################################################################
-  my (%args) = @_;
-
-  my ( $module, $context, $config ) = @args{qw(module context config)};
-  $args{type} //= 'hash';
-
-  my $type = $args{type} eq 'object' ? 'hash' : $args{type};
-
-  require_module $module;
-
-  my $obj;
-
-  ## no critic (ProhibitTies)
-  my %tie_subs = (
-    hash => sub {
-      $obj = bless {}, $module;
-      return tie %{$obj}, $module, $context, $config;
-    },
-    array => sub {
-      $obj = bless [], $module;
-      return tie @{$obj}, $module, $context, $config;
-    },
-    handle => sub {
-      $obj = bless gensym, $module;
-      return tie *{$obj}, $module, $context, $config;
-    },
-  );
-
-  my $func = $tie_subs{$type}->();
-
-  #my $func = tied %{$obj};
-
-  if ( $func->can('init_plugin') ) {
-    $func->init_plugin( $args{context}, $args{config} );
-  }
-
-  return $obj;
 }
 
 ########################################################################

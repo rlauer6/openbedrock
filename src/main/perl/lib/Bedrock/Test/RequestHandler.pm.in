@@ -5,6 +5,7 @@ package Faux::Logger;
 use strict;
 use warnings;
 
+use Bedrock::Constants qw(:chars);
 use IO::Scalar;
 use Data::Dumper;
 
@@ -25,7 +26,7 @@ sub new {
 
   $LOG_LEVEL = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
 
-  my $log = '';
+  my $log = $EMPTY;
 
   my $fh = IO::Scalar->new( \$log );
 
@@ -39,7 +40,12 @@ sub new {
     };
   }
 
-  return bless { log => \$log, fh => $fh }, $class;
+  my $self = {
+    log => \$log,
+    fh  => $fh,
+  };
+
+  return bless $self, $class;
 }
 
 ########################################################################
@@ -53,6 +59,7 @@ sub _log {
     if $log_level > $LOG_LEVEL;
 
   my $depth = 0;
+
   my @stack;
 
   while ( my @frame = caller $depth++ ) {
@@ -62,7 +69,7 @@ sub _log {
   my $caller_package = $stack[2]->[3];
   my $lineno         = $stack[1]->[2];
 
-  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join q{}, @message;
+  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join $EMPTY, @message;
 
   return print { $self->{fh} } $log_message, "\n";
 }
@@ -87,22 +94,112 @@ sub close {  ## no critic (ProhibitAmbiguousNames ProhibitBuiltIn)
 package Bedrock::Test::RequestHandler;
 ########################################################################
 
+use Bedrock::Constants qw(:chars :booleans);
+use Cwd qw(getcwd);
 use English qw(_no_match_vars);
 use List::Util qw(pairs);
+use File::Basename;
 
 caller or __PACKAGE__->main();
 
 ########################################################################
 sub new {
 ########################################################################
-  my ( $class, %config ) = @_;
+  my ( $class, @args ) = @_;
 
-  $config{headers}      //= [];
-  $config{content_type} //= 'text/html';
+  my $options = ref $args[0] ? $args[0] : {@args};
 
-  $config{logger} = Faux::Logger->new( $config{log_level} );
+  my $buffer = delete $options->{buffer};
 
-  return bless \%config, $class;
+  for (qw(content_type uri filename log_level headers_in headers_out method )) {
+    $options->{ $UNDERSCORE . $_ } = delete $options->{$_};
+  }
+
+  $options->{_headers_out} //= [];
+
+  $options->{_content_type} //= 'text/html';
+
+  $options->{_logger} = Faux::Logger->new( $options->{_log_level} // 'error' );
+
+  $options->{_document_root} //= $ENV{DOCUMENT_ROOT} // getcwd;
+
+  if ($buffer) {
+    my $buffer = $EMPTY;
+
+    $options->{_output_handle} = IO::Scalar->new( \$buffer );
+    $options->{_buffer}        = \$buffer;
+  }
+  else {
+    $options->{_output_handle} = *STDOUT;
+  }
+
+  my $self = bless $options, $class;
+
+  $self->{_headers_in} //= {};
+
+  foreach my $header ( grep {/^HTTP_/xsm} keys %ENV ) {
+    next
+      if $header !~ /^HTTP_/xsm;
+
+    my $value = $ENV{$header};
+
+    $header =~ s/^HTTP_//xsm;
+
+    $self->headers_in( $header, $value );
+  }
+
+  my $filename = $self->filename;
+
+  if ( !$self->filename ) {
+    $self->filename( $ENV{PATH_TRANSLATED} // $PROGRAM_NAME );
+  }
+
+  if ( $ENV{REQUEST_METHOD} && !$self->method ) {
+    $self->method( $ENV{REQUEST_METHOD} );
+  }
+  elsif ( !$self->method ) {
+    $self->method('GET');
+  }
+
+  return $self;
+}
+
+########################################################################
+sub method {
+########################################################################
+  my ( $self, $method ) = @_;
+
+  if ($method) {
+    $self->{_method} = $method;
+  }
+
+  return $self->{_method};
+}
+
+########################################################################
+sub headers_in {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( ref $args[0] && reftype( $args[0] ) eq 'HASH' ) {
+    @args = %{ $args[0] };
+  }
+  elsif ( ref $args[0] && reftype( $args[0] ) eq 'ARRAY' ) {
+    @args = @{ $args[0] };
+  }
+  elsif ( !@args ) {
+    return $self->{_headers_in};
+  }
+  elsif ( @args % 2 ) {
+    return $self->{_headers_in}->{ uc $args[0] };
+  }
+
+  foreach my $h ( pairs @args ) {
+    my ( $header, $value ) = @{$h};
+    $self->{_headers_in}->{ uc $header } = $value;
+  }
+
+  return $self->{_headers_in};
 }
 
 ########################################################################
@@ -110,15 +207,32 @@ sub log {  ## no critic (ProhibitBuiltIn)
 ########################################################################
   my ($self) = @_;
 
-  return $self->{logger};
+  return $self->{_logger};
 }
 
 ########################################################################
 sub filename {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $filename ) = @_;
 
-  return $self->{filename} // $PROGRAM_NAME;
+  if ($filename) {
+    $self->{_filename} = $filename;
+  }
+
+  return $self->{_filename};
+}
+
+########################################################################
+sub _document_root {
+########################################################################
+  my ( $self, $document_root ) = @_;
+
+  return $self->{_document_root}
+    if !$document_root;
+
+  $self->{_document_root} = $document_root;
+
+  return $self->{_document_root};
 }
 
 ########################################################################
@@ -126,7 +240,11 @@ sub uri {
 ########################################################################
   my ($self) = @_;
 
-  return $self->{uri} // q{/};
+  my ( $name, $path, $ext ) = fileparse( $self->filename, qr/[.][^.]+$/xsm );
+
+  my $document_root = $ENV{DOCUMENT_ROOT} // $EMPTY;
+
+  return sprintf '%s/%s%s', $document_root, $name, $ext;
 }
 
 ########################################################################
@@ -134,7 +252,7 @@ sub content_type {
 ########################################################################
   my ( $self, $content_type ) = @_;
 
-  return $self->{content_type}
+  return $self->{_content_type}
     if !$content_type;
 
   $self->cgi_header_out( 'Content-type' => $content_type );
@@ -143,13 +261,35 @@ sub content_type {
 }
 
 ########################################################################
-sub cgi_header_out {
+sub cgi_header_out { goto &headers_out; }
+sub header_out     { goto &headers_out; }
+########################################################################
+sub headers_out {
 ########################################################################
   my ( $self, @headers ) = @_;
 
-  push @{ $self->{headers} }, @headers;
+  $self->{_headers_out} //= [];
+
+  foreach my $h ( pairs @headers ) {
+    my ( $header, $value ) = @{$h};
+
+    die "no value for $header\n"
+      if !$value;
+
+    push @{ $self->{_headers_out} }, $header, $value;
+  }
 
   return;
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $content ) = @_;
+
+  my $fh = $self->{_output_handle};
+
+  return print {$fh} $content;
 }
 
 ########################################################################
@@ -157,9 +297,14 @@ sub send_http_header {
 ########################################################################
   my ($self) = @_;
 
-  print {*STDOUT} sprintf "%s\n", join '', map { sprintf "%s: %s\n", @{$_} } pairs @{ $self->{headers} };
+  return
+    if !$self->{_headers_out} || !@{ $self->{_headers_out} };
 
-  return;
+  my @headers = map { sprintf '%s: %s', @{$_} } pairs @{ $self->{_headers_out} || [] };
+
+  my $headers_out = sprintf "%s\n\n", join "\n", @headers;
+
+  return $self->print($headers_out);
 }
 
 ########################################################################
@@ -167,7 +312,32 @@ sub DESTROY {
 ########################################################################
   my ($self) = @_;
 
+  $self->flush_output();
+
   return $self->log->close;
+}
+
+########################################################################
+sub get_output_buffer {
+########################################################################
+  my ($self) = @_;
+
+  return $self->{_buffer} ? ${ $self->{_buffer} } : $EMPTY;
+}
+
+########################################################################
+sub flush_output {
+########################################################################
+  my ($self) = @_;
+
+  my $output = $self->{_buffer} ? ${ $self->{_buffer} } : $EMPTY;
+
+  if ($output) {
+    print $output;
+    ${ $self->{_buffer} } = $EMPTY;
+  }
+
+  return;
 }
 
 ########################################################################
@@ -187,3 +357,88 @@ sub main {
 }
 
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Test::RequestHandler - a mock request handler for testing
+
+=head1 SYNOPSIS
+
+ my $r = Bedrock::Test::RequestHandler->new(filename => 'foo.roc');
+
+=head1 DESCRIPTION
+
+This is a mocked request handler for testing other parts of Bedrock
+that require a request handler.  It attempts to behave like the Apache
+request handler, providing only the necessary methods to simulate an
+HTTP request.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+ new(options)
+
+=over 5
+
+=item buffer
+
+Boolean value that indicates that the handler should buffer output. To
+examine the state of the buffer use the C<get_output_buffer> method.
+
+When the handler is destroyed the buffer is output to the selected
+file handle (typically STDOUT) and cleared. To manually flush the
+buffer call the C<flush_output()> method
+
+=item content_type
+
+Response content type.
+
+=item filename
+
+Absolute path to file.
+
+=item headers_in
+
+Hash, array or list of key/value pairs that represent the request headers.
+
+=item headers_out
+
+Set or get the output headers.
+
+=item log_level
+
+Logging level:
+
+ error
+ warn
+ info
+ debug
+
+=item method
+
+Request method. Defaults to GET.
+
+=item uri
+
+URI portion of the filename.
+
+=back
+
+=head2 get_output_buffer
+
+Retrieve the output buffer contents.
+
+=head2 flush_buffer
+
+Output the buffer to the selected file handle and clear buffer.
+
+=head1 AUTHOR
+
+=head1 SEE ALSO
+
+=cut

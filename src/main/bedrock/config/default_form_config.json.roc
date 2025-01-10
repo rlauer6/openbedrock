@@ -1,4 +1,6 @@
+<sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 {
+    "show_errors" : <var ($site.SHOW_ERRORS --or 1)>,
     "tables": {
     },
     "javascript": [
@@ -21,7 +23,7 @@
         },
         {
             "rel": "stylesheet",
-            "href": "/bedrock/indexed-table-handler.css"
+            "href": "/bedrock/css/indexed-table-handler.css"
         }
     ],
     "database": {

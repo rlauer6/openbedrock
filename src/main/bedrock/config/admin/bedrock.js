@@ -454,7 +454,7 @@ $(function () {
     if ( $(id).length ) {
       $(id).on('click', function () {
         
-        $('#login-saction').val(action);
+        $('#login-action').val(action);
       
         if ( action == 'login' ) {
           var username=$('#username').val().trim();

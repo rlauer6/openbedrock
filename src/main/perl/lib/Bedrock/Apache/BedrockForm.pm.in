@@ -1,3 +1,4 @@
+package Apache::BedrockForm;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Copyright (C) 2001, Charles Jones, LLC.
@@ -17,8 +18,6 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package Apache::Form;
-
 use strict;
 use warnings;
 
@@ -35,7 +34,9 @@ use BLM::IndexedTableHandler::Form;
 use Bedrock;
 use Bedrock::BedrockConfig;
 use Bedrock::Handler;
+use Carp;
 
+use JSON;
 use Data::Dumper;
 use English qw(-no_match_vars);
 
@@ -55,15 +56,15 @@ sub get_loglevel {
 }
 
 ########################################################################
-sub get_form_name {
+sub parse_uri {
 ########################################################################
   my ($r) = @_;
 
-  my $uri = $r->uri();
+  my $uri = $r->uri;
 
-  my ($form) = $uri =~ /form\/(.*)$/xsm;
+  my ( $form, $id ) = $uri =~ /form\/([^\/]+)\/?(\d+)?$/xsm;
 
-  return $form;
+  return ( $form, $id );
 }
 
 ########################################################################
@@ -80,23 +81,40 @@ sub handler {
 
   my $bedrock_handler = eval { return Bedrock::Handler->new($r); };
 
-  return $SERVER_ERROR
-    if !$bedrock_handler || $EVAL_ERROR;
+  return report_error(
+    request  => $r,
+    error    => $EVAL_ERROR,
+    err_code => $SERVER_ERROR
+  ) if !$bedrock_handler || $EVAL_ERROR;
 
   my $config = $bedrock_handler->get_config;
 
   my $req = Apache2::Request->new($r);
 
-  my $form_name = get_form_name($r);
+  my ( $form_name, $id ) = parse_uri($r);
+  $id //= $req->param('id');
 
   my $form = eval { return BLM::IndexedTableHandler::Form->new( form_name => $form_name ); };
 
-  return $NOT_FOUND
-    if ( !$form || $EVAL_ERROR );
+  return report_error(
+    form     => $form,
+    request  => $r,
+    error    => $EVAL_ERROR,
+    err_code => $SERVER_ERROR
+  ) if !$form || $EVAL_ERROR;
+
+  my $form_handler = $form->get_handler;
+
+  if ($id) {
+    $form_handler->reload($id);
+  }
+
+  my $accept = $r->headers_in->{Accept} // q{};
+  my $is_api = ( $r->method eq 'POST' ) || $accept =~ /json/xsm;
 
   my $action = $req->param('action');
 
-  if ( $r->method() eq 'GET' ) {
+  if ( !$is_api ) {
 
     my $html = $form->render_page;
 
@@ -107,7 +125,94 @@ sub handler {
     return $OK;
   }
 
+  my $input = $req->param();
+
+  my $result = eval { return $form_handler->handler($input); };
+
+  return report_error(
+    form     => $form,
+    error    => $EVAL_ERROR,
+    err_code => $HTTP_BAD_REQUEST,
+    request  => $r,
+  ) if !$result || $EVAL_ERROR;
+
+  $r->content_type('application/json');
+
+  my $data;
+
+  if ( reftype($result) eq 'ARRAY' ) {
+    # this is actually a BLM::IndexedTableHandler::RecordSet that
+    # needs to be devolved into an array. We call the getter in the
+    # even the column has a custom getter that might format the
+    # result.
+
+    my @as_array;
+
+    foreach my $r ( @{$result} ) {
+      my %data;
+
+      foreach my $k ( @{ $r->fields } ) {
+        $data{$k} = $r->get($k);
+      }
+
+      push @as_array, \%data;
+    }
+
+    $data = { data => \@as_array };
+  }
+  else {
+    $data = { data => $result->devolve };
+  }
+
+  $r->send_http_headers;
+
+  $r->print( JSON->new->pretty->encode($data) );
+
   return $OK;
+}
+
+########################################################################
+sub report_error {
+########################################################################
+  my (%args) = @_;
+
+  my ( $r, $error, $http_code, $form ) = @args{qw(request error err_code form)};
+
+  my $show_errors = $form ? $form->get_config->{show_errors} : 1;
+
+  if ( $show_errors && ( $r->method eq 'GET' || $r->headers_in->{Accept} =~ /html/xsm ) ) {
+    my $html = <<"END_OF_HTML";
+<html>
+ <head>
+   <title>ERROR</title>
+ </head>
+ <body>
+   <pre>$error</pre>
+ </body>
+</html>
+END_OF_HTML
+
+    $r->send_http_header;
+
+    $r->print($html);
+
+    return $OK;
+  }
+
+  $r->content_type('application/json');
+
+  my $err_str = JSON->new->pretty->encode(
+    { error     => $error,
+      err_code  => $http_code,
+      form_name => $form ? $form->get_form_name : q{}
+    }
+  );
+
+  $r->send_http_headers;
+
+  $r->print($err_str);
+
+  return $HTTP_BAD_REQUEST;
 }
 
 1;
@@ -135,7 +240,7 @@ Apache::Form - A MySQL table handler
  
    <IfModule mod_perl.c>
      SetHandler perl-script
-     PerlHandler Apache::Form
+     PerlHandler Apache::BedrockForm
    </IfModule>
  </Directory>
 

@@ -196,6 +196,8 @@ AX_RPMBUILD_CHECK
 AX_PERLDEPS_CHECK
 
 ads_PERL_MODULE([Apache2::Const])
+ads_PERL_MODULE([Apache2::Request])
+ads_PERL_MODULE([Apache::ConfigParser],[OPTIONAL])
 ads_PERL_MODULE([AppConfig])
 ads_PERL_MODULE([Carp])
 ads_PERL_MODULE([Crypt::CBC])
@@ -210,6 +212,7 @@ ads_PERL_MODULE([File::Basename])
 ads_PERL_MODULE([File::Copy])
 ads_PERL_MODULE([File::Path])
 ads_PERL_MODULE([File::Temp])
+ads_PERL_MODULE([File::Type], [OPTIONAL])
 ads_PERL_MODULE([File::Spec::Functions])
 ads_PERL_MODULE([Getopt::Long])
 ads_PERL_MODULE([GDBM_File], [], [1.03])
@@ -220,11 +223,11 @@ ads_PERL_MODULE([IPC::Shareable])
 ads_PERL_MODULE([Time::HiRes])
 ads_PERL_MODULE([JSON])
 ads_PERL_MODULE([MIME::Base64])
+ads_PERL_MODULE([MIME::Types], [OPTIONAL])
 ads_PERL_MODULE([Number::Format], [OPTIONAL])
 ads_PERL_MODULE([Net::FTP], [], [2.56])
 ads_PERL_MODULE([Net::SMTP], [], [2.15])
 ads_PERL_MODULE([Spreadsheet::ParseExcel])
-ads_PERL_MODULE([Redis],[OPTIONAL])
 ads_PERL_MODULE([Role::Tiny])
 ads_PERL_MODULE([Text::CSV_XS])
 ads_PERL_MODULE([Term::ANSIColor], [OPTIONAL])
@@ -232,10 +235,6 @@ ads_PERL_MODULE([Text::ASCIITable], [OPTIONAL])
 ads_PERL_MODULE([Tie::IxHash])
 ads_PERL_MODULE([XML::Simple])
 ads_PERL_MODULE([XML::Parser])
-
-# These really are optional...
-ads_PERL_MODULE([Hash::Util],  [OPTIONAL])
-ads_PERL_MODULE([Net::OAuth2::Profile::WebServer],  [OPTIONAL])
 
 dnl +---------------------+
 dnl |  Autotools Output.  |

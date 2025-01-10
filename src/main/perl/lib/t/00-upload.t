@@ -8,9 +8,7 @@ package main;
 use strict;
 use warnings;
 
-use lib qw(.);
-
-use Test::More tests => 7;
+use Test::More qw(no_plan);
 
 use Bedrock::Context;
 use Carp;
@@ -63,11 +61,12 @@ my ( $content, $filename ) = create_upload_stream();
 local $ENV{REQUEST_METHOD} = 'POST';
 local $ENV{CONTENT_TYPE}   = 'multipart/form-data; boundary=xYzZY';
 
-my $config = { UPLOAD_PATH => '/tmp', LOG4PERL_LEVEL => 'error' };
-
 my $ctx = Bedrock::Context->new(
-  CONFIG          => $config,
-  REQUEST_HANDLER => sub { }
+  config => {
+    UPLOAD_PATH    => '/tmp',
+    LOG4PERL_LEVEL => 'error',
+  },
+  request => sub { },
 );
 
 my @members = qw{
@@ -93,7 +92,6 @@ my @members = qw{
 my $file_info;
 
 {
-
   my $fh = IO::Scalar->new( \$content );
 
   local *STDIN = $fh;
@@ -126,6 +124,8 @@ close $fh;
 
 # remove uploaded file
 unlink "/tmp/$filename";
+
+done_testing;
 
 END {
 }
