@@ -113,8 +113,6 @@ subtest 'upsert' => sub {
   like( $EVAL_ERROR, qr/cannot be null/smi, 'null exception' )
     or diag("$EVAL_ERROR");
 
-  diag( Dumper( [ error => $EVAL_ERROR ] ) );
-
   $id = eval {
     $ith->set( 'buz', 'buzzz' );
     $ith->save();

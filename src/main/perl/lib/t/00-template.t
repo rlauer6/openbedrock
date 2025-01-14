@@ -2,7 +2,7 @@ use strict;
 use warnings;
 
 use Data::Dumper;
-use Test::More;
+use Test::More qw(no_plan);
 use English qw(-no_match_vars);
 
 BEGIN {

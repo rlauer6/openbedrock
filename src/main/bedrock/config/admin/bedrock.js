@@ -1,361 +1,381 @@
-var containers = 'login logout session register plugins tags'.split(' ');
+var containers = 'login logout session register plugins tags left-menu'.split(' ');
 
 var spinner = '<div class="d-flex mt-5 justify-content-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
 
 // -------------------------------------------------
 function enable_tooltips() {
 // -------------------------------------------------
-  const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-  const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
+const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
 }
 
 // -------------------------------------------------
 function show_spinner(hide) {
 // -------------------------------------------------
-  if ( hide ) {
-    $('#tags-container').html('');
-  }
-  else {
-    $('#tags-container').html(spinner);
-  }
+if ( hide ) {
+$('#tags-container').html('');
+    }
+    else {
+        $('#tags-container').html(spinner);
+    }
 
-  show_container('tags');
+    show_container('tags');
 }
 
 // -------------------------------------------------
 function show_container(container) {
 // -------------------------------------------------
-  containers.forEach((c) => {
-    $('#' + c + '-container').hide();
-  });
+    containers.forEach((c) => {
+        $('#' + c + '-container').hide();
+    });
 
-  $('#top-button').hide();
+    $('#top-button').hide();
+    $('#back-button').hide();
 
-  if ( $('#' + container +'-container').length ) {
-    $('#' + container +'-container').show();
-  }
-
-  if ( container == 'tags' ) {
-    $('#top-button').show();
-  }
+    if ( $('#' + container +'-container').length ) {
+        $('#' + container +'-container').show();
+    }
+    
+    if ( container == 'tags' ) {
+        $('#top-button').show();
+    }
+      
+    if ( ui_history.length > 1 ) {
+       $('#back-button').show();
+    }
 }
 
 // -------------------------------------------------
 function bedrock_error(message, alert_type) {
 // -------------------------------------------------
-  $('#bedrock-error-message').text(message);
+    $('#bedrock-error-message').text(message);
 
-  $('#bedrock-error').removeClass();
+    $('#bedrock-error').removeClass();
 
-  if ( !alert_type ) {
-    alert_type = 'danger';
-  }
+    if ( !alert_type ) {
+        alert_type = 'danger';
+    }
 
-  alert_type = 'alert-' + alert_type;
+    alert_type = 'alert-' + alert_type;
 
-  $('#bedrock-error').addClass('alert ' + alert_type + ' alert-dismissible fade show');
+    $('#bedrock-error').addClass('alert ' + alert_type + ' alert-dismissible fade show');
 
-  $('#bedrock-error').show();
+    $('#bedrock-error').show();
 }
 
 // -------------------------------------------------
 function api_tag_list() {
 // -------------------------------------------------
-  show_spinner();
+    show_spinner();
 
-  $.ajax({
-    url: '/bedrock/tag',
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
-    console.log(data);
+    $.ajax({
+        url: '/bedrock/tag',
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        console.log(data);
 
-    var html = ul_list(data.tags, 'tag-list', '', 'ul-link-item');
-    $('#tags-container').html(html);
+        var html = ul_list(data.tags, 'tag-list', '', 'ul-link-item');
+        $('#tags-container').html(html);
 
-    $('.ul-link-item').on('click', function() {
-      api_tag_doc($(this).text());
+        $('.ul-link-item').on('click', function() {
+            api_tag_doc($(this).text());
+        });
+
+        show_container('tags');
+
+        return true;
+    }).fail(function($xhr, status, error) {
+
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+
+        show_spinner(1);
+        
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
     });
-
-    show_container('tags');
-
-    return true;
-  }).fail(function($xhr, status, error) {
-
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-
-    show_spinner(1);
-    
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
-    
-    return false;
-  });
 }
 
 // -------------------------------------------------
 function api_config() {
 // -------------------------------------------------
-  $.ajax({
-    url: '/bedrock/config',
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
-    console.log(data);
+    $.ajax({
+        url: '/bedrock/config',
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        console.log(data);
 
-    return true;
-  }).fail(function($xhr, status, error) {
+        return true;
+    }).fail(function($xhr, status, error) {
 
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-    
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
-    
-    return false;
-  });
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
+    });
 }
 // -------------------------------------------------
 function api_session() {
 // -------------------------------------------------
-  $.ajax({
-    url: '/bedrock/session',
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
-    console.log(data);
+    $.ajax({
+        url: '/bedrock/session',
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        console.log(data);
 
-    return true;
-  }).fail(function($xhr, status, error) {
+        return true;
+    }).fail(function($xhr, status, error) {
 
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-    
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
-    
-    return false;
-  });
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
+    });
 }
 
 // -------------------------------------------------
 function api_tag_doc(tag) {
 // -------------------------------------------------
-  show_spinner();
+    show_spinner();
 
-  $.ajax({
-    url: '/bedrock/tag/' + tag,
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
-    console.log(data);
+    $.ajax({
+        url: '/bedrock/tag/' + tag,
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        console.log(data);
 
-    var html = data.html
-    html = '<div class="bedrock-pod"><span id="_podtop_"></span>' + html + '</div>';
+        var html = data.html
+        html = '<div class="bedrock-pod"><span id="_podtop_"></span>' + html + '</div>';
 
-    $('#tags-container').html(html);
+        $('#tags-container').html(html);
 
-    show_container('tags');
+        show_container('tags');
 
-    return true;
-  }).fail(function($xhr, status, error) {
+        return true;
+    }).fail(function($xhr, status, error) {
 
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-    
-show_spinner(1);
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        show_spinner(1);
 
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
- 
-    return false;
-  });
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
+    });
+}
+
+// -------------------------------------------------
+function api_generic_doc(contentName, func) {
+// -------------------------------------------------
+    //show_spinner();
+
+    $.ajax({
+        url: '/bedrock/docs/' + contentName,
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        var html = data.html
+        //html = '<span id="_podtop_"></span>' + html;
+        //show_spinner(1);
+
+        func(html, contentName);
+
+        return true;
+    }).fail(function($xhr, status, error) {
+
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        show_spinner(1);
+
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
+    });
 }
 
 // -------------------------------------------------
 function api_plugin_doc(plugin_type, plugin) {
 // -------------------------------------------------
-  show_spinner();
+    show_spinner();
 
-  var plugin_types = { "Application Plugins" : "/bedrock/plugins/Startup",
-                       "Filters" : "/bedrock/plugins/Filter",
-                       "Plugins" : "/bedrock/plugins"
-                     };
-  var url;
+    var plugin_types = { "Application Plugins" : "/bedrock/plugins/Startup",
+                         "Filters" : "/bedrock/plugins/Filter",
+                         "Plugins" : "/bedrock/plugins"
+                       };
+    var url;
 
-  if  (plugin) {
-    plugin = plugin == 'Filter' ? '' : '/' + plugin;
-    url = plugin_types[plugin_type] + plugin;
-  }
-  else {
-    url = `/bedrock/pod/${plugin_type}`;
-    plugin = plugin_type;
-  }
-
-  $.ajax({
-    url: url,
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
-    console.log(data);
-
-    if ( data.url ) {
-      window.open(data.url, '_blank');
-      return;
-    }
-
-    var html = data.html;
-
-    if ( html ) {
-      html = `<div class="bedrock-pod"><span id="_podtop_">${html}</div>`;
+    if  (plugin) {
+        plugin = plugin == 'Filter' ? '' : '/' + plugin;
+        url = plugin_types[plugin_type] + plugin;
     }
     else {
-      show_spinner(1);
-      bedrock_error(`Nothing found for "${plugin}" warning`);
-      return;
+        url = `/bedrock/pod/${plugin_type}`;
+        plugin = plugin_type;
     }
 
-    $('#tags-container').html(html);
-
-    if ( data.source && data.source == 'metacpan' ) {
-      $('.bedrock-pod h1').on('click', function() {
-        // location = '#_podtop_';
-      });
-    }
-    else {
-      $('#top-button').on('click', function() {
-        $('#tags-container').scrollTop('#tags-container').position().top;
-      });
-
-      $('.bedrock-pod a').on('click', function(e) {
-        e.preventDefault();
-        var ahref = $(this).attr('href');
-        var topOffset = $(ahref).offset().top;
-        var offset=$('#tags-container').position().top;
-        $('#tags-container').scrollTop(topOffset - offset);
-      });
-
-      $('.pod-link').on('click', function() {
-        var bedrock_data = $(this).attr('bedrock-data');
-        var module = bedrock_data.split('?');
+    $.ajax({
+        url: url,
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
+        console.log(data);
         
-        api_plugin_doc(module[0]);
-      });
-    }
+        if ( data.url ) {
+            window.open(data.url, '_blank');
+            return;
+        }
+        
+        var html = data.html;
+        
+        if ( html ) {
+            html = `<div class="bedrock-pod"><span id="_podtop_">${html}</span></div>`;
+        }
+        else {
+            show_spinner(1);
+            bedrock_error(`Nothing found for "${plugin}" warning`);
+            return;
+        }
 
-    show_container('tags');
+        $('#tags-container').html(html);
 
-    //location = '#_podtop_';
+        enable_internal_links();
 
-    return true;
-  }).fail(function($xhr, status, error) {
 
-    show_spinner(1);
+        $('.pod-link').on('click', function() {
+            var bedrock_data = $(this).attr('bedrock-data');
+            var module = bedrock_data.split('?');
+            
+            api_plugin_doc(module[0]);
+        });
 
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-    
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
+        show_container('tags');
 
-    return false;
-  });
+        return true;
+    }).fail(function($xhr, status, error) {
+
+        show_spinner(1);
+
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+
+        return false;
+    });
 }
 
 // -------------------------------------------------
 function ul_list(list, id, uri_root, css_class) {
 // -------------------------------------------------
-  css_class = css_class ? ` class="${css_class}"` : '';
+    css_class = css_class ? ` class="${css_class}"` : '';
 
-  uri_root = uri_root ? uri_root + '/' : '';
+    uri_root = uri_root ? uri_root + '/' : '';
 
-  var ul = '';
+    var ul = '';
 
-  list.forEach((item) => {
-    if ( uri_root) {
-      ul += `<li><a href="${uri_root}${item}">${item}</a></li>\n`;
-    }
-    else {
-      ul += `<li${css_class}>${item}</li>\n`;
-    }
-  });
+    list.forEach((item) => {
+        if ( uri_root) {
+            ul += `<li><a href="${uri_root}${item}">${item}</a></li>\n`;
+        }
+        else {
+            ul += `<li${css_class}>${item}</li>\n`;
+        }
+    });
 
-  return `<ul id="${id}">\n${ul}</ul>\n`;
+    return `<ul id="${id}">\n${ul}</ul>\n`;
 }
 
 // -------------------------------------------------
 function api_plugins() {
 // -------------------------------------------------
-  show_spinner();
+    show_spinner();
 
-  $.ajax({
-    url: '/bedrock/plugins',
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
+    $.ajax({
+        url: '/bedrock/plugins',
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
 
-    console.log(data);
+        console.log(data);
 
-    var plugins = data.plugins;
-    var plugin_map = data.plugin_map;
-    var plugin_links = data.links;
-    var plugin_names = data.names;
+        var plugins = data.plugins;
+        var plugin_map = data.plugin_map;
+        var plugin_links = data.links;
+        var plugin_names = data.names;
 
-    var sections = Object.keys(plugins);
+        var sections = Object.keys(plugins);
 
-    var section_ids = [];
+        var section_ids = [];
 
-    for (const s in plugin_map ) {
-      var id = `#${plugin_map[s]} .accordion-body`;
+        for (const s in plugin_map ) {
+            var id = `#${plugin_map[s]} .accordion-body`;
 
-      var items = plugins[s];
-      var links = plugin_links[s];
-      var names = plugin_names[s];
+            var items = plugins[s];
+            var links = plugin_links[s];
+            var names = plugin_names[s];
 
-      var ul = '';
+            var ul = '';
 
-      items.forEach((item) => {
-        ul += `<li class="ul-link-item" bedrock-data="${s}">${names[item]}</li>\n`;
-      });
+            items.forEach((item) => {
+                ul += `<li class="ul-link-item" bedrock-data="${s}">${names[item]}</li>\n`;
+            });
 
-      var html = `<h2>${s}</h2>\n`;
-      html = `<ul id="${plugin_map[s]}_list">\n${ul}</ul>`;
+            var html = `<h2>${s}</h2>\n`;
+            html = `<ul id="${plugin_map[s]}_list">\n${ul}</ul>`;
 
-      $(id).html(html);
-    }
+            $(id).html(html);
+        }
 
-    $('.ul-link-item').on('click', function() {
-      api_plugin_doc($(this).attr('bedrock-data'), $(this).text());
+        $('.ul-link-item').on('click', function() {
+            api_plugin_doc($(this).attr('bedrock-data'), $(this).text());
+        });
+
+        show_container('plugins');
+        
+        return true;
+    }).fail(function($xhr, status, error) {
+
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+
+        show_spinner(1);
+
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
     });
-
-    show_container('plugins');
-    
-    return true;
-  }).fail(function($xhr, status, error) {
-
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-
-    show_spinner(1);
-
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
-    
-    return false;
-  });
 
 }
 
@@ -364,132 +384,242 @@ function api_modules(module_type) {
 // -------------------------------------------------
     show_spinner();
 
-  $.ajax({
-    url: '/bedrock/' + module_type,
-    dataType: 'json',
-    headers: { 'Accept': 'application/json' },
-    method: 'GET',
-    contentType: 'application/json'
-  }).done(function (data) {
+    $.ajax({
+        url: '/bedrock/' + module_type,
+        dataType: 'json',
+        headers: { 'Accept': 'application/json' },
+        method: 'GET',
+        contentType: 'application/json'
+    }).done(function (data) {
 
-    console.log(data);
+        console.log(data);
 
-    var modules = data.modules;
-    
-    var ul = '';
-      modules.forEach((module) => {
-        var link = module.replaceAll('::', '/');
-        ul += `<li class="ul-link-item" bedrock-data="${link}">${module}</li>\n`;
-      });
+        var modules = data.modules;
+        
+        var ul = '';
+        modules.forEach((module) => {
+            var link = module.replaceAll('::', '/');
+            ul += `<li class="ul-link-item" bedrock-data="${link}">${module}</li>\n`;
+        });
 
-    var html = `<ul>\n${ul}</ul>`;
+        var html = `<ul>\n${ul}</ul>`;
 
-    $('#tags-container').html(html);
-    
-    $('.ul-link-item').on('click', function() {
-      api_plugin_doc($(this).attr('bedrock-data'));
+        $('#tags-container').html(html);
+        
+        $('.ul-link-item').on('click', function() {
+            api_plugin_doc($(this).attr('bedrock-data'));
+        });
+
+        show_container('tags');
+        
+        return true;
+    }).fail(function($xhr, status, error) {
+
+        console.log($xhr);
+        console.log(status);
+        console.log(error);
+        
+        show_spinner(1);
+
+        bedrock_error(`Error fetching data [${status}]: ${error}`);
+        
+        return false;
     });
+}
 
-    show_container('tags');
-    
-    return true;
-  }).fail(function($xhr, status, error) {
+// -------------------------------------------------
+function enable_internal_links () {
+// -------------------------------------------------
+    $('.bedrock-pod').off('click');
 
-    console.log($xhr);
-    console.log(status);
-    console.log(error);
-    
-    show_spinner(1);
+    $('.bedrock-pod a').on('click', function(e) {
+        e.preventDefault();
 
-    bedrock_error(`Error fetching data [${status}]: ${error}`);
+        // DBD::SQLite anchors contain ':'
+        var ahref = $(this).attr('href'); // anchors appear to now be URL encoded
+        if (ahref.substring(0,4) == 'http' ) {
+          document.location = ahref;
+          return true;
+        }
+
+        ahref = decodeURIComponent(ahref);
+        ahref = ahref.replaceAll(':', '\\:');
+
+        $('#tags-container').scrollTop(0);
+        var containerOffset=$('#tags-container').offset().top;
+        var topOffset = $(ahref).offset().top;
+        $('#tags-container').scrollTop(topOffset - containerOffset);
+    });
+}
+
+var ui_history;
+
+// -------------------------------------------------
+function go_back() {
+// -------------------------------------------------
+    var action = ui_history.shift();
+
+    if ( ui_history.length == 0 ) {
+        $('#back-button').hide();
+    }
+
+    if ( action["type"] == "click" ) {
+        $(action["el"]).trigger("click", [ 'back' ]);
+    }
+
+    return;
+}
+
+// -------------------------------------------------
+function set_container_size () {
+// -------------------------------------------------
+    var container_top = $('#abs-top').offset().top;
+
+    var container_height = $('footer').offset().top - container_top;
+
+    $('#tags-container').css('height', container_height);
+}
+
+// -------------------------------------------------
+function push_event(event, back) {
+// -------------------------------------------------
+    if ( back ) {
+        return;
+    }
     
-    return false;
-  });
+    ui_history.push(event);
 }
 
 // -------------------------------------------------
 $(function () {
 // -------------------------------------------------
-  var container_top = document.getElementById('tags-container').offsetTop;
-  $('#tags-container').css('height', $(document).height() - container_top);
+    set_container_size();
 
-  $('#module-search').on('click', function(e) {
-    e.preventDefault();
-    api_plugin_doc( $('#module-name').val());
-  });
-
-  $('.dropdown-menu li a').on('click', function (e) { 
-    e.preventDefault();
-    
-    var active_item = $(this).text();
-
-    if ( active_item  == 'Plugins' ) {
-      api_plugins();
-    }
-    else if ( active_item == 'Tags' ) {
-      api_tag_list();
-    }
-    else if ( active_item == 'Bedrock Modules') {
-      api_modules('bedrock-internal');
-    }
-    else if ( active_item == 'Installed Perl Modules') {
-      api_modules('system');
-    }
-  });
-
-  $("#username").attr('tabindex', 100);
-  $("#password").attr('tabindex', 101);
-
-  containers.forEach((container) => {
-    $('#' + container + '-link').on('click', function () {
-      show_container(container);
+    $(window).resize(function() {
+        set_container_size();
     });
-  });
 
-  var login_containers = [ 'login', 'logout' ];
+    ui_history = [];
 
-  login_containers.forEach((action) => {
-    var id = '#' + action + '-button';
-
-    if ( $(id).length ) {
-      $(id).on('click', function () {
+    $('#module-search').on('click', function(e) {
+        e.preventDefault();
         
-        $('#login-action').val(action);
-      
-        if ( action == 'login' ) {
-          var username=$('#username').val().trim();
-        var password=$('#password').val().trim();
-          
-        if ( !username || !password ) {
-          bedrock_error('please enter username and password');
-          return false;
+        push_event({ "el" : this,
+                          "type" : "search",
+                          "value" : $('#module-name').val()
+                        }, back);
+
+        api_plugin_doc( $('#module-name').val());
+    });
+
+    $('#bedrock-logo').on('click', function(e, back) {
+        show_container('left-menu');
+        push_event({ "el" : this, "type" : "click"}, back);
+    });
+
+    $('.dropdown-menu li a').on('click', function (e, back) { 
+        e.preventDefault();
+
+        if  (back != 'back' ) {
+            ui_history.push({ "el" : this,
+                              "type" : "click"
+                            });
         }
+
+        var active_item = $(this).text();
+
+        if ( active_item  == 'Plugins' ) {
+            api_plugins();
         }
+        else if ( active_item == 'Tags' ) {
+            api_tag_list();
+        }
+        else if ( active_item == 'Bedrock Modules') {
+            api_modules('bedrock-internal');
+        }
+        else if ( active_item == 'Installed Perl Modules') {
+            api_modules('system');
+        }
+    });
+
+    $("#username").attr('tabindex', 100);
+    $("#password").attr('tabindex', 101);
+
+    containers.forEach((container) => {
+        $('#' + container + '-link').on('click', function () {
+            show_container(container);
+        });
+    });
+
+    var login_containers = [ 'login', 'logout' ];
+
+    login_containers.forEach((action) => {
+        var id = '#' + action + '-button';
+
+        if ( $(id).length ) {
+            $(id).on('click', function () {
+                
+                $('#login-action').val(action);
+                
+                if ( action == 'login' ) {
+                    var username=$('#username').val().trim();
+                    var password=$('#password').val().trim();
+                    
+                    if ( !username || !password ) {
+                        bedrock_error('please enter username and password');
+                        return false;
+                    }
+                }
+                
+                $('#login-form').submit();
+            });
+        }
+    });
+
+    $('#register-button').on('click', function(e) {
+        e.preventDefault();
+
+        var username=$('#register-username').val().trim();
+        var password=$('#register-password').val().trim();
+        var email=$('#email').val().trim();
+
+        if ( !username || !password || !email ) {
+            bedrock_error('username, password amd email are required');
+            return false;
+        }
+
+        var first_name=$('#first_name').val().trim();
+        var last_name=$('#last_name').val().trim();
+
+        $('#register-form').submit();
+    });
+
+    enable_tooltips();
+
+    $('#top-button').on('click', function() {
+        $('#tags-container').scrollTop(0);
+    });
+
+    $('#back-button').on('click', function() {
+        go_back();
+    });
+    
+    $('.list-group-item').on('click', function(e, back) {
+        var activeLink = $('.list-group-item.active');
+        $(activeLink).removeClass('active');
+
+        var activeContent = $(activeLink).attr('bedrock-data');
+        $('#' + activeContent).hide();
+
+        var contentName = $(this).attr('bedrock-data');
         
-        $('#login-form').submit();
-      });
-    }
-  });
+        $(this).addClass('active');
 
-  $('#register-button').on('click', function(e) {
-    e.preventDefault();
+        api_generic_doc(contentName, function(html, id) {
+            $('#' + id).html(html);
+            $( '#' + id).css('display', 'inline-block');
+        });
 
-    var username=$('#register-username').val().trim();
-    var password=$('#register-password').val().trim();
-    var email=$('#email').val().trim();
-
-    if ( !username || !password || !email ) {
-      bedrock_error('username, password amd email are required');
-      return false;
-    }
-
-    var first_name=$('#first_name').val().trim();
-    var last_name=$('#last_name').val().trim();
-
-    $('#register-form').submit();
-  });
-
-  enable_tooltips();
+        push_event({ "el" : this, "type" : "click"}, back);
+    });
 });
-
-

@@ -23,8 +23,15 @@ package Apache::Bedrock;
 use strict;
 use warnings;
 
+BEGIN {
+  if ( $ENV{MOD_PERL} ) {
+    use Apache2::ServerRec ();
+    use Apache2::ServerUtil;
+  }
+}
+
 use Bedrock qw(slurp_file);
-use Bedrock::Apache::Constants qw(:http);
+use Bedrock::Apache::Constants qw(:http %APACHE_LOG_LEVELS);
 use Bedrock::Constants qw(:chars :defaults :booleans);
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
@@ -48,6 +55,8 @@ with 'Bedrock::Logger';
 
 our $VERSION = '@PACKAGE_VERSION@';
 our $RELEASE = '@BEDROCK_RELEASE@';
+our $BENCHMARKS;
+our $REDIS;
 
 if ($Bedrock::Handler::BEDROCK_BENCHMARK) {
   require Benchmark;
@@ -71,8 +80,6 @@ our %EXPORT_TAGS = (
     )
   ]
 );
-
-our $REDIS;
 
 if ( $ENV{REDIS_CONFIG} ) {
 
@@ -106,7 +113,17 @@ sub handler {
     }
   }
 
-  my $benchmarks = $Bedrock::Handler::BEDROCK_BENCHMARK ? [ Benchmark->new ] : [];
+  # reset Apache log level to match BedrocLogLevel
+  if ( is_mod_perl() ) {
+    my $s = Apache2::ServerUtil->server;
+
+    my $bedrock_log_level = $ENV{BedrockLogLevel} // 'info';
+
+    $s->loglevel( $APACHE_LOG_LEVELS{ uc $bedrock_log_level } );
+    $r->log->info( sprintf 'Resetting Apache log level: %s', $bedrock_log_level );
+  }
+
+  $BENCHMARKS = $Bedrock::Handler::BEDROCK_BENCHMARK ? [ Benchmark->new ] : [];
 
   my $bedrock_handler = eval { return Bedrock::Handler->new($r); };
 
@@ -117,7 +134,7 @@ sub handler {
   }
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'Bedrock::Handler->new() complete', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'Bedrock::Handler->new() complete', @{$BENCHMARKS} );
 
   # get the Bedrock config object
   my $conf = $bedrock_handler->config;
@@ -222,7 +239,7 @@ sub handler {
   }
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'environment setup complete', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'environment setup complete', @{$BENCHMARKS} );
 
   my $ctx = Bedrock::Context->new(
     request => $r,
@@ -231,7 +248,7 @@ sub handler {
   );
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'context object created', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'context object created', @{$BENCHMARKS} );
 
   # this needs to be done before load_startup_modules()
   $conf->init_plugin_path();
@@ -253,7 +270,7 @@ sub handler {
   );
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'TagX object creation complete', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'TagX object creation complete', @{$BENCHMARKS} );
 
   # load startup modules
   my $pre_bound = eval { return load_startup_modules( $modules, $ctx, $tx ) };
@@ -276,7 +293,7 @@ sub handler {
   }
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'module binding complete', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'module binding complete', @{$BENCHMARKS} );
 
   # this is where Bedrock starts parsing the template
   eval { $tx->output };
@@ -284,10 +301,10 @@ sub handler {
   my $err = $EVAL_ERROR;
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'Bedrock tag processing complete', @{$benchmarks} );
+  $BENCHMARKS = report_time( $r, 'Bedrock tag processing complete', @{$BENCHMARKS} );
 
   # --- benchmark
-  $benchmarks = report_time( $r, 'request complete', $benchmarks->[0] );
+  $BENCHMARKS = report_time( $r, 'request complete', $BENCHMARKS->[0] );
 
   $bedrock_handler->restore_dir;
 
@@ -356,6 +373,7 @@ sub load_startup_modules {
   my ( $modules, $context, $tx ) = @_;
 
   my %pre_bound_modules;
+
   my $handler = $context->request;
 
   mlogger(
@@ -366,6 +384,12 @@ sub load_startup_modules {
 
   foreach my $idx ( 0 .. $#{$modules} ) {
     my $module = $modules->[$idx];
+
+    mlogger(
+      $handler,
+      level   => 'debug',
+      message => Dumper( [ module => $module ] )
+    );
 
     $module->{type} //= 'hash';
 
@@ -409,6 +433,8 @@ sub load_startup_modules {
         }
       );
     }
+
+    $BENCHMARKS = report_time( $handler, $module->{binding}, @{$BENCHMARKS} );
   }
 
   return \%pre_bound_modules;

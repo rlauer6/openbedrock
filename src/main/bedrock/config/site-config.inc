@@ -32,6 +32,7 @@
    DBI_USER                   ($env.DBI_USER)
    DBI_PASS                   ($env.DBI_PASS)
    DBI_HOST                   ($env.DBI_HOST)
+   bedrock_shell              ($perl_config.installsitebin + '/bedrock.pl')
 >
 
 <hash:source

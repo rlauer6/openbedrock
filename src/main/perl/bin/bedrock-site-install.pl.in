@@ -15,7 +15,7 @@ BEGIN {
   }
 }
 
-use Bedrock qw(slurp_file);
+use Bedrock qw(slurp_file perl_config);
 use HTML::Entities;
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:booleans :log_levels);
@@ -50,7 +50,7 @@ sub install_web_site {
 ########################################################################
   my ( $self, $manifest ) = @_;
 
-  my $install = Bedrock::Install->new( %{ $self->get_options }, manifest => \$manifest, );
+  my $install = Bedrock::Install->new( %{ $self->get_options }, manifest => $manifest, );
 
   $install->install();
 
@@ -207,8 +207,9 @@ sub main {
 
   my $template = Bedrock::Template->new(
     { param => {
-        config => $config,
-        env    => \%ENV,
+        config      => $config,
+        env         => \%ENV,
+        perl_config => perl_config(),
       },
       INCLUDE_PATH => $config_dir,
     }
@@ -221,6 +222,8 @@ sub main {
     cp $tmpfile, sprintf '%s/%s', $config_dir, $file;
   }
 
+  $template->disable_tag('array');
+
   foreach my $template_file (qw(tagx.xml mysql-session.xml)) {
 
     $template->file( $template_file . '.roc' );
@@ -228,14 +231,25 @@ sub main {
     open my $fh, '>', sprintf '%s/%s', $config_dir, $template_file
       or die sprintf 'could not open %s for writing', $template_file . '.roc';
 
-    print {$fh} decode_entities( $template->parse() );
+    print {$fh} $template->parse();
 
     close $fh;
   }
 
+  $template->disable_tag( [] );
+
   $template->file('bedrock-manifest');
 
-  $app->install_web_site( $template->parse() );
+  my $manifest = eval {
+    my $json = $template->parse();
+    return JSON->new->decode($json);
+  };
+
+  die "could not parse 'bedrock-manifest': $EVAL_ERROR"
+    if !$manifest || $EVAL_ERROR;
+
+  $app->install_web_site($manifest);
+
   my $document_root = $ENV{APACHE_DOCUMENT_ROOT};
   $document_root //= sprintf '%s/html', $ENV{APACHE_SITE_ROOT} // $ENV{APACHE_ROOT};
 

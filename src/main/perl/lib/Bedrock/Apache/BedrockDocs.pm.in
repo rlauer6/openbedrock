@@ -163,6 +163,10 @@ sub handler {
         return tag_docs( $bedrock_handler, lc $1 );
       };
 
+      /docs\/?(.*?)\/?$/xsm && do {
+        return generic_docs( $bedrock_handler, lc $1 );
+      };
+
       /^\/env\/?$/xsm && do {
         return env_docs($bedrock_handler);
       };
@@ -289,6 +293,37 @@ sub fetch_template {
 }
 
 ########################################################################
+sub _render_markdown {
+########################################################################
+  my ( $bedrock_handler, $file ) = @_;
+
+  my $logger = $bedrock_handler->request->log;
+
+  $logger->debug( sprintf 'rendering markdown for %s', $file );
+
+  my $html = eval {
+    my $md = Markdown::Render->new(
+      infile => $file,
+      engine => 'text_markdown',
+      body   => $FALSE
+    );
+
+    $md->render_markdown;
+
+    return $md->get_html;
+  };
+
+  if ( !$html || $EVAL_ERROR ) {
+    # log this in case we are in eval {}
+    my $err_msg = sprintf "could not render markdown: $EVAL_ERROR";
+    $logger->error($err_msg);
+    die $err_msg;
+  }
+
+  return $html;
+}
+
+########################################################################
 sub is_available_on_metacpan {
 ########################################################################
   my ($module) = @_;
@@ -311,7 +346,6 @@ sub is_available_on_metacpan {
   print {$fh} $content;
 
   return $filename;
-
 }
 
 ########################################################################
@@ -409,14 +443,10 @@ sub _show_pod {
 
   if ( $file && -e $file ) {
     $html = create_pod_file( $bedrock_handler, $file, $config->{BEDROCK_POD_CSS_URL} );
-
-    $back_url = sprintf '%s/%s', $config->{BEDROCK_ADMIN_DIR}, $back_url;
   }
 
   return
     if !$html || length($html) < $POD_MIN_SIZE;
-
-  $module =~ s/\//::/xsmg;
 
   if ( is_api($r) ) {
     # strip body, just want pod
@@ -426,12 +456,15 @@ sub _show_pod {
     # fix pod links
     $html
       =~ s/<a\s+href="\/bedrock\/pod\/([^<"]+)"[^>]*>([^<]+)<\/a>/<span class="pod-link" bedrock-data="$1">$2<\/span>/xsmg;
+    return $html;
   }
-  else {
-    my $top_section = header( $config, back_url => $back_url, module => $module );
 
-    $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
-  }
+  $module =~ s/\//::/xsmg;
+
+  $back_url = sprintf '%s/%s', $config->{BEDROCK_ADMIN_DIR}, $back_url;
+  my $top_section = header( $config, back_url => $back_url, module => $module );
+
+  $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
 
   return $html;
 }
@@ -1291,6 +1324,42 @@ sub tag_list {
   }
 
   return @tags;
+}
+
+########################################################################
+sub generic_docs {
+########################################################################
+  my ( $bedrock_handler, $document_name ) = @_;
+
+  my $r = $bedrock_handler->request_handler;
+
+  # this endpoint for Ajax only...(for now)
+  return $NOT_FOUND
+    if !is_api($r);
+
+  my $config = $bedrock_handler->config;
+
+  my $files = $config->{BEDROCK_DOCUMENTATION}->{file_list} || {};
+
+  return $NOT_FOUND
+    if !$files->{$document_name};
+
+  my $filename = $files->{$document_name}->{path};
+
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+
+  my $html = eval {
+    return _show_pod( $bedrock_handler, file => $filename )
+      if $ext =~ /pl|pm|cgi/xsm;
+
+    return _render_markdown( $bedrock_handler, file => $filename );
+  };
+
+  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
+
+  output( $r, { uri_root => $bedrock_admin_dir, html => $html } );
+
+  return $OK;
 }
 
 ########################################################################

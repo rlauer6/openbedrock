@@ -24,7 +24,7 @@
   <body class="p-3 m-0 border-0 m-0 border-0">
     <nav class="navbar navbar-expand-lg bg-body-tertiary">
       <div class="container-fluid">
-        <a class="navbar-brand" href="#">
+        <a id="bedrock-logo" class="navbar-brand" href="#">
           <img src="/bedrock/img/bedrock.gif" alt="Bedrock">
         </a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span>
@@ -69,11 +69,43 @@
     </nav>
 
     <div id="top-container">
+
       <div id="bedrock-error" role="alert">
         <span id="bedrock-error-message"></span>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
       </div>
+      <div id="abs-top"></div>
+      <span id="top-button">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-up-circle-fill" viewBox="0 0 16 16">
+          <path d="M16 8A8 8 0 1 0 0 8a8 8 0 0 0 16 0m-7.5 3.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708l3-3a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707z"/>
+      </svg>
+      </span>
+      <span id="back-button">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left-circle-fill" viewBox="0 0 16 16">
+  <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5z"/>
+        </svg>
+      </span>
 
+      <div id="left-menu-container">
+        <div class="row">
+          <div class="col-auto">
+            <div class="list-group">
+              <a href="#" class="list-group-item list-group-item-action active" bedrock-data="welcome">Welcome</a>
+              <a href="#" class="list-group-item list-group-item-action" bedrock-data="examples">Examples</a>
+              <a href="#" class="list-group-item list-group-item-action" bedrock-data="bedrock-shell">Bedrock Shell</a>
+              <a href="#" class="list-group-item list-group-item-action" bedrock-data="contributing">Contributing</a>
+              <a href="#" class="list-group-item list-group-item-action" bedrock-data="bugs">Reporting Bugs</a>
+            </div>
+          </div>
+          <div class="col" >
+            <div id="welcome" class="side-menu-item bedrock-pod" ></div>
+            <div id="examples" class="side-menu-item bedrock-pod"></div>
+            <div id="bedrock-shell" class="side-menu-item bedrock-pod"></div>
+            <div id="contributing" class="side-menu-item"></div>
+            <div id="bugs" class="side-menu-item"></div>
+          </div>
+        </div>
+      </div>
       <div id="plugins-container">
         <div class="accordion accordion-flush" id="plugins-content">
 
@@ -119,7 +151,6 @@
         </div>
       </div>
 
-      <button id="top-button" class="btn btn-primary btn-sm mb-2" type="button">Top</button>
       <div id="tags-container">
       </div>
 
@@ -223,6 +254,9 @@
           <trace --output $session>
         </pre>
       </div>
+<footer class="fixed-bottom p-3 bg-dark-subtle">
+    <span class="text-muted">Bedrock Version <var $bedrock.version()></span>
+</footer>
     </div>
   </body>
 </html>

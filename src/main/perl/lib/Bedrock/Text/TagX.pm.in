@@ -114,6 +114,8 @@ sub parse {
 
   my $input = $self->{input};
 
+  my $opentag_expr = $self->{OPENTAG_EXPR};
+
   INPUT:
   while (<$input>) {
 
@@ -183,7 +185,8 @@ sub parse {
       # Check if we have a supported tag
       my $tag = $_;
 
-      if ( !$raw && s/$OPENTAG_EXPR//xsmoi ) {
+      if ( !$raw && s/$opentag_expr//xsmi ) {
+
         # Yes we do
         # The text before the '<' needs to be processed.
         if ( length $text ) {
@@ -938,7 +941,7 @@ sub new {
 
   if ( $class = ref $proto ) {
 
-    $self = bless { 'error' => {} }, $class;
+    $self = bless { error => {} }, $class;
 
     if ($output) {
       $self->out_handle( TagX::Output->new($output) );
@@ -947,10 +950,11 @@ sub new {
       $self->out_handle( $proto->out_handle );
     }
 
-    $self->{VARS}  = $proto->{VARS};
-    $self->{error} = $proto->{error}->newLevel($input);
+    $self->{VARS}         = $proto->{VARS};
+    $self->{error}        = $proto->{error}->newLevel($input);
+    $self->{OPENTAG_EXPR} = $OPENTAG_EXPR;
 
-    for (qw( DB options)) {
+    for (qw( DB options )) {
       next if !exists $proto->{$_};
 
       $self->{$_} = $proto->{$_};
@@ -959,9 +963,10 @@ sub new {
   else {
     $self = bless {}, $proto;
     $self->out_handle( TagX::Output->new($output) );
-    $self->{VARS}  = TagX::Symtab->new;
-    $self->{error} = TagX::Error->new($input);
-    $self->{DB}    = {};
+    $self->{VARS}         = TagX::Symtab->new;
+    $self->{error}        = TagX::Error->new($input);
+    $self->{DB}           = {};
+    $self->{OPENTAG_EXPR} = $OPENTAG_EXPR;
   }
 
   if ( !ref $input ) {
@@ -976,12 +981,14 @@ sub new {
 
     $self->{__input_opened} = $input;
 
-    die "Unable to open [$file_or_fd] for input: $OS_ERROR\n"
+    die sprintf "Unable to open [%s] $file_or_fd] for input: [%s]\n", $file_or_fd, $OS_ERROR
       if !$input;
   }
 
   $self->{input} = $input;
   $self->ctx($output);
+
+  $self->check_disabled_tags;
 
   for ( keys %args ) {
     $self->{VARS}->{$_} = $args{$_};
@@ -1028,18 +1035,25 @@ sub check_disabled_tags {
   my $options = $self->{options} // {};
 
   # disabled tags?
-  my $config = $options->{CONFIG} // {};
+
+  my $config = $options->{CONFIG};
+
+  if ( !$config ) {
+    if ( $self->ctx && reftype( $self->ctx ) eq 'HASH' ) {
+      $config = $self->ctx->{CONFIG};
+    }
+  }
 
   if ($config) {
     my @disabled_tags = @{ $config->{DISABLED_TAGS} || [] };
 
-    my $tags = $Bedrock::Constants::OPENTAG_EXPR;
+    my $tags = $self->{OPENTAG_EXPR};
 
     foreach my $t (@disabled_tags) {
       $tags =~ s/$t\|?//xsm;
     }
 
-    $Bedrock::Constants::OPENTAG_EXPR = $tags;
+    $self->{OPENTAG_EXPR} = $tags;
   }
 
   return;
