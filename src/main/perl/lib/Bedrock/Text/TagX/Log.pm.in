@@ -1,5 +1,3 @@
-#!@PERL@ -w
-
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -21,88 +19,91 @@
 #
 
 package TagX::Log;
+# should no longer be used...replaced with Bedrock::Logger
 
 use strict;
 use warnings;
 
-use Bedrock::Log::Spooler;
-use English;
+use Bedrock::Constants qw(:booleans :chars);
+use English qw(-no_match_vars);
 use Date::Format;
 use Data::Dumper;
 
-BEGIN {
-  use Exporter ();
-  use vars qw (@ISA @EXPORT @EXPORT_OK);
-  @ISA = qw (Exporter);
-}
+use parent qw(Exporter);
 
-@EXPORT = qw (log_message);
-@EXPORT_OK = qw (start_logger);
+our @EXPORT    = qw (log_message);
+our @EXPORT_OK = qw (start_logger);
 
-use Scalar::Util qw/reftype blessed/;
+use Scalar::Util qw(reftype blessed);
 
 my %options = (
-	       'LOG_MAXSIZE'  => 100000,
-	       'LOG_WARNINGS' => 'off',
-	       'LOG_ERRORS'   => 'off',
-	       'LOG_FORMAT'   => '%m/%d/%Y %H:%M:%S'
-	      );
+  LOG_MAXSIZE  => 100_000,
+  LOG_WARNINGS => 'off',
+  LOG_ERRORS   => 'off',
+  LOG_FORMAT   => '%m/%d/%Y %H:%M:%S'
+);
 
+########################################################################
 sub start_logger {
+########################################################################
   my %args = @_;
 
-  if ( ! $args{LOG_FILE} && ! $args{LOG_SPOOLER} ) {
-    return 0;
+  if ( !$args{LOG_FILE} && !$args{LOG_SPOOLER} ) {
+    return $FALSE;
   }
-  
+
   # override default options
-  @options{keys %args} = values %args;
-  
+  @options{ keys %args } = values %args;
+
   my ( $logfile, $maxsize ) = @options{qw(LOG_FILE LOG_MAXSIZE)};
-  
+
   if ( $logfile && $logfile ne 'STDERR' ) {
     if ( -e $logfile ) {
       # truncate log unless LOG_MAXSIZE < 0
-      if ( $maxsize == 0 || ( $maxsize > 0 && ( stat($logfile) )[7] > $maxsize ) ) {
-	open( FILE, '>', $logfile );
-	close FILE;
+      if ( $maxsize == 0 || ( $maxsize > 0 && ( stat $logfile )[7] > $maxsize ) ) {
+        open my $fh, '>', $logfile;
+        close $fh;
       }
     }
-    
+
     # Redirect STDERR too to append to logfile
-    if ( ! open( STDERR, '>>', $logfile) ) {
+    if ( !open( STDERR, '>>', $logfile ) ) {
       warn __PACKAGE__, " unable to append to log file [$logfile]: $OS_ERROR";
       return;
     }
-    
+
     my $fd = IO::Handle->new_from_fd( 'STDERR', 'a' );
     $fd->autoflush(1);
     $fd->close;
   }
-  
+
   # log warnings/errors to page log, unless in eval {}
   $SIG{__DIE__} = $SIG{__WARN__} = sub {
     # don't log if we are in an eval {}
-    return unless defined $^S and $^S == 0;
-    
+    return
+      if $EXCEPTIONS_BEING_CAUGHT;
+
     unshift @_, undef;
-    goto &log_message
+    goto &log_message;
   };
-  
-  &log_message( undef, "started logger");
+
+  log_message( undef, 'started logger' );
+
+  return;
 }
 
-
+########################################################################
 sub log_message {
-  my $obj = shift;
-  
-  if ( ! $options{LOG_FILE} && ! $options{LOG_SPOOLER} ) {
+########################################################################
+  my ( $obj, @raw_message ) = @_;
+
+  if ( !$options{LOG_FILE} && !$options{LOG_SPOOLER} ) {
     return 0;
   }
 
   # -- get caller
   my ( $pack, $filename, $line ) = caller;
-  
+
   # -- set page
   my $page = eval {
     if ( $ENV{BEDROCK_URI} ) {
@@ -114,48 +115,49 @@ sub log_message {
     else {
       my @stack;
       my $i = 0;
-      
-      while (my @details = caller($i++)) {
+
+      while ( my @details = caller( $i++ ) ) {
         push @stack, \@details;
       }
-      (pop @stack)->[1];
+      ( pop @stack )->[1];
     }
   };
 
-  
   # -- set loc input location tracking
-  my $loc = '';
-  
+  my $loc = $EMPTY;
+
   if ( blessed($obj) && $obj->can('start_location') ) {
-    $loc = "[" . $obj->start_location . "]\n[$obj]\n";
+    $loc = sprintf "[%s]\n[%s]\n", $obj->start_location, $obj;
   }
 
-
   # -- set time, default: %m/%d/%Y %H:%M:%S
-  my $time = time2str($options{LOG_FORMAT}, time);
+  my $time = time2str( $options{LOG_FORMAT}, time );
 
-  
   # -- create log message
-  my @raw_message = @_;
-  my $message = sprintf("%s [%s]\t[%s]\t%s(%s)\n%s%s\n",
-                        $time, $$, $page, $filename, $line, $loc, "@raw_message");
-  
+  my $message = sprintf "%s [%s]\t[%s]\t%s(%s)\n%s%s\n", $time, $PID, $page, $filename, $line, $loc,
+    "@raw_message";
+
   # -- write log message to file, stderr, or spooler
   if ( $options{LOG_FILE} && $options{LOG_FILE} ne 'STDERR' ) {
     my $logfile = $options{LOG_FILE};
-    if ( !  open( LOG, '>>', $logfile) ) {
-      warn __PACKAGE__, " could not open log file: [$logfile]: $OS_ERROR";
+
+    open my $fh, '>>', $logfile
+      or do {
+      warn sprintf '%s could not open log file: [%s]: %s', __PACKAGE__, $logfile, $OS_ERROR;
       return;
-    }
-      
-    print LOG $message;
-    close LOG
+      };
+
+    print {$fh} $message;
+
+    close $fh;
   }
   elsif ( $options{LOG_FILE} eq 'STDERR' ) {
-    print STDERR $message;
+    print {*STDERR} $message;
   }
   elsif ( $options{LOG_SPOOLER} ) {
-    my %spooler_options = (channel => "bedrock/log$page");
+    require Bedrock::Log::Spooler;
+
+    my %spooler_options = ( channel => "bedrock/log$page" );
 
     # note LOG_SPOOLER can override channel
     #
@@ -163,12 +165,13 @@ sub log_message {
     #   <scalar name="channel">mychannel</scalar>
     # </object>
     #
-    if (ref($options{LOG_SPOOLER}) && reftype($options{LOG_SPOOLER}) eq 'HASH' ) {
-      @spooler_options{keys %{$options{LOG_SPOOLER}}} = values %{$options{LOG_SPOOLER}};
+    if ( ref( $options{LOG_SPOOLER} ) && reftype( $options{LOG_SPOOLER} ) eq 'HASH' ) {
+      @spooler_options{ keys %{ $options{LOG_SPOOLER} } } = values %{ $options{LOG_SPOOLER} };
     }
-    
+
     eval {
       my $spooler = Bedrock::Log::Spooler->instance(%spooler_options);
+
       $spooler->publish(
         \@raw_message,
         page     => $page,
@@ -178,12 +181,15 @@ sub log_message {
       );
     };
 
-    if ( $@ ) {
-      # try to print the log message to STDERR
-      print STDERR "error spooling log message: $@\n";
-      print STDERR $message;
+    if ($EVAL_ERROR) {
+      print {*STDERR} 'error spooling log message: ' . $EVAL_ERROR;
+      print {*STDERR} $message;
     }
   }
+
+  return;
 }
 
 1;
+
+__END__

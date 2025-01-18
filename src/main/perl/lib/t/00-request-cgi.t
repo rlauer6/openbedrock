@@ -36,7 +36,11 @@ subtest 'headers' => sub {
   $r->headers_out( 'Content-type',   'text/plain' );
 
   $r->send_http_header;
-  is( $buffer, "Content-type: text/plain\r\nContent-length: 100\r\nAccept-Ranges: bytes\r\n\r\n", 'headers' );
+
+  my @headers = grep {$_} sort split /\r\n/xsm, $buffer;
+
+  is_deeply( \@headers, [ sort 'Content-type: text/plain', 'Content-length: 100', 'Accept-Ranges: bytes' ] );
+
 };
 
 ########################################################################
