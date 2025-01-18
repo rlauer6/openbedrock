@@ -30,7 +30,7 @@ package main;
 ########################################################################
 
 use Bedrock;
-use Bedrock::Apache::Request_cgi;
+use Bedrock::Apache::Request::CGI;
 use Bedrock::Apache::Constants qw($OK);
 use Bedrock::Test::Utils qw(connect_db);
 use Bedrock::XML;
@@ -82,7 +82,7 @@ sub create_request_handler {
   local $ENV{REQUEST_METHOD}  = 'GET';
   local $ENV{HTTP_COOKIE}     = q{};
 
-  return Apache::Request_cgi->new( output_handle => $fh );
+  return Apache::Request::CGI->new( output_handle => $fh );
 }
 
 my $r = create_request_handler();

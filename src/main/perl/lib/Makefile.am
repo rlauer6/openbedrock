@@ -16,6 +16,7 @@ perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
+perl5bedrockapacherequestlibdir           = $(perl5libdir)/Bedrock/Apache/Request
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
@@ -119,9 +120,14 @@ BEDROCK_APACHE = \
     Bedrock/Apache/BedrockModPerl.pm.in \
     Bedrock/Apache/BedrockSessionFiles.pm.in \
     Bedrock/Apache/Constants.pm.in \
-    Bedrock/Apache/HandlerUtils.pm.in \
-    Bedrock/Apache/Request_cgi.pm.in \
-    Bedrock/Apache/Request_shell.pm.in
+    Bedrock/Apache/HandlerUtils.pm.in
+
+perl5bedrockapacherequestlib_DATA = \
+    $(BEDROCK_APACHE_REQUEST:.pm.in=.pm)
+
+BEDROCK_APACHE_REQUEST = \
+    Bedrock/Apache/Request/CGI.pm.in \
+    Bedrock/Apache/Request/Shell.pm.in
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
@@ -336,6 +342,7 @@ PERL_PM = \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
+    $(BEDROCK_APACHE_REQUEST) \
     $(BEDROCK_DBI) \
     $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
