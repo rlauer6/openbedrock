@@ -1,4 +1,4 @@
-var containers = 'login logout session register plugins tags left-menu'.split(' ');
+var containers = 'login logout session register plugins tags docs'.split(' ');
 
 var spinner = '<div class="d-flex mt-5 justify-content-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
 
@@ -10,37 +10,47 @@ const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstra
 }
 
 // -------------------------------------------------
-function show_spinner(hide) {
+function show_spinner(container, hide) {
 // -------------------------------------------------
-if ( hide ) {
-$('#tags-container').html('');
+    var containerId = `#${container}-container`;
+
+    if ( hide ) {
+        $(containerId).html('');
+        $(containerId).removeClass('d-flex justify-content-center');
     }
     else {
-        $('#tags-container').html(spinner);
+        $(containerId).html(spinner);
+        $(containerId).addClass('d-flex justify-content-center');
     }
-
-    show_container('tags');
 }
 
 // -------------------------------------------------
-function show_container(container) {
+function show_container(container, top_button, history_button) {
 // -------------------------------------------------
+    containerId = `#${container}-container`;
+
     containers.forEach((c) => {
-        $('#' + c + '-container').hide();
+        $(`#${c}-container`).hide();
     });
 
     $('#top-button').hide();
     $('#back-button').hide();
 
-    if ( $('#' + container +'-container').length ) {
-        $('#' + container +'-container').show();
+    if ( $(containerId).length ) {
+        $(containerId).show();
     }
     
-    if ( container == 'tags' ) {
+    $('#top-button').off('click');
+    
+    if ( top_button ) {
         $('#top-button').show();
-    }
       
-    if ( ui_history.length > 1 ) {
+        $('#top-button').click(function() {
+            $(containerId).scrollTop(0);
+        });
+    }
+    
+    if ( history_button && ui_history.length > 1 ) {
        $('#back-button').show();
     }
 }
@@ -66,7 +76,7 @@ function bedrock_error(message, alert_type) {
 // -------------------------------------------------
 function api_tag_list() {
 // -------------------------------------------------
-    show_spinner();
+    show_spinner('tags');
 
     $.ajax({
         url: '/bedrock/tag',
@@ -75,6 +85,9 @@ function api_tag_list() {
         method: 'GET',
         contentType: 'application/json'
     }).done(function (data) {
+
+        show_spinner('tags', 1);
+
         console.log(data);
 
         var html = ul_list(data.tags, 'tag-list', '', 'ul-link-item');
@@ -93,7 +106,7 @@ function api_tag_list() {
         console.log(status);
         console.log(error);
 
-        show_spinner(1);
+        show_spinner('tags', 1);
         
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
@@ -153,7 +166,7 @@ function api_session() {
 // -------------------------------------------------
 function api_tag_doc(tag) {
 // -------------------------------------------------
-    show_spinner();
+    show_spinner('tags');
 
     $.ajax({
         url: '/bedrock/tag/' + tag,
@@ -163,6 +176,7 @@ function api_tag_doc(tag) {
         contentType: 'application/json'
     }).done(function (data) {
         console.log(data);
+        show_spinner('tags', 1);
 
         var html = data.html
         html = '<div class="bedrock-pod"><span id="_podtop_"></span>' + html + '</div>';
@@ -178,7 +192,7 @@ function api_tag_doc(tag) {
         console.log(status);
         console.log(error);
         
-        show_spinner(1);
+        show_spinner('tags', 1);
 
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
@@ -189,7 +203,7 @@ function api_tag_doc(tag) {
 // -------------------------------------------------
 function api_generic_doc(contentName, func) {
 // -------------------------------------------------
-    //show_spinner();
+    show_spinner('docs');
 
     $.ajax({
         url: '/bedrock/docs/' + contentName,
@@ -200,7 +214,7 @@ function api_generic_doc(contentName, func) {
     }).done(function (data) {
         var html = data.html
         //html = '<span id="_podtop_"></span>' + html;
-        //show_spinner(1);
+        show_spinner('docs', 1);
 
         func(html, contentName);
 
@@ -211,7 +225,7 @@ function api_generic_doc(contentName, func) {
         console.log(status);
         console.log(error);
         
-        show_spinner(1);
+        show_spinner('docs', 1);
 
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
@@ -222,7 +236,7 @@ function api_generic_doc(contentName, func) {
 // -------------------------------------------------
 function api_plugin_doc(plugin_type, plugin) {
 // -------------------------------------------------
-    show_spinner();
+    show_spinner('tags');
 
     var plugin_types = { "Application Plugins" : "/bedrock/plugins/Startup",
                          "Filters" : "/bedrock/plugins/Filter",
@@ -247,7 +261,9 @@ function api_plugin_doc(plugin_type, plugin) {
         contentType: 'application/json'
     }).done(function (data) {
         console.log(data);
-        
+
+        show_spinner('tags', 1);
+
         if ( data.url ) {
             window.open(data.url, '_blank');
             return;
@@ -259,15 +275,13 @@ function api_plugin_doc(plugin_type, plugin) {
             html = `<div class="bedrock-pod"><span id="_podtop_">${html}</span></div>`;
         }
         else {
-            show_spinner(1);
             bedrock_error(`Nothing found for "${plugin}" warning`);
             return;
         }
 
         $('#tags-container').html(html);
 
-        enable_internal_links();
-
+        fix_encoded_links();
 
         $('.pod-link').on('click', function() {
             var bedrock_data = $(this).attr('bedrock-data');
@@ -281,7 +295,7 @@ function api_plugin_doc(plugin_type, plugin) {
         return true;
     }).fail(function($xhr, status, error) {
 
-        show_spinner(1);
+        show_spinner('tags', 1);
 
         console.log($xhr);
         console.log(status);
@@ -317,7 +331,7 @@ function ul_list(list, id, uri_root, css_class) {
 // -------------------------------------------------
 function api_plugins() {
 // -------------------------------------------------
-    show_spinner();
+    show_spinner('tags');
 
     $.ajax({
         url: '/bedrock/plugins',
@@ -328,6 +342,8 @@ function api_plugins() {
     }).done(function (data) {
 
         console.log(data);
+
+        show_spinner('tags', 1);
 
         var plugins = data.plugins;
         var plugin_map = data.plugin_map;
@@ -370,7 +386,7 @@ function api_plugins() {
         console.log(status);
         console.log(error);
 
-        show_spinner(1);
+        show_spinner('tags', 1);
 
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
@@ -382,7 +398,7 @@ function api_plugins() {
 // -------------------------------------------------
 function api_modules(module_type) {
 // -------------------------------------------------
-    show_spinner();
+    show_spinner('tags');
 
     $.ajax({
         url: '/bedrock/' + module_type,
@@ -391,6 +407,8 @@ function api_modules(module_type) {
         method: 'GET',
         contentType: 'application/json'
     }).done(function (data) {
+
+        show_spinner('tags', 1);
 
         console.log(data);
 
@@ -410,7 +428,6 @@ function api_modules(module_type) {
             api_plugin_doc($(this).attr('bedrock-data'));
         });
 
-        show_container('tags');
         
         return true;
     }).fail(function($xhr, status, error) {
@@ -419,7 +436,7 @@ function api_modules(module_type) {
         console.log(status);
         console.log(error);
         
-        show_spinner(1);
+        show_spinner('tags', 1);
 
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
@@ -428,13 +445,31 @@ function api_modules(module_type) {
 }
 
 // -------------------------------------------------
-function enable_internal_links () {
+function fix_encoded_links () {
+// -------------------------------------------------
+    // may not need to do this if we rely on the browser to resolve
+    // internal links
+    $('.bedrock-pod a').each( function(idx, el) {
+
+        // DBD::SQLite anchors contain ':'
+        var ahref = $(el).attr('href'); // anchors appear to now be URL encoded
+        // only need this if we going to implement our own click handler?
+        // ahref = decodeURIComponent(ahref);
+        // ahref = ahref.replaceAll(':', '\\:');
+        $(el).attr('href', ahref);
+    });
+}
+
+// -------------------------------------------------
+function enable_internal_links (container) {
 // -------------------------------------------------
     $('.bedrock-pod').off('click');
 
+    fix_encoded_links();
+
     $('.bedrock-pod a').on('click', function(e) {
         e.preventDefault();
-
+        
         // DBD::SQLite anchors contain ':'
         var ahref = $(this).attr('href'); // anchors appear to now be URL encoded
         if (ahref.substring(0,4) == 'http' ) {
@@ -445,10 +480,10 @@ function enable_internal_links () {
         ahref = decodeURIComponent(ahref);
         ahref = ahref.replaceAll(':', '\\:');
 
-        $('#tags-container').scrollTop(0);
-        var containerOffset=$('#tags-container').offset().top;
+        $(container).scrollTop(0);
+        var containerOffset=$('#abs-top').offset().top;
         var topOffset = $(ahref).offset().top;
-        $('#tags-container').scrollTop(topOffset - containerOffset);
+	$(container).scrollTop(topOffset - containerOffset);
     });
 }
 
@@ -478,6 +513,7 @@ function set_container_size () {
     var container_height = $('footer').offset().top - container_top;
 
     $('#tags-container').css('height', container_height);
+    $('#docs-container').css('height', container_height);
 }
 
 // -------------------------------------------------
@@ -488,6 +524,22 @@ function push_event(event, back) {
     }
     
     ui_history.push(event);
+}
+
+// ------------------------------------------------------------------------
+function show_tag_doc() {
+// ------------------------------------------------------------------------
+    $('#docs-container a').on('click', function(e) { 
+        var ahref = $(this).attr('href'); 
+
+        if (ahref.substring(0, 5, ahref) == '#tag-' ) { 
+            var tag_name = ahref.replace('#tag-', '');
+            api_tag_doc(tag_name);
+            return false;
+        } 
+
+        return true;
+    });
 }
 
 // -------------------------------------------------
@@ -501,7 +553,15 @@ $(function () {
 
     ui_history = [];
 
-    $('#module-search').on('click', function(e) {
+    show_container('left-menu');
+    
+    // prevent alert from being removed from DOM
+    $('#bedrock-error').on('close.bs.alert', function() {
+        $('#bedrock-error').hide();
+        return false;
+    });
+
+    $('#module-search').on('click', function(e, back) {
         e.preventDefault();
         
         push_event({ "el" : this,
@@ -541,6 +601,7 @@ $(function () {
             api_modules('system');
         }
     });
+
 
     $("#username").attr('tabindex', 100);
     $("#password").attr('tabindex', 101);
@@ -596,10 +657,6 @@ $(function () {
 
     enable_tooltips();
 
-    $('#top-button').on('click', function() {
-        $('#tags-container').scrollTop(0);
-    });
-
     $('#back-button').on('click', function() {
         go_back();
     });
@@ -616,10 +673,24 @@ $(function () {
         $(this).addClass('active');
 
         api_generic_doc(contentName, function(html, id) {
-            $('#' + id).html(html);
-            $( '#' + id).css('display', 'inline-block');
+            id = '#docs-container';
+            $(id).html(html);
+            $(id).css('display', 'inline-block');
+
+            var containerSize = $('footer').offset().top - $(id).offset().top;
+            $(id).height(containerSize);
+	    $(id).css('overflow', 'scroll');
+
+            $('#docs-container').scrollTop(0);
+
+            if ( contentName == 'examples') {
+                show_tag_doc();
+            }
+
         });
 
         push_event({ "el" : this, "type" : "click"}, back);
     });
+
+    $('.list-group-item').first().trigger('click');
 });

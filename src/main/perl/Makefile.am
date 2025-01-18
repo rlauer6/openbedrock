@@ -11,6 +11,7 @@ TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
 
 BEDROCK_TESTS = \
     t/00-var.yml \
+    t/00-chomp.yml \
     t/01-multi-line.yml \
     t/02-null.yml \
     t/03-if.yml \

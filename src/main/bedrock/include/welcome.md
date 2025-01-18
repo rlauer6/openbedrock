@@ -1,4 +1,4 @@
-#Welcome to Bedrock!
+# Welcome to Bedrock!
 
 Bedrock is a server side web application development framework that
 can be used with Apache web servers. It allows HTML developers to

@@ -2,7 +2,7 @@
 <!-- Bedrock MySQL Sessions -->
 <object>
   <scalar name="binding">session</scalar>
-  <scalar name="session">yes</scalar>
+  <scalar name="session">no</scalar>
   <scalar name="module">BLM::Startup::UserSession</scalar>
 
   <object name="config">

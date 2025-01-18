@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<include "handler.inc" />
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
@@ -12,23 +13,18 @@
     <link rel="stylesheet" href="bedrock.css">
   </head>
 
-  <if $input.action --eq 'register'>
-    
-    <null $session.register($input.get('register-username', $input.get('register-password'),  $input.first_name, $input.last_name, $input.email))>
-  <elsif $input.action --eq 'logout'>
-    <null $session.logout()>
-  <elsif $input.action --eq 'login'>
-    <null $session.login($input.username, $input.password)>
-  </if>
-  
   <body class="p-3 m-0 border-0 m-0 border-0">
     <nav class="navbar navbar-expand-lg bg-body-tertiary">
       <div class="container-fluid">
         <a id="bedrock-logo" class="navbar-brand" href="#">
           <img src="/bedrock/img/bedrock.gif" alt="Bedrock">
         </a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
+                aria-controls="navbarSupportedContent" aria-expanded="false"
+                aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
         </button>
+
         <div class="collapse navbar-collapse" id="navbarSupportedContent">
           <ul class="navbar-nav me-auto mb-2 mb-lg-0">
             <li class="nav-item dropdown">
@@ -74,15 +70,16 @@
         <span id="bedrock-error-message"></span>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
       </div>
+
       <div id="abs-top"></div>
       <span id="top-button">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-up-circle-fill" viewBox="0 0 16 16">
           <path d="M16 8A8 8 0 1 0 0 8a8 8 0 0 0 16 0m-7.5 3.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708l3-3a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707z"/>
-      </svg>
+        </svg>
       </span>
       <span id="back-button">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left-circle-fill" viewBox="0 0 16 16">
-  <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5z"/>
+          <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5z"/>
         </svg>
       </span>
 
@@ -97,166 +94,29 @@
               <a href="#" class="list-group-item list-group-item-action" bedrock-data="bugs">Reporting Bugs</a>
             </div>
           </div>
-          <div class="col" >
-            <div id="welcome" class="side-menu-item bedrock-pod" ></div>
-            <div id="examples" class="side-menu-item bedrock-pod"></div>
-            <div id="bedrock-shell" class="side-menu-item bedrock-pod"></div>
-            <div id="contributing" class="side-menu-item"></div>
-            <div id="bugs" class="side-menu-item"></div>
-          </div>
-        </div>
-      </div>
-      <div id="plugins-container">
-        <div class="accordion accordion-flush" id="plugins-content">
-
-          <div class="accordion-item">
-            <h2 class="accordion-header">
-              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#application-plugins" aria-expanded="false" aria-controls="application-plugins">
-                Application Plugins
-              </button>
-            </h2>
-
-            <div id="application-plugins" class="accordion-collapse collapse" data-bs-parent="#plugins-content">
-              <div class="accordion-body">
-              </div>
+          <div id='right-content' class="col" >
+            <div id="docs-container" class="side-menu-item bedrock-pod" ></div>
+            <div id="tags-container" class="bedrock-pod"></div>
+            <div id="session-container"></div>
+            <div class="container" id="login-container">
+              <include "login-container" />
+            </div>
+            <div class="container" id="register-container">
+              <include "register-container"/>
+            </div>
+            
+            <div id="plugins-container">
+              <include "plugins-container" />
             </div>
           </div>
-
-          <div class="accordion-item">
-            <h2 class="accordion-header">
-              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#filters" aria-expanded="false" aria-controls="filters">
-                Filters
-              </button>
-            </h2>
-
-            <div id="filters" class="accordion-collapse collapse" data-bs-parent="#plugins-content">
-              <div class="accordion-body">
-              </div>
-            </div>
-          </div>
-
-          <div class="accordion-item">
-            <h2 class="accordion-header">
-              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#plugins" aria-expanded="false" aria-controls="plugins">
-                Plugins
-              </button>
-            </h2>
-
-            <div id="plugins" class="accordion-collapse collapse" data-bs-parent="#plugins-content">
-              <div class="accordion-body">
-              </div>
-            </div>
-          </div>
-
         </div>
       </div>
 
-      <div id="tags-container">
-      </div>
 
-      <div class="container" id="login-container">
-        <div class="row mt-4">
-          <div class="col-12">
-            <form id='login-form' action="index.roc" method="post">
-              <div class="row m-2">
-                <div class="col-4">
-                  <span id="username-label"><a href="#" class="m-0" data-bs-toggle="tooltip" data-bs-title="Enter your username, not your email!">Username</a></span>
-                </div>
-                <div class="col-4">
-                  <input id="username" name="username" class="w-20" value="<var $session.username>">
-                </div>
-              </div>
-              
-              <div class="row m-2">
-                <div class="col-4">
-                  <span id="password-label">Password</span>
-                </div>
-                <div class="col-4">
-                  <input type="password" id="password" name="password" class="w-20">
-                </div>
-              </div>
-              
-              <div class="row mt-4">
-                <div class="col-4 offset-4">
-                  <button type="button" id="<iif $session.username logout login >-button" class="btn btn-primary"><iif $session.username Logout Login></button>
-                </div>
-              </div>
-              <input type="hidden" name="action" id="login-action" value="">
-            </form>
-          </div>
-        </div>
-      </div>
-
-      <div class="container" id="register-container">
-        <div class="row mt-4">
-          <div class="col-12">
-            <form id='register-form' action="index.roc" method="post">
-              
-              <div class="row mt-4">
-                <div class="col-4">
-                  <span id="register-username-label">Username</span>
-                </div>
-                <div class="col-4">
-                  <input id="register-username" type="text" name="register-username" size="16" maxlength="30" tabindex="200">
-                </div>
-              </div>
-              
-              <div class="row mt-2">
-                <div class="col-4">
-                  <span id="register-password-label">
-                    <a href="#" class="link-opacity-0 m-0"  data-bs-toggle="tooltip" data-bs-title="Passwords should contain at least 1 digit, special character, number, lower and uppercase letter">Password</a></span>
-                  </div>
-                <div class="col-4">
-                  <input id="register-password" type="password" name="register-password" size="16" maxlength="30" tabindex="201">
-                </div>
-              </div>
-              
-              <div class="row mt-4">
-                <div class="col-4">
-                  <span id="first_name-label">First Name</span>
-                </div>
-                <div class="col-4">
-                  <input id="first_name" type="text" name="first_name" size="16" maxlength="30" tabindex="202">
-                </div>
-              </div>
-              
-              <div class="row mt-2">
-                <div class="col-4">
-                  <span id="last_name-label">Last Name</span>
-                </div>
-                <div class="col-4">
-                  <input id="last_name" type="text" name="last_name" size="16" maxlength="30" tabindex="203">
-                </div>
-              </div>
-              
-              <div class="row mt-2">
-                <div class="col-4">
-                  <span id="email-label">E-Mail</span>
-                </div>
-                <div class="col-4">
-                  <input id="email" type="text" name="email" size="16" maxlength="100" tabindex="204">
-                </div>
-              </div>
-              
-              <div class="row mt-4">
-                <div class="col-4 offset-4">
-                  <button type="button" id="register-button" class="btn btn-primary">Register</button>
-                </div>
-              </div>
-              <input type="hidden" name="action" value="register">
-            </form>
-          </div>
-        </div>
-      </div>
       
-      <div id="session-container">
-        <pre>
-          <trace --output $session>
-        </pre>
-      </div>
-<footer class="fixed-bottom p-3 bg-dark-subtle">
-    <span class="text-muted">Bedrock Version <var $bedrock.version()></span>
-</footer>
+      <footer class="fixed-bottom p-3 bg-dark-subtle">
+        <span class="text-muted">Bedrock Version <var $bedrock.version()></span>
+      </footer>
     </div>
   </body>
 </html>
