@@ -10,4 +10,8 @@ dist_bedrock_include_DATA = \
     bedrock-docs-listing.inc \
     bedrock-docs-listing-index.inc \
     bedrock-docs-plugins.inc \
-    bedrock-docs-ul.inc
+    bedrock-docs-ul.inc \
+    bugs.md \
+    contributing.md \
+    examples.md \
+    welcome.md

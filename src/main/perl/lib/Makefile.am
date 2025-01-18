@@ -71,7 +71,6 @@ perl5bedrocklib_DATA = \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
     Bedrock/Install.pm \
-    Bedrock/Log.pm \
     Bedrock/Logger.pm \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
@@ -170,7 +169,6 @@ perl5bedrocktexttagxtaglib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody.pm \
     Bedrock/Text/TagX/TAG/SQLHandler.pm \
     Bedrock/Text/TagX/TAG/SQLConnector.pm
-
 
 BEDROCK_TEXT_TAGX_TAG=$(perl5bedrocktexttagxtaglib_DATA:.pm=.pm.in)
 
