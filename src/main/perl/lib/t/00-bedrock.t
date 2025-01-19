@@ -3,15 +3,14 @@
 use strict;
 use warnings;
 
-use lib qw{.};
-
+use Bedrock::Constants qw(%LOG4PERL_LOG_LEVELS);
 use Bedrock::Hash;
 use Bedrock::Array;
-use Bedrock::Test::Utils qw{:all};
+use Bedrock::Test::Utils qw(:all);
 use Cwd;
 use Data::Dumper;
-use English qw{-no_match_vars};
-use File::Touch qw{touch};
+use English qw(-no_match_vars);
+use File::Touch qw(touch);
 use File::chdir;
 use Test::More;
 use Scalar::Util qw(reftype);
@@ -145,6 +144,31 @@ subtest 'to_regexp' => sub {
 
 };
 
+########################################################################
+subtest 'to_loglevel' => sub {
+########################################################################
+
+  my %test_levels = (
+    5     => $LOG4PERL_LOG_LEVELS{trace},
+    foo   => $LOG4PERL_LOG_LEVELS{error},
+    -1    => $LOG4PERL_LOG_LEVELS{error},
+    0     => $LOG4PERL_LOG_LEVELS{error},
+    1     => $LOG4PERL_LOG_LEVELS{warn},
+    2     => $LOG4PERL_LOG_LEVELS{info},
+    3     => $LOG4PERL_LOG_LEVELS{debug},
+    4     => $LOG4PERL_LOG_LEVELS{trace},
+    error => $LOG4PERL_LOG_LEVELS{error},
+    warn  => $LOG4PERL_LOG_LEVELS{warn},
+    info  => $LOG4PERL_LOG_LEVELS{info},
+    debug => $LOG4PERL_LOG_LEVELS{debug},
+    trace => $LOG4PERL_LOG_LEVELS{trace},
+  );
+
+  foreach ( keys %test_levels ) {
+    is( to_loglevel($_), $test_levels{$_}, 'level ' . $_ . ' is ' . to_loglevel($_) );
+  }
+};
+
 1;
 
 __DATA__
@@ -153,4 +177,5 @@ is_array => isa array ref
 is_regexp => isa regexp
 find_in_path => find files in path list
 to_regexp => convert a string to compiled regexp
+to_loglevel => convert verbosity level or string to Log4perl log level
 END_OF_PLAN

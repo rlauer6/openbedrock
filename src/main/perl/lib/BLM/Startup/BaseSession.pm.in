@@ -27,17 +27,17 @@ use warnings;
 
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
+use Bedrock qw(is_hash);
+use Bedrock::XML;
 use Carp;
+use Data::Dumper;
 use Digest::MD5;
-use POSIX qw(strftime);
 use English qw(-no_match_vars);
 use File::Path;
 use File::Temp qw(tempfile);
-use Data::Dumper;
-use List::Util qw(pairs any);
 use JSON;
-
-use Bedrock::XML;
+use List::Util qw(pairs any);
+use POSIX qw(strftime);
 
 # +---------------------------------------------------------------+
 # | ->CONNECT( %options )                                         |
@@ -159,6 +159,37 @@ sub kill_session {
     session => $session,
     config  => $config,
   );
+}
+
+########################################################################
+sub create_session_file {
+########################################################################
+  my ( $self, $filename, $content ) = @_;
+
+  my $session_dir = $self->create_session_dir;
+
+  die "could not create session directory\n"
+    if !$self->create_session_dir;
+
+  my $path = sprintf '%s%s', $session_dir, $filename;
+
+  if ( is_hash($content) || is_array($content) ) {
+    $content
+      = is_hash($content)
+      ? Bedrock::Hash->new( %{$content} )
+      : Bedrock::Array->new( @{$content} );
+
+    $content = JSON->new->encode( $content->devolve );
+  }
+
+  open my $fh, '>', $path
+    or die "could not open $path for writing\n";
+
+  print {$fh} $content;
+
+  close $fh;
+
+  return $path;
 }
 
 ########################################################################
@@ -318,14 +349,16 @@ sub digest {
 ########################################################################
   my $md5 = Digest::MD5->new;
 
-  my @seed = ( time, $ENV{REMOTE_ADDR}, $PID, rand );
+  my @seed = ( time, ( $ENV{REMOTE_ADDR} // q{} ), $PID, rand );
 
   $md5->add( sprintf '%012d:%20s:%08d:%.10f', @seed );
 
   return $md5->hexdigest;
 }
 
+########################################################################
 sub expiry {
+########################################################################
   my ($expires) = @_;
 
   return if !$expires;
@@ -455,7 +488,7 @@ sub deserialize_session {
 
   my $data = eval { return Bedrock::XML->newFromString($raw_session); };
 
-  return
+  return $data
     if $data;
 
   my $errstr = $EVAL_ERROR;
@@ -463,12 +496,12 @@ sub deserialize_session {
   # maybe this is a JSON string?
   $data = eval { return JSON->new->decode($raw_session); };
 
+  return $data
+    if $data;
+
   $errstr .= "\n$EVAL_ERROR";
 
-  die "session data is neither Bedrock XML nor JSON\n$errstr"
-    if !$data;
-
-  return $data;
+  die "session data is neither Bedrock XML nor JSON\n$errstr";
 }
 
 #
@@ -565,13 +598,13 @@ sub FETCH {
     return $self->{$key};
   }
   elsif ( any { $key eq $_ } qw( username firstname lastname email config) ) {
-    return $self->{'data'}->{$key};
+    return $self->{data}->{$key};
   }
-  elsif ( exists $self->{'data'}->{'prefs'}->{$key} ) {
-    return $self->{'data'}->{'prefs'}->{$key};
+  elsif ( exists $self->{data}->{prefs}->{$key} ) {
+    return $self->{data}->{prefs}->{$key};
   }
   else {
-    return $self->{'config'}->{'default_prefs'}->{$key};
+    return $self->{config}->{default_prefs}->{$key};
   }
 }
 
@@ -595,10 +628,10 @@ sub STORE {
     die "Cannot store empty string in `$key'.\n"
       if ( any { $key eq $_ } qw(firstname lastname) ) && !length $value;
 
-    return $self->{'data'}->{$key} = $value;
+    return $self->{data}->{$key} = $value;
   }
   else {
-    return $self->{'data'}->{'prefs'}->{$key} = $value;
+    return $self->{data}->{prefs}->{$key} = $value;
   }
 }
 
@@ -679,7 +712,7 @@ sub CLEAR {
 ########################################################################
   my ($self) = @_;
 
-  return %{ $self->{'data'}->{'prefs'} } = ();
+  return %{ $self->{data}->{prefs} } = ();
 }
 
 ########################################################################
