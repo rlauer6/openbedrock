@@ -95,8 +95,14 @@
       <object name="examples">
         <scalar name="path"><var ($config.DIST_DIR + '/include/examples.md')></scalar>
       </object>
+      <object name="tutorials">
+        <scalar name="path"><var ($config.DIST_DIR + '/include/tutorials.md')></scalar>
+      </object>
       <object name="contributing">
         <scalar name="path"><var ($config.DIST_DIR + '/include/contributing.md')></scalar>
+      </object>
+      <object name="bugs">
+        <scalar name="path"><var ($config.DIST_DIR + '/include/bugs.md')></scalar>
       </object>
     </object>
   </object>

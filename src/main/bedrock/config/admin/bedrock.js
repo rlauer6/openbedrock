@@ -234,7 +234,7 @@ function api_generic_doc(contentName, func) {
 }
 
 // -------------------------------------------------
-function api_plugin_doc(plugin_type, plugin) {
+function api_module_doc(plugin_type, plugin) {
 // -------------------------------------------------
     show_spinner('tags');
 
@@ -287,7 +287,7 @@ function api_plugin_doc(plugin_type, plugin) {
             var bedrock_data = $(this).attr('bedrock-data');
             var module = bedrock_data.split('?');
             
-            api_plugin_doc(module[0]);
+            api_module_doc(module[0]);
         });
 
         show_container('tags');
@@ -374,7 +374,7 @@ function api_plugins() {
         }
 
         $('.ul-link-item').on('click', function() {
-            api_plugin_doc($(this).attr('bedrock-data'), $(this).text());
+            api_module_doc($(this).attr('bedrock-data'), $(this).text());
         });
 
         show_container('plugins');
@@ -417,16 +417,19 @@ function api_modules(module_type) {
         var ul = '';
         modules.forEach((module) => {
             var link = module.replaceAll('::', '/');
-            ul += `<li class="ul-link-item" bedrock-data="${link}">${module}</li>\n`;
+            var href = '#module-' + module_type;
+            ul += `<li class="ul-link-item"><a data-bedrock="${link}" href="${href}">${module}</a></li>\n`;
         });
 
         var html = `<ul>\n${ul}</ul>`;
 
         $('#tags-container').html(html);
-        
-        $('.ul-link-item').on('click', function() {
-            api_plugin_doc($(this).attr('bedrock-data'));
-        });
+
+        show_container('tags');
+
+//        $('.ul-link-item').on('click', function() {
+//            api_module_doc($(this).attr('bedrock-data'));
+//        });
 
         
         return true;
@@ -441,22 +444,6 @@ function api_modules(module_type) {
         bedrock_error(`Error fetching data [${status}]: ${error}`);
         
         return false;
-    });
-}
-
-// -------------------------------------------------
-function fix_encoded_links () {
-// -------------------------------------------------
-    // may not need to do this if we rely on the browser to resolve
-    // internal links
-    $('.bedrock-pod a').each( function(idx, el) {
-
-        // DBD::SQLite anchors contain ':'
-        var ahref = $(el).attr('href'); // anchors appear to now be URL encoded
-        // only need this if we going to implement our own click handler?
-        // ahref = decodeURIComponent(ahref);
-        // ahref = ahref.replaceAll(':', '\\:');
-        $(el).attr('href', ahref);
     });
 }
 
@@ -487,24 +474,6 @@ function enable_internal_links (container) {
     });
 }
 
-var ui_history;
-
-// -------------------------------------------------
-function go_back() {
-// -------------------------------------------------
-    var action = ui_history.shift();
-
-    if ( ui_history.length == 0 ) {
-        $('#back-button').hide();
-    }
-
-    if ( action["type"] == "click" ) {
-        $(action["el"]).trigger("click", [ 'back' ]);
-    }
-
-    return;
-}
-
 // -------------------------------------------------
 function set_container_size () {
 // -------------------------------------------------
@@ -516,15 +485,6 @@ function set_container_size () {
     $('#docs-container').css('height', container_height);
 }
 
-// -------------------------------------------------
-function push_event(event, back) {
-// -------------------------------------------------
-    if ( back ) {
-        return;
-    }
-    
-    ui_history.push(event);
-}
 
 // ------------------------------------------------------------------------
 function show_tag_doc() {
@@ -542,6 +502,91 @@ function show_tag_doc() {
     });
 }
 
+// ------------------------------------------------------------------------
+function loadContent(contentName) {
+// ------------------------------------------------------------------------
+    if ( contentName == 'tags' ) {
+        api_tag_list();
+    } else if ( contentName == 'plugins' ) {
+        api_plugins();
+    } else if ( contentName == 'bedrock-modules' ) {
+        api_modules('bedrock-internal');
+    } else if ( contentName == 'perl-modules' ) {
+        api_modules('system');
+    } else if ( contentName == 'login' ) {
+        show_container('login');
+    } else if ( contentName == 'register' ) {
+        show_container('register')
+    } else {
+        api_generic_doc(contentName, function(html, id) {
+            id = '#docs-container';
+            $(id).html(html);
+            $(id).css('display', 'inline-block');
+
+            var containerSize = $('footer').offset().top - $(id).offset().top;
+            $(id).height(containerSize);
+	    $(id).css('overflow', 'scroll');
+
+            $('#docs-container').scrollTop(0);
+
+            if ( contentName == 'examples' || contentName == 'tutorials' ) {
+                show_tag_doc();
+            }
+
+        });
+    }
+}
+
+// ------------------------------------------------------------------------
+function loadView(section, data) {
+// ------------------------------------------------------------------------
+    const contentDiv = document.getElementById('docs-container');
+
+    var hrefArray = $('.list-group a').map(function () {
+        return $(this).attr('href');
+    }).get();
+
+    var isLeftMenu = hrefArray.find(element => element === '#' + section);
+
+    var dropDown = $('.dropdown-menu a').map(function () {
+        return $(this).attr('href');
+    }).get();
+
+    var navLinks = $('.nav-link').map(function() {
+        return $(this).attr('href');
+    }).get();
+    
+    hrefArray = hrefArray.concat(dropDown, navLinks);
+    
+    hrefArray = hrefArray.filter((link) => link != '#');
+
+    var contentName = hrefArray.find(element => element === '#' + section);
+
+    if ( contentName ) {
+        contentName = contentName.replace('#','');
+        contentDiv.innerHtml = loadContent(contentName);
+    }
+    else if ( data ) {
+        var module_type = section.replace('module-', '');
+        api_module_doc(data);
+    }
+}
+
+// ------------------------------------------------------------------------
+// Function to handle navigation
+// ------------------------------------------------------------------------
+function navigateTo(hash, data) {
+    // Extract section name from the hash (e.g., #home -> home)
+    const section = hash.replace('#', '');
+
+    // Dynamically load content for the section
+    loadView(section, data);
+    
+    // Update the browser's history stack
+    history.pushState({ section: section }, '', hash);
+}
+
+
 // -------------------------------------------------
 $(function () {
 // -------------------------------------------------
@@ -551,9 +596,7 @@ $(function () {
         set_container_size();
     });
 
-    ui_history = [];
-
-    show_container('left-menu');
+    // show_container('left-menu');
     
     // prevent alert from being removed from DOM
     $('#bedrock-error').on('close.bs.alert', function() {
@@ -562,55 +605,23 @@ $(function () {
     });
 
     $('#module-search').on('click', function(e, back) {
-        e.preventDefault();
-        
-        push_event({ "el" : this,
-                          "type" : "search",
-                          "value" : $('#module-name').val()
-                        }, back);
-
-        api_plugin_doc( $('#module-name').val());
+        e.preventDefault();        
+        api_module_doc( $('#module-name').val());
     });
 
     $('#bedrock-logo').on('click', function(e, back) {
-        show_container('left-menu');
-        push_event({ "el" : this, "type" : "click"}, back);
+        history.pushState({ section: section }, '', location.hash);
+        navigateTo('welcome');
     });
-
-    $('.dropdown-menu li a').on('click', function (e, back) { 
-        e.preventDefault();
-
-        if  (back != 'back' ) {
-            ui_history.push({ "el" : this,
-                              "type" : "click"
-                            });
-        }
-
-        var active_item = $(this).text();
-
-        if ( active_item  == 'Plugins' ) {
-            api_plugins();
-        }
-        else if ( active_item == 'Tags' ) {
-            api_tag_list();
-        }
-        else if ( active_item == 'Bedrock Modules') {
-            api_modules('bedrock-internal');
-        }
-        else if ( active_item == 'Installed Perl Modules') {
-            api_modules('system');
-        }
-    });
-
 
     $("#username").attr('tabindex', 100);
     $("#password").attr('tabindex', 101);
 
-    containers.forEach((container) => {
-        $('#' + container + '-link').on('click', function () {
-            show_container(container);
-        });
-    });
+//    containers.forEach((container) => {
+//        $('#' + container + '-link').on('click', function () {
+//            show_container(container);
+//       });
+//    });
 
     var login_containers = [ 'login', 'logout' ];
 
@@ -657,40 +668,49 @@ $(function () {
 
     enable_tooltips();
 
-    $('#back-button').on('click', function() {
-        go_back();
+    // Handle clicks on internal links
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+
+        if (target.tagName === 'A' && target.dataset.bedrock !== undefined) {
+            event.preventDefault(); // Prevent default behavior
+            const hash = target.getAttribute('href'); // Get the hash
+
+            navigateTo(hash, target.dataset.bedrock); // Navigate using the custom handler
+        }
+        else {
+            console.log('not sure where to go from here...');
+        }
     });
-    
+
+    // Handle back/forward navigation
+    window.addEventListener('popstate', (event) => {
+        const hash = location.hash; // Get the current hash
+        const section = hash ? hash.replace('#', '') : 'welcome';
+        loadView(section); // Reload the view
+    });
+
+    // Handle hash changes (when users manually modify the URL or use a bookmark)
+    window.addEventListener('hashchange', () => {
+        const hash = location.hash; // Get the current hash
+        const section = hash.replace('#', '');
+        loadView(section); // Reload the view based on the hash
+    });
+
+    // Handle direct visits and bookmarked links
+    window.addEventListener('DOMContentLoaded', () => {
+        // Get the current hash (or default to #home)
+        const hash = location.hash || '#welcome';
+        const section = hash.replace('#', '');
+        loadView(section); // Load the view dynamically
+    });
+
+    // just update the color of the menu selected
     $('.list-group-item').on('click', function(e, back) {
         var activeLink = $('.list-group-item.active');
         $(activeLink).removeClass('active');
 
-        var activeContent = $(activeLink).attr('bedrock-data');
-        $('#' + activeContent).hide();
-
-        var contentName = $(this).attr('bedrock-data');
-        
         $(this).addClass('active');
-
-        api_generic_doc(contentName, function(html, id) {
-            id = '#docs-container';
-            $(id).html(html);
-            $(id).css('display', 'inline-block');
-
-            var containerSize = $('footer').offset().top - $(id).offset().top;
-            $(id).height(containerSize);
-	    $(id).css('overflow', 'scroll');
-
-            $('#docs-container').scrollTop(0);
-
-            if ( contentName == 'examples') {
-                show_tag_doc();
-            }
-
-        });
-
-        push_event({ "el" : this, "type" : "click"}, back);
     });
 
-    $('.list-group-item').first().trigger('click');
 });

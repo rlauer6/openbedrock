@@ -32,27 +32,27 @@
                 Documentation
               </a>
               <ul class="dropdown-menu">
-                <li><a class="dropdown-item" id="tag-link" href="#">Tags</a></li>
-                <li><a class="dropdown-item" href="#">Plugins</a></li>
+                <li><a class="dropdown-item" href="#tags" data-bedrock="tags">Tags</a></li>
+                <li><a class="dropdown-item" href="#plugins" data-bedrock="plugins">Plugins</a></li>
                 <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" href="#">Bedrock Modules</a></li>
-                <li><a class="dropdown-item" href="#">Installed Perl Modules</a></li>
+                <li><a class="dropdown-item" href="#bedrock-modules" data-bedrock="bedrock-modules">Bedrock Modules</a></li>
+                <li><a class="dropdown-item" href="#perl-modules" data-bedrock="perl-modules">Installed Perl Modules</a></li>
               </ul>
             </li>
             <li class="nav-item">
-              <a href="#" class="nav-link <if $config.ALLOW_BEDROCK_ENV_INFO --eq 'no'>disabled aria-disabled=\"true\"</if>">Environment</a>
+              <a href="#environment" data-bedrock="environment" class="nav-link <if $config.ALLOW_BEDROCK_ENV_INFO --eq 'no'>disabled aria-disabled=\"true\"</if>">Environment</a>
             </li>
             <li class="nav-item">
-              <a href="#" class="nav-link <if $config.ALLOW_BEDROCK_CONFIG_INFO --eq 'no'>disabled aria-disabled=\"true\"</if>">Configuration</a>
+              <a href="#configuration" data-bedrock="configuration" class="nav-link <if $config.ALLOW_BEDROCK_CONFIG_INFO --eq 'no'>disabled aria-disabled=\"true\"</if>">Configuration</a>
             </li>
             <li class="nav-item">
-              <a href="#" id="login-link" class="nav-link"><iif $session.username Logout Login></a>
+              <a href="#login" id="login-link" class="nav-link" data-bedrock="login"><iif $session.username Logout Login></a>
             </li>
             <li class="nav-item">
-              <a href="#" id="register-link" class="nav-link">Register</a>
+              <a href="#register" id="register-link" class="nav-link" data-bedrock="register">Register</a>
             </li>
             <li class="nav-item">
-              <a href="#" id="session-link" class="nav-link">Session</a>
+              <a href="#session" id="session-link" class="nav-link" data-bedrock="session">Session</a>
             </li>
           </ul>
           <form class="d-flex">
@@ -64,59 +64,38 @@
       </div>
     </nav>
 
-    <div id="top-container">
+    <div id="bedrock-error" role="alert">
+      <span id="bedrock-error-message"></span>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
 
-      <div id="bedrock-error" role="alert">
-        <span id="bedrock-error-message"></span>
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-      </div>
-
-      <div id="abs-top"></div>
-      <span id="top-button">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-up-circle-fill" viewBox="0 0 16 16">
-          <path d="M16 8A8 8 0 1 0 0 8a8 8 0 0 0 16 0m-7.5 3.5a.5.5 0 0 1-1 0V5.707L5.354 7.854a.5.5 0 1 1-.708-.708l3-3a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 5.707z"/>
-        </svg>
-      </span>
-      <span id="back-button">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-arrow-left-circle-fill" viewBox="0 0 16 16">
-          <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0m3.5 7.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5z"/>
-        </svg>
-      </span>
-
-      <div id="left-menu-container">
-        <div class="row">
-          <div class="col-auto">
-            <div class="list-group">
-              <a href="#" class="list-group-item list-group-item-action active" bedrock-data="welcome">Welcome</a>
-              <a href="#" class="list-group-item list-group-item-action" bedrock-data="examples">Examples</a>
-              <a href="#" class="list-group-item list-group-item-action" bedrock-data="bedrock-shell">Bedrock Shell</a>
-              <a href="#" class="list-group-item list-group-item-action" bedrock-data="contributing">Contributing</a>
-              <a href="#" class="list-group-item list-group-item-action" bedrock-data="bugs">Reporting Bugs</a>
-            </div>
-          </div>
-          <div id='right-content' class="col" >
-            <div id="docs-container" class="side-menu-item bedrock-pod" ></div>
-            <div id="tags-container" class="bedrock-pod"></div>
-            <div id="session-container"></div>
-            <div class="container" id="login-container">
-              <include "login-container" />
-            </div>
-            <div class="container" id="register-container">
-              <include "register-container"/>
-            </div>
-            
-            <div id="plugins-container">
-              <include "plugins-container" />
-            </div>
+    <div id="abs-top"></div>
+    <div id="body-container" class="container">
+      <div class="row">
+        <div class="col-auto">
+          <div class="list-group">
+            <a href="#welcome" class="list-group-item list-group-item-action active" data-bedrock="welcome">Welcome</a>
+            <a href="#examples" class="list-group-item list-group-item-action" bedrock-data="examples">Examples</a>
+            <a href="#tutorials" class="list-group-item list-group-item-action" bedrock-data="tutorials">Tutorials</a>
+            <a href="#bedrock-shell" class="list-group-item list-group-item-action" bedrock-data="bedrock-shell">Bedrock Shell</a>
+            <a href="#contributing" class="list-group-item list-group-item-action" bedrock-data="contributing">Contributing</a>
+            <a href="#bugs" class="list-group-item list-group-item-action" bedrock-data="bugs">Reporting Bugs</a>
           </div>
         </div>
+
+        <div class="col">
+          <div id="register-container" class="container"><include "register-container"/></div>
+          <div id="docs-container" class="container side-menu-item bedrock-pod" ></div>
+          <div id="tags-container" class="container bedrock-pod"></div>
+          <div class="container" id="session-container"></div>
+          <div class="container" id="login-container"><include "login-container" /></div>
+          <div class="container" id="plugins-container"><include "plugins-container" /></div>
+        </div>
       </div>
-
-
-      
-      <footer class="fixed-bottom p-3 bg-dark-subtle">
-        <span class="text-muted">Bedrock Version <var $bedrock.version()></span>
-      </footer>
     </div>
+    
+    <footer class="fixed-bottom p-3 bg-dark-subtle">
+      <span class="text-muted">Bedrock Version <var $bedrock.version()></span>
+    </footer>
   </body>
 </html>

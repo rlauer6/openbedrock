@@ -1,3 +1,4 @@
+package Apache::Request::Shell;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
@@ -19,13 +20,11 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package Apache::Request::Shell;
-
 use strict;
 use warnings;
 
 use AppConfig qw(ARGCOUNT_NONE ARGCOUNT_ONE);
-use Bedrock qw(slurp_file);
+use Bedrock qw(slurp_file to_loglevel);
 use Bedrock::Constants qw(:chars :booleans :defaults :log_levels);
 use Bedrock::Context qw(init_log4perl_logger find_log4perl_conf);
 use Bedrock::VERSION qw( $ID $BUILD_DATE $RELEASE);
@@ -41,6 +40,11 @@ use Time::HiRes;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+
+use Readonly;
+
+Readonly::Scalar our $DEFAULT_LOG_FILE  => '/tmp/bedrock.log';
+Readonly::Scalar our $DEFAULT_LOG_LEVEL => 'warn';
 
 ########################################################################
 sub new {
@@ -67,17 +71,19 @@ sub new {
   die "Unable to open input file `$self->{input}'\n"
     if !-f $self->{input};
 
+  my $options = $self->{options};
+
   ## no critic (RequireLocalizedPunctuationVars)
   $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
-  $ENV{CONFIG_PATH}         //= $self->{options}->{config};
+  $ENV{CONFIG_PATH}         //= $options->{config};
 
   $ENV{DOCUMENT_ROOT} = abs_path( $ENV{DOCUMENT_ROOT} // getcwd );
 
   @ARGV = @{ $self->{argv} };
 
   # redirect STDOUT
-  if ( defined $self->{options}->{outfile} ) {
-    my $file = $self->{options}->{outfile};
+  if ( defined $options->{outfile} ) {
+    my $file = $options->{outfile};
 
     open STDOUT, '>', $file
       or die "could not open [$file] for output";
@@ -94,8 +100,10 @@ sub get_options {
 ########################################################################
   my ($self) = @_;
 
-  $self->{options} = {};
   my %options;
+
+  $self->{options} = \%options;
+
   my $result = eval {
     return GetOptions(
       \%options,
@@ -156,10 +164,10 @@ sub get_options {
     my $tags = $Bedrock::Constants::OPENTAG_EXPR;
 
     foreach my $t ( @{ $options{'disable-tag'} } ) {
-      $tags =~ s/$t\|?//xsm;
+      $tags =~ s/$t[|]?//xsm;
     }
 
-    $Bedrock::Constants::OPENTAG_EXPR = $tags;
+    $self->{OPENTAG_EXPR} = $tags;
   }
 
   $self->{options} = \%options;
@@ -172,17 +180,20 @@ sub add_env_vars {
 ########################################################################
   my ($file) = @_;
 
+  local $RS = undef;
+
   open my $fh, '<', $file
     or die "could not open $file";
 
-  while ( my $line = <$fh> ) {
-    next if $line =~ /^[#]/xsm;
-    my ( $k, $v ) = split /\s*=\s*/xsm, $line;
+  my @lines = split /\n/xsm, <$fh>;
+
+  close $fh;
+
+  foreach ( grep { !/^[#]/xsm } @lines ) {
+    my ( $k, $v ) = split /\s*=\s*/xsm;
     chomp $v;
     $ENV{$k} = $v;
   }
-
-  close $fh;
 
   return;
 }
@@ -192,11 +203,14 @@ sub read_input {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self->{input} ) {
+  my $input   = $self->{input};
+  my $options = $self->{options};
 
-    if ( $self->{input} !~ /^\//xsm ) {
-      $self->{input}        = sprintf '%s/%s', getcwd, $self->{input};
-      $ENV{PATH_TRANSLATED} = $self->{input};
+  if ($input) {
+
+    if ( $input !~ /^\//xsm ) {
+      $input = sprintf '%s/%s', getcwd, $input;
+      $ENV{PATH_TRANSLATED} = $input;
     }
 
     # cat foo | bedrock joe.roc
@@ -213,12 +227,12 @@ sub read_input {
     my $fh = File::Temp->new(
       TEMPLATE => 'bedrock-shell-XXXXX',
       SUFFIX   => '.roc',
-      DIR      => $self->{options}->{tempdir},
-      UNLINK   => $self->{options}->{cleanup}
+      DIR      => $options->{tempdir},
+      UNLINK   => $options->{cleanup}
     );
 
     $self->{_tempfile} = $fh->filename;
-    $self->{input}     = $fh->filename;
+    $input = $fh->filename;
 
     $self->get_logger->debug( Dumper( [$self] ) );
 
@@ -252,10 +266,9 @@ sub init_database_config {
   if ( $db && exists $self->{config} ) {
 
     my ( $dsn, $username, $password )
-      = map { $self->{config}->{ $db . "_$_" } } qw{db username password};
+      = map { $self->{config}->get( $db . "_$_" ) } qw(db username password);
 
-    ## no critic (RequireLocalizedPunctuationVars)
-    @ENV{qw{DBI_DSN DBI_USER DBI_PASS}} = ( $dsn, $username, $password );
+    @ENV{qw(DBI_DSN DBI_USER DBI_PASS)} = ( $dsn, $username, $password );
   }
 
   return $self;
@@ -286,7 +299,7 @@ sub read_resource_file {
   $self->{options}->{rc} = $rc_file // $EMPTY;
 
   if ($rc_file) {
-    $self->{config} = AppConfig->new(
+    my $app_config = AppConfig->new(
       { CASE   => $TRUE,
         CREATE => $TRUE,
         ERROR  => sub { },
@@ -294,15 +307,17 @@ sub read_resource_file {
       },
     );
 
-    $self->{config}->define( 'cleanup' => { ARGCOUNT => ARGCOUNT_NONE } );
+    $self->{config} = $app_config;
 
-    $self->{config}->file($rc_file);
+    $app_config->define( 'cleanup' => { ARGCOUNT => ARGCOUNT_NONE } );
 
-    my %varlist = $self->{config}->varlist($DOT);
+    $app_config->file($rc_file);
+
+    my %varlist = $app_config->varlist($DOT);
 
     # command line overrides the value in resource file for these options
     if ( exists $varlist{config} && !$self->{options}->{config} ) {
-      my $config_path = $self->{config}->config();
+      my $config_path = $app_config->config();
 
       if ( $config_path && -d $config_path ) {
         $self->{options}->{config} = abs_path($config_path);
@@ -310,23 +325,23 @@ sub read_resource_file {
     }
 
     if ( exists $varlist{logfile} && !$self->{options}->{logfile} ) {
-      $self->{options}->{logfile} = $self->{config}->logfile();
+      $self->{options}->{logfile} = $app_config->logfile();
     }
 
     if ( exists $varlist{loglevel} && !$self->{options}->{loglevel} ) {
-      $self->{options}->{loglevel} = $self->{config}->loglevel();
+      $self->{options}->{loglevel} = $app_config->loglevel();
     }
 
     if ( exists $varlist{tempdir} && !$self->{options}->{tempdir} ) {
-      $self->{options}->{tempdir} = $self->{config}->tempdir();
+      $self->{options}->{tempdir} = $app_config->tempdir();
     }
 
     if ( exists $varlist{cleanup} && !$self->{options}->{cleanup} ) {
-      $self->{options}->{cleanup} = $self->{config}->cleanup();
+      $self->{options}->{cleanup} = $app_config->cleanup();
     }
 
     if ( exists $varlist{db} && !$self->{options}->{db} ) {
-      $self->{options}->{db} = $self->{config}->db();
+      $self->{options}->{db} = $app_config->db();
     }
   }
 
@@ -339,11 +354,12 @@ sub init_options {
   my ($self) = @_;
 
   $self->read_resource_file;
+  my $options = $self->{options};
 
   my %defaults = (
     tempdir  => $DOT,
-    loglevel => 'warn',
-    logfile  => '/tmp/bedrock.log',
+    loglevel => $DEFAULT_LOG_LEVEL,
+    logfile  => $DEFAULT_LOG_FILE,
     cleanup  => $FALSE,
     tempdir  => $DOT,
     config   => $ENV{CONFIG_PATH} ? abs_path( $ENV{CONFIG_PATH} ) : $EMPTY,
@@ -351,14 +367,14 @@ sub init_options {
 
   # set default values
   foreach ( keys %defaults ) {
-    next if exists $self->{options}->{$_};
+    next if exists $options->{$_};
 
-    $self->{options}->{$_} = $defaults{$_};
+    $options->{$_} = $defaults{$_};
   }
 
   # directly specify input file
-  if ( defined $self->{options}->{infile} ) {
-    $self->{input} = $self->{options}->{infile};
+  if ( defined $options->{infile} ) {
+    $self->{input} = $options->{infile};
   }
 
   return $self;
@@ -405,7 +421,13 @@ sub init_logger {
   my ($self) = @_;
 
   # set loglevel
-  my $logfile = $self->{options}->{logfile} // '/tmp/bedrock.log';
+  my $options = $self->{options};
+
+  my $logfile = $options->{logfile};
+
+  if ($logfile) {
+    $logfile = $DEFAULT_LOG_FILE;
+  }
 
   my $log4perl_conf = find_log4perl_conf();
 
@@ -416,12 +438,12 @@ sub init_logger {
 
   init_log4perl_logger( \$log4perl_conf_text );
 
-  my $log_level_str = $self->{options}->{loglevel} // 'error';
+  my $log_level_str = $options->{loglevel} // 'error';
 
-  my $log_level = $LOG4PERL_LOG_LEVELS{ lc $log_level_str };
+  my $log_level = to_loglevel($log_level_str);
   $self->get_logger->level($log_level);
 
-  $self->get_logger->info('Logging initialized...');
+  $self->get_logger->info( sprintf 'Logging initialized at "%s: level...', $log_level_str );
 
   return $self->get_logger;
 }
