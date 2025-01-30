@@ -281,8 +281,6 @@ function api_module_doc(plugin_type, plugin) {
 
         $('#tags-container').html(html);
 
-        fix_encoded_links();
-
         $('.pod-link').on('click', function() {
             var bedrock_data = $(this).attr('bedrock-data');
             var module = bedrock_data.split('?');

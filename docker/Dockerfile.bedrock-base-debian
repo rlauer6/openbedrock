@@ -1,0 +1,53 @@
+FROM debian:bookworm AS httpd-mod-perl-debian
+
+# ----------------------------------------------------
+# ...got the MySQL repo setting by installing the deb
+#    fround here:
+#
+#    https://dev.mysql.com/downloads/repo/apt/
+#
+#  The deb in an interactive install, but then cp'd 
+#  the installed files to this directory
+# ----------------------------------------------------
+COPY mysql-apt-config.gpg /usr/share/keyrings/mysql-apt-config.gpg
+COPY mysql.list /etc/apt/sources.list.d/
+COPY bookworm-backports.list /etc/apt/sources.list.d/
+RUN apt-get update
+
+RUN apt-get install -y \
+    less vim curl git automake less gcc gnupg libzip-dev \
+    apache2 apache2-dev libpcre3 libapr1-dev libaprutil1-dev \
+    libmysqlclient-dev libssl-dev libperl-dev perl-doc
+
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+RUN cpanm -n ExtUtils::XSBuilder::ParseSource
+
+RUN curl -LO https://archive.apache.org/dist/perl/mod_perl-2.0.13.tar.gz && \
+   tar xvzf mod_perl-2.0.13.tar.gz && \
+   cd mod_perl-2.0.13 && \
+   perl Makefile.PL  && \
+   make && make install
+
+RUN curl -LO https://archive.apache.org/dist/httpd/libapreq/libapreq2-2.17.tar.gz && \
+    tar xfvz libapreq2-2.17.tar.gz && \
+    cd libapreq2-2.17 && \
+    perl Makefile.PL --disabe-static && \
+    make && make install
+
+RUN rm -rf mod_perl-2.0.13*
+RUN rm -rf libapreq2-2.17*
+RUN apt-get autoremove -yq && rm -rf /var/lib/apt/lists/*
+
+FROM httpd-mod-perl-debian AS bedrock-base-debian
+
+RUN cpanm -n -v DBD::mysql
+
+COPY requires requires
+COPY test-requires test-requires
+
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v": ""; printf q{%s%s}, "\n", $m, $v;' requires); do \
+      cpanm -n -v $a; \
+    done
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v" : ""; printf q{%s%s},"\n", $m, $v;' test-requires); do \
+      cpanm -n -v $a; \
+    done

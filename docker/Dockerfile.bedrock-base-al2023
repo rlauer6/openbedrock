@@ -1,0 +1,55 @@
+FROM amazonlinux:latest AS bedrock-base-al2023
+
+# --------------
+# Utilities, etc
+# --------------
+RUN dnf install -y --allowerasing perl-core less tree gcc procps curl make automake iputils vim-minimal
+
+# -----
+# cpanm
+# -----
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+
+# ------
+# Apache
+# ------
+RUN dnf install -y \
+    httpd mod_perl mod_perl-devel \
+    apr apr-devel apr-util-devel apr-util \
+    expat-devel
+
+# ----------------
+# Apache2::Request
+# ----------------
+# We manually install this because the Perl based
+# installation ends up putting the .so files in /usr/lib, not
+# /usr/lib64 and there doesn't seem to be a way to for that with
+# Makefile.PL
+RUN cpanm -n -v ExtUtils::XSBuilder::ParseSource
+RUN curl -O https://dlcdn.apache.org//httpd/libapreq/libapreq2-2.17.tar.gz
+RUN tar xfvz libapreq2-2.17.tar.gz
+RUN cd libapreq2-2.17 && \
+    ./configure --prefix=/usr --libdir=/usr/lib64 --enable-perl-glue && \
+    make && make install
+
+# ----------
+# DBD::mysql
+# ----------
+RUN curl -L  https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm  -O
+RUN dnf install -y mysql80-community-release-el9-1.noarch.rpm 
+RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+RUN dnf install mysql-community-client mysql-community-devel -y
+RUN cpanm -n -v DBD::mysql
+
+# -----------------
+# Perl dependencies
+# -----------------
+COPY requires requires
+COPY test-requires test-requires
+
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v": ""; printf q{%s%s}, "\n", $m, $v;' requires); do \
+      cpanm -n -v $a; \
+    done
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v" : ""; printf q{%s%s},"\n", $m, $v;' test-requires); do \
+      cpanm -n -v $a; \
+    done

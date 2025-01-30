@@ -1,7 +1,31 @@
- | Dockerfile.al2023 | Amazon Linux 2023 |
+# README
 
-Each of these Dockerfiles will create a base image that includes the
-latest verison of Bedrock built specifically for that distribution.
+This the README file for describing how to create Docker images
+and run a Bedrock enabled Apache server inside a Docker container.
+
+# Overview
+
+This directory contains Docker build and supporting files for building
+Docker images based on several distributions described below.
+
+| Distribution | Dockerfile | Description |
+| ------------ | ---------- | ----------- |
+| Debian | Dockerfile.bedrock-base-debian | Debian distribution (`bookworm`) - base image |
+| Debian | Dockerfile.debian | Debian distribution (`bookworm`) |
+| Fedora | Dockerfile.bedrock-base-fedora | Fedora distribution (40) - base image |
+| Fedora | Dockerfile.fedora | Fedora distribution (40) |
+| Amazon Linux | Dockerfile.al2023 | Amazon Linux 2023 |
+
+Each of these Dockerfiles will create a Docker image that includes the
+latest verison of Bedrock built specifically for that distribution. To
+speed development of Bedrock itself, base images are created for
+Debian and Fedora that contain the Apache server (mod_perl enabled)
+and the current list of Perl module dependencies.  It can take a
+relatively long time to build all of the dependencies. By creating a
+base image that contains all of the dependencies minus Bedrock itself
+it becomes easier to make changes to Bedrock and test the results.
+
+# CI for Bedrock
 
 See [README-github.md](docker/README-github.md) for details regarding
 how to create the Docker image used for continuous integration when
@@ -74,16 +98,19 @@ regarding how to enable the documentation server.
 # Bedrock Enabled Apache Website
 
 After all of the dependencies have been installed during the make
-process, the last step to complete the image is to install Bedrock and
-the Apache web site. This is done when `cpanm` is run followed by
-`bedrock-site-install`.
+process, the last step to create the complete the image that will be
+used by our `docker-compose.yml` configuration is to install Bedrock and
+the Apache web site. This is done by building the image by using
+either the `Dockerfile.debian` or `Dockerfile.fedora`
+Dockefiles. Essentially these Dockerfiles will just add Bedrock to the
+image and then run `bedrock-site-install` which creates a Bedrock
+enabled Apache environment.
 
 ```
 cpanm -n -v Bedrock.tar.gz
 bedrock-site-install --distro=redhat
 ```
 
-TBD: bedrock-site-install help
 The install script will use the environment file for the version of
 Apache (default 2.4) and the distribution (redhat or debian) chosen to
 configure the installation process using the Bedrock `site-config.inc`
@@ -107,7 +134,7 @@ file.
 > directory and install Bedrock using `cpanm`. If necessary run the
 > site installation script (`bedrock-site-install`). If new
 > dependencies are added you'll need to add those before restarting
-> the web server (`kill -HUP 1`).
+> the web server (`kill -USR1 1`).
 
 Using the distribution environment file (e.g. `apache24-env-debian`)
 and the site configuration (`site-config.inc`), the installation
@@ -123,7 +150,7 @@ changes to this file while running your container, be sure to test
 your configuration before restarting the server.
 
 ```
-httpd -t -f /etc/httpd/conf/http.conf && kill -HUP 1
+httpd -t -f /etc/httpd/conf/http.conf && kill -USR1 1
 ```
 
 > Warning: If you do not test the configuration first and an error
@@ -149,7 +176,7 @@ running inside the container environment.
 ## Bedrock Documentation
 
 The Bedrock documentation page (`/bedrock`) is protected by a Basic
-Auth challenge (username: fred, password: bedrock). The page is
+Auth challenge (username: `fred`, password: `bedrock`). The page is
 protected by default because it might expose configuration information
 if you enabled that in your `tagx.xml` file.
 

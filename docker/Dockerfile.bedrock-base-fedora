@@ -1,0 +1,52 @@
+FROM fedora:latest as httpd-mod-perl-fedora
+
+RUN yum install -y httpd httpd-devel apr apr-util perl-core less gcc make
+RUN yum install -y curl --allowerasing
+
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+RUN cpanm -n -v Apache::Test ExtUtils::XSBuilder
+RUN cpanm -n -v Module::CoreList
+
+RUN curl -LO https://archive.apache.org/dist/perl/mod_perl-2.0.13.tar.gz && \
+   tar xvzf mod_perl-2.0.13.tar.gz && \
+   cd mod_perl-2.0.13 && \
+   perl Makefile.PL  && \
+   make && make install
+
+RUN rm -rf /mod_perl-2.0.13*
+RUN yum clean all && \
+    rm -rf /var/cache/yum
+
+RUN curl -O https://dlcdn.apache.org//httpd/libapreq/libapreq2-2.17.tar.gz
+RUN tar xfvz libapreq2-2.17.tar.gz
+RUN cd /libapreq2-2.17 &&  \
+    ./configure --with-apache2-apxs=/usr/bin/apxs  && \
+    make && make install
+RUN cd /libapreq2-2.17 && \
+    perl Makefile.PL --with-apache2-apxs=/usr/bin/apxs && \
+    make && make install
+
+RUN rm -rf /libapreq2-2.17 && \
+     yum clean all &&  \
+     rm -rf /var/cache/yum
+
+FROM httpd-mod-perl-fedora AS bedrock-base-fedora
+
+RUN curl -L  https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm  -O
+RUN dnf install -y mysql80-community-release-el9-1.noarch.rpm
+RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+RUN dnf install mysql-community-client mysql-community-devel -y
+RUN cpanm -n -v DBD::mysql
+RUN cpanm -n -v Crypt::CBC
+RUN ccflags=$(perl -MConfig -e 'print qq{$Config{ccflags} -Wno-implicit-function-declaration};'); \
+    cpanm -n -v --configure-args="ccflags='$ccflags'" Crypt::DES
+
+COPY requires requires
+COPY test-requires test-requires
+
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v": ""; printf q{%s%s}, "\n", $m, $v;' requires); do \
+      cpanm -n -v $a; \
+    done
+RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v" : ""; printf q{%s%s},"\n", $m, $v;' test-requires); do \
+      cpanm -n -v $a; \
+    done
