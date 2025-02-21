@@ -204,11 +204,15 @@ Alias /session <var $site.BEDROCK_SESSION_DIR>
   </IfModule>
 
   <IfModule !mod_perl.c>
+    # You apparently wanted to use mod_perl but it is not enabled!
     SetHandler bedrock-session-files
   </IfModule>
   <else>
+    # Looks like you have deliberately disabled mod_perl via APACHE_MOD_PERL="<var $site.APACHE_MOD_PERL>"
     SetHandler bedrock-session-files
   </if>
 
 </Directory>
+<else>
+# BedrockSessionFiles has been disabled BEDROCK_SESSIONS_ENABLED="<var $site.BEDROCK_SESSIONS_ENABLED>"
 </if>

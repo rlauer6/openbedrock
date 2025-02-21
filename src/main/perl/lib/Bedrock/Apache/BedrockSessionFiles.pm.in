@@ -25,6 +25,10 @@ use warnings;
 use Role::Tiny::With;
 with 'Bedrock::Apache::HandlerUtils';
 
+use APR::Finfo ();
+use APR::Const -compile => qw(FINFO_NORM);
+
+use Bedrock::Constants qw(:booleans);
 use Bedrock::Apache::Constants qw(:all);
 use English qw(-no_match_vars);
 use List::Util qw(pairs);
@@ -32,6 +36,80 @@ use List::Util qw(pairs);
 use Readonly;
 
 Readonly our $BUFFER_SIZE => 4 * 1024;
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+########################################################################
+sub handler {
+########################################################################
+  my ($r) = @_;
+
+  $r->log->info('BedrockSessionFiles started...');
+
+  my $method = $r->method();
+
+  return $HTTP_BAD_REQUEST
+    if $method !~ /^(?:GET|HEAD)$/xsm;
+
+  my $uri = $r->uri();
+
+  # prevent access of files...without this anyone with the session
+  # cookie value could potentially read the files in the session directory
+  my @parts = grep {/./xsm} split /\//xsm, $uri;
+
+  return $HTTP_BAD_REQUEST
+    if @parts != 2;
+
+  my $verify_file = $ENV{BEDROCK_SESSION_FILES_VERIFY_FILE};
+  my $verify_user = $ENV{BEDROCK_SESSION_FILES_VERIFY_USERS};
+
+  my $file_info = eval { return get_session_file_info( $r, $verify_file, $verify_user ); };
+
+  return set_error_status( $r, $EVAL_ERROR )
+    if !$file_info || $EVAL_ERROR;
+
+  my $session = $file_info->{session};
+
+  my $timeout = $session->config->{session_files}->{ttl} // $ENV{BEDROCK_SESSION_FILES_TTL};
+
+  my $filename = $file_info->{filename};
+
+  if ($timeout) {
+    my $mtime    = $file_info->{mtime};
+    my $file_age = time - $mtime;
+
+    if ( $file_age > $timeout ) {
+      unlink $filename;
+
+      return $NOT_FOUND;
+    }
+  }
+
+  if ( is_mod_perl() ) {
+
+    $r->filename($filename);
+
+    # update Apache's metadata
+    $r->finfo( APR::Finfo::stat( $filename, APR::Const::FINFO_NORM, $r->pool ) );
+
+    $r->handler('default-handler');
+    $r->set_handlers( PerlResponseHandler => [] );
+
+    return Apache2::Const::OK;
+  }
+
+  return head( $r, $filename )
+    if $method eq 'HEAD';
+
+  my $ranges = $r->headers_in->{'Range'};
+
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+
+  return send_file( $r, $filename )
+    if !$ranges;
+
+  return send_file_with_ranges( $r, $filename, $ranges );
+}
 
 ########################################################################
 sub send_file_with_ranges {
@@ -48,12 +126,19 @@ sub send_file_with_ranges {
   # print other header info
   my $boundary = 'multipart-boundary';
 
-  $r->headers_out( 'Accept-ranges' => 'bytes' );
-  $r->headers_out( 'Content-type'  => "multipart/x-byteranges; boundary=$boundary" );
+  if ( $r =~ /Apache2/xsm ) {
+    $r->headers_out->add( 'Accept-ranges' => 'bytes' );
+    $r->headers_out->add( 'Content-type'  => "multipart/x-byteranges; boundary=$boundary" );
+  }
+  else {
+    $r->headers_out( 'Accept-ranges' => 'bytes' );
+    $r->headers_out( 'Content-type'  => "multipart/x-byteranges; boundary=$boundary" );
+  }
 
   $r->send_http_header();
 
-  open my $fh, '<', $file;
+  open my $fh, '<', $file
+    or die "could not open $file for reading\n";
 
   send_ranges(
     $r,
@@ -183,49 +268,6 @@ sub head {
   return $OK;
 }
 
-########################################################################
-sub handler {
-########################################################################
-  my ($r) = @_;
-
-  my $method = $r->method();
-
-  return $HTTP_BAD_REQUEST
-    if ( $method ne 'GET' ) && ( $method ne 'HEAD' );
-
-  my $file_info = eval { return get_session_file_info($r); };
-
-  if ( !$file_info || $EVAL_ERROR ) {
-    return set_error_status( $r, $EVAL_ERROR );
-  }
-
-  my $filename = $file_info->{filename};
-
-  # if this is mod_perl we should be running in the PerlFixupHandler
-  # phase. Setting the filename here just redirects Apache to serve up
-  # a file from the file system. In this case from the user's validate
-  # session directory. IOW, all we are doing is really resolving the
-  # real location of the file.
-
-  if ( is_mod_perl() ) {
-    $r->filename( $file_info->{filename} );
-
-    return $OK;
-  }
-
-  return head( $r, $filename )
-    if $method eq 'HEAD';
-
-  my $ranges = $r->headers_in->{'Range'};
-
-  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
-
-  return send_file( $r, $filename )
-    if !$ranges;
-
-  return send_file_with_ranges( $r, $filename, $ranges );
-}
-
 1;
 
 __END__
@@ -281,7 +323,14 @@ expires.  Session directories are removed after the sessions have expired.>
 
 =head2 Setting Up the Apache Handler
 
-Setup the handler in your Apache configuration file as shown below:
+If you want to use the CGI version instead of the C<mod_perl> version
+of the handler, copy the CGI handler to your F</cgi-bin>
+directory. F<bedrock-session-files.cgi> is distributed as part of
+Bedrock and can be found at
+F</usr/lib/bedrock/cgi-bin/bedrock-session-files.cgi>.
+
+Setup the handler in your Apache configuration file as shown below
+when C<mod_perl> is not being used:
 
   Action bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
 
@@ -291,26 +340,90 @@ Setup the handler in your Apache configuration file as shown below:
     AcceptPathInfo On
     Options -Indexes
   
-    <IfModule mod_perl.c>
-      SetHandler perl-script
-      PerlFixupHandler Apache::BedrockSessionFiles
-    </IfModule>
-  
-    <IfModule !mod_perl.c>
-      SetHandler bedrock-session-files
-    </IfModule>
+    SetHandler bedrock-session-files
   
   </Directory>
 
-If you want to use the CGI version instead of the C<mod_perl> version
-of the handler, copy the CGI handler to your F</cgi-bin>
-directory. F<bedrock-session-files.cgi> is distributed as part of
-Bedrock and can be found at
-F<@libdir@/bedrock/cgi-bin/bedrock-session-files.cgi>.
+To use the C<mod_perl> version of the session file handler we invoke
+our handler during the C<PerlFixupHandler> phase. This is one the
+phases that will allow us to successfully remap the filename and let
+Apache serve the file normally. We do this in this phase to take
+advantage of Apache's C<mod_mime> which will send the correct header
+based on the file contents as well as any other functionality Apache
+might provide when serving files.
+
+We could of course, implement a response handler that would determine
+the mime type, send the correct header, read the file from syste and
+send the file to the client. But Apache can do all of that better.
+
+We also use this phase to isolate the handler's scope at the directory
+level. It is possible to use an earlier phase
+(C<PerlMaptToStorageHandler>) but doing so would require we install
+the handler at the server level.
+
+=head2 Security Considerations
+
+Using a session directory opens up the possibility of access by an
+actor that is able to hijack your session. To reduce the window of
+opportunity for illegal access there are a few things you can do.
+
+=over 5
+
+=item * Set a low TTL for session files.
+
+In your configuration for C<BLM::Startup::UserSession> set a value for
+C<ttl> in the C<session_files> section of the configuration.
+
+ <object name="session_files">
+   <scalar name="ttl">60</scalar>
+ </object>
+
+...or set the environment variable C<BEDROCK_SESSION_FILES_TTL> in the Apache configuration.
+
+ PerlSetEnv BEDROCK_SESSION_FILES_TTL 60
+
+Any access of the file after the timeout will result in a 404 error.
+
+=item * Disable caching
+
+Configure the session directory so that caching is disabled.
+
+ <Directory /var/www/bedrock/session>
+     <IfModule mod_headers.c>
+         Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+         Header set Pragma "no-cache"
+         Header set Expires "0"
+     </IfModule>
+ </Directory>
+
+=item * Avoid placing sensitive data in the session directory
+
+=back
+
+=head2 Anonymous Sessions
+
+The module was designed to serve files from a logged in user's session
+directory. The idea being that only the user that belongs to that
+session can view the file.  Accordingly, the class will validate the
+session via the cookie and then see if the session contains a
+c<username> element.  If it does not, then the user has been logged
+out and the handler will abort with a 401.
+
+There are use cases however for serving files from an anonymous user's
+session. If you want to allow this capability you can add
+C<verify_user> to the C<session_files> section of the
+C<BLM::Startup::UserSession> configuration with a value of 0. This
+will disable the check for a logged in user.
+
+You can also set the environment variable
+BEDROCK_SESSION_FILES_VERIFY_USER ot a true value in Apache's
+configuration.
+
+ PerlSetEnv BEDROCK_SESSION_FILES_VERIFY_USER 1
 
 =head1 SEE ALSO
 
-C<Bedrock::Handler>, C<Bedrock::Apache::Request::CGI>
+L<Bedrock::Handler>, L<Bedrock::Apache::Request::CGI>
 
 =head1 AUTHOR
 

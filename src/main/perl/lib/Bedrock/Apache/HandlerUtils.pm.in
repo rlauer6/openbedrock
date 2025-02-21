@@ -53,7 +53,7 @@ sub get_cookie {
 
   my $cookie_value = $cookies->{$cookie_name} ? $cookies->{$cookie_name} : undef;
 
-  $r->log->trace(
+  $r->log->debug(
     Dumper(
       [ cookies     => $cookies,
         cookie_name => $cookie_name,
@@ -76,7 +76,7 @@ sub get_session_cookie {
 ########################################################################
 sub check_session {
 ########################################################################
-  my ($bedrock_handler) = @_;
+  my ( $bedrock_handler, $verify_user ) = @_;
 
   my $r = $bedrock_handler->request;
 
@@ -87,31 +87,43 @@ sub check_session {
     die "no or expired session\n";
   }
 
-  return validate_session($bedrock_handler);
+  return validate_session( $bedrock_handler, $verify_user );
 }
 
 ########################################################################
 sub validate_session {
 ########################################################################
-  my ($handler) = @_;
+  my ( $handler, $verify_user ) = @_;
 
   my $r = $handler->request;
 
   my $config = $handler->config->get_module_config('usersession');
+
+  $verify_user = defined $verify_user ? $verify_user : $config->{session_files}->{verify_user} // $TRUE;
 
   my $ctx = Bedrock::Context->new(
     request => $handler->request,
     config  => $handler->get_config,
   );
 
-  my $session
-    = eval { bind_module( config => $config, module => 'BLM::Startup::UserSession', context => $ctx, ); };
+  my $session = eval {
+    my $module = bind_module(
+      config  => $config,
+      module  => 'BLM::Startup::UserSession',
+      context => $ctx,
+    );
+
+    return $module;
+  };
 
   die "unable to bind BLM::Startup::Session module\n$EVAL_ERROR"
     if !$session;
 
-  if ( !$session->{username} ) {
-    $r->log->error( sprintf 'invalid session or session timed out. error: [%s]', $EVAL_ERROR );
+  $verify_user = defined $verify_user ? $verify_user : $TRUE;
+
+  if ( $verify_user && !$session->{username} ) {
+    $r->log->error( sprintf 'no username in session, invalid session or session timed out? error: [%s]',
+      $EVAL_ERROR );
 
     die "no or expired session\n";
   }
@@ -155,7 +167,7 @@ sub get_session_file_info { goto &get_file_info; }
 ########################################################################
 sub get_file_info {
 ########################################################################
-  my ( $r, $verify ) = @_;
+  my ( $r, $verify, $verify_user ) = @_;
 
   $verify //= $TRUE;
 
@@ -166,7 +178,7 @@ sub get_file_info {
 
   my $bedrock_handler = Bedrock::Handler->new($r);
 
-  my $session = check_session($bedrock_handler);
+  my $session = check_session( $bedrock_handler, $verify_user );
 
   my $session_dir = $session->get_session_dir;
 
@@ -283,11 +295,15 @@ for implementing Bedrock based applications.
 
 =head2 check_session
 
+ check_session(handler, verify-user)
+
 Checks for a session cookie and validates the cookie against the
 session table. This methods requires a properly configured
 L<BLM::Startup::UserSession> plugin.
 
 Throws an exception if the cookie is missing or expired.
+
+See L</validate_session>.
 
 =head2 dump_session_info
 
@@ -297,46 +313,121 @@ Dumps the session information to the Apache log in debug mode.
 
 =head2 dump_request_info
 
- dump_request_info($r)
+ dump_request_info($handler)
 
 Dumps the request information to the Apache log in debug mode.
 
 =head2 get_cookie
 
- get_cookie(cookie-name)
+ get_cookie(handler, cookie-name)
 
 Retrieves the value of a single cookie.
 
 =head2 get_file_info
 
- get_file_info(request, verify)
+ get_file_info(request, verify, verify-user)
 
-Retrieve
+Retrieve a hash of metadata associated with the filename in the
+request object.
+
+=over 5
+
+=item session
+
+The session hash. 
+
+=item session_dir
+
+The session directory. This is the directory associated with the
+session, not just the root. If all you want is the root of the session
+directory, use the C<Bedrock::Config> object exposed as the C<config>
+element of this hash.
+
+  my $file_info = get_file_info($handler);
+  my $config = $file_info->{config};
+  my $base_session_dir = $config->get('SESSION_DIR');
+
+=item filename
+
+The fully qualified path to the file in the requests object.
+
+=item mtime
+
+The modification time in seconds in seconds since the epoch.
+
+=item config
+
+The configuration object (an instance of Bedrock::Config) which
+contains Bedrock's configuation.
+
+=back
+
 =head2 get_session_cookie
+
+ get_session_cookie(handler);
+
+ Returns the session cookie.  See L<get_cookie>.
 
 =head2 get_session_file_info
 
+Another name for L</get_file_info>.
+
 =head2 verify_file
+
+ verify_file(handler, filename)
+
+Verifies that C<filename> exists and is readable. Throws an exception
+of the file does not exist or is not readable.
 
 =head2 is_mod_perl
 
+Return a boolean indicating whether C<mod_perl> is enabled. This
+method relies on the presence of the C<MOD_PERL> environment variable.
+
 =head2 set_error_status
+
+ set_error_status(handler, error)
+
+Sets and outputs the HTTP status based on the error string. Uses a
+regexp to convert the string to an error status.
+
+  NOT_FOUND         =>  /not\sfound/
+  FORBIDDEN         =>  /not\sreadable/
+  HTTP_UNAUTHORIZED =>  /expired\ssession/
+  SERVER_ERROR      =>  /server\serror/
+
+Returns SERVER_ERROR if the none of the above are found.
 
 =head2 validate_session
 
-This method is called for you by L</check_session> so you should not
-need to invoke this method. It will return a row from the session
-table if the user is authenticated and the session is valid.
+ validate_session(handler, verify-user)
 
- [0]
- [1]
- [2]
- [3]
- [4]
+Returns the session object (C<BLM::Startup::Session).
+
+This method is called for you by L</check_session> so you should not
+need to invoke this method. If C<verify-user> is not defined or set to
+1 an exception will be thrown if there is no username in the
+session. In other words, the default value for C<verify-use> is true.
+
+=over 5
+
+=item handler
+
+ A C<Bedrock::Handler> object.
+
+=item verify-user
+
+Boolean that indicates if an exception should be thrown if there is no
+username in the session. This typically indicates that the session has
+timed out.
+
+default: true
+
+=back
 
 =head1 SEE ALSO
 
-L<Role::Tiny>, L<Role::Tiny::With>
+L<Role::Tiny>, L<Role::Tiny::With>, L<Bedrock::Config>
 
 =head1 AUTHOR
 
