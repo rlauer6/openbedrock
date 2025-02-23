@@ -27,12 +27,17 @@ use warnings;
 use parent qw( Bedrock::Hash );
 
 use Bedrock::Constants qw{:chars :booleans};
+use English qw(-no_match_vars);
 use Log::Log4perl;
+use List::Util qw(pairs);
+use Scalar::Util 'reftype';
 
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+
+caller or __PACKAGE__->main();
 
 ########################################################################
 sub TIEHASH {
@@ -152,6 +157,271 @@ sub closeBLM {  ## no critic (NamingConventions::Capitalization)
     if !$dbi || ref($dbi) !~ /DBI::db/xsm || !$dbi->ping;
 
   return $dbi->disconnect;
+}
+
+########################################################################
+sub install_plugin {
+########################################################################
+  my ($self) = @_;
+
+  my $xml = dump_plugin( $self, 1 );
+
+  die "path is required to install a plugin\n"
+    if !$self->get_path;
+
+  my $config   = Bedrock::XML->newFromString($xml);
+  my $filename = $self->get_name;
+  my $module   = $config->{module};
+
+  if ( !$filename ) {
+    $filename = lc $module;
+
+    if ( $filename =~ /::([^:]+)$/xsm ) {
+      $filename = $1;
+    }
+  }
+
+  if ( $filename !~ /[.]xml$/xsm ) {
+    $filename = "$filename.xml";
+  }
+
+  my $config_file = sprintf '%s/%s', $self->get_path, $filename;
+
+  die sprintf "ERROR:: %s file exists. Use --force to replace\n", $config_file
+    if -e $config_file && !$self->get_force;
+
+  if ( !$self->get_silent ) {
+    print {*STDERR} sprintf qq{installing "%s" for module "%s" to %s\n}, $filename, $module, $self->get_path;
+  }
+
+  Bedrock::XML::writeXML( $config, $config_file );
+
+  return 0;
+}
+
+########################################################################
+sub help {
+########################################################################
+  print {*STDOUT} <<'END_OF_HELP';
+usage:
+
+  $PROGRAM Options command args
+
+Options
+-------
+ -p, --path     install path for plugin config
+ -f, --force    force overwrite of config file
+ -n, --name     name of config file (default: module suffix)
+ -s, --silent   silent
+ -F, --format   outptu format for dump - xml, json, yaml (default: xml)
+
+Commands  Args
+--------  ----
+install   optional list of key value pairs to add or replace config values
+dump      dump the contents of the plugin config
+help      display this help
+
+Hints
+-----
+* path should be the path to Bedrock's startup config directory, 
+  typicallly BEDROCK_CONFIG_PATH/../config.d/startup
+
+  example: /var/www/bedrock/config.d/startup
+
+* add or replace configuration values at install time
+
+  $PROGRAM -p /var/www/bedrock/config.d/startup install foo bar
+
+* dump the config
+
+  $PROGRAM -F yaml dump
+
+END_OF_HELP
+
+  return 0;
+}
+
+########################################################################
+sub dump_plugin {
+########################################################################
+  my ( $self, $no_dump ) = @_;
+
+  require Data::NestedKey;
+
+  my $plugin_config = _fetch_plugin_config($self);
+
+  $plugin_config = $plugin_config->devolve;
+
+  die "no plugin config found in distribution\n"
+    if !$plugin_config;
+
+  my $format = $self->get_format // 'xml';
+
+  die "unknown formatter\n"
+    if $format !~ /^(?:xml|ya?ml|json|dumper|storable)$/ixsm;
+
+  my %formatter = (
+    xml => sub {
+      return Bedrock::XML::writeXML($plugin_config);
+    },
+    json => sub {
+      $Data::NestedKey::FORMAT = 'JSON';
+      return $self->get_data->as_string;
+    },
+    yaml => sub {
+      $Data::NestedKey::FORMAT = 'YAML';
+      return $self->get_data->as_string;
+    },
+    dumper => sub {
+      $Data::NestedKey::FORMAT = 'Dumper';
+      return $self->get_data->as_string;
+    },
+    storable => sub {
+      $Data::NestedKey::FORMAT = 'Storable';
+      return $self->get_data->as_string;
+    },
+  );
+
+  $formatter{yml} = $formatter{yaml};
+
+  my $output = $formatter{$format}->();
+
+  if ( !$no_dump ) {
+    print {*STDOUT} $output;
+  }
+
+  return $no_dump ? $output : 0;
+}
+
+########################################################################
+sub _set_plugin_vars {
+########################################################################
+  my ($self) = @_;
+
+  require Data::NestedKey;
+
+  return 0
+    if !$self->get_args();
+
+  die "arguments must be key/value pairs\n"
+    if $self->get_args() % 2;
+
+  my %args = $self->get_args();
+
+  my $plugin_config = $self->get_plugin_config;
+  $plugin_config = $plugin_config->devolve;
+
+  my $config = $plugin_config->{config} // {};
+
+  my $data = Data::NestedKey->new( $config, %args );
+
+  $self->set_data($data);
+
+  $plugin_config->{config} = $config;
+
+  return 0;
+}
+
+########################################################################
+sub _fetch_plugin_config {
+########################################################################
+  my ($self) = @_;
+
+  require Bedrock::XML;
+
+  require Data::Dumper;
+  Data::Dumper->import('Dumper');
+
+  require File::Find;
+  File::Find->import('find');
+
+  my @xml_files;
+
+  find(
+    sub {
+      my $name = $File::Find::name;
+      return
+        if $name !~ /[.]xml$/xsm;
+
+      push @xml_files, $name;
+
+      return;
+    },
+
+    $self->get_dist_dir
+  );
+
+  die "no xml files in distribution\n"
+    if !@xml_files;
+
+  my $plugin_config;
+
+  foreach my $file (@xml_files) {
+    my $obj = eval { return Bedrock::XML->new($file); };
+
+    next
+      if !$obj || $EVAL_ERROR || !ref $obj;
+
+    next
+      if !$obj->{binding} || $obj->{module} ne $self->get_class;
+
+    $obj->{config} //= {};
+    $plugin_config = $obj;
+
+    last;
+  }
+
+  return
+    if !$plugin_config;
+
+  $self->set_plugin_config($plugin_config);
+
+  _set_plugin_vars($self);
+
+  return $plugin_config;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my ($class) = @_;
+
+  require File::ShareDir;
+  require CLI::Simple;
+
+  my $package = $class;
+  $package =~ s/::/\-/xsmg;
+
+  my $dist_dir = eval { return File::ShareDir::dist_dir($package); };
+
+  if ( !$dist_dir || $EVAL_ERROR ) {
+    print {*STDERR} "no dist_dir found for $class\n";
+    exit 1;
+  }
+
+  my $cli = CLI::Simple->new(
+    option_specs => [
+      qw(
+        path|p=s
+        force|f
+        name|n=s
+        silent|s
+        format|F=s
+      )
+    ],
+    extra_options => [qw(dist_dir class plugin_config data)],
+    commands      => {
+      dump    => \&dump_plugin,
+      install => \&install_plugin,
+      help    => \&help,
+    }
+  );
+
+  $cli->set_dist_dir($dist_dir);
+
+  $cli->set_class($class);
+
+  exit $cli->run();
 }
 
 1;

@@ -427,6 +427,8 @@ AC_CONFIG_FILES(
         [cpan/Makefile]
         [src/Makefile]
         [src/main/Makefile]
+        [src/main/bash/Makefile]
+        [src/main/bash/bin/Makefile]
         [src/main/bedrock/Makefile]
         [src/main/bedrock/pebbles/Makefile]
         [src/main/bedrock/include/Makefile]

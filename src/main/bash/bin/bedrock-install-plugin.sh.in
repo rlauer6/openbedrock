@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# -*- mode: sh; -*-
+
+# Script to install the config file for a plugin plugins must contain
+# a .xml file in the root of their distribution share directory
+
+########################################################################
+install_plugin() {
+########################################################################
+    command="$1"
+    shift
+
+    MODULE="$1"
+    shift
+
+    if test -z "$MODULE"; then
+        echo "ERROR: no module"
+        exit 1;
+    fi
+
+    if [[ "$command" = "install" ]]; then
+        INSTALL_PATH="$1";
+        if ! test -d "$INSTALL_PATH"; then
+            "ERROR: $INSTALL_PATH not a directory name"
+            exit;
+        fi
+        command="$force -p $INSTALL_PATH $command"
+    else
+        FORMAT="$1";
+        command="-F $FORMAT $command"
+    fi
+
+    shift;
+
+    MODULINO=$(echo $MODULE | perl -M$MODULE -ne 'chomp; s/::/\//g; $m="$_.pm"; print $INC{$m};' 2>/dev/null)
+    if test -n "$MODULINO"; then
+        POSIXLY_CORRECT=1 perl $MODULINO $command "$@"
+    else
+        echo "ERROR: could not find $MODULE"
+    fi
+}
+
+########################################################################
+usage() {
+########################################################################
+    cat <<EOF
+Usage: $0 <options> <command> [args...]
+
+Options
+-------
+  -m, --mirror VALUE    Set the mirror URL
+  -p, --plugin VALUE    Set the plugin name
+  -l, --location VALUE  Set the install path of CPAN modules
+  -r, --reinstall       Reinstall of plugin
+  -f, --force           Force overwrite of plugin config
+  -h, --help            Show this help message
+
+Commands
+--------
+  install  path key value ...
+  dump     format key value ...
+
+Hints
+-----
+* plugin distributions should install a .xml file in the shared distribution directory
+
+* View the current default values for your plugin's configuration file as shown here:
+ 
+  ./bedrock-install-plugin.sh BLM::Startup::Captcha dump
+
+* Update configuration values during install:
+
+  ./bedrock-install-plugin.sh -p /var/www/bedrock/config.d/startup BLM::Startup::Captcha install key value
+
+   - for deeply nested configuration values use dotted notation:
+
+     session_files.verify_user 0
+     cookie.expiry_secs 900
+
+   - for configuration keys that require an array specify key multiple times and add a '+' prefix
+
+     +menu.item foo
+     +menu.item bar
+
+   - to add a new hash key
+
+     +foo bar
+
+EOF
+
+   exit 0
+}
+
+# Default values
+mirror=""
+plugin=""
+location=""
+reinstall=""
+
+PERL=$(command -v perl)
+if test -z "$PERL"; then
+    echo "ERROR: no perl?"
+    exit 1
+fi
+
+# Use getopt to parse long and short options
+PARSED_OPTIONS=$(getopt -o "l:m:p:hrf" --long location:,mirror:,plugin:,help,reinstall,force -- "$@")
+
+if [[ $? -ne 0 ]]; then
+    usage
+fi
+
+# Evaluate the parsed options
+eval set -- "$PARSED_OPTIONS"
+
+# Parse options
+while true; do
+    case "$1" in
+        -m|--mirror) mirror="$2"; shift 2 ;;
+        -p|--plugin) plugin="$2"; shift 2 ;;
+        -l|--location) location="$2"; shift 2 ;;
+        -r|--reinstall) reinstall="1"; shift;;
+        -f|--force) force="--force"; shift;;
+        -h|--help) usage; shift;;  # Display help and exit
+        --) shift; break ;;   # End of options
+        *) echo "Invalid option: $1" >&2; usage ;;
+    esac
+done
+
+# Ensure a command is provided
+if [[ $# -eq 0 ]]; then
+    echo "Error: Missing command" >&2
+    usage
+fi
+
+# Capture the command and arguments
+command="$1"
+shift
+cmd_args=("$@")
+
+if test -n "$mirror"; then
+    MIRROR="--mirror $mirror"
+fi
+
+# Validate the command
+case "$command" in
+    install|dump)
+        if test -z "$plugin"; then
+            echo "ERROR: no plugin specified"
+            usage
+        fi
+
+        if ! [[ "$plugin" =~ \.tar\.gz ]]; then
+            module="$plugin";
+        else
+            module=$(basename $plugin)
+            module=${module%.tar.gz}
+            module=$(echo $module | sed 's/\-[0-9].*$//; s/\-/::/g;')
+        fi
+
+        # see if module is installed
+        $PERL -M$module -e 1 2>/dev/null && installed="yes"
+
+        test -n "$location" && location="-l $location"
+
+        if [[ -z "$installed" || -n "$reinstall" ]]; then
+            cpanm -v $MIRROR $location $plugin
+        fi
+
+        install_plugin $command $module "$@"
+        ;;
+
+    *)
+        echo "Error: Unsupported command '$command'" >&2
+        usage
+        ;;
+esac
