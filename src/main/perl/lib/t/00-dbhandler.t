@@ -9,6 +9,7 @@ BEGIN {
 
 use Bedrock::Constants qw(:booleans);
 use Data::Dumper;
+use DBI;
 use English qw(-no_match_vars);
 use File::Temp qw(tempfile);
 use IO::Handle;
@@ -17,7 +18,17 @@ use Scalar::Util qw(openhandle);
 use Test::More;
 
 plan skip_all => 'no DBI_USER set'
-  if !$ENV{DBI_USER} || !$ENV{DBI_PASS};
+  if ( !$ENV{DBI_USER} || !$ENV{DBI_PASS} );
+
+eval {
+  my $host = $ENV{DBI_HOST} // '127.0.0.1';
+
+  my $dbi = DBI->connect( 'dbi:mysql::' . $host, $ENV{DBI_USER}, $ENV{DBI_PASS} );
+  $dbi->disconnect;
+};
+
+plan skip_all => 'no database connection'
+  if $EVAL_ERROR;
 
 use_ok('BLM::DBHandler');
 

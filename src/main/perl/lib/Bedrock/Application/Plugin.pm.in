@@ -1,9 +1,8 @@
 package Bedrock::Application::Plugin;
-# TODO: refactor database connection method
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
-#    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2025, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -24,18 +23,21 @@ package Bedrock::Application::Plugin;
 use strict;
 use warnings;
 
-use parent qw( Bedrock::Hash );
+use Bedrock::Constants qw(:chars :booleans);
+use Bedrock::DBI::Utils qw(load_dsn_from_config);
+use BLM::DBHandler qw(easy_connect);
 
-use Bedrock::Constants qw{:chars :booleans};
 use English qw(-no_match_vars);
 use Log::Log4perl;
 use List::Util qw(pairs);
-use Scalar::Util 'reftype';
+use Scalar::Util qw(reftype);
 
 our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+
+use parent qw( Bedrock::Hash );
 
 caller or __PACKAGE__->main();
 
@@ -96,20 +98,29 @@ sub _dbi_connect {
 ########################################################################
   my ($self) = @_;
 
+  my %config = %{ $self->config };
+
+  # a plugin must define the database connect parameters for auto
+  # connnect, we're not going to assume that the enviroment might hold
+  # the values (for now)
+
+  # backward compatibility
+  $config{data_source} //= $config{DBI_DSN};
+
   return
-    if !$self->config->{DBI_DSN};
+    if !$config{data_source};
 
-  require DBI;
-
-  my $options = {};
+  $config{username} //= $config{DBI_USER};
+  $config{password} //= $config{DBI_PASS};
+  $config{database} //= $config{DBI_DB};
+  $config{host}     //= $config{DBI_HOST};
+  $config{socket}   //= $config{DBI_SOCKET};
 
   foreach my $o (qw(RaiseError PrintError AutoCommit)) {
-    $options->{$o} = $self->config->{$o} // $TRUE;
+    $config{$o} //= $TRUE;
   }
 
-  my @args = @{ $self->config }{qw( DBI_DSN DBI_USER DBI_PASS )};
-
-  return $self->dbi( DBI->connect( @args, $options ) );
+  return easy_connect( \%config );
 }
 
 ########################################################################
@@ -255,6 +266,8 @@ sub dump_plugin {
   die "no plugin config found in distribution\n"
     if !$plugin_config;
 
+  my $data = $self->get_data // Data::NestedKey->new($plugin_config);
+
   my $format = $self->get_format // 'xml';
 
   die "unknown formatter\n"
@@ -266,19 +279,19 @@ sub dump_plugin {
     },
     json => sub {
       $Data::NestedKey::FORMAT = 'JSON';
-      return $self->get_data->as_string;
+      return "$data";
     },
     yaml => sub {
       $Data::NestedKey::FORMAT = 'YAML';
-      return $self->get_data->as_string;
+      return "$data";
     },
     dumper => sub {
       $Data::NestedKey::FORMAT = 'Dumper';
-      return $self->get_data->as_string;
+      return "$data";
     },
     storable => sub {
       $Data::NestedKey::FORMAT = 'Storable';
-      return $self->get_data->as_string;
+      return "$data";
     },
   );
 

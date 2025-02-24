@@ -1,10 +1,10 @@
-#!/usr/bin/env perl
+#00!/usr/bin/env perl
 
 use strict;
 use warnings;
 
 use Bedrock::Constants qw(:defaults);
-
+use Bedrock qw(slurp_file);
 use Bedrock::Serializer qw(evolve devolve);
 use Bedrock::Hash;
 use Cwd qw(abs_path cwd getcwd);
@@ -15,7 +15,7 @@ use JSON;
 use YAML qw(Dump Load);
 use List::Util qw( any );
 
-use Test::More tests => 13;
+use Test::More;
 
 BEGIN {
   use_ok('Bedrock::BedrockConfig');
@@ -79,7 +79,7 @@ sub write_config {
       print {$fh} Dump( devolve $obj);
     }
     elsif ( $type eq 'json' ) {
-      print {$fh} JSON->new->utf8->pretty->encode( devolve $obj);
+      print {$fh} JSON->new->pretty->encode( devolve $obj);
     }
   }
 
@@ -127,7 +127,7 @@ while (1) {
     /^[#]\sjson/xsm && do {
       ( $json_str, $next_line ) = read_lines(*DATA);
 
-      $json = JSON->new->utf8->decode($json_str);
+      $json = JSON->new->decode($json_str);
       last;
     };
   }
@@ -166,9 +166,21 @@ subtest 'Read all types' => sub {
   for my $t (qw/xml yaml json/) {
     my $file = $config_files{$t}->{filename};
 
+    my $content = slurp_file( sprintf '%s/%s', $cwd, $file );
+
     my $config = eval { Bedrock::Config->new( $cwd . q{/} . $file ); };
+
     ok( $config, 'read config' )
-      or diag($EVAL_ERROR);
+      or do {
+      diag(
+        Dumper(
+          [ content => $content,
+            error   => $EVAL_ERROR
+          ]
+        )
+      );
+      BAIL_OUT( 'could not read config ' . $file );
+      };
 
     is_deeply( $config, $config_files{$t}->{obj}, "type: $t" );
 
@@ -360,6 +372,8 @@ subtest 'get_module_config' => sub {
   ok( exists $input->{foo} && $input->{foo} eq 'bar', 'retrieved config object' )
     or diag( Dumper( [ $input, $config ] ) );
 };
+
+done_testing;
 
 1;
 

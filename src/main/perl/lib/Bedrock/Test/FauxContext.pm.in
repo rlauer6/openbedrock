@@ -1,0 +1,165 @@
+package Bedrock::Test::FauxContext;
+
+use strict;
+use warnings;
+
+use Bedrock::Context qw(parse_cookie);
+use Bedrock::Constants qw(:chars);
+use Bedrock::Test::FauxHandler;
+
+use Carp::Always;
+use Carp;
+use Data::Dumper;
+use List::Util qw(pairs);
+
+our @EXPORT_OK = qw(bind_module);
+
+use parent qw(Exporter);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %options ) = @_;
+  $options{request} = bless {}, 'Bedrock::Test::FauxHandler';
+
+  my $self = bless \%options, $class;
+
+  return $self;
+}
+
+########################################################################
+sub bind_module {
+########################################################################
+  my ( $ctx, $config, $module ) = @_;
+
+  $module //= $config->{module};
+
+  my $plugin_config = $config->{config} // {};
+
+  my $obj = bless {}, $module;
+
+  tie %{$obj}, $module, $ctx, $plugin_config;  ## no critic (ProhibitTies)
+
+  return $obj;
+}
+
+########################################################################
+sub cgi_header_in {
+########################################################################
+  require CGI;
+
+  my $cgi = CGI->new;
+
+  my %http_vars = map { $_ => $cgi->http($_) } $cgi->http();
+
+  foreach my $p ( pairs %http_vars ) {
+    my ( $key, $value ) = @{$p};
+    $key =~ s/^HTTP_//xsm;
+
+    $http_vars{$key} = $value;
+
+    delete $http_vars{ 'HTTP_' . $key };
+  }
+
+  return %http_vars;
+}
+
+########################################################################
+sub send_http_header {
+########################################################################
+  my ($self) = @_;
+
+  if ( $self->{headers} ) {
+    $self->print( $self->{headers}, "\r\n" );
+  }
+
+  $self->{headers} = undef;
+
+  return;
+}
+
+########################################################################
+sub cgi_header_out {
+########################################################################
+  my ( $self, @headers ) = @_;
+
+  $self->{headers} //= $EMPTY;
+
+  if (@headers) {
+    foreach my $p ( pairs @headers ) {
+      my ( $header, $value ) = @{$p};
+
+      $self->{headers} .= "$header: $value\r\n";
+    }
+  }
+
+  return $self->{headers};
+}
+
+########################################################################
+sub headers_out { }
+########################################################################
+
+########################################################################
+sub getCookieValue {
+########################################################################
+  my ( $self, $name ) = @_;
+
+  my $cookie = $ENV{HTTP_COOKIE};
+
+  return
+    if !$cookie;
+
+  my $cookie_value = parse_cookie($cookie)->{$name};
+
+  return $cookie_value;
+}
+
+########################################################################
+sub getConfigValue { }
+########################################################################
+
+########################################################################
+sub getInputValue {
+########################################################################
+  my ( $self, $name ) = @_;
+
+  carp Dumper( [ name => $name, $ENV{$name} ] );
+
+  return $ENV{$name};
+}
+
+########################################################################
+sub request { return _set( @_, 'request' ) };  ## no critic (RequireArgUnpacking)
+########################################################################
+
+########################################################################
+sub _set {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args > 1 ) {
+    return $self->{ $args[1] } = $args[0];
+  }
+  else {
+    return $self->{ $args[0] };
+  }
+}
+
+########################################################################
+sub print {  ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->{outhandle}->print(@args);
+}
+
+########################################################################
+sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return $self->{outhandle}->close(@args);
+}
+
+1;

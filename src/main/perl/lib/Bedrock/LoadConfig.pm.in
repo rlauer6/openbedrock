@@ -1,0 +1,295 @@
+package Bedrock::LoadConfig;
+# Load and parse configuration files
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw($DEFAULT_BEDROCK_CONFIG_PATH);
+use Bedrock::XML;
+use Carp;
+use Cwd qw(getcwd);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Fcntl qw(:DEFAULT);
+use JSON;
+use List::Util qw(uniq);
+use Scalar::Util qw(openhandle);
+use YAML qw(LoadFile);
+
+use Readonly;
+
+Readonly::Scalar our $PEEK_LENGTH       => 256;
+Readonly::Scalar our $PEEK_DEBUG_LENGTH => 32;
+
+use parent qw(Exporter);
+
+our @EXPORT_OK   = qw(load_config locate_file validate_config_paths);
+our %EXPORT_TAGS = ( all => [ \@EXPORT_OK ] );
+
+our %CONFIG_READERS = (
+  json => sub { decode_json( scalar slurp_file(shift) ) },
+  yaml => sub { LoadFile(shift) },
+  yml  => sub { LoadFile(shift) },
+  xml  => sub { Bedrock::XML->new(shift) },
+);
+
+our $VERSION = '@PACAKGE_VERSION@';
+
+########################################################################
+sub load_config {
+########################################################################
+  my ($file) = @_;
+
+  my ( $ext, $filename );
+
+  if ( openhandle($file) ) {
+    # Filehandle case: Detect format and extract filename if possible
+    $ext      = _detect_handle_format($file);
+    $filename = _get_handle_filename($file) // '<filehandle>';
+
+    carp 'unable to detect filename, using <filehandle> instead'
+      if $filename eq '<filehandle>';
+  }
+  else {
+    # Filename case: Validate extension and locate file
+    $file     = locate_file($file);
+    $filename = $file;
+
+    if ( $file =~ /[.](xml|json|ya?ml)$/xsm ) {
+      $ext = $1;
+    }
+    else {
+      croak 'Config files must have .xml, .json, or .yaml extension';
+    }
+  }
+
+  my $config = eval { $CONFIG_READERS{$ext}->($file) };
+
+  croak "Could not load config\n$EVAL_ERROR"
+    if !$config;
+
+  # Preserve the original file source
+  $config->{_config_path} = $filename;
+
+  return $config;
+}
+
+########################################################################
+sub locate_file {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  $file = ( ref $self || $self =~ /__PACKAGE__/xsm ) ? $file : $self;
+
+  return
+    if !$file;
+
+  $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
+  my @search_paths = validate_config_paths( @ENV{qw(CONFIG_PATH BEDROCK_CONFIG_PATH)} );
+
+  my $path = eval {
+
+    return $file
+      if -f $file;
+
+    return getcwd . "/$file"
+      if -f getcwd . "/$file";
+
+    for my $dir (@search_paths) {
+      return "$dir/$file"
+        if -f "$dir/$file";
+    }
+
+    return;
+  };
+
+  croak sprintf 'Config file not found: %s',
+    Dumper(
+    [ file         => $file,
+      path         => $path,
+      error        => $EVAL_ERROR,
+      search_paths => \@search_paths,
+    ]
+    ) if !$path || !-f $path;
+
+  croak "Cannot open config file $path for reading."
+    if !-r $path;
+
+  return $path;
+}
+
+########################################################################
+sub validate_config_paths {
+########################################################################
+  my (@paths) = @_;
+
+  return grep { $_ && -d } uniq( map { defined $_ ? ( $_, $_ . '.d' ) : () } @paths );
+}
+
+########################################################################
+sub _detect_handle_format {
+########################################################################
+  my ($fh) = @_;
+
+  my $original_pos = !_is_data_handle($fh) ? 0 : tell $fh;
+
+  # probably unnecessary, but if note that if not __DATA__ we default
+  # to start of file
+  seek $fh, $original_pos, 0;
+
+  my $peek;
+  read $fh, $peek, $PEEK_LENGTH;
+
+  seek $fh, $original_pos, 0;
+
+  return 'json' if $peek =~ /^\s*[{[]/xsm;
+  return 'xml'  if $peek =~ /^\s*<[?]?(?:xml|object)\s+/xsm;
+  return 'yaml' if $peek =~ /^\s*---/xsm;
+
+  # should be enough to determine why we failed, if not consider changing default
+  croak sprintf 'Could not determine format from filehandle input (%s)', substr $peek, 0, $PEEK_DEBUG_LENGTH;
+}
+
+########################################################################
+sub _get_handle_filename {
+########################################################################
+  my ($fh) = @_;
+
+  my $fd = fileno $fh;
+
+  return
+    if !defined $fd;
+
+  my $is_data = _is_data_handle($fh);
+
+  return $PROGRAM_NAME
+    if $is_data;  # Return script name for DATA section
+
+  if ( -d '/proc/self/fd' ) {
+    my $path = readlink "/proc/self/fd/$fd";
+    return $path if defined $path && -f $path;
+  }
+
+  if ( $OSNAME eq 'darwin' ) {
+    my $path = "\0" x 1024;
+
+    my $result = eval { fcntl $fh, F_GETPATH(), $path };
+
+    if ($result) {
+      $path =~ s/\0.*$//xsm;
+      return $path
+        if -f $path;
+    }
+  }
+
+  return;
+}
+
+########################################################################
+sub _is_data_handle {
+########################################################################
+  my ($fh) = @_;
+
+  no strict 'refs';
+  my $is_data = *{'main::DATA'}{IO} && $fh == \*{'main::DATA'};
+  use strict 'refs';
+
+  return $is_data;
+}
+
+1;  # End of module
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::LoadConfig - Load configuration files of various formats
+
+=head1 SYNOPSIS
+
+  use Bedrock::LoadConfig qw(load_config locate_file validate_config_paths);
+
+  # Load from a filename
+  my $config = load_config("settings.json");
+
+  # Load from a filehandle
+  open my $fh, '<', 'config.yaml';
+  my $config = load_config($fh);
+
+  # Load from DATA section
+  my $config = load_config(\*DATA);
+
+  # Validate multiple paths
+  validate_config_paths('/etc/config.yaml', '/home/user/.config.json');
+
+=head1 DESCRIPTION
+
+Bedrock::LoadConfig provides utility functions to load configuration files
+from filenames, filehandles, or the DATA section. It also includes path
+validation utilities.
+
+=head2 SUPPORTED FORMATS
+
+Bedrock::LoadConfig supports the following configuration file formats:
+
+=over 4
+
+=item *
+
+C<JSON> (via L<JSON>)
+
+=item *
+
+C<YAML> (via L<YAML::XS>)
+
+=item *
+
+C<XML> (via L<Bedrock::XML>)
+
+=back
+
+These formats are managed through the package variable C<%CONFIG_READERS>, 
+which maps file types to their respective deserialization routines.
+
+=head3 INTERNAL NOTE
+
+C<%CONFIG_READERS> is currently a static package variable and cannot be modified 
+at runtime. This design ensures consistency in supported formats and avoids 
+unexpected behavior. However, future versions of this module may provide 
+mechanisms for extending or overriding format support dynamically.
+
+=cut
+
+=head2 METHODS AND SUBROUTINES
+
+=head3 load_config
+
+  my $config = load_config($filename);
+  my $config = load_config($filehandle);
+
+Reads and deserializes a configuration file. Returns a hashref containing the configuration data.
+
+=head3 locate_file
+
+  my $full_path = locate_file($filename);
+
+Searches common directories for a configuration file.
+
+=head3 validate_config_paths
+
+  validate_config_paths(@paths);
+
+Checks if all paths exist. Croaks if any path is invalid.
+
+=head1 AUTHOR
+
+Rob Lauer - <rclauer@gmail.com>
+
+=head1 SEE ALSO
+
+L<Bedrock>, L<JSON>, L<YAML::XS>, L<Bedrock::XML>
+
+=cut

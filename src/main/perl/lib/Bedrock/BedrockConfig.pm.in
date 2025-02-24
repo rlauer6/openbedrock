@@ -34,7 +34,7 @@ use warnings;
 BEGIN {
 
   # Note we do not use Bedrock::Logger here since Bedrock::Config is
-  # used load configuration information for Bedock::Logger
+  # used load configuration information for Bedrock::Logger
   # (Log::Log4perl). Instead we use carp & croak.
 
   use Carp;
@@ -47,6 +47,8 @@ use Bedrock::Dump;
 use Bedrock::Serializer qw( evolve devolve);
 use Bedrock::XML;
 use Bedrock::Constants qw(:defaults :chars :booleans);
+use Bedrock::LoadConfig qw(load_config validate_config_paths locate_file);
+
 use Cwd;
 use Data::Dumper;
 use English qw( -no_match_vars );
@@ -69,7 +71,7 @@ sub new {
 
   $class = ref $class || $class;
 
-  my $self = $file ? _load_config($file) : {};
+  my $self = $file ? load_config($file) : {};
 
   $self = bless $self, $class;
 
@@ -159,12 +161,6 @@ sub get_module_config {
   my $module = $self->get_module($module_name);
 
   return $module ? $module->{config} : $module;
-}
-
-########################################################################
-sub locate_file {
-########################################################################
-  goto &_locate_file;
 }
 
 ########################################################################
@@ -427,71 +423,6 @@ sub _set_get {
   return $self->{$key};
 }
 
-########################################################################
-{
-  my %config_readers = (
-    xml => sub {
-      my ($file) = @_;
-
-      return Bedrock::XML->new($file);
-    },
-    json => sub {
-      my ($file) = @_;
-
-      my $json = slurp_file $file;
-
-      return decode_json($json);
-    },
-
-    yaml => sub {
-      my ($file) = @_;
-
-      return LoadFile($file);
-    },
-
-    yml => sub {
-      my ($file) = @_;
-
-      return LoadFile($file);
-    },
-
-  );
-
-########################################################################
-  sub _load_config {
-########################################################################
-    my ($file) = @_;
-
-    $file = locate_file($file);
-
-    my $ext;
-
-    if ( $file =~ /[.](xml|json|ya?ml)$/xsm ) {
-      $ext = $1;
-    }
-
-    croak 'config files must have .xml, .json or .yaml extension'
-      if !$ext;
-
-    my $config = eval { return $config_readers{$ext}->($file); };
-
-    croak "could not load $file\n$EVAL_ERROR"
-      if !$config;
-
-    $config->{_config_path} = $file;
-
-    return $config;
-  }
-}
-
-########################################################################
-sub validate_config_paths {
-########################################################################
-  my (@paths) = @_;
-
-  return grep { $_ && -d } uniq( map { defined $_ ? ( $_, $_ . '.d' ) : () } @paths );
-}
-
 # _locate_file will return the path to a file or throw an exception if
 # the file cannot be found or cannot be read.
 
@@ -511,48 +442,8 @@ sub validate_config_paths {
 # the function will use the CONFIG_PATH then BEDROCK_CONFIG_PATH
 #
 ########################################################################
-sub _locate_file {
+sub _locate_file { goto &locate_file; }
 ########################################################################
-  my ( $self, $file ) = @_;
-
-  $file = ref $self ? $file : $self;
-
-  return
-    if !$file;
-
-  $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
-  my @search_paths = validate_config_paths( @ENV{qw(CONFIG_PATH BEDROCK_CONFIG_PATH)} );
-
-  my $path = eval {
-
-    return $file
-      if -f $file;
-
-    return getcwd . "/$file"
-      if -f getcwd . "/$file";
-
-    for my $dir (@search_paths) {
-      return "$dir/$file"
-        if -f "$dir/$file";
-    }
-
-    return;
-  };
-
-  croak sprintf 'Config file not found: %s',
-    Dumper(
-    [ file         => $file,
-      path         => $path,
-      error        => $EVAL_ERROR,
-      search_paths => \@search_paths,
-    ]
-    ) if !$path || !-f $path;
-
-  croak "Cannot open config file $path for reading."
-    if !-r $path;
-
-  return $path;
-}
 
 1;
 
@@ -580,10 +471,48 @@ can be serialized as Bedrock XML, JSON or YAML.
 
 =head2 new
 
- new( filename )
+  my $config = Bedrock::Config->new($filename);
+  my $config = Bedrock::Config->new($filehandle);
 
-Reads and deserializes a serialized configuration file specified and
-returns a L<Bedrock::Config> object. 
+Reads and deserializes a serialized configuration file from either:
+
+=over 4
+
+=item *
+
+A filename (a string containing the path to a config file)
+
+=item *
+
+A filehandle (an already opened filehandle, such as C<DATA> or an
+instance of L<IO::Handle>)
+
+=back
+
+Returns a L<Bedrock::Config> object.
+
+If a filehandle is provided, the format will be automatically detected
+based on the file contents.  Once detected, the corresponding
+deserializer (JSON, YAML, or XML) is invoked to parse the
+configuration.
+
+=head3 Additional Fields
+
+The returned object includes an extra field:
+
+=over 4
+
+=item *
+
+B<_config_path> — The original source of the configuration (filename
+or C<< <filehandle> >>)
+
+=back
+
+This field can be useful for logging, debugging, or tracking the
+origin of a loaded configuration.
+
+If the format cannot be determined, an error is thrown.
 
 =head2 config_path
 
@@ -702,8 +631,8 @@ If the file is not an absolute path, the function will attempt to find
 the file in either the paths pointed to by the environement variables
 C<CONFIG_PATH> and C<BEDROCK_CONFIG_PATH> (in that order).
 
-If C<BEDROCK_CONFIG_PATH> is set but I<not defined> or I<empty>, then only C<CONFIG_PATH> 
-will be used in the search.
+If C<BEDROCK_CONFIG_PATH> is set but I<not defined> or I<empty>, then
+only C<CONFIG_PATH> will be used in the search.
 
 If C<BEDROCK_CONFIG_PATH> does not exists in C<%ENV>, the the default Bedrock
 site configuration path will be included in the search.
