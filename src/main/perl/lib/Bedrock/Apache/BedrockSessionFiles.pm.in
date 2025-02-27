@@ -70,30 +70,30 @@ sub handler {
 
   my $session = $file_info->{session};
 
-  my $timeout = $session->config->{session_files}->{ttl} // $ENV{BEDROCK_SESSION_FILES_TTL};
-
   my $filename = $file_info->{filename};
 
-  if ($timeout) {
-    my $mtime    = $file_info->{mtime};
-    my $file_age = time - $mtime;
+  my $expired = check_file_ttl(
+    session  => $session,
+    filename => $filename,
+    mtime    => $file_info->{mtime}
+  );
 
-    if ( $file_age > $timeout ) {
-      unlink $filename;
-
-      return $NOT_FOUND;
-    }
-  }
+  return $NOT_FOUND
+    if $expired;
 
   if ( is_mod_perl() ) {
 
     $r->filename($filename);
 
-    # update Apache's metadata
+    # update Apache's metadata, otherwise you'll get a 404
     $r->finfo( APR::Finfo::stat( $filename, APR::Const::FINFO_NORM, $r->pool ) );
 
-    $r->handler('default-handler');
-    $r->set_handlers( PerlResponseHandler => [] );
+    # allow Bedrock handler to serve .roc files, but otherwise just
+    # serve up file, thank you Apache
+    if ( $filename !~ /[.]roc$/xsm ) {
+      $r->handler('default-handler');
+      $r->set_handlers( PerlResponseHandler => [] );
+    }
 
     return Apache2::Const::OK;
   }
@@ -109,6 +109,51 @@ sub handler {
     if !$ranges;
 
   return send_file_with_ranges( $r, $filename, $ranges );
+}
+
+########################################################################
+sub update_cache {
+########################################################################
+  my ( $session, $filename ) = @_;
+
+  my $cache = $session->{cache} // {};
+  $session->{cache} = $cache;
+
+  my $file_info = $cache->{$filename} // {};
+  $cache->{$filename} = $file_info;
+
+  $file_info->{ttl} //= $session->config->{session_files}->{ttl} // $ENV{BEDROCK_SESSION_FILES_TTL};
+
+  $file_info->{last_access} = time;
+
+  return $cache;
+}
+
+########################################################################
+sub check_file_ttl {
+########################################################################
+  my (%args) = @_;
+
+  my ( $session, $filename, $mtime ) = @args{qw(session filename mtime)};
+
+  my $cache = update_cache( $session, $filename );
+
+  my $ttl = $cache->{$filename}->{ttl};
+
+  return $FALSE
+    if !$ttl;
+
+  my $file_age = time - $mtime;
+
+  if ( $file_age > $ttl ) {
+    unlink $filename;
+
+    delete $cache->{$filename};
+  }
+
+  $session->closeBLM;
+
+  return $file_age > $ttl ? $TRUE : $FALSE;
 }
 
 ########################################################################
@@ -363,9 +408,12 @@ the handler at the server level.
 
 =head2 Security Considerations
 
-Using a session directory opens up the possibility of access by an
-actor that is able to hijack your session. To reduce the window of
-opportunity for illegal access there are a few things you can do.
+Using a session directory opens up the possibility of access of
+session files by an actor that is able to hijack your session. Session
+files are located on a storage device identified by the user's session
+cookie value. Of course, session hijacking also compromises other data
+stored in a user's session. To reduce the window of opportunity for
+illegal access there are a few things you can do.
 
 =over 5
 
@@ -378,7 +426,8 @@ C<ttl> in the C<session_files> section of the configuration.
    <scalar name="ttl">60</scalar>
  </object>
 
-...or set the environment variable C<BEDROCK_SESSION_FILES_TTL> in the Apache configuration.
+...or set the environment variable C<BEDROCK_SESSION_FILES_TTL> in the
+Apache configuration.
 
  PerlSetEnv BEDROCK_SESSION_FILES_TTL 60
 
@@ -406,7 +455,7 @@ The module was designed to serve files from a logged in user's session
 directory. The idea being that only the user that belongs to that
 session can view the file.  Accordingly, the class will validate the
 session via the cookie and then see if the session contains a
-c<username> element.  If it does not, then the user has been logged
+C<username> element.  If it does not, then the user has been logged
 out and the handler will abort with a 401.
 
 There are use cases however for serving files from an anonymous user's

@@ -10,7 +10,7 @@ use Bedrock::Test::Utils qw(:all);
 use Cwd qw(abs_path getcwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Bedrock::Test::RequestHandler;
+use Bedrock::Test::FauxHandler;
 
 use Test::More;
 
@@ -23,7 +23,7 @@ plan tests => 1 + keys %TESTS;
 use_ok('Bedrock::Handler');
 
 ########################################################################
-my $request_handler = Bedrock::Test::RequestHandler->new;
+my $request_handler = Bedrock::Test::FauxHandler->new;
 
 # we should be running tests from src/main/perl directory...
 my $cwd = abs_path(getcwd);

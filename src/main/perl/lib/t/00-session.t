@@ -86,6 +86,7 @@ my $session_config = $config->{config};
 ########################################################################
 subtest 'TIEHASH' => sub {
 ########################################################################
+
   $session = eval { return bind_module( $ctx, $config, 'BLM::Startup::UserSession' ); };
 
   ok( !$EVAL_ERROR, 'bound module' )

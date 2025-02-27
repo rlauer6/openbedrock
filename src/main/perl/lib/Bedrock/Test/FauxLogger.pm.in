@@ -1,0 +1,93 @@
+package Bedrock::Test::FauxLogger;
+
+# provide a mocked Handler and logger class for testing
+
+use strict;
+use warnings;
+
+use Bedrock::Constants qw(:chars);
+use IO::Scalar;
+use Data::Dumper;
+
+our $LOG_LEVEL;
+
+our %LOG_LEVELS = (
+  error => 0,
+  warn  => 1,
+  info  => 2,
+  debug => 3,
+  trace => 4,
+);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $level ) = @_;
+
+  $LOG_LEVEL = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
+
+  my $log = $EMPTY;
+
+  my $fh = IO::Scalar->new( \$log );
+
+  no strict 'refs';  ## no critic (ProhibitNoStrict)
+
+  foreach my $m (qw{ error debug warn fatal info trace }) {
+    *{ $class . "::$m" } = sub {
+      my ( $self, @message ) = @_;
+
+      return $self->_log( $m, @message );
+    };
+  }
+
+  my $self = {
+    log => \$log,
+    fh  => $fh,
+  };
+
+  return bless $self, $class;
+}
+
+########################################################################
+sub _log {
+########################################################################
+  my ( $self, $level, @message ) = @_;
+
+  my $log_level = $LOG_LEVELS{$level};
+
+  return
+    if $log_level > $LOG_LEVEL;
+
+  my $depth = 0;
+
+  my @stack;
+
+  while ( my @frame = caller $depth++ ) {
+    push @stack, \@frame;
+  }
+
+  my $caller_package = $stack[2]->[3];
+  my $lineno         = $stack[1]->[2];
+
+  my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join $EMPTY, @message;
+
+  return print { $self->{fh} } $log_message, "\n";
+}
+
+########################################################################
+sub as_string {
+########################################################################
+  my ($self) = @_;
+
+  return ${ $self->{log} };
+}
+
+########################################################################
+sub close {  ## no critic (ProhibitAmbiguousNames ProhibitBuiltIn)
+########################################################################
+  my ($self) = @_;
+
+  return $self->{fh}->close;
+}
+
+1;

@@ -26,7 +26,7 @@ use warnings;
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::DBI::Utils qw(load_dsn_from_config);
 use BLM::DBHandler qw(easy_connect);
-
+use Data::Dumper;
 use English qw(-no_match_vars);
 use Log::Log4perl;
 use List::Util qw(pairs);
@@ -213,18 +213,19 @@ sub install_plugin {
 ########################################################################
 sub help {
 ########################################################################
-  print {*STDOUT} <<'END_OF_HELP';
+  print {*STDOUT} <<"END_OF_HELP";
 usage:
 
-  $PROGRAM Options command args
+  $PROGRAM_NAME Options command args
 
 Options
 -------
  -p, --path     install path for plugin config
+ -P, --plugin   name of the plugin if not a Bedrock::Application::Plugin
  -f, --force    force overwrite of config file
  -n, --name     name of config file (default: module suffix)
  -s, --silent   silent
- -F, --format   outptu format for dump - xml, json, yaml (default: xml)
+ -F, --format   output format for dump - xml, json, yaml (default: xml)
 
 Commands  Args
 --------  ----
@@ -241,11 +242,11 @@ Hints
 
 * add or replace configuration values at install time
 
-  $PROGRAM -p /var/www/bedrock/config.d/startup install foo bar
+  $PROGRAM_NAME -p /var/www/bedrock/config.d/startup install foo bar
 
 * dump the config
 
-  $PROGRAM -F yaml dump
+  $PROGRAM_NAME -F yaml dump
 
 END_OF_HELP
 
@@ -253,13 +254,31 @@ END_OF_HELP
 }
 
 ########################################################################
+sub fetch_plugin_config {
+########################################################################
+  my ($self) = @_;
+
+  my $plugin = $self->get_plugin;
+
+  my $plugin_config = eval { find_plugin_config( $plugin, 1 ); };
+
+  if ( !$plugin_config ) {
+    $plugin_config = find_plugin_config( $plugin, 0 );
+  }
+
+  $self->set_plugin_config($plugin_config);
+
+  _set_plugin_vars($self);
+
+  return $plugin_config;
+}
+
+########################################################################
 sub dump_plugin {
 ########################################################################
   my ( $self, $no_dump ) = @_;
 
-  require Data::NestedKey;
-
-  my $plugin_config = _fetch_plugin_config($self);
+  my $plugin_config = fetch_plugin_config($self);
 
   $plugin_config = $plugin_config->devolve;
 
@@ -275,7 +294,7 @@ sub dump_plugin {
 
   my %formatter = (
     xml => sub {
-      return Bedrock::XML::writeXML($plugin_config);
+      return Bedrock::XML::writeXML( $data->{data} );
     },
     json => sub {
       $Data::NestedKey::FORMAT = 'JSON';
@@ -311,8 +330,6 @@ sub _set_plugin_vars {
 ########################################################################
   my ($self) = @_;
 
-  require Data::NestedKey;
-
   return 0
     if !$self->get_args();
 
@@ -324,13 +341,9 @@ sub _set_plugin_vars {
   my $plugin_config = $self->get_plugin_config;
   $plugin_config = $plugin_config->devolve;
 
-  my $config = $plugin_config->{config} // {};
-
-  my $data = Data::NestedKey->new( $config, %args );
+  my $data = Data::NestedKey->new( $plugin_config, %args );
 
   $self->set_data($data);
-
-  $plugin_config->{config} = $config;
 
   return 0;
 }
@@ -340,12 +353,6 @@ sub _fetch_plugin_config {
 ########################################################################
   my ($self) = @_;
 
-  require Bedrock::XML;
-
-  require Data::Dumper;
-  Data::Dumper->import('Dumper');
-
-  require File::Find;
   File::Find->import('find');
 
   my @xml_files;
@@ -395,31 +402,128 @@ sub _fetch_plugin_config {
 }
 
 ########################################################################
+sub get_all_xml_files {
+########################################################################
+  my ($dist_dir) = @_;
+
+  File::Find->import('find');
+
+  my @xml_files;
+
+  find(
+    sub {
+      my $name = $File::Find::name;
+
+      return
+        if $name !~ /[.]xml$/xsm;
+
+      push @xml_files, $name;
+
+      return;
+    },
+    $dist_dir
+  );
+
+  die "no xml files in distribution\n"
+    if !@xml_files;
+
+  return \@xml_files;
+}
+
+########################################################################
+sub is_core_plugin {
+########################################################################
+  my ($plugin) = @_;
+
+  my $inst = ExtUtils::Installed->new();
+
+  my @modules = $inst->modules();
+
+  my $plugin_file = $plugin;
+  $plugin_file =~ s/::/\//xsmg;
+
+  my $is_core_plugin = eval {
+    my $module_path;
+
+    if ( !$INC{"$plugin_file.pm"} && $PROGRAM_NAME !~ /$plugin_file/ ) {
+      Module::Load::load("$plugin_file.pm");
+      $module_path = $INC{"$plugin_file.pm"};
+    }
+    else {
+      $module_path = $PROGRAM_NAME;
+    }
+
+    my $bedrock = $inst->packlist('Bedrock');
+
+    return exists $bedrock->{$module_path} ? $TRUE : $FALSE;
+  };
+
+  print {*STDERR} $EVAL_ERROR;
+
+  return $is_core_plugin;
+}
+
+########################################################################
+sub find_plugin_config {
+########################################################################
+  my ( $plugin, $core ) = @_;
+
+  my $is_core = is_core_plugin($plugin);
+
+  die $EVAL_ERROR
+    if !defined $is_core && $EVAL_ERROR;
+
+  die "not a core plugin\n"
+    if $core && !$is_core;
+
+  my $dist_dir_name = $plugin;
+  $dist_dir_name =~ s/::/-/xsmg;
+
+  my $dist_dir
+    = eval { return $core ? File::ShareDir::dist_dir('Bedrock') : File::ShareDir::dist_dir($dist_dir_name); };
+
+  die "no plugin distribution named $plugin\n"
+    if !$core && !$dist_dir;
+
+  my $xml_files = get_all_xml_files($dist_dir);
+
+  die "no .xml configuration files for $plugin\n"
+    if !@{$xml_files};
+
+  foreach my $file ( @{ $xml_files || [] } ) {
+    my $config = Bedrock::XML->new($file);
+
+    next if !ref $config || reftype($config) ne 'HASH';
+
+    return $config
+      if $config->{module} && $config->{module} eq $plugin;
+  }
+
+  die "no .xml configuration file found for $plugin\n";
+}
+
+########################################################################
 sub main {
 ########################################################################
   my ($class) = @_;
 
-  require File::ShareDir;
+  require Bedrock::XML;
   require CLI::Simple;
-
-  my $package = $class;
-  $package =~ s/::/\-/xsmg;
-
-  my $dist_dir = eval { return File::ShareDir::dist_dir($package); };
-
-  if ( !$dist_dir || $EVAL_ERROR ) {
-    print {*STDERR} "no dist_dir found for $class\n";
-    exit 1;
-  }
+  require Data::NestedKey;
+  require ExtUtils::Installed;
+  require File::ShareDir;
+  require Module::Load;
 
   my $cli = CLI::Simple->new(
     option_specs => [
       qw(
+        plugin|P=s
         path|p=s
         force|f
         name|n=s
         silent|s
         format|F=s
+        help|h
       )
     ],
     extra_options => [qw(dist_dir class plugin_config data)],
@@ -430,7 +534,14 @@ sub main {
     }
   );
 
-  $cli->set_dist_dir($dist_dir);
+  my $package = $class;
+
+  if ( $package ne __PACKAGE__ ) {
+    $cli->set_plugin($package);
+  }
+  elsif ( !$cli->get_plugin ) {
+    die "--plugin is a required option\n";
+  }
 
   $cli->set_class($class);
 

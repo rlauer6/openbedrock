@@ -774,7 +774,7 @@ sub cleanup_session_dir {
 ########################################################################
 sub create_session_file {
 ########################################################################
-  my ( $self, $filename, $content ) = @_;
+  my ( $self, $filename, $content, $ttl ) = @_;
 
   my $session_dir = $self->create_session_dir;
 
@@ -798,6 +798,10 @@ sub create_session_file {
   print {$fh} $content;
 
   close $fh;
+
+  if ($ttl) {
+    $self->set_session_file_ttl( $path, $ttl );
+  }
 
   return $path;
 }
@@ -862,18 +866,41 @@ sub rename_session_file {
 }
 
 ########################################################################
+sub set_session_file_ttl {
+########################################################################
+  my ( $self, $filename, $ttl ) = @_;
+
+  return
+    if !$ttl;
+
+  my $cache = $self->{cache} // {};
+
+  $cache->{$filename} = { ttl => $ttl, created => time };
+
+  $self->{cache} = $cache;
+
+  return $cache;
+}
+
+########################################################################
 sub create_session_tempfile {
 ########################################################################
   my ( $self, $template, %options ) = @_;
 
-  my $name   = delete $options{NAME};
+  my $name = delete $options{NAME};
+
   my $suffix = delete $options{SUFFIX};
-  my $dir    = $self->create_session_dir( $options{dir} );
+
+  my $dir = $self->create_session_dir( $options{dir} );
+
+  if ($name) {
+    $template = 'tempXXXXX';
+  }
 
   my ( $fh, $filename ) = tempfile(
     $template,
-    DIR    => $dir,
-    SUFFIX => $suffix,
+    DIR => $dir,
+    $name ? () : ( SUFFIX => $suffix // '.html' ),
   );
 
   if ($name) {
@@ -898,7 +925,7 @@ sub version {
 ########################################################################
 sub copy2session {
 ########################################################################
-  my ( $obj, $file ) = @_;
+  my ( $obj, $file, $ttl ) = @_;
 
   my $self = tied %{$obj};
 
@@ -927,6 +954,10 @@ sub copy2session {
   }
   else {
     die "file $file is empty\n";
+  }
+
+  if ($ttl) {
+    $self->set_session_file_ttl( $dest, $ttl );
   }
 
   return $dest;
@@ -2145,26 +2176,81 @@ update is successful.
 
 =head1 METHODS AND SUBROUTINES
 
-These methods are provided for you by the base class but can be
-overwridden by your implementation.
+The methods are provided for you by the base class but can be
+overwridden by your implementation of a session handler. For example:
+C<look_user> might have a different implementation for a SQL based
+session vs an in-memory type of session.
 
-=head2 cleanup_session_dir
+=head2 Methods Documented in L<BLM::Startup::UserSession>
+
+The methods below are document in
+L<BLM::Startup::UserSession>. Although that version of a session
+manager is based on MySQL, the documentation of these methods should
+be consistent across implementations.
+
+=item * L<BLM::Startup::UserSession/change_passwd>
+
+=item * L<BLM::Startup::UserSession/cleanup_session_dir>
+
+=item * L<BLM::Startup::UserSession/clear>
+
+=item * L<BLM::Startup::UserSession/config>
+
+=item * L<BLM::Startup::UserSession/context>
+
+=item * L<BLM::Startup::UserSession/cookie>
+
+=item * L<BLM::Startup::UserSession/cookieless_session>
+
+=item * L<BLM::Startup::UserSession/create_temp_login_session>
+
+=item * L<BLM::Startup::UserSession/delete_session_file>
+
+=item * L<BLM::Startup::UserSession/encrypt>
+
+=item * L<BLM::Startup::UserSession/get_session_dir>
+
+=item * L<BLM::Startup::UserSession/kill_session>
+
+=item * L<BLM::Startup::UserSession/login>
+
+=item * L<BLM::Startup::UserSession/logout>
+
+=item * L<BLM::Startup::UserSession/lookup_user>
+
+=item * L<BLM::Startup::UserSession/lookup_users>
+
+=item * L<BLM::Startup::UserSession/register>
+
+=item * L<BLM::Startup::UserSession/remember_user>
+
+=item * L<BLM::Startup::UserSession/remove_user>
+
+=item * L<BLM::Startup::UserSession/set_log_level>
+
+=item * L<BLM::Startup::UserSession/version>
+
+=back
+
+=head2 Session File Handling
+
+=head3 cleanup_session_dir
 
  cleanup_session_dir( 0 | 1 )
 
 Indicate whether or not the C<login()> method should attempt to
 cleanup session directories.
 
-=head2 copy2session
+=head3 copy2session
 
  copy2session(path)
 
 Copies the file indicated by C<path> to the session directory.  Throws
-an exception of the file does not exist, is empty or is unreadable. If
+an exception if the file does not exist, is empty or is unreadable. If
 the path is the name of a file, it is assumed to be in the document
 root.
 
-=head2 create_session_dir
+=head3 create_session_dir
 
  create_session_dir([sub-dir])
 
@@ -2195,24 +2281,29 @@ Your handler would obviously need to manage session directories and
 serve files from your external file storage system.
 
 You could also sub-class this module and provide your own
-C<create_session_dir()>, C<create_session_tempfiel()>, and 
+C<create_session_dir()>, C<create_session_tempfile()>, and 
 
 See L<Apache::BedrockCloudSessionFiles> for an example of serving
 session files from S3.
 
-=head2 create_session_tempfile
+=head3 create_session_tempfile
 
  create_session_tempfile(template, options)
 
 Creates a temporary file in the current session directory.
 
- <null $session.create_session_tempfile('fooXXXX', 'SUFFIX', '.html')>
+ <null:tempfile $session.create_session_tempfile('fooXXXX', 'SUFFIX', '.html')>
+
+Returns a two element C<Bedrock::Array> containing a filehandle and
+the name of the temporary file.
 
 =over 5
 
 =item template
 
-Template to use for file creation (see C<tempfile>). Use at least 4 X's.
+Template to use for file creation (see C<tempfile>). Use at least 4
+X's. If you provide a C<NAME> parameter, then the template value is
+ignored.
 
 =item options
 
@@ -2224,45 +2315,51 @@ Sub directory under the C<session> directory to create.
 
 =item SUFFIX
 
-Suffix (extension).
+Suffix (extension). The default SUFFIX is C<.html>.  If you want no
+suffix, pass '' as the SUFFIX parameter.
 
 =item NAME
 
-Creates a temporary file with this name.
+Creates a temporary file with this name (include an extension). If you
+pass NAME, SUFFIX is ignored.
 
 =back
 
 =back
 
-=head2 create_session_file
+=head3 create_session_file
 
- create_session_file( filename, content )
+ create_session_file( filename, content, [ttl] )
 
 Writes the content to the session directory using the filename specified.
 If the C<content> parameter is a hash or array it will be deserialize
 as a JSON object.
 
-=head2 encrypt
+Optionally add a TTL value for the file. Defaults to the TTL defined
+in the C<session_files> section of the configuration file (ttl) or the
+environment variable C<BEDROCK_SESSION_FILES_TTL> if they exist.
 
- encrypt( password, salt )
-
-This method is a cover of the Perl's C<crypt()> method. For storing
-passwords in a database previous versions of the MySQL implementation
-of a session manager used this function. Subsequent version used the
-C<password()> function of MySQL 5.7.  Starting with version 8 of
-MySQL, passwords are stored in the session table when the
-C<register()> function is called using the C<sha2()> function.
-
-=head2 rename_session_file
+=head3 rename_session_file
 
  rename_session_file(old-name, new-name);
 
 Renames a file in a use session. Throws an exception if the file does
 not exist.
 
+=head3 set_session_file_ttl
+
+ set_session_file_ttl(seconds)
+
+Sets the TTL for a session file. If a client attempts to access the
+file after the TTL has expired the file will be removed from the
+session and a 404 will be returned.
+
+When a file is created using C<create_session_file> it may be assigned
+a default TTL. See L</create_session_file>.
+
 =head1 SEE ALSO
 
-L<BLM::Startup::UserSession>
+L<BLM::Startup::UserSession>, L<BLM::Startup::SQLSession>, L<BLM::Startup::Session>
 
 =head1 AUTHOR
 

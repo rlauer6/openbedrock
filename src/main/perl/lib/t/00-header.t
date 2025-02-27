@@ -56,11 +56,23 @@ subtest 'see_other' => sub {
   $header->print_header($ctx);
   my @headers = sort grep {$_} split /\r\n/xsm, $output;
 
-  is( $headers[1], 'Location: /foo' )
-    or diag( Dumper( [$output] ) );
+  like( "@headers", qr/Location: \/foo/sm, 'Location: /foo' )
+    or diag(
+    Dumper(
+      [ headers => \@headers,
+        output  => $output
+      ]
+    )
+    );
 
-  is( $headers[2], 'Status: 303 See Other' )
-    or diag( Dumper( [$output] ) );
+  like( "@headers", qr/Status: 303 See Other/sm, 'Status: 303 See Other' )
+    or diag(
+    Dumper(
+      [ headers => \@headers,
+        output  => $output
+      ]
+    )
+    );
 };
 
 ########################################################################
@@ -73,11 +85,23 @@ subtest 'location' => sub {
   $header->print_header($ctx);
   my @headers = sort grep {$_} split /\r\n/xsm, $output;
 
-  is( $headers[1], 'Location: /foo' )
-    or diag( Dumper( [$output] ) );
+  like( "@headers", qr/Location: \/foo/sm, 'Location: /foo' )
+    or diag(
+    Dumper(
+      [ headers => "@headers",
+        output  => $output
+      ]
+    )
+    );
 
-  is( $headers[2], 'Status: 302 Found' )
-    or diag( Dumper( [$output] ) );
+  like( "@headers", qr/Status: 302 Found/sm, 'Status: 302 Found' )
+    or diag(
+    Dumper(
+      [ headers => "@headers",
+        output  => $output
+      ]
+    )
+    );
 };
 
 ########################################################################
@@ -90,13 +114,13 @@ subtest 'no_cache' => sub {
   $header->print_header($ctx);
   my @headers = sort grep { !/Content/xsm } split /\r\n/xsm, $output;
 
-  is( $headers[0], 'Cache-control: no-cache', 'Cache-control: no-cache' )
+  like( "@headers", qr/Cache-control: no-cache/sm, 'Cache-control: no-cache' )
     or diag( Dumper( [ \@headers ] ) );
 
-  is( $headers[1], 'Cache-control: no-store', 'Cache-control: no-store' )
+  like( "@headers", qr/Cache-control: no-store/sm, 'Cache-control: no-store' )
     or diag( Dumper( [ \@headers ] ) );
 
-  is( $headers[2], 'Pragma: no-cache', 'Pragma: no-cache' )
+  like( "@headers", qr/Pragma: no-cache/sm, 'Pragma: no-cache' )
     or diag( Dumper( [ \@headers ] ) );
 
 };

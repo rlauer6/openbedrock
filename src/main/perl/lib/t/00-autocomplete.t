@@ -12,7 +12,7 @@ BEGIN {
 }
 
 ########################################################################
-package FauxSession;
+package Bedrock::Test::FauxSession;
 ########################################################################
 
 ########################################################################
@@ -29,7 +29,7 @@ package main;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Bedrock::Test::RequestHandler;
+use Bedrock::Test::FauxHandler;
 use File::Temp qw(tempdir tempfile);
 use JSON;
 use Scalar::Util qw(reftype);
@@ -87,7 +87,7 @@ sub main {
 
   my ( $dir, $session_id, $filename ) = create_temp_file;
 
-  my $handler = Bedrock::Test::RequestHandler->new(
+  my $handler = Bedrock::Test::FauxHandler->new(
     content_type => 'application/json',
     uri          => '/session/' . $filename,
     filename     => $filename,
@@ -102,7 +102,11 @@ sub main {
     no warnings 'redefine';  ## no critic (ProhibitNoWarnings)
 
     *{'Bedrock::Apache::HandlerUtils::check_session'} = sub {
-      return bless { session => $session_id, dir => $dir }, 'FauxSession';
+      return bless {
+        session => $session_id,
+        dir     => $dir
+        },
+        'Bedrock::Test::FauxSession';
     };
 
   }

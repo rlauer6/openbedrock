@@ -195,9 +195,15 @@ client-cert: certs
 	openssl rsa -in $(CLIENT_KEY) -out $(CLIENT_KEY)
 	openssl x509 -sha1 -req -in $(CLIENT_CSR) -days 3650 -CA $(CA_CERT) -CAkey $(CA_KEY) -set_serial 01 > $(CLIENT_CERT)
 
-DOCKERFILE_DEBIAN = Dockerfile.debian
-DOCKERFILE_AL2023 = Dockerfile.al2023
-DOCKERFILE_FEDORA = Dockerfile.fedora
+DOCKERFILE_DEBIAN      = Dockerfile.debian
+DOCKERFILE_DEBIAN_BASE = Dockerfile.bedrock-base-debian
+
+DOCKERFILE_AL2023      = Dockerfile.al2023
+DOCKERFILE_AL2023_BASE = Dockerfile.bedrock-base-al2023
+
+DOCKERFILE_FEDORA      = Dockerfile.fedora
+DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-base-fedora
+
 DOCKERFILE_GITHUB = Dockerfile.github
 
 BEDROCK_VERSION = $(shell cat $(top_srcdir)/VERSION)
@@ -213,21 +219,30 @@ cpan/Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_srcdir)/bedrock-$(BEDROCK_VERSION)
 Bedrock.tar.gz: cpan/Bedrock-$(BEDROCK_VERSION).tar.gz
 	cp $(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz Bedrock.tar.gz
 
-bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz
+bedrock-debian-base: $(DOCKERFILE_DEBIAN_BASE)
+	docker build -f $< . -t $@ && touch $@
+
+bedrock-fedora-base: $(DOCKERFILE_FEDORA_BASE)
+	docker build -f $< . -t $@ && touch $@
+
+bedrock-al2023-base: $(DOCKERFILE_AL2023_BASE)
+	docker build -f $< . -t $@ && touch $@
+
+bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz bedrock-debian-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
-bedrock-fedora: $(DOCKERFILE_FEDORA) Bedrock.tar.gz
+bedrock-fedora: $(DOCKERFILE_FEDORA) Bedrock.tar.gz bedrock-fedora-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
-bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock.tar.gz
+bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock.tar.gz bedrock-al2023-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build -f $< . -t $@:latest | tee $$LOG; \

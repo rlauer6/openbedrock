@@ -89,8 +89,8 @@ perl5bedrocklib_DATA = \
 perl5bedrocktestlib_DATA = \
     Bedrock/Test/FauxContext.pm \
     Bedrock/Test/FauxHandler.pm \
-    Bedrock/Test/Utils.pm \
-    Bedrock/Test/RequestHandler.pm
+    Bedrock/Test/FauxLogger.pm \
+    Bedrock/Test/Utils.pm
 
 BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
 
@@ -402,7 +402,14 @@ clean-local:
 # test one :  TEST=01-indexedtablehandler
 # test group: TEST=indexedtablehandler 
 #
-test: Bedrock/Test.pm Bedrock/Test/Utils.pm Bedrock/Test/FauxContext.pm Bedrock/Test/FauxHandler.pm
+FAUXMODULES = \
+    Bedrock/Test.pm \
+    Bedrock/Test/FauxLogger.pm \
+    Bedrock/Test/Utils.pm \
+    Bedrock/Test/FauxContext.pm \
+    Bedrock/Test/FauxHandler.pm
+
+test: $(FAUXMODULES)
 	echo "$$TEST"; \
 	if test -z "$$TEST"; then \
 	  TEST="t"; \

@@ -6,7 +6,7 @@ use warnings;
 use Bedrock;
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw(:booleans);
-use Bedrock::Test::RequestHandler;
+use Bedrock::Test::FauxHandler;
 use Carp::Always;
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
@@ -46,7 +46,7 @@ sub main {
 ########################################################################
   subtest 'read config' => sub {
 ########################################################################
-    $request_handler = Bedrock::Test::RequestHandler->new( log_level => 'trace' );
+    $request_handler = Bedrock::Test::FauxHandler->new( log_level => 'trace' );
 
     my $config_path = abs_path '../../../main/bedrock/config';
 

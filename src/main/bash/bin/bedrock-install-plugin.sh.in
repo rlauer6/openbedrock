@@ -26,19 +26,27 @@ install_plugin() {
         fi
         command="$force -p $INSTALL_PATH $command"
     else
-        FORMAT="$1";
-        command="-F $FORMAT $command"
+        test -n "$1" && FORMAT="-F $1";
+        command="$FORMAT $command"
     fi
 
     shift;
-
+    
     MODULINO=$(echo $MODULE | perl -M$MODULE -ne 'chomp; s/::/\//g; $m="$_.pm"; print $INC{$m};' 2>/dev/null)
     if test -n "$MODULINO"; then
-        POSIXLY_CORRECT=1 perl $MODULINO $command "$@"
+        PLUGIN=$(perl -M$MODULE -e "print $MODULE->isa(q{Bedrock::Application::Plugin});")
+        if [[ "$PLUGIN" = "1" ]]; then
+            POSIXLY_CORRECT=1 perl $MODULINO $command "$@"
+        else
+            MODULINO=$(perl -MBedrock::Application::Plugin -e 'print $INC{"Bedrock/Application/Plugin.pm"};' 2>/dev/null)
+            POSIXLY_CORRECT=1 perl $MODULINO --plugin $MODULE $command "$@"
+        fi
     else
         echo "ERROR: could not find $MODULE"
     fi
-}
+
+}  
+  
 
 ########################################################################
 usage() {
@@ -164,7 +172,16 @@ case "$command" in
         test -n "$location" && location="-l $location"
 
         if [[ -z "$installed" || -n "$reinstall" ]]; then
-            cpanm -v $MIRROR $location $plugin
+            found=$(curl -s https://fastapi.metacpan.org/v1/download_url/$plugin | jq -r '.release//""')
+            if test -z "$found"; then
+                echo "no $plugin found on CPAN"
+            fi
+
+            if test -n "$found" || test -n "$MIRROR"; then
+                cpanm -v $MIRROR $location $plugin
+            else
+                exit 1;
+            fi
         fi
 
         install_plugin $command $module "$@"
