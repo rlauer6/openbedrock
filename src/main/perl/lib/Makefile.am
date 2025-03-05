@@ -73,6 +73,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Install.pm \
     Bedrock/LoadConfig.pm \
     Bedrock/Logger.pm \
+    Bedrock/Log.pm \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Pager.pm \

@@ -196,13 +196,13 @@ client-cert: certs
 	openssl x509 -sha1 -req -in $(CLIENT_CSR) -days 3650 -CA $(CA_CERT) -CAkey $(CA_KEY) -set_serial 01 > $(CLIENT_CERT)
 
 DOCKERFILE_DEBIAN      = Dockerfile.debian
-DOCKERFILE_DEBIAN_BASE = Dockerfile.bedrock-base-debian
+DOCKERFILE_DEBIAN_BASE = Dockerfile.bedrock-debian-base
 
 DOCKERFILE_AL2023      = Dockerfile.al2023
-DOCKERFILE_AL2023_BASE = Dockerfile.bedrock-base-al2023
+DOCKERFILE_AL2023_BASE = Dockerfile.bedrock-al2023-base
 
 DOCKERFILE_FEDORA      = Dockerfile.fedora
-DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-base-fedora
+DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-fedora-base
 
 DOCKERFILE_GITHUB = Dockerfile.github
 
