@@ -10,20 +10,22 @@ Docker images based on several distributions described below.
 
 | Distribution | Dockerfile | Description |
 | ------------ | ---------- | ----------- |
-| Debian | Dockerfile.bedrock-base-debian | Debian distribution (`bookworm`) - base image |
+| Debian | Dockerfile.bedrock-debian-base | Debian distribution (`bookworm`) - base image |
 | Debian | Dockerfile.debian | Debian distribution (`bookworm`) |
-| Fedora | Dockerfile.bedrock-base-fedora | Fedora distribution (40) - base image |
+| Fedora | Dockerfile.bedrock-fedora-base | Fedora distribution (40) - base image |
 | Fedora | Dockerfile.fedora | Fedora distribution (40) |
+| Amazon Linux | Dockerfile.bedrock-al20230base | Amazon Linux 2023 - base image |
 | Amazon Linux | Dockerfile.al2023 | Amazon Linux 2023 |
 
 Each of these Dockerfiles will create a Docker image that includes the
 latest verison of Bedrock built specifically for that distribution. To
 speed development of Bedrock itself, base images are created for
-Debian and Fedora that contain the Apache server (mod_perl enabled)
-and the current list of Perl module dependencies.  It can take a
-relatively long time to build all of the dependencies. By creating a
-base image that contains all of the dependencies minus Bedrock itself
-it becomes easier to make changes to Bedrock and test the results.
+Debian, Fedora and Amazon Linxu that contain the Apache server
+(mod_perl enabled) and the current list of Perl module dependencies.
+It can take a relatively long time to build all of the
+dependencies. By creating a base image that contains all of the
+dependencies minus Bedrock itself it becomes easier to make changes to
+Bedrock and test the results.
 
 # CI for Bedrock
 
@@ -97,12 +99,12 @@ regarding how to enable the documentation server.
 
 # Bedrock Enabled Apache Website
 
-After all of the dependencies have been installed during the make
+After all of the dependencies have been installed during the `make`
 process, the last step to create the complete the image that will be
 used by our `docker-compose.yml` configuration is to install Bedrock and
 the Apache web site. This is done by building the image by using
-either the `Dockerfile.debian` or `Dockerfile.fedora`
-Dockefiles. Essentially these Dockerfiles will just add Bedrock to the
+either the `Dockerfile.debian`, `Dockerfile.fedora`, or `Dockerfile.al2023`
+Dockerfiles. Essentially these Dockerfiles will just add Bedrock to the
 image and then run `bedrock-site-install` which creates a Bedrock
 enabled Apache environment.
 
@@ -128,13 +130,17 @@ file.
 
 > Hint: If a change is made to Bedrock or the files to be installed
 > to enable the Apache website, you can shortcut the image creation
-> process. The `docker-compose.yml` file mounts `/tmp/scratch` for
-> you to allow transferring files back and forth from the container to
-> your host system.  Copy the new Bedrock distribution to the scratch
-> directory and install Bedrock using `cpanm`. If necessary run the
-> site installation script (`bedrock-site-install`). If new
-> dependencies are added you'll need to add those before restarting
-> the web server (`kill -USR1 1`).
+> process. Copy the new Bedrock distribution to the contain Bedrock
+> using `cpanm`.
+
+```
+docker cp Bedrock-3.2.0.tar.gz docker_web_1:/tmp
+cpanm -n -v Bedrock-3.2.0.tar.gz
+```
+
+>If necessary run the site installation script
+> (`bedrock-site-install`). If new dependencies are added you'll need
+> to add those before restarting the web server (`kill -USR1 1`).
 
 Using the distribution environment file (e.g. `apache24-env-debian`)
 and the site configuration (`site-config.inc`), the installation
@@ -188,7 +194,7 @@ if you enabled that in your `tagx.xml` file.
 
 # Running the Server Using `docker-compose`
 
-A `docker-compose.yml` file is include that will launch the container
+A `docker-compose.yml` file is included that will launch the container
 and bring up an Apache webserver listening on port 80. It will also
 bring up a MySQL server running on port 3306.
 
@@ -308,9 +314,9 @@ port 8080.  The setup Looks something like this...
 >configure port forwarding for port 8080.
 
 Additionally, all ports are normally blocked to my EC2 except 22. In this scenario
-we open port 80 of my EC2 to the bastion host as well as port 22. Keep
+we open port 80 of my EC2 to the bastion host (only) as well as port 22. Keep
 in mind you still want to restrict port 22 on your bastion host to
-your local IP address __only__.
+your local IP address!
 
 To bring up the tunnel I use the command below in Linux running on my
 Chromebook.
@@ -331,12 +337,12 @@ ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_
 * $REMOTE_USER - remote user used to access bastion host
 * $REMOTE_BASTION - public IP of the bastion host
 
-Here's the help script that accomplishes the same thing:
+Here's the helper script that accomplishes the same thing:
 
 ```
 #!/bin/bash
 
-BASTION=50.17.129.75
+BASTION=xx.xx.xx.xx
 REMOTE_IP=10.1.4.191
 USER=ec2-user
 REMOTE_PORT=80
@@ -348,13 +354,13 @@ ssh -i ~/.ssh/id_rsa -f -N -L $LOCAL_PORT:$REMOTE_IP:$REMOTE_PORT $USER@$BASTION
 _or use the `web-tunnel` script in this directory._
 
 ```
-./web-tunnel -u ec2-user -i 10.1.4.191 -b 50.17.129.75 -p 80 -l 8080 up
+./web-tunnel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 up
 ```
 
 ..to stop port forwarding
 
 ```
-./web-tunnel -O cancel -u ec2-user -i 10.1.4.191 -b 50.17.129.75 -p 80 -l 8080 up
+./web-tunnel -O cancel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 up
 ```
 
 # Installing from RPMs
