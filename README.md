@@ -75,10 +75,10 @@ echo 'Bedrock says <var $input.text>' | bedrock text='Hello World!'
 1. Build your required rpms on your own...which I had been doing for a
    LONG time.
 2. Package the rpm in such a way that it ignores dependencies and
-   essentially becomes, for all intents and purposes and CPAN tarball.
+   essentially becomes, for all intents and purposes a CPAN tarball.
 
 You can still build Bedrock the old fashioned way by cloning the repo
-and manually installing it as shown below.
+and manually installing as shown below.
 
 ## Manual Installation
 
@@ -105,15 +105,15 @@ bedrock --version
 
 ## Installing as a CPAN Distribution
 
->>Bedrock is not and may never be, uploaded to CPAN, however as
->detailed above it is now the preferred way of intalling Bedrock.
+>Bedrock is not and may never be, uploaded to CPAN, however as
+>detailed above it is now the preferred way of installing Bedrock.
 
 ### Prerequisites
 
 In addition to the prerequistes for manually installing Bedrock you
 will also need the artifacts listed below.
 
-* [`make-cpan-dist`](https://github.com/rlauer/make-cpan-dist.git)
+* [`make-cpan-dist`](https://github.com/rlauer6/make-cpan-dist.git)
 
 Follow the instructions below to create a distribution tarball.
 
@@ -142,14 +142,10 @@ or
 
 The manual installation method assumes you are trying to install all
 of the components of Bedrock in order to create a web application
-using an Apache server. Accordingly it will attempt to determine the
-type of your system (Redhat vs Debian) since that will affect where
-components eventually get installed.
-
-Rather than directly installing these components in your web
-directories, the installation process stages the components in the
-directory you configured as `datadir` under the `/bedrock`
-subdirectory. So if you did this:
+using an Apache server. However, rather than directly installing these
+components in your web directories, the installation process stages
+the components in the directory you configured as `datadir` under the
+`/bedrock` subdirectory. So if you did this:
 
 `./configure --prefix=/usr`
 
@@ -158,15 +154,24 @@ enabled web server under `/usr/share/bedrock`.
 
 Installing Bedrock from the CPAN distribution will install Bedrock
 where you would expect them to be installed using a CPAN installation
-method.
+method. After installing Bedrock from the CPAN distribution you can
+use all of the Perl module in Bedrock for templating or use the
+command line version of Bedrock (`bedrock`).
 
-In either case the additional files that make up the web framework are
-included in the distribution but are not automatically installed into
-your web application hierarchy.
+```
+echo '<trace --output $config>' | bedrock
+```
 
-A separate utility is included for configuring your web environment
-that should be run after installing Bedrock from the distribution
-tarball.
+Whether you manually install Bedrock or use the CPAN distribution the
+additional files that make up the web framework are installed are not
+automatically installed into your web application hierarchy.
+
+A separate utility (`bedrock-site-install`) is included for
+configuring and finalizing your web environment.  You typically would
+run this utility after after installing Bedrock. The utility takes an
+argument that indicates the type of your system (Redhat vs Debian) so
+it will install components into the correct locations for that
+distribution.
 
 See `man bedrock-site-install` for more details.
 
@@ -179,6 +184,13 @@ rapidly replacing the use of templating packages alone as a web development
 framework. Bedrock was born in the late 90's when other solutions
 were being born as well.  It was used (and is still used today) by the
 company that funded its development.
+
+Bedrock has been proven to be extremely useful for prototyping, rapid
+application development and anything that needs a solid templating
+enviroment. Give it a try! Feedback welcome!
+
+Some quick Bedrock tricks...
+
 
 ## Tests
 
