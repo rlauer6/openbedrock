@@ -425,6 +425,7 @@ AC_CONFIG_FILES(
         [Makefile]
         [bin/Makefile]
         [cpan/Makefile]
+        [cpan/bedrock-lite/Makefile]
         [src/Makefile]
         [src/main/Makefile]
         [src/main/bash/Makefile]
