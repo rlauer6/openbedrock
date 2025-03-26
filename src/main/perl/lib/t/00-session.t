@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 
@@ -132,8 +134,6 @@ subtest 'create_session_file' => sub {
   ok( -s $file, 'file written' );
 
   my $obj = eval {
-    require JSON::PP;
-
     my $content = slurp_file $file;
 
     return JSON->new->decode($content);
@@ -145,8 +145,6 @@ subtest 'create_session_file' => sub {
   unlink $file;
 
   my $session_dir = $session->create_session_dir;
-
-  rmdir $session_dir;
 };
 
 my $session_id = $session->{session};
@@ -174,8 +172,36 @@ subtest 'save' => sub {
 };
 
 ########################################################################
+subtest expire_session => sub {
+########################################################################
+  my $dbi = $session->db_handle;
+
+  my $session_dir = $session->create_session_dir;
+
+  ok( -d $session_dir, "$session_dir exists" );
+
+  my $sql = <<'END_OF_SQL';
+update session
+  set expires = date_sub(now(), interval 10 minute)
+  where session = ?
+END_OF_SQL
+
+  $dbi->do( $sql, {}, $session->{session} );
+
+  $config->{config}->{cleanup_session_dir} = 'yes';
+
+  $session->closeBLM;
+
+  ok( !-d $session_dir, "$session_dir cleaned up" );
+};
+
+########################################################################
 subtest 'register' => sub {
 ########################################################################
+  $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
+
+  $session = eval { return bind_module( $ctx, $config, 'BLM::Startup::UserSession' ); };
+
   my $rc = eval {
     return $session->register( 'fflintstone', 'W1lma', 'Fred', 'Flintstone', 'fflintstone@openbedrock.net' );
   };

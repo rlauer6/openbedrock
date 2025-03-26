@@ -1,0 +1,163 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Carp;
+use Data::Dumper;
+use Data::NestedKey;
+use English qw(no_match_vars);
+use JSON;
+use Pod::Usage;
+use List::Util qw(none);
+use YAML;
+use Getopt::Long qw(:config no_ignore_case);
+
+########################################################################
+sub slurp_file {
+########################################################################
+  my ($file) = @_;
+
+  local $RS = undef;
+
+  open my $fh, '<', $file
+    or croak "could not open $file\n";
+
+  my $content = <$fh>;
+
+  close $fh;
+
+  return $content;
+}
+
+########################################################################
+sub fetch_config {
+########################################################################
+  my ($file) = @_;
+
+  my $obj = eval {
+
+    if ( $file =~ /[.]xml$/xsm ) {
+      $Data::NestedKey::FORMAT ||= 'XML';
+
+      my $bedrock_obj = eval {
+        require Bedrock::XML;
+
+        return Bedrock::XML->new($file);
+      };
+
+      croak "unable to fetch $file\n$EVAL_ERROR"
+        if !$bedrock_obj || $EVAL_ERROR;
+
+      return $bedrock_obj->devolve;
+    }
+
+    if ( $file =~ /[.]json$/xsm ) {
+      my $json_obj = JSON->new->decode( slurp_file($file) );
+      $Data::NestedKey::FORMAT ||= 'JSON';
+
+      return $json_obj;
+    }
+
+    if ( $file =~ /[.yma?l]$/xsm ) {
+      my $yaml_obj = LoadFile($file);
+
+      $Data::NestedKey::FORMAT ||= 'YAML';
+      return $yaml_obj;
+    }
+
+    croak "don't know what to do with $file\n";
+  };
+
+  return $obj;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my @option_specs = qw(
+    help|h
+    infile|i=s
+    format|f=s
+  );
+
+  my %options;
+
+  GetOptions( \%options, @option_specs );
+
+  if ( $options{help} ) {
+    pod2usage( { -verbose => 1, -exitval => 1 } );
+  }
+
+  croak sprintf "not a valid format - %s (must be one of: xml, json, yml)\n", $options{format}
+    if $options{format} && none { $_ eq lc $options{format} } qw(xml json yaml);
+
+  $Data::NestedKey::FORMAT = uc( $options{format} // q{} );
+
+  croak "--infile is required\n"
+    if !$options{infile};
+
+  my $obj = fetch_config( $options{infile} );
+
+  my $dnk = Data::NestedKey->new( $obj, @ARGV );
+
+  if ( $Data::NestedKey::FORMAT eq 'XML' ) {
+    ## no critic
+    no warnings 'redefine';
+    no strict 'refs';
+
+    *{'Data::NestedKey::as_string'} = sub {
+      my ($self) = @_;
+
+      return Bedrock::XML::writeXML( $self->{data} );
+    };
+  }
+
+  print $dnk->as_string;
+
+  return 0;
+}
+
+exit main();
+
+1;
+
+__END__
+
+=pod
+
+=head1 SYNOPSIS
+
+ dnky-config {Options} key value key value ...
+
+ Update a configuration file with values.
+
+ Example:
+
+   dnky-config -i /var/wwww/bedrock/config.d/startup/mysql-session.xml config.password foo
+
+=head1 OPTIONS
+
+ --help, -h       this help message
+ --infile, -i     input file
+ --format, -f     xml, json, yml (default: input format)
+
+=head2 Notes
+
+=over 5
+
+=item 1. input format is determined by the extension (.xml, .yml, .json)
+
+=item 2. output format by default is same as input. Use C<--format> to alter output format
+
+=item 3. xml format means Bedrock XML
+
+=item 4. you can set multiple values on the command line
+
+Example:
+
+ dnky-config -i infile.json foo.bar buz foo.buz bar
+
+=back
+
+=cut

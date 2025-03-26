@@ -227,12 +227,12 @@ $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz:
 	cd $(top_srcdir); \
 	$(MAKE) distcheck
 
-cpan/Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz
+$(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz
 	cd $(top_srcdir)/cpan; \
 	make cpan
 
-Bedrock.tar.gz: cpan/Bedrock-$(BEDROCK_VERSION).tar.gz
-	cp $(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz Bedrock.tar.gz
+Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz
+	cp $(top_srcdir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz Bedrock-$(BEDROCK_VERSION).tar.gz
 
 bedrock-debian-base: $(DOCKERFILE_DEBIAN_BASE)
 	docker build -f $< . -t $@ && touch $@
@@ -243,24 +243,24 @@ bedrock-fedora-base: $(DOCKERFILE_FEDORA_BASE)
 bedrock-al2023-base: $(DOCKERFILE_AL2023_BASE)
 	docker build -f $< . -t $@ && touch $@
 
-bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock.tar.gz bedrock-debian-base
+bedrock-debian: $(DOCKERFILE_DEBIAN) Bedrock-$(BEDROCK_VERSION).tar.gz bedrock-debian-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
-	docker build -f $< . -t $@:latest | tee $$LOG; \
+	docker build --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
-bedrock-fedora: $(DOCKERFILE_FEDORA) Bedrock.tar.gz bedrock-fedora-base
+bedrock-fedora: $(DOCKERFILE_FEDORA) Bedrock-$(BEDROCK_VERSION).tar.gz bedrock-fedora-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
-	docker build -f $< . -t $@:latest | tee $$LOG; \
+	docker build  --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
-bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock.tar.gz bedrock-al2023-base
+bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock-$(BEDROCK_VERSION).tar.gz bedrock-al2023-base
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
-	docker build -f $< . -t $@:latest | tee $$LOG; \
+	docker build  --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 

@@ -18,7 +18,16 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  $dbi->disconnect;
+  $dbi->do('use bedrock');
+
+  my @tables = map { $_->[0] } $dbi->selectall_arrayref('show tables');
+
+  if ( !grep { $_ eq 'form_test' } @tables ) {
+    plan skip_all => 'TODO: create form_test table for test';
+  }
+  else {
+    $dbi->disconnect;
+  }
 }
 
 use_ok('BLM::IndexedTableHandler::Form');

@@ -253,7 +253,10 @@ subtest 'new()' => sub {
   my $new_ith = eval { return $ith->load_config(*DATA); };
 
   ok( !$EVAL_ERROR, 'loaded config and create new handler' )
-    or BAIL_OUT( Dumper( [ error => $EVAL_ERROR ] ) );
+    or do {
+    diag( Dumper( [ error => $EVAL_ERROR ] ) );
+    BAIL_OUT("could not load config\n");
+    };
 
   isa_ok( $new_ith, 'BLM::IndexedTableHandler' )
     or diag($EVAL_ERROR);
@@ -350,7 +353,7 @@ __DATA__
     }
   },
   "database": {
-     "dsn": "dbi:mysql:bedrock",
+     "dsn": "dbi:mysql:foo",
      "user": "fred",
      "password": "flintstone",
      "hostname": "127.0.0.1"

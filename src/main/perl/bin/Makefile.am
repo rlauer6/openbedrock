@@ -21,7 +21,8 @@ PERLSCRIPTS = \
     bedrock-model-importer.pl.in \
     bedrock-cache.pl.in \
     brxml2json.pl.in \
-    bedrock-site-install.pl.in
+    bedrock-site-install.pl.in \
+    dnky-config.pl.in
 
 GPERLSCRIPTS = $(PERLSCRIPTS:.pl.in=.pl)
 
@@ -58,6 +59,7 @@ install-data-hook: installdirs
 	ln -f -s @bindir@/bedrock-site-install.pl  $(DESTDIR)/$(bindir)/bedrock-site-install
 	ln -f -s @bindir@/bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
 	ln -f -s @bindir@/bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
+	ln -f -s @bindir@/dnky-config.pl $(DESTDIR)$(bindir)/dnky-config
 endif
 
 .PHONY: clean-local

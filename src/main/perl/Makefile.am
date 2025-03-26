@@ -70,7 +70,7 @@ harness: $(GBEDROCK_TEST_HARNESS)
 .PHONY: test
 test: $(BEDROCK_TESTS) $(GBEDROCK_TEST_HARNESS) bedrock-test
 	set -x; \
-	TEST=$$TEST ./bedrock-test
+	TEST=$$TEST ./run-tests test-list . .
 	rm -f test-list
 
 test-list:
