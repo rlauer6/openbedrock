@@ -102,7 +102,7 @@ $(GXML_FILES): % : %.in
 	$(do_subst) $$tmp > $@; \
 	rm $$tmp;
 
-$(GYML_FILES): % : %.in
+$(GYML_FILES): % : $(srcdir)/%.in
 	SESSION="$(SESSION)"; \
 	SESSION=$${SESSION:-mysql}; \
 	DBI_USER="$(DBI_USER)"; \
@@ -150,7 +150,9 @@ dist_noinst_DATA = \
     $(DOCKERFILE) \
     $(APACHE_CONF) \
     $(TAGX) \
-    $(BEDROCK_CONF)
+    $(BEDROCK_CONF) \
+    requires \
+    test-requires
 
 .PHONY: config
 config: $(CONFIG_FILES)
@@ -221,7 +223,7 @@ DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-fedora-base
 
 DOCKERFILE_GITHUB = Dockerfile.github
 
-BEDROCK_VERSION = $(shell cat $(top_srcdir)/VERSION)
+BEDROCK_VERSION = @PACKAGE_VERSION@
 
 $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz:
 	cd $(top_srcdir); \
@@ -264,15 +266,18 @@ bedrock-al2023: $(DOCKERFILE_AL2023) Bedrock-$(BEDROCK_VERSION).tar.gz bedrock-a
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
 
+.PHONY: bedrock-ci
+bedrock-ci: bedrock-test
+	cat ~/.ssh/github.token | docker login ghcr.io -u rlauer6 --password-stdin
+	docker build -f $< . -t ghcr.io/rlauer6/bedrock-test
+	docker push ghcr.io/rlauer6/bedrock-test:latest
+
 bedrock-test: $(DOCKERFILE_GITHUB)
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
-	cat ~/.ssh/github.token | docker login ghcr.io -u rlauer6 --password-stdin
-	docker build -f $< . -t ghcr.io/rlauer6/bedrock-test
-	docker push ghcr.io/rlauer6/bedrock-test:latest
 
 clean-local:
 	set -x; \
@@ -288,3 +293,4 @@ realclean: clean
 	if test -n "$$(docker image list | awk '{print $$1}' | grep '^bedrock$$')"; then \
 	  docker rmi bedrock; \
 	fi
+

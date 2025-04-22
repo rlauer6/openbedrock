@@ -4,14 +4,21 @@ use strict;
 use warnings;
 
 use Carp;
+use Cwd qw(realpath);
 use Data::Dumper;
 use Data::NestedKey;
 use English qw(no_match_vars);
+use File::Basename qw(fileparse);
+use Getopt::Long qw(:config no_ignore_case);
 use JSON;
 use Pod::Usage;
 use List::Util qw(none);
 use YAML;
-use Getopt::Long qw(:config no_ignore_case);
+
+use Readonly;
+
+Readonly::Scalar our $TRUE    => 1;
+Readonly::Scalar our $SUCCESS => 0;
 
 ########################################################################
 sub slurp_file {
@@ -66,10 +73,51 @@ sub fetch_config {
       return $yaml_obj;
     }
 
-    croak "don't know what to do with $file\n";
+    croak sprintf "I don't know what to do with %s\n", $file;
   };
 
+  croak "could not read $file:\n$EVAL_ERROR"
+    if !$obj;
+
   return $obj;
+}
+
+########################################################################
+sub replace_file {
+########################################################################
+  my ( $options, $content ) = @_;
+
+  my $backup;
+
+  # make a backup of the original file
+  if ( $options->{backup} ) {
+    my ( $name, $path, $ext ) = fileparse( $options->{infile}, qr/[.][^.]+$/xsm );
+    $path = realpath($path);
+
+    $backup = sprintf '%s/%s.%s', $path, $name, $options->{backup};
+    rename $options->{infile}, $backup;
+  }
+
+  eval {
+    open my $fh, '>', $options->{infile}
+      or croak sprintf "could not open %s for writing\n", $options->{file};
+
+    print {$fh} $content;
+
+    close $fh;
+  };
+
+  if ($EVAL_ERROR) {
+    my $err = $EVAL_ERROR;
+
+    if ($backup) {
+      rename $backup, $options->{infile};
+    }
+
+    croak $err;
+  }
+
+  return;
 }
 
 ########################################################################
@@ -79,6 +127,8 @@ sub main {
     help|h
     infile|i=s
     format|f=s
+    replace|r
+    backup|b=s
   );
 
   my %options;
@@ -113,9 +163,18 @@ sub main {
     };
   }
 
-  print $dnk->as_string;
+  if ( $options{backup} ) {
+    $options{replace} = $TRUE;
+  }
 
-  return 0;
+  if ( $options{replace} ) {
+    replace_file( \%options, $dnk->as_string );
+  }
+  else {
+    print {*STDOUT} $dnk->as_string;
+  }
+
+  return $SUCCESS;
 }
 
 exit main();
@@ -141,6 +200,8 @@ __END__
  --help, -h       this help message
  --infile, -i     input file
  --format, -f     xml, json, yml (default: input format)
+ --replace, -r    replace file
+ --backup, -b     backup extension, make a backup of the file before replacing
 
 =head2 Notes
 
@@ -154,10 +215,14 @@ __END__
 
 =item 4. you can set multiple values on the command line
 
-Example:
+=item 5. C<--backup> implies C<--replace>
+
+=back
+
+=head2 Example:
 
  dnky-config -i infile.json foo.bar buz foo.buz bar
 
-=back
+ dnky-config -i infile.json -b bak foo.bar buz
 
 =cut

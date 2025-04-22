@@ -71,7 +71,7 @@ Where `{target}` is one of:
 | `bedrock-al2023` | image based on `amazonlinux:2023` |
 
 After building and running a Docker container from one of the
-images you created, verify that Bedrock is installed working properly.
+images you created, verify that Bedrock is installed and working properly.
 
 ```
 docker run --rm -it bedrock-debian /bin/bash

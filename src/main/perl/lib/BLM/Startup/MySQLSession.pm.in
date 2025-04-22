@@ -24,7 +24,10 @@ package BLM::Startup::MySQLSession8;
 use strict;
 use warnings;
 
+use English qw(-no_match_vars);
+
 use BLM::Startup::SQLSession qw($DUPLICATE_USERNAME $USERNAME_NOT_FOUND $BAD_LOGIN);
+use Bedrock::DBI::Utils qw(load_dsn_from_config);
 
 use parent qw(BLM::Startup::SQLSession);
 
@@ -66,6 +69,55 @@ sub LOGIN {
     if !defined $aref;
 
   return $aref;
+}
+
+# +---------------------------------------------------------------+
+# | ->CONNECT( %options )                                         |
+# |                                                               |
+# | config      => configuration object                           |
+# |                                                               |
+# | Purpose: perform any database connection ritual required.     |
+# |          This method will be called when the session object   |
+# |          is instantiated.                                     |
+# | Returns: none                                                 |
+# +---------------------------------------------------------------+
+
+Readonly our $NO_DATASOURCE => "%s->CONNECT(): param 'data_source' must be specified in config\n";
+Readonly our $CONNECT_ERROR => "Could not connect to database %s:\n%s\n";
+
+sub CONNECT {
+  my ( $self, %options ) = @_;
+
+  my $config = $options{config};
+
+  my $dsn = load_dsn_from_config( $options{config} );
+
+  my @extra_options = grep {/^mysql_/xsm} keys %{$config};
+
+  if (@extra_options) {
+    $dsn = sprintf '%s;%s', $dsn, join q{;}, map { "$_=" . $config->{$_} } @extra_options;
+  }
+
+  $self->get_logger->debug( sprintf 'connecting to %s', $dsn );
+
+  # Get the required database params
+  die sprintf $NO_DATASOURCE, ref $self
+    if !$dsn;
+
+  $self->{dbh} = eval {
+    return DBI->connect(
+      $dsn,
+      @{ $options{config} }{qw(username password)},
+      { RaiseError => $TRUE,
+        AutoCommit => $TRUE
+      }
+    );
+  };
+
+  die sprintf $CONNECT_ERROR, $dsn, $EVAL_ERROR
+    if !$self->{dbh} || $EVAL_ERROR;
+
+  return;
 }
 
 ########################################################################
