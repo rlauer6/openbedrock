@@ -20,8 +20,8 @@ Docker images based on several distributions described below.
 Each of these Dockerfiles will create a Docker image that includes the
 latest verison of Bedrock built specifically for that distribution. To
 speed development of Bedrock itself, base images are created for
-Debian, Fedora and Amazon Linxu that contain the Apache server
-(mod_perl enabled) and the current list of Perl module dependencies.
+Debian, Fedora and Amazon Linux that contain the Apache server
+(`mod_perl` enabled) and the current list of Perl module dependencies.
 It can take a relatively long time to build all of the
 dependencies. By creating a base image that contains all of the
 dependencies minus Bedrock itself it becomes easier to make changes to
@@ -31,11 +31,11 @@ Bedrock and test the results.
 
 See [README-github.md](docker/README-github.md) for details regarding
 how to create the Docker image used for continuous integration when
-new branches are pushed to GitHub.
+commits are pushed to GitHub.
 
 # Building the Bedrock Images
 
-A `Makefile` is included in the `docker` directory that will create
+A `Makefile.am` is included in the `docker` directory that will create
 Docker images based on various distros described above.  The
 Dockerfiles for each of these flavors attempts to build the
 dependencies for that environment, each of which have their own way of
@@ -44,25 +44,12 @@ be a lengthy process. You can shortcut building the image and just
 install Bedrock or website updates manually inside your container. See
 [Bedrock Enabled Apache Website](#bedrock-enabled-apache-website).
 
-The build process will first run `make` from the root of the
-repository creating the distribution tarball and a CPAN distribution
-that is then used to install Bedrock. Once all of the dependencies are
-installed, the make process installs Bedrock. Finally, the
-`bedrock-site-install` script is run which installs the Bedrock
-enabled Apache website. You can this use this site for developing
-Bedrock applications or for exploring Bedrock.
+## Build Process Steps
 
-To build an image based on one of these distributions:
-
-```
-make {target}
-```
-
-Where `{target}` is one of:
-
-* `bedrock-debian`
-* `bedrock-fedora`
-* `bedrock-al2023`
+Since you are reading the `README` in the `docker` directory you are
+presumably interested in creating Docker images for running a Bedrock
+website. The `Makefile.am` here will create Docker images for three
+Linux distributions:
 
 | Image | Description |
 | ----- | ----------- |
@@ -70,13 +57,51 @@ Where `{target}` is one of:
 | `bedrock-fedora` | image based on `fedora:40`        |
 | `bedrock-al2023` | image based on `amazonlinux:2023` |
 
+When you run `make` in the `docker` directory it will run `make` from
+the root of the project creating the distribution tarball and a CPAN
+distribution that is then used to install Bedrock on images.
+
+To create the images:
+
+```
+make && make images
+```
+
+`make images` will creates the base images which include all
+dependencies for building bedrock for each of the supported
+distributions. After the base images are created it will create the
+final images by installing Bedrock in the base image and running the
+`bedrock-site-install` script is run which installs and configures the
+Bedrock enabled Apache website.
+
+You can use this site for developing Bedrock applications or for
+exploring Bedrock.
+
+To build an image based on just one of the Linux distributions:
+
+```
+make && make {target}
+```
+
+Where `{target}` is one of:
+
+* `debian`
+* `fedora`
+* `al2023`
+
+
 After building and running a Docker container from one of the
 images you created, verify that Bedrock is installed and working properly.
 
 ```
-docker run --rm -it bedrock-debian /bin/bash
+docker run -d -p 80:80 bedrock-debian
 curl http:://localhost
 ```
+
+## Docker Compose
+
+This directory also contains a `docker-compose.yml` file you can use
+to bring up a LAMB (Linux/Apache/MySQL/Bedrock) stack.
 
 There is a `.env` file for each distribution for use with
 `docker-compose`.  To bring up the Bedrock server using
@@ -85,10 +110,24 @@ There is a `.env` file for each distribution for use with
 ```
 docker-compose --env debian.env up
 ```
+
 or 
 
 ```
 DOCKERFILE=Dockerfile.fedora DOCKERIMAGE=bedrock-fedora docker-compose up
+```
+
+## Localstack & Redis
+
+The `docker-compose.yml` file also contains the configurations to
+bring up a Redis server and the Localstack (AWS emulator)
+environments.
+
+These can be enabled using the `--profile` option when you invoke
+`docker-compose`.
+
+```
+BEDROCK=~/git/openbedrock docker-compose --profile redis --profile localstack up
 ```
 
 Visit the Bedrock documentation at http://localhost/bedrock to
@@ -99,17 +138,14 @@ regarding how to enable the documentation server.
 
 # Bedrock Enabled Apache Website
 
-After all of the dependencies have been installed during the `make`
-process, the last step to create the complete the image that will be
-used by our `docker-compose.yml` configuration is to install Bedrock and
-the Apache web site. This is done by building the image by using
-either the `Dockerfile.debian`, `Dockerfile.fedora`, or `Dockerfile.al2023`
-Dockerfiles. Essentially these Dockerfiles will just add Bedrock to the
-image and then run `bedrock-site-install` which creates a Bedrock
-enabled Apache environment.
+After the base image containing all of Bedrock and Apache's
+dependencies have been installed the final image is created. During
+that creation the Apache environment is finalized and a Bedrock
+enabled website is installed using the `bedrock-site-install`
+script. Essentially the final image is produced like this:
 
 ```
-cpanm -n -v Bedrock.tar.gz
+cpanm -n -v Bedrock-3.3.1.tar.gz
 bedrock-site-install --distro=redhat
 ```
 
@@ -134,13 +170,18 @@ file.
 > using `cpanm`.
 
 ```
-docker cp Bedrock-3.2.0.tar.gz docker_web_1:/tmp
-cpanm -n -v Bedrock-3.2.0.tar.gz
+docker cp Bedrock-3.3.2.tar.gz docker_web_1:/tmp
+```
+
+...then inside the container
+
+```
+cpanm -n -v Bedrock-3.3.2.tar.gz
 ```
 
 >If necessary run the site installation script
 > (`bedrock-site-install`). If new dependencies are added you'll need
-> to add those before restarting the web server (`kill -USR1 1`).
+> to add those before restarting the web server (`apachectl graceful`).
 
 Using the distribution environment file (e.g. `apache24-env-debian`)
 and the site configuration (`site-config.inc`), the installation
@@ -156,7 +197,7 @@ changes to this file while running your container, be sure to test
 your configuration before restarting the server.
 
 ```
-httpd -t -f /etc/httpd/conf/http.conf && kill -USR1 1
+httpd -t -f /etc/httpd/conf/http.conf && apachectl graceful
 ```
 
 > Warning: If you do not test the configuration first and an error
@@ -179,7 +220,14 @@ configuration for the container environment.
 Likewise this file contains a database configuration for the database
 running inside the container environment.
 
+
 ## Bedrock Documentation
+
+By default Bedrock documentation is enabled (See `ALLOW_BEDROCK_INFO`
+in `tagx.xml`) however your webserver document directory must have an
+empty `/bedrock` directory created (this was done for you by
+`bedrock-site-install`). You can then access documentation at
+http://localhost:8080/bedrock
 
 The Bedrock documentation page (`/bedrock`) is protected by a Basic
 Auth challenge (username: `fred`, password: `bedrock`). The page is
@@ -192,40 +240,9 @@ if you enabled that in your `tagx.xml` file.
 > this URI. One way to achieve that is to edit the environment files
 > described below that control the configuration of each image flavor.
 
-# Running the Server Using `docker-compose`
-
-A `docker-compose.yml` file is included that will launch the container
-and bring up an Apache webserver listening on port 80. It will also
-bring up a MySQL server running on port 3306.
-
-```
-cd docker
-docker-compose --env bedrock-debian up
-```
-
-## Localstack & Redis
-
-The `docker-compose.yml` file also contains the configurations to
-bring up a Redis server and the Localstack (AWS emulator)
-environments.
-
-These can be enabled using the `--profile` option when you invoke
-`docker-compose`.
-
-```
-BEDROCK=~/git/openbedrock docker-compose --profile redis --profile localstack up
-```
-
-## Bedrock Documentation
-
-By default Bedrock documentation is enabled (See `ALLOW_BEDROCK_INFO`
-in `tagx.xml`) however your webserver document directory must have an empty
-`/bedrock` directory created. You can then access documentation at
-http://localhost:8080/bedrock
-
 # Connecting to the MySQL Server
 
-## Connecting to localhost
+## Connecting to `localhost`
 
 To connect to the MySQL server running in the container without using
 TCP you need to expose the socket to your host.  The
@@ -258,7 +275,7 @@ use DBI;
 
 ## Connecting via TCP
 
-Find the IP address of the MySQL server running in the container:
+Use 127.0.0.1 or find the IP address of the MySQL server running in the container:
 
 ```
 export DBI_HOST=$(docker inspect docker_db_1 | \

@@ -54,3 +54,20 @@ make bedrock-test
 
 This will create a new `bedrock-test` image and push it to the GitHub
 registry.
+
+# Building a Docker Image from Docker
+
+The `bedrock-test` image is a self-container Docker image with all of
+the prerequisites to build a Bedrock Image.  It does not include
+Bedrock, just the artifacts required to build Bedrock. It is used to
+test the build but can also be used to create Bedrock images.
+
+To build a Bedrock image you need to run in privilged mode and then
+startup `docker` inside the container.
+
+```
+docker run --rm -it --privileged -v /var/lib/docker bedrock-test /bin/bash
+```
+
+...then `service docker start`
+

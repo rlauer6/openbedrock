@@ -103,6 +103,6 @@ PACKAGE_EXE =
 
 include $(top_srcdir)/cpan/Makefile.cpan
 
-CLEANFILES = \
+CLEANFILES += \
     $(PACKAGE_MODULES) \
     Lite.pm

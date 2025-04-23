@@ -52,7 +52,7 @@ make test
 # Bedrock GitHub CI Container
 
 The docker image used to build and test Bedrock is based on the
-`perl:5.40-threaded-bookworm' docker image (a Debian variant). A
+`perl:5.40-threaded-bookworm` docker image (a Debian variant). A
 [Dockerfile](docker/Dockerfile.github) is provided as part of this
 project which will load all of the dependencies required to build and
 test Bedrock.
@@ -67,11 +67,12 @@ In order to push an image to the GitHub Container Registry you need a
 personal access token with privileges to do so. If you've lost the
 token you'll need to re-create one [here.](https://github.com/settings/tokens)
 
-After building the image, login to the registry and push the image to GitHub.
+The build and push of the image to the registry is done by running
+`make bedrock-test` in the `docker` directory...but as a reminder
+after building the image, the `make` recipe will login to the registry
+and push the image to GitHub.
 
 ```
-cd docker
-docker build -f Dockerfile.github . -t bedrock-test:latest
 echo $GITHUB_TOKEN | docker login ghcr.io -u rlauer6 --password-stdin
 docker push ghcr.io/rlauer6/bedrock-test:latest
-``
+```

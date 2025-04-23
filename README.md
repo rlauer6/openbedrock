@@ -15,6 +15,11 @@ This is the README file for the `bedrock` project.
 
 ![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
+**NEW!**
+
+Bedrock images are now available on dockerhub. [Try Bedrock
+now!](https://hub.docker.com/r/rlauer/openbedrock)
+
 # Overview
 
 Bedrock is a server side web development framework that can be used
@@ -188,9 +193,6 @@ company that funded its development.
 Bedrock has been proven to be extremely useful for prototyping, rapid
 application development and anything that needs a solid templating
 enviroment. Give it a try! Feedback welcome!
-
-Some quick Bedrock tricks...
-
 
 ## Tests
 

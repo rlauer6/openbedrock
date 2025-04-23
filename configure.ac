@@ -22,7 +22,7 @@ dnl proofing; as of may not be used yet...)
 AC_CONFIG_MACRO_DIR([autotools])
 
 dnl Turn on all Automake warnings and report them as errors
-AM_INIT_AUTOMAKE([-Wall foreign tar-ustar ])
+AM_INIT_AUTOMAKE([-Wall -Wno-portability gnu foreign tar-ustar ])
 
 DFLT_MAINTAINER="rclauer@gmail.com"
 AC_SUBST([DFLT_MAINTAINER])
@@ -144,6 +144,43 @@ AC_ARG_WITH(
         )
 
 AC_SUBST([apache_sessiondir])
+
+
+AC_ARG_WITH([mysql-host],
+  [AS_HELP_STRING([--with-mysql-host=HOST], [MySQL host (default: bedrock_db_1)])],
+  [mysql_host="$withval"],
+  [mysql_host="bedrock_db_1"]
+)
+
+AC_ARG_WITH([mysql-user],
+  [AS_HELP_STRING([--with-mysql-user=USER], [MySQL user (default: fred)])],
+  [mysql_user="$withval"],
+  [mysql_user="fred"]
+)
+
+AC_ARG_WITH([mysql-password],
+  [AS_HELP_STRING([--with-mysql-password=PASS], [MySQL user password (default: flintstone)])],
+  [mysql_password="$withval"],
+  [mysql_password="flintstone"]
+)
+
+AC_ARG_WITH([mysql-database],
+  [AS_HELP_STRING([--with-mysql-database=database], [MySQL user database (default: bedrock)])],
+  [mysql_database="$withval"],
+  [mysql_database="bedrock"]
+)
+
+AC_ARG_WITH([mysql-root-password],
+  [AS_HELP_STRING([--with-mysql-root-password=PASS], [MySQL root password (default: bedrock)])],
+  [mysql_root_password="$withval"],
+  [mysql_root_password="bedrock"]
+)
+
+AC_SUBST([mysql_host])
+AC_SUBST([mysql_user])
+AC_SUBST([mysql_password])
+AC_SUBST([mysql_database])
+AC_SUBST([mysql_root_password])
 
 AC_PATH_PROG([PERL],
 	[perl], [/usr/bin/env perl], [/usr/local/bin:/usr/bin:$PATH])
@@ -365,6 +402,12 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]apache_default_htdocsdir[@],$(apache_default_htdocsdir),g'"'"' \
   -e '"'"'s,[@]apache_sessiondir[@],$(apache_sessiondir),g'"'"' \
 \
+  -e '"'"'s,[@]mysql_user[@],$(MYSQL_USER),g'"'"' \
+  -e '"'"'s,[@]mysql_password[@],$(MYSQL_PASSWORD),g'"'"' \
+  -e '"'"'s,[@]mysql_host[@],$(MYSQL_HOST),g'"'"' \
+  -e '"'"'s,[@]mysql_database[@],$(MYSQL_DATABASE),g'"'"' \
+  -e '"'"'s,[@]mysql_root_password[@],$(MYSQL_ROOT_PASSWORD),g'"'"' \
+\
   -e '"'"'s,[@]AWK[@],$(AWK),g'"'"' \
   -e '"'"'s,[@]BASH_SH[@],$(BASH_SH),g'"'"' \
   -e '"'"'s,[@]CAT[@],$(CAT),g'"'"' \
@@ -503,6 +546,12 @@ printf "                     cgibindir: %s\n" "`__poor_mans_expand_file_name cgi
 printf "                     htdocsdir: %s\n" "`__poor_mans_expand_file_name htdocsdir`"
 printf "                    pebblesdir: %s\n" "`__poor_mans_expand_file_name pebblesdir`"
 printf "                        imgdir: %s\n" "`__poor_mans_expand_file_name imgdir`"
+printf "\n"
+printf "                    mysql_user: %s\n" "`__poor_mans_expand_file_name mysql_user`"
+printf "                mysql_password: %s\n" "`__poor_mans_expand_file_name mysql_password`"
+printf "                    mysql_host: %s\n" "`__poor_mans_expand_file_name mysql_host`"
+printf "                mysql_database: %s\n" "`__poor_mans_expand_file_name mysql_database`"
+printf "           mysql_root_password: %s\n" "`__poor_mans_expand_file_name mysql_root_password`"
 printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
