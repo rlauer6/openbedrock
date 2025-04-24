@@ -79,7 +79,7 @@ sub _detect_handle_format {
 ########################################################################
   my ($fh) = @_;
 
-  my $is_data = *DATA{IO} && $fh == \*DATA;
+  my $is_data = *DATA{IO} && defined fileno($fh) && fileno($fh) == fileno \*DATA;
 
   my $original_pos = !$is_data ? 0 : tell $fh;
 

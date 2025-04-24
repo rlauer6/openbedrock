@@ -7,7 +7,7 @@ GITHUB_TOKEN ?= $(shell cat ~/.ssh/github.token)
 
 .PHONY: bedrock-ci
 bedrock-ci: $(DOCKERFILE_GITHUB) bedrock-test
-	cat $(GITHUB_TOKEN) | docker login $(GHCR) -u rlauer6 --password-stdin
+	echo $(GITHUB_TOKEN) | docker login $(GHCR) -u rlauer6 --password-stdin
 	docker build -f $< . -t $(GHCR_REPO)/bedrock-test
 	docker push $(GHCR_REPO)/bedrock-test:latest
 

@@ -40,6 +40,11 @@ MAINTAINERCLEANFILES = config.status \
 
 DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 
+.PHONY: ensure-clean-build-from-top
+ensure-clean-build-from-top:
+	@echo "Performing clean build check from top level..."
+	$(MAKE) all dist
+
 clean-local:
 	for a in $$(ls bedrock*.tar.gz); do \
 	  rm -f $$a; \

@@ -98,11 +98,3 @@ dist_noinst_DATA = \
     test-requires
 
 CLEANFILES += $(CONFIG_FILES)
-
-clean-local:
-	set -x; \
-	bedrock="$$(docker ps -a | tail -n +2 | grep 'bedrock' | awk '{print $$1}')"; \
-	echo $$bedrock; \
-	if test -n "$$bedrock"; then \
-	  docker rm -f $$bedrock; \
-	fi;
