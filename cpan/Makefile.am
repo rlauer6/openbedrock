@@ -1,34 +1,42 @@
 SUBDIRS = . bedrock-lite
 
-CPAN_DIST_MAKER=make-cpan-dist.pl
+CPAN_DIST_MAKER = make-cpan-dist.pl
 
-package_version=@PACKAGE_VERSION@
-package=@PACKAGE@
+PACKAGE_VERSION = @PACKAGE_VERSION@
 
-# builds the distribution tarball and renames based on package version
+TARBALL = Bedrock-$(PACKAGE_VERSION).tar.gz
+
+REQUIRES_FILE = $(srcdir)/requires
+TEST_REQUIRES_FILE = $(srcdir)/test-requires
+
+.PHONY: cpan
 cpan: buildspec.yml
-	cd $(top_srcdir); \
-	$(MAKE) clean && $(MAKE)
-
+	rm -f $(TARBALL); \
+	$(MAKE) -C $(top_builddir) ensure-clean-build-from-top
+	tmpdir=$$(mktemp -d); \
+	project_root="$${tmpdir}/usr"; \
+	$(MAKE) -C $(top_builddir) install DESTDIR=$$tmpdir; \
 	test -n "$$DEBUG" && set -x; \
 	test -n "$$DEBUG" && DEBUG="--debug"; \
-	test -e requires && REQUIRES="-r requires"; \
+	REQUIRES="-r $$project_root/share/bedrock/requires"; \
 	test -n "$(NOCLEANUP)" && NOCLEANUP="--no-cleanup"; \
 	test -n "$(DRYRUN)" && DRYRUN="--dryrun"; \
 	test -n "$(SCANDEPS)" && SCANDEPS="-s"; \
 	test -n "$(NOVERSION)" && NOVERSION="-n"; \
-	PROJECT_ROOT="--project-root $$(readlink -f ..)"; \
-	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || echo "$$?"
+	PROJECT_ROOT="--project-root $$project_root"; \
+	SKIP_TESTS=1 \
+	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES \
+	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || true; \
+	rm -rf "$$tmpdir"
+	test -e $(TARBALL) || false
 
-# handle n.m.r-b version format (but don't use this anymore!)
-	if test -n "$$(echo $(package_version) | grep '\-')"; then \
-		echo $$package_version; \
-		package_version=$(package_version); package=$(package); \
-		tarball=$${package##perl-}-$${package_version%%-*}.tar.gz; \
-		test -e "$$tarball" && mv $$tarball $${package##perl-}-$$package_version.tar.gz; \
-	fi
+cpandir = $(datadir)/bedrock
 
-.PHONY: cpan
+dist_cpan_DATA = \
+    requires \
+    test-requires \
+    buildspec.yml \
+    postamble
 
 CLEANFILES = \
     extra-files \

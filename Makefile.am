@@ -1,18 +1,20 @@
-# -*-Makefile-*-
+# -*- mode: makefile; -*-
 
-SUBDIRS = cpan bin src docker .
+SUBDIRS = bin src cpan docker .
 
 # The ACLOCAL_AMFLAGS are used by 'autoreconf' and by the Makefile
 # rebuild rule when they need to run 'aclocal'.
 ACLOCAL_AMFLAGS = -I autotools
 
-docdir = $(datadir)/doc/bedrock-$(VERSION)
-
+########################################################################
+# RPM installation only (website build)
+#
 # just in case the session directory has not been created
 apache_session_DATA = 
-
+#
 bedrockdir = $(apache_default_htdocsdir)/bedrock
 bedrock_DATA =
+########################################################################
 
 FILES = \
     AUTHORS \
@@ -25,6 +27,8 @@ FILES = \
     COPYING \
     ChangeLog \
     TODO.md
+
+docdir = $(datadir)/bedrock/doc
 
 dist_doc_DATA = $(FILES)
 
@@ -43,9 +47,9 @@ DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 .PHONY: ensure-clean-build-from-top
 ensure-clean-build-from-top:
 	@echo "Performing clean build check from top level..."
-	$(MAKE) all dist
+	$(MAKE) clean all dist
 
 clean-local:
-	for a in $$(ls bedrock*.tar.gz); do \
+	for a in $$(ls bedrock*.tar.gz 2>/dev/null); do \
 	  rm -f $$a; \
 	done

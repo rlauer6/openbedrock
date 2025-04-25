@@ -109,7 +109,12 @@ bedrock-test: test-list
 	echo "$(srcdir)/run-tests test-list $(srcdir) $(builddir)" > bedrock-test
 	chmod 755 bedrock-test
 
-dist_noinst_DATA = $(BEDROCK_TESTS) test-tag.pl load-config.pl run-tests
+testsdir = $(datadir)/bedrock/tests/perl
+
+dist_tests_DATA = \
+    $(BEDROCK_TESTS) \
+    test-tag.pl \
+    run-tests
 
 CLEANFILES = \
     foo.inc \

@@ -427,11 +427,80 @@ test: $(FAUXMODULES)
 	DBI_USER="$${DBI_USER:-root}"; \
 	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" DBI_USER="$$DBI_USER" \
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
-	  $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $(srcdir)/$$TEST
+	  $(PROVE) -v -I $(srcdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(buildir)/Bedrock/Text $(srcdir)/$$TEST
 
 prove.sh: Bedrock/Test.pm
-	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I . -I Bedrock -I Bedrock/Text $(srcdir)/t" > prove.sh
+	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I $(srdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/t" > prove.sh
 	chmod 755 prove.sh
 
 CLEANFILES = \
     prove.sh
+
+testsdir = $(datadir)/bedrock/tests/lib
+
+ALL_TESTS = \
+    t/00-application.t \
+    t/00-array.t \
+    t/00-autocomplete.t \
+    t/00-bedrock-application-plugin.t \
+    t/00-bedrock.t \
+    t/00-bedrock-xml.t \
+    t/00-blm-startup-bedrock.t \
+    t/00-blm-startup-config.t \
+    t/00-cache.t \
+    t/00-cgi.t \
+    t/00-config.t \
+    t/00-dbhandler.t \
+    t/00-dbi-utils.t \
+    t/00-encode.t \
+    t/00-form.t \
+    t/00-handler-common.t \
+    t/00-handler.t \
+    t/00-handler-utils.t \
+    t/00-hash.t \
+    t/00-header.t \
+    t/00-if.t \
+    t/00-indexedtablehandler.t \
+    t/00-load-config.t \
+    t/00-logger.t \
+    t/00-mail.t \
+    t/00-maker.t \
+    t/00-model-field.t \
+    t/00-model.t \
+    t/00-object.t \
+    t/00-pager.t \
+    t/00-regexp.t \
+    t/00-request-cgi.t \
+    t/00-scalar.t \
+    t/00-session.t \
+    t/00-table-name.t \
+    t/00-tagx-log.t \
+    t/00-template.t \
+    t/00-upload.t \
+    t/01-config.t \
+    t/01-dbhandler.t \
+    t/01-handler-utils.t \
+    t/01-indexedtablehandler.t \
+    t/01-logger.t \
+    t/01-model-field.t \
+    t/01-model.t \
+    t/01-tagx-log.t \
+    t/01-template.t \
+    t/02-indexedtablehandler.t \
+    t/02-model.t \
+    t/02-template.t \
+    t/03-dbhandler.t \
+    t/03-indexedtablehandler.t \
+    t/03-model.t \
+    t/04-indexedtablehandler.t \
+    t/04-model.t \
+    t/05-indexedtablehandler.t \
+    t/05-model.t \
+    t/06-indexedtablehandler.t \
+    t/06-model.t \
+    t/07-indexedtablehandler.t \
+    t/07-model.t \
+    t/08-indexedtablehandler.t \
+    t/08-model.t
+
+dist_tests_DATA = $(ALL_TESTS)

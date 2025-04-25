@@ -2,7 +2,9 @@
 
 SUBDIRS = .
 
-data_DATA = bedrock-perl5-inc-begin-block.snippet
+snippetdir = $(datadir)/bedrock
+
+dist_snippet_DATA = bedrock-perl5-inc-begin-block.snippet
 
 ## Ensure that our input file makes it into the distribution tarball
 dist_noinst_DATA = bedrock-perl5-inc-begin-block.snippet.in

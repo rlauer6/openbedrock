@@ -8,7 +8,7 @@ LITE = Lite.pm.in
 @do_subst_command@
 
 lib/Bedrock/Lite.pm: $(LITE)
-	test -d $(builddir)/lib/Bedrock && mkdir -p $(builddir)/lib/Bedrock
+	test -d $(builddir)/lib/Bedrock || mkdir -p $(builddir)/lib/Bedrock
 	$(do_subst) $< > $@
 
 PACKAGE_MODULES = \
@@ -101,8 +101,17 @@ PACKAGE_MODULES = \
 
 PACKAGE_EXE = 
 
-include $(top_srcdir)/cpan/Makefile.cpan
+include $(srcdir)/bedrock-lite.mk
+
+dist_noinst_DATA = \
+    buildspec.yml \
+    Lite.pm.in \
+    00-bedrock.t.in \
+    requires.in \
+    test-requires.in \
+    bedrock-lite.mk
 
 CLEANFILES += \
     $(PACKAGE_MODULES) \
-    Lite.pm
+    Lite.pm \
+    $(builddir)/lib/Bedrock/Lite.pm
