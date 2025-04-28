@@ -3,7 +3,7 @@
 BEDROCK_VERSION = @PACKAGE_VERSION@
 
 .PHONY: bedrock
-bedrock: $(top_srcdir)/bedrock-$(BEDROCK_VERSION).tar.gz
+bedrock: $(top_builddir)/bedrock-$(BEDROCK_VERSION).tar.gz
 
 ########################################################################
 # make distcheck - ensures that the distribution is complete
@@ -23,8 +23,7 @@ $(top_builddir)/bedrock-$(BEDROCK_VERSION).tar.gz: ensure-clean-build
 # make cpan - creates a CPAN distribution
 ########################################################################
 $(top_builddir)/cpan/Bedrock-$(BEDROCK_VERSION).tar.gz: $(top_builddir)/bedrock-$(BEDROCK_VERSION).tar.gz
-	cd $(top_builddir)/cpan; \
-	make cpan
+	$(MAKE) -C $(top_srcdir)/cpan cpan
 
 ########################################################################
 # copies the Bedrock distribution to the Docker context

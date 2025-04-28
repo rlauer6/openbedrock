@@ -11,6 +11,14 @@ lib/Bedrock/Lite.pm: $(LITE)
 	test -d $(builddir)/lib/Bedrock || mkdir -p $(builddir)/lib/Bedrock
 	$(do_subst) $< > $@
 
+SHELL_MODULES = \
+    lib/Bedrock/Apache/Request/Shell.pm \
+    lib/Bedrock/Context.pm \
+    lib/Bedrock/Handler.pm \
+    lib/Bedrock/Apache/Bedrock.pm \
+    lib/Bedrock/Apache/Constants.pm \
+    lib/Bedrock/VERSION.pm
+
 PACKAGE_MODULES = \
     lib/Bedrock.pm \
     lib/Bedrock/Array.pm \
@@ -95,11 +103,17 @@ PACKAGE_MODULES = \
     lib/Bedrock/XML/Container/Object.pm \
     lib/Bedrock/XML/Container/Scalar.pm \
     lib/BLM/DBHandler.pm \
+    lib/BLM/Startup/Header.pm \
+    lib/BLM/Startup/Input.pm \
+    lib/BLM/Startup/Config.pm \
+    lib/BLM/Startup/Env.pm \
+    lib/BLM/Startup/Bedrock.pm \
     lib/BLM/IndexedTableHandler.pm \
     lib/BLM/IndexedTableHandler/Common.pm \
     lib/BLM/IndexedTableHandler/RecordSet.pm
 
-PACKAGE_EXE = 
+PACKAGE_EXE = \
+    bin/bedrock.pl
 
 include $(srcdir)/bedrock-lite.mk
 
@@ -113,5 +127,7 @@ dist_noinst_DATA = \
 
 CLEANFILES += \
     $(PACKAGE_MODULES) \
+    $(SHELL_MODULES) \
+    $(PACKAGE_EXE) \
     Lite.pm \
     $(builddir)/lib/Bedrock/Lite.pm

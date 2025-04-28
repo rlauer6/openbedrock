@@ -14,6 +14,14 @@ EXTRA_FILES = \
     bedrock.conf.roc \
     tagx.xml.roc
 
+ROC_FILES= \
+    bedrock.conf.roc \
+    bedrock-manifest.roc \
+    dbi.conf.roc \
+    default_form_config.json.roc \
+    mysql-session.xml.roc \
+    tagx.xml.roc
+
 @do_subst_command@
 
 ADMIN = \
