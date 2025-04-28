@@ -15,10 +15,15 @@ This is the README file for the `bedrock` project.
 
 ![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
-**NEW!**
+# What's New
 
-Bedrock images are now available on dockerhub. [Try Bedrock
+## 2025-04
+
+* Bedrock images are now available on dockerhub. [Try Bedrock
 now!](https://hub.docker.com/r/rlauer/openbedrock)
+* `Bedrock::Lite` - all the flavor, 1/3 less calories
+  - A version of Bedrock without Apache. Useful for basic templating
+    and daemon that need some of Bedrock's goodies.
 
 # Overview
 
@@ -55,6 +60,10 @@ built-in objects **$input**, **$header**, **$session**, and **$config**:
 <sqlconnect>
 <foreach>
 ```
+
+> Bedrock is under constant development as it serves as the engine
+> that powers [Treasurer's
+> Briefcase](https://www.treasurersbriefcase.com)
 
 # Running Bedrock in a Shell
 

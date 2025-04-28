@@ -11,9 +11,10 @@ bedrock-ci: $(DOCKERFILE_GITHUB) bedrock-test
 	docker build -f $< . -t $(GHCR_REPO)/bedrock-test
 	docker push $(GHCR_REPO)/bedrock-test:latest
 
-bedrock-test: $(DOCKERFILE_GITHUB)
+bedrock-test: $(DOCKERFILE_GITHUB) $(top_srcdir)/build-github
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
+	cp $(top_srcdir)/build-github $(builddir); \
 	docker build -f $< . -t $@:latest | tee $$LOG; \
 	cat $$LOG | grep 'Successfully built' | awk '{print $$3}' > $@; \
 	rm $$LOG;
