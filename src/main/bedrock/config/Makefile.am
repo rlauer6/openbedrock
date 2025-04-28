@@ -10,8 +10,14 @@ EXTRA_FILES = \
     apache22-env-debian \
     apache24-env-redhat \
     apache22-env-redhat \
-    site-config.inc \
+    site-config.inc
+
+ROC_FILES= \
     bedrock.conf.roc \
+    bedrock-manifest.roc \
+    dbi.conf.roc \
+    default_form_config.json.roc \
+    mysql-session.xml.roc \
     tagx.xml.roc
 
 @do_subst_command@
@@ -47,9 +53,9 @@ GCONFIG = $(CONFIG:.in=)
 $(GCONFIG): % : %.in
 	$(do_subst) $< > $@
 
-config_DATA = $(GCONFIG) $(EXTRA_FILES)
+config_DATA = $(GCONFIG) $(EXTRA_FILES) $(ROC_FILES)
 
-dist_config_DATA = $(EXTRA_FILES) $(CONFFILES)
+dist_config_DATA = $(EXTRA_FILES) $(CONFFILES) $(ROC_FILES)
 
 dist_noinst_DATA = $(CONFIG)
 
