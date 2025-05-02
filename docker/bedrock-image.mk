@@ -1,5 +1,5 @@
 #-*- mode: makefile; -*-
-# use pattern rule publi-%: bedrock:% when `make` can be upgraded to 4+
+# use pattern rule public-%: bedrock:% when `make` can be upgraded to 4+
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
 	docker build  --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $@:latest | tee $$LOG; \

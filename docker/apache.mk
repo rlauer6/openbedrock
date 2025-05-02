@@ -14,7 +14,8 @@ BEDROCK_CONF = \
   bedrock.conf.in \
   bedrock-info.conf.in \
   bedrock-session-files.conf.in \
-  bedrock-autocomplete.conf.in
+  bedrock-autocomplete.conf.in \
+  rest.conf.in
 
 GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
 CONFIG_FILES += $(GBEDROCK_CONF)

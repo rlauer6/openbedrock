@@ -3,6 +3,7 @@ package TagX::Symtab;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2025, TBC Developmentgroup, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,107 +24,134 @@ package TagX::Symtab;
 use strict;
 use warnings;
 
-use Scalar::Util qw(blessed);
+use Scalar::Util qw(blessed reftype);
 use Tie::Hash;
 
 @TagX::Symtab::ISA = qw ( Tie::StdHash );
 
+########################################################################
 sub TIEHANDLE {
-  my $class = shift;
-  my $self  = bless {}, $class;
-  $self->{'data'} = {};
-  $self->{'code'} = {};
-  $self;
+########################################################################
+  my ($class) = @_;
+
+  my $self = bless {}, $class;
+
+  $self->{data} = {};
+  $self->{code} = {};
+
+  return $self;
 }
 
+########################################################################
 sub FETCH {
+########################################################################
   my ( $self, $key ) = @_;
 
   # Check to see if frames exist and requested key has an entry in
   # the topmost frame, and return that if available
-  if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
-    return $self->{'frames'}->[0]->{$key};
+  if ( exists $self->{frames} and exists $self->{frames}->[0]->{$key} ) {
+    return $self->{frames}->[0]->{$key};
   }
 
   # Else check in the actual symbol table for the value
-  if ( exists $self->{'data'}->{$key} ) {
-    return $self->{'data'}->{$key};
+  if ( exists $self->{data}->{$key} ) {
+    return $self->{data}->{$key};
   }
-  elsif ( exists $self->{'code'}->{$key} ) {
+  elsif ( exists $self->{code}->{$key} ) {
 
     # Else do the code ref symbol table
-    my $code = delete $self->{'code'}->{$key};
-    return $self->{'data'}->{$key} = $code->();
+    my $code = delete $self->{code}->{$key};
+    return $self->{data}->{$key} = $code->($self);
   }
   else {
-
     # failure everywhere
-    return undef;
+    return;
   }
 }
 
+########################################################################
+sub define {
+########################################################################
+  my ( $self, $k, $v ) = @_;
+
+  my $stash = reftype( $v // q{} ) eq 'CODE' ? 'code' : 'data';
+
+  return $self->{$stash}{$k} = $v;
+}
+
+########################################################################
 sub STORE {
+########################################################################
   my ( $self, $key, $value ) = @_;
 
   # If frames exists, store in topmost frame -- presumes no values are code refs
-  if ( exists $self->{'frames'} ) {
-    $self->{'frames'}->[0]->{$key} = $value;
+  if ( exists $self->{frames} ) {
+    $self->{frames}->[0]->{$key} = $value;
     return $value;
   }
 
   # If value is a code-ref, store in code ref symbol table,
   # else store in the actual symbol table
   if ( ref($value) eq 'CODE' ) {
-    $self->{'code'}->{$key} = $value;
+    $self->{code}->{$key} = $value;
   }
   else {
-    $self->{'data'}->{$key} = $value;
+    $self->{data}->{$key} = $value;
   }
-  $value;
+
+  return $value;
 }
 
+########################################################################
 sub DELETE {
+########################################################################
   my ( $self, $key ) = @_;
 
   # Delete from frame if frames exist
-  if ( exists $self->{'frames'} ) {
-    return delete $self->{'frames'}->[0]->{$key};
+  if ( exists $self->{frames} ) {
+    return delete $self->{frames}->[0]->{$key};
   }
 
   # delete from symbol table or code-ref table
-  if ( exists $self->{'data'}->{$key} ) {
-    return delete $self->{'data'}->{$key};
+  if ( exists $self->{data}->{$key} ) {
+    return delete $self->{data}->{$key};
   }
-  elsif ( exists $self->{'code'}->{$key} ) {
-    return delete $self->{'data'}->{$key};
+  elsif ( exists $self->{code}->{$key} ) {
+    return delete $self->{data}->{$key};
   }
-  else {
-    return undef;
-  }
+
+  return;
 }
 
+########################################################################
 sub CLEAR {
-  my $self = shift;
+########################################################################
+  my ($self) = @_;
 
   # Clear frame if frames exist
-  if ( exists $self->{'frames'} ) {
-    %{ $self->{'frames'}->[0] } = ();
+  if ( exists $self->{frames} ) {
+    %{ $self->{frames}->[0] } = ();
     return;
   }
 
-  %{ $self->{'data'} } = ();
-  %{ $self->{'code'} } = ();
+  %{ $self->{data} } = ();
+  %{ $self->{code} } = ();
+
+  return;
 }
 
+########################################################################
 sub EXISTS {
+########################################################################
   my ( $self, $key ) = @_;
-  if ( exists $self->{'frames'} and exists $self->{'frames'}->[0]->{$key} ) {
+
+  if ( exists $self->{frames} and exists $self->{frames}->[0]->{$key} ) {
     return 1;
   }
-  elsif ( exists $self->{'data'}->{$key} ) {
+  elsif ( exists $self->{data}->{$key} ) {
     return 1;
   }
-  elsif ( exists $self->{'code'}->{$key} ) {
+  elsif ( exists $self->{code}->{$key} ) {
     return 1;
   }
   else {
@@ -131,121 +159,116 @@ sub EXISTS {
   }
 }
 
+########################################################################
 sub FIRSTKEY {
-  my $self = shift;
-  delete $self->{'keys'};
+########################################################################
+  my ($self) = @_;
 
-  if ( exists $self->{'frames'} ) {
+  delete $self->{keys};
+
+  if ( exists $self->{frames} ) {
     my $k = {};
-    %{$k} = ( %{ $self->{'frames'}->[0] } );
-    for my $name ( keys %{ $self->{'data'} } ) {
+    %{$k} = ( %{ $self->{frames}->[0] } );
+
+    for my $name ( keys %{ $self->{data} } ) {
       next if exists $k->{$name};
-      $k->{$name} = $self->{'data'}->{$name};
+      $k->{$name} = $self->{data}->{$name};
     }
-    $self->{'keys'} = $k;
+    $self->{keys} = $k;
   }
   else {
-    $self->{'keys'} = $self->{'data'};
+    $self->{keys} = $self->{data};
   }
 
-  my $a = keys %{ $self->{'keys'} };
-  each %{ $self->{'keys'} };
+  my $a = keys %{ $self->{keys} };
+
+  return each %{ $self->{keys} };
 }
 
+########################################################################
 sub NEXTKEY {
-  each %{ $_[0]->{'keys'} };
+########################################################################
+  return each %{ $_[0]->{keys} };
 }
 
+########################################################################
 sub new {
-  my $class = shift;
-  my $self  = bless {}, $class;
-  tie %{$self}, $class;
-  $self;
+########################################################################
+  my ($class) = @_;
+
+  my $self = bless {}, $class;
+  tie %{$self}, $class;  ## no critic
+
+  return $self;
 }
 
-sub close {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
+########################################################################
+sub close {  ## no critic
+########################################################################
+  my ($obj) = @_;
 
-  delete $self->{'keys'};
+  my $self = tied %{$obj};
+
+  delete $self->{keys};
   my %objects_to_close;
 
-  for my $name ( keys %{ $self->{'data'} } ) {
-    my $value = $self->{'data'}->{$name};
+  for my $name ( keys %{ $self->{data} } ) {
+    my $value = $self->{data}->{$name};
 
     # No destruction if value is not an object
-    next unless ref($value);
+    next if !ref $value;
 
     # skip if we've already called this object's destructor
     next if exists $objects_to_close{$value};
 
     # No destruction unless the object has a `closeBLM()' method
-    next unless blessed($value) && $value->can('closeBLM');
+    next if !( blessed $value && $value->can('closeBLM') );
 
     $objects_to_close{$value} = 1;
 
     # Close it
     $value->closeBLM;
   }
+
   continue {
-    delete $self->{'data'}->{$name};
+    delete $self->{data}->{$name};
   }
+
+  return;
 }
 
+########################################################################
 sub new_frame {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
-  $self->{'frames'} = [] unless exists $self->{'frames'};
-  unshift @{ $self->{'frames'} }, {};
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
+
+  if ( exists $self->{frames} ) {
+    $self->{'frames'} = [];
+  }
+
+  return unshift @{ $self->{frames} }, {};
 }
 
+########################################################################
 sub end_frame {
-  my $obj  = shift;
-  my $self = tied( %{$obj} );
-  shift @{ $self->{'frames'} } if exists $self->{'frames'};
-  delete $self->{'frames'}     if @{ $self->{'frames'} } == 0;
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj};
+
+  if ( exists $self->{frames} ) {
+    shift @{ $self->{frames} };
+  }
+
+  if ( @{ $self->{frames} } == 0 ) {
+    delete $self->{frames};
+  }
+
+  return;
 }
 
 1;
 
-#
-# Revision 1.8  2012/09/09 14:39:41  rlauer
-# - in close() we want to make sure we don't call closeBLM() more than once on same object.  This can happen when a variable ($_) takes on the
-#   value of a BLM and both it and the BLM instance object are being destroyed.
-#
-# Revision 1.7  2011/09/15 16:05:32  eutl420
-# - perl tidy
-#
-# Revision 1.6  2011/07/17 16:56:08  eutl420
-# - build .pm from .pm.in, added @PERL@
-#
-# Revision 1.5  2010/11/29 15:57:53  rlauer
-# - change openbedrock.org to openbedrock.net
-#
-# Revision 1.4  2001/02/14 15:35:49  sridhar
-# Added copyright and GPL notice
-#
-# Revision 1.3  2000/11/22 15:26:35  sridhar
-# 1. Keeps separate lists for variables which need to constructed on
-# first reference and variable which have been constructed.
-# 2. Support for Bedrock stack frames -- Caller can invoked
-# `new_frame()' method when required and `end_frame()' method when
-# done. All variables created between `new_frame()' and `end_frame()' go
-# away after `end_frame()'
-# 3. when one does a `keys' on the symbol table, only variables which
-# have been constructed are returned. Variables which are bound to code
-# to be constructed on first reference are not returned. So one can
-# safely do a dump without constructing unconstructed objects.
-#
-# Revision 1.2  2000/11/20 18:07:26  sridhar
-# If error occurs, need to invoke `handle_error()' method so variables
-# bound to code can be deleted so they are not constructed when the
-# error page asks for them.
-#
-# Revision 1.1  2000/11/07 13:58:14  sridhar
-# The Bedrock symbol table finally has a class of its own. Has an
-# optimization: a variable can be bound with a `sub' which is invoked if
-# the variable is referenced. This constructs the object. Might save
-# some cycles for scripts which don't use many Bedrock objects.
-#
-#
+__END__

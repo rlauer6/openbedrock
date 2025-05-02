@@ -84,9 +84,7 @@
           "source" : "<var $source.config>",
           "name" : [
             "mysql-session.xml",
-            "s3.xml",
-            "rest.xml",
-            "redis-cache.xml"
+            "rest.xml"
            ]
         }
       ]

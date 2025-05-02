@@ -44,16 +44,17 @@ caller or __PACKAGE__->main();
 ########################################################################
 sub TIEHASH {
 ########################################################################
-  my ( $class, $ctx, $config ) = @_;
+  my ( $class, $ctx, $config, $tagx ) = @_;
 
   my $self = bless {}, $class;
 
   $self->context($ctx);
 
-  $self->config( $config || {} );
+  $self->config( $config // {} );
 
-  # keep in mind this object may not exist because it is not pre-bound
-  $self->input( $self->context->{INPUT} );
+  $self->tagx( $tagx // {} );
+
+  $self->auto_connect( $config->{auto_connect} // $TRUE );
 
   die "plugin $class failed to initialize properly\n"
     if !$self->init_plugin;
@@ -69,10 +70,11 @@ sub __set_get {
   return @args ? $self->set( '__' . $what, @args ) : $self->get( '__' . $what );
 }
 ########################################################################
-sub config  { unshift @_, 'config';  goto &__set_get; }
-sub context { unshift @_, 'context'; goto &__set_get; }
-sub dbi     { unshift @_, 'dbi';     goto &__set_get; }
-sub input   { unshift @_, 'input';   goto &__set_get; }
+sub config       { unshift @_, 'config';  goto &__set_get; }
+sub context      { unshift @_, 'context'; goto &__set_get; }
+sub _dbi         { unshift @_, '_dbi';    goto &__set_get; }
+sub tagx         { unshift @_, 'tagx';    goto &__set_get; }
+sub auto_connect { unshift @_, 'tagx';    goto &__set_get; }
 ########################################################################
 
 ########################################################################
@@ -84,13 +86,61 @@ sub global_config { unshift @_, 'CONFIG';  goto &_context; }
 ########################################################################
 
 ########################################################################
+sub input {
+########################################################################
+  my ($self) = @_;
+
+  ######################################################################
+  # This is sort of magical...
+  #
+  # The symbol table (TagX::Symtab) is a tied hash. Reaching into
+  # the hash triggers the FETCH method. That method knows how to lazy
+  # load BLMs like BLM::Startup::Input. So even if C<$input> has not
+  # yet been loaded, this will load the input object. Previous
+  # versions of Bedrock retrieved the C<$input> object from the
+  # context but it may have never been loaded when the context object
+  # was created.
+  #
+  # Note: We do not do this in the constructor so that we do not
+  # instantiate the the C<$input> object if we don't need to. This
+  # allows other subroutines to have first crack at processing input
+  # data.
+  ######################################################################
+
+  return $self->tagx->symtab->{input};
+}
+
+########################################################################
+sub export {
+########################################################################
+  my ( $self, %params ) = @_;
+
+  return $self->tagx->param(%params);
+}
+
+########################################################################
 sub init_plugin {
 ########################################################################
   my ($self) = @_;
 
-  $self->_dbi_connect;
+  if ( $self->auto_connect ) {
+    $self->_dbi_connect;
+  }
 
   return $TRUE;
+}
+
+########################################################################
+sub dbi {
+########################################################################
+  my ($self) = @_;
+
+  my $dbi = $self->_dbi;
+
+  return $dbi
+    if $dbi;
+
+  return $self->_dbi_connect;
 }
 
 ########################################################################
@@ -120,7 +170,11 @@ sub _dbi_connect {
     $config{$o} //= $TRUE;
   }
 
-  return easy_connect( \%config );
+  my $dbi = easy_connect( \%config );
+
+  $self->_dbi($dbi);
+
+  return $dbi;
 }
 
 ########################################################################
@@ -156,7 +210,7 @@ sub FETCH {
 }
 
 ########################################################################
-sub closeBLM {  ## no critic (NamingConventions::Capitalization)
+sub closeBLM {
 ########################################################################
   my ($obj) = @_;
 
@@ -575,9 +629,9 @@ provide the basic plumbing for your typical Bedrock application plugin
 (aka Startup BLMs). Application plugins, as opposed to plain plugins
 like L<BLM::Date> are pre-loaded by Bedrock and available without
 having to load them using the C<plugin> tag. These plugins are bound
-to a variable name in the plugin's configuration file. Using the
-plugin then is done by referencing the variable name and perhaps
-calling one of its methods.
+to a variable name of your choosing set in the plugin's configuration
+file. Using the plugin done by referencing the variable name
+and perhaps calling one of its methods.
 
  <trace --output $session>
  <null $session.set('foo', 'bar')>
@@ -637,59 +691,69 @@ specifying the C<override> option.
 
  <scalar name="override">yes</scalar>
 
-The C<config> object in your configuration can contain what ever you
-would like it to contain. Those values can then be accessed using the plugin's
-C<config()> method.
+The C<config> object in your configuration can contain whatever you
+would like it to contain. Those values can then be accessed using the
+plugin's C<config()> method.
 
  <null:config $foo.config()>
  <var $config.get('bar')>
 
 ...would retrieve the C<bar> value from your configuration object.
+See L<Bedrock::XML> for more information about Bedrock XML files.
 
 =head1 PLUGIN CREATOR
 
-Included with Bedrock is a script for creating the scaffolding for an
-application plugin.
+Included with Bedrock is a script (F<bedrock-plugin>) for creating the
+scaffolding for both application plugins and plugins you can load with
+the C<E<lt>pluginE<gt>> tag. See C<bedrock-plugin --help> for more
+information.
 
 =head1 CONVENIENCE METHODS
 
 The C<Bedrock::Application::Plugin> module provides some convenience
 methods and functionality that is usually required when writing an
-application plugin.  Plugins sometimes interact with databases, access
+application plugin. Plugins typically interact with databases, access
 configuration information and possibly the userE<039>s session data.
 
-=head2 Database Connectivity
+=head2 Opening a Database
 
-If you define the C<DBI_DSN>, C<DBI_USER> and C<DBI_PASS> variables in
-the C<config> object of the pluginE<039>s configuration, the database
-will be opened by the C<init_plugin> method when the class is
-instantiated .  You can use the C<dbi()> method to return the handle
-to the opened database.
+The default C<init_plugin()> method will look in your pluginE<039>s
+C<config> object for the database parameters C<DBI_DSN, DBI_USER,
+DBI_PASS, RaiseError, PrintError, AutoCommit>, and attempt to connect
+to the database for you. If successful, you can use the C<dbi()> method
+to fetch the database handle.
 
-The database is opened in the C<init_plugin()> method, thus if you
-decide to override this method but would still want the default
-behavior, make sure you call the parentE<039>s C<init_plugin()> method.
+To prevent the plugin from opening a connection at startup, override
+C<init_plugin> or set C<auto_connect> to 0 in your config file. The
+default is to automatically connect to the database only if database
+parameters are found in your configuration. Calling the C<dbi> method
+after startup will open the connection and return a DBI object.
 
- sub init_plugin {
-   my ($self) = @_;
-  
-   $self->SUPER::init_plugin;
+Example configuration:
 
-   return 1;
- }
+  <object>
+    <scalar name="binding">foo</scalar>
+    <scalar name="module">BLM::Startup::Foo</scalar>
+
+    <object name="config">
+      <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
+      <scalar name="DBI_USER">fred</scalar>
+      <scalar name="DBI_PASS">flintstone</scalar>
+      <scalar name="RaiseError">1</scalar>
+      <scalar name="PrintError">1</scalar>
+      <scalar name="AutoCommit">1</scalar>
+      <scalar name="auto_connect">1</scalar>
+    </object>
+
+  </object>
 
 =head2 Session Access
 
-You can use the C<session()> method to access the user's session.  The
-C<$session> object is only available in application plugins if you
-have set the C<session> value to I<yes> in the session managerE<039>s
-configuration object.
-
-  <!-- Generic Bedrock Sessions -->
-  <object>
-    <scalar name="binding">session</scalar>
-    <scalar name="session">yes</scalar>
-    ...
+If you have a session manager like C<BLM::Startup::UserSession>
+installed, you can use the C<session()> method to access the session
+object. The C<$session> object is only available in application
+plugins if you have set the C<session> value to I<yes> in the session
+managerE<039>s configuration object.
 
 The C<session()> method returns the session object.  Setting a value
 in the returned session object will set the value in the userE<039>s
@@ -697,20 +761,37 @@ session.
 
 In your plugin:
 
- my $session = $self->session();
- $session->set(foo => 'bar');
+  sub foo {
+   my ($self) = @_;
+   ...
+   my $session = $self->session();
+   $session->set(foo => 'bar');
+   ...
+   return;
+  }
 
 ...then in your Bedrock page:
 
- <var $session.foo>
+  <null $myplugin.foo()>
+  <var $session.foo>
 
-=item * Configuration access
+=head2 Configuration access
 
 You can access the pluginE<039>s configuration object using the
 C<config()> method.
 
+ $self->config->{foo};
+
 You can access BedrockE<039>s configuration object using the
 C<global_config()> method.
+
+ $self->global_config->{SESSION_DIR};
+
+I<Keep in mind you can put anything you need in the C<config> section of
+your configuration file and retrieve those values using the C<config()>
+method.>
+
+  $self->config->{foo};
 
 =head2 Logging
 
@@ -745,55 +826,18 @@ like this to log at a different level than the rest of Bedrock.:
  log4perl.category.MySuperClass=DEBUG, Bedrock
  log4perl.additivity.MySuperClass=0
 
-=head1 MORE GORY DETAILS
-
-As noted previously, application plugins are available on your page by
-referencing the variable bound to your plugin. These plugins are
-pre-bound by Bedrock when the page is processed. They are bound to the
-variable like this:
-
-  my $obj = bless {}, $module_name
-  my $plugin = tie %{$obj}, $module, $context, $config;
-
-This class includes a TIEHASH method which stores the context and config
-objects for your use later.
-
-Bedrock then calls your C<init_plugin()> method and subsequently
-stores the plugin object to Bedrock's symbol table making it available
-in your pages.
-
-Strictly speaking if you don't need the convenience routines offered
-by this class you can just create your own plugin as shown below:
-
-  sub TIEHASH { 
-    my ( $class, $ctx, $config ) = @_;
-  
-    my $self = bless {}, $class;
- 
-    # you'll probably want to save the context object
-    # (Bedrock::Context)...and you're configuration
- 
-    $self->{ctx} = $ctx;
-    $self->{config} = $config;
-  
-    return $self;
-  }
-  
-  1;
-
-The context object provides methods like C<apache_handler()> that
-gives you access to Apache's request handler, C<cgi_header_in()> to
-access the input headers and other useful methods for developing web
-applications. See L<Bedrock::Context> for more details.
-
 =head1 METHODS AND SUBROUTINES
+
+=head2 auto_connect
+
+Get the value of auto_connect.
 
 =head2 config
 
  config( [config] )
 
 Sets or returns the configuration object for your Plugin.  The
-L<TIEHASH> method initializes the BLM and initially sets the
+C<TIEHASH()> method initializes the BLM and initially sets the
 configuration value from the XML C<config> object in your module
 definition.
 
@@ -813,13 +857,20 @@ definition.
 
 Sets or returns the context object (see L<Bedrock::Context>).  The
 value of the C<context> object is set during the invocation of the
-C<TIEHASH> method when Bedrock instantiates the BLM.
+C<TIEHASH()> method when Bedrock instantiates the BLM.
 
 =head2 dbi
 
  dbi()
 
-Set or return a DBI handle.
+Returns a handle to an opened database if you have defined the
+database parameters in your config file.
+
+=head2 export
+
+ export(foo => 'bar');
+
+Export one or more variables to the current Bedrock context.
 
 =head2 global_config
 
@@ -828,42 +879,25 @@ Set or return a DBI handle.
 Returns the Bedrock F<tagx.xml> config object.  Note this is the final
 merged configuration object.
 
+=head2 header
+
+ header()
+
+Returns the C<BLM::Startup::Header> object.
+
 =head2 init_plugin
 
  init_plugin()
 
-You can implement an initialization routine which is called when
-Bedrock creates your object.  At the point at which this method is
+You can implement an initialization routine which will be called when
+Bedrock creates your object. At the point at which this method is
 called you have access to the PluginE<039>s configuration object
 (C<config>), the session object (C<session>), the header object
 (C<header>), and the context object (C<context>).
 
 Your initialization method should return true if successful.
 
-=head3 Opening a database connection
-
-The default C<init_plugin()> method will look in your PluginE<039>s
-C<config> object for database parameters C<DBI_DSN, DBI_USER,
-DBI_PASS, RaiseError, PrintError, AutoCommit>, and attempt to connect
-to the database for you.  If successful, you can use the C<dbi> method
-to fetch the database handle.
-
-  <object>
-    <scalar name="binding">foo</scalar>
-    <scalar name="module">BLM::Startup::Foo</scalar>
-
-    <object name="config">
-      <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
-      <scalar name="DBI_USER">fred</scalar>
-      <scalar name="DBI_PASS">flintstone</scalar>
-      <scalar name="RaiseError">1</scalar>
-      <scalar name="PrintError">1</scalar>
-      <scalar name="AutoCommit">1</scalar>
-    </object>
-
-  </object>
-
-=head get_logger
+=head2 get_logger
 
  get_logger( category )
 
@@ -884,16 +918,7 @@ the log and not included in the final output generated by your page.
 
  input()
 
-Returns or sets the C<input> object.  I<This is of dubious value.>  The
-C<input> object is not pre-bound, so although we initialize it in the
-constructor from the C<Bedrock::Context> object, it is possible that
-it was never instantiated by Bedrock.
-
-If you have an C<input> object you want to share, go ahead and set it,
-however a better practice is to have your methods accept the argument
-from the Bedrock page.
-
- <null $my_object.my_method($input)>
+Returns or sets the C<input> object.
 
 =head2 session
 
@@ -901,68 +926,213 @@ from the Bedrock page.
 
 Returns the C<session> object.  
 
-Application Plugins only have access to the C<session> object via the
-C<context> object if the C<session> object is being pre-bound, similar
-to the way the C<header> object is treated.  Plugins other than the
-pre-bound object liek C<header> or C<session> are only created when
-they are used in the Bedrock page itself.
+=head2 tagx
 
-I<To have Bedrock pre-bind the C<session> object you must declare the
-session handling Plugin as the official C<session> object.>
-
-    <!-- Generic Bedrock Sessions -->
-    <object>
-      <scalar name="binding">session</scalar>
-      <scalar name="module">BLM::Startup::UserSession</scalar>
-
- -->  <scalar name="session">yes</scalar>
-
-      <object name="config">
-        <scalar name="verbose">2</scalar>
-        <scalar name="param">session</scalar>
-        <scalar name="login_cookie_name">session_login</scalar>
-        <scalar name="login_cookie_expiry_days">365</scalar>
-        <scalar name="data_source">dbi:mysql:bedrock</scalar>
-        <scalar name="username">fred</scalar>
-        <scalar name="password">flintstone</scalar>
-        <scalar name="table_name">session</scalar>
-        <scalar name="purge_user_after">30</scalar>
-
-        <object name="cookie">
-          <scalar name="path">/</scalar>
-          <scalar name="expiry_secs">3600</scalar>
-          <scalar name="domain"></scalar>
-        </object>
-      </object>
-    </object>
-
-I<Future versions of Bedrock may include a mechanism to pre-bind
-Plugin objects of arbritary type.  Currently, Bedrock treats the
-C<session> and C<header> objects as the only objects that it will
-instantiate when the Bedrock handler is invoked.>
-
-=head2 header
-
- header()
-
-Returns the C<BLM::Startup::Header> object.
+Returns an instance of C<Text::TagX>
 
 =head2 closeBLM
 
 Your plugin can implement an optional method (C<closeBLM>) that will
-be called prior to the plugin objectE<039>s destruction.
+be called prior to the plugin objectE<039>s destruction.  The default
+C<closeBLM> method will close the database connection if one is open.
 
-You should perform any clean-up necessary in this method prior to your
-object being destroyed.
+Your implmentation should perform any clean-up necessary in this
+method prior to your object being destroyed.
 
-I<You should not implement a C<DESTROY> method in your Plugin, but
-rather use this method to perform your shutdown actions.  Your method
-is called with the Bedrock object that was tied to your pluginE<039>s
-implemention, so you need to use the template below to access your
-objectE<039>s class instance>.
+B<DO NOT IMPLEMENT A C<DESTROY> METHOD IN YOUR PLUGIN!>
 
-The default C<closeBLM> method will disconnect from the database if
-one was openened.
+I<Implement a C<closeBLM> method to perform any shutdown actions.
+Your method is called with the Bedrock object that was tied to your
+pluginE<039>s implemention, so you need to use the template below to
+access your objectE<039>s class instance>.
+
+ sub closeBLM {
+   my ($obj) = @_;
+ 
+   my $self = tied %{$obj};
+
+   # your shutdown actions here
+ }
+
+
+=head1 EXPORTING DATA TO YOUR BEDROCK PAGE
+
+There are at least three ways to return data to your Bedrock page.
+
+=over 5
+
+=item 1. Return a value from a method.
+
+When your methods return a value that value can be capture in a page variable.
+
+ <null:result $my_plugin.some_method()>
+ <null --define-var=results $my_plugin.some_method()>
+
+=item 2. Set an key in your plugin's hash.
+
+Your plugin is a I<tied> hash. You can simply set a key value pair in C<$self>.
+
+ $self->{foo} = 'bar'
+
+...and then retrieve it as an attribute of your plugin.
+
+ <var $my_plugin.foo>
+
+=item 3. You can inject the variable into your Bedrock page's context.
+
+ $self->export(foo => 'bar');
+
+...and then
+
+ <var $foo>
+
+=back
+
+=head1 MORE GORY DETAILS
+
+As noted previously, application plugins are available on your page by
+referencing the variable name set in the configuration file. These
+plugins are lazy loaded by Bedrock when the page is processed. Let's take a closer look...
+
+
+=head2 Plugin Lifecycle
+
+When a Bedrock page is requested, the C<Bedrock::Apache::Bedrock>
+handler initializes the Bedrock environment. This consists of reading
+Bedrock's configuration file and all other configuration files in the
+configuration directory.  Configuration files in the
+F<config.d/plugins> and F<config.d/startup> directories are considered
+to be application plugin configuration files. Each of these is read
+and parsed. Bedrock then creates an entry in Bedrock's symbol table
+using the name you provided in the C<bind> configuration variable.
+
+ <scalar name="bind">session</scalar>
+
+ The value of that entry is a subroutine that looks like this:
+
+  sub {
+
+    require_module($class);
+
+    return bind_module(
+      type    => $type,  # <scalar name="type"></scalar>
+      module  => $class, # <scalar name="module"></scalar>
+      context => $context, # Bedrock::Context object
+      config  => $config, # Bedrock's merged configuration object
+      tagx    => $tx # Text::TagX object 
+    );
+  }
+
+Bedrock's symbol table C<Text::TagX> is a tied hash whose C<FETCH()>
+method executes this subroutine the first time your page references
+the bind variable and replaces the value with a reference to your
+instantiated plugin.
+
+The C<bind_module()> method then:
+
+=over 5
+
+=item 1. Determines the object type (default: hash)
+
+You set the object's type in the config variable C<type>. This
+determines how it will be tied. The default type is 'hash'.
+
+ <scalar name="type">hash</scalar>
+
+=item 2. Loads the module
+
+You set the module class name in the config variable C<module>.
+
+ <scalar name="module">BLM::Startup::UserSession</scalar>
+
+=item 3. Ties the object, triggering a call to C<TIE{type}()> method
+
+  my $obj = bless {}, $module_name
+  my $plugin = tie %{$obj}, $module, $context, $config, $tagx;
+
+=item 4. The default C<TIEHASH()> method calls C<init_plugin()>
+
+=item 5. C<closeBLM> is called when the object is being destroyed.
+
+Bedrock will only call the C<closeBLM> if your plugin provides one.
+
+=back
+
+=head2 Creating A Lighter Weight Plugin
+
+Now that you know how this magic works you can create your own
+lightweight plugins when you don't need the sugar provided by
+C<Bedrock::Application::Plugin>. Creating your own skinny plugin class
+like this:
+
+=over 5
+
+=item * Create a configuration file and place it Bedrock's F<config.d/plugin> directory.
+
+ <object>
+   <scalar name="module">MyPlugin</scalar>
+   <scalar name="bind">myplugin</scalar>
+ </object>
+
+=item * Create a class with C<TIEHASH()> method.
+
+  package MyPlugin;
+
+  use strict;
+  use warnings;
+
+  sub TIEHASH { 
+    my ( $class, $context, $config, $tagx ) = @_;
+  
+    my $self = bless {}, $class;
+  
+    $self->{ctx} = $context;
+    $self->{config} = $config;
+    $self->{tagx} = $tagx;
+  
+    return $self;
+  }
+  
+  sub hello_world {
+    return 'Hello World!';
+  }
+
+  1;
+
+=item * Access your plugin in a Bedrock page
+
+ <var $myplugin.hello_world()>
+
+=back
+
+You don't need to store the C<TIEHASH> input parameters if you don't
+need them. You might find them useful.
+
+=over 5
+
+=item ctx
+
+The C<$ctx> object provides methods like C<request()> that
+gives you access to Apache's request handler, C<cgi_header_in()> to
+access the input headers and other useful methods for developing web
+applications. See L<Bedrock::Context> for more details.
+
+=item config
+
+The C<$config> object contains Bedrock's merged configuration file.
+
+=item tagx
+
+The C<$tagx> object is an instance of C<Text::TagX> which processed
+the tag that loaded your plugin. In general you should muck with this
+object, however if you are rolling your own lightweight plugin you can
+access variables and export variables to Bedrock's context.
+
+  my $tagx = $self->{tagx};
+
+  my $foo = $tagx->param('foo'); # fetch $foo
+
+  $tagx->param(foo => 'bar'); # set $foo
 
 =head1 SEE ALSO
 
@@ -973,4 +1143,3 @@ L<Bedrock::Plugin>, L<Bedrock::Context>, L<Bedrock::Hash>, L<Bedrock::Logger>
 Rob Lauer - <rclauer@gmail.com>
 
 =cut
-

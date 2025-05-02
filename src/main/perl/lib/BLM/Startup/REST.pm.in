@@ -3,30 +3,31 @@ package BLM::Startup::REST;
 use strict;
 use warnings;
 
-use Bedrock::Constants qw(:booleans);
-use Bedrock qw(:booleans);
-
+use Bedrock::Constants qw(:booleans :http_errors);
+use Bedrock qw(:booleans slurp_json);
 use Bedrock::RegExp;
+
+use English qw(-no_match_vars);
 use Carp;
 use Data::Dumper;
 use JSON;
 use Log::Log4perl::Level;
 use Scalar::Util qw(blessed);
-
-use Readonly;
+use List::Util qw(mesh pairs);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
 use parent qw(Bedrock::Hash Class::Accessor::Fast);
 
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic
 
 __PACKAGE__->follow_best_practice;
 __PACKAGE__->mk_accessors(
   qw(
     config
     context
+    default_routes
     env_ok
     error
     global_config
@@ -37,27 +38,20 @@ __PACKAGE__->mk_accessors(
     result
     routes
     status
+    tagx
   )
-);
-
-Readonly::Hash our %HTTP_ERRORS => (
-  '400' => 'BAD REQUEST',
-  '401' => 'UNAUTHORIZED',
-  '403' => 'FORBIDDEN',
-  '404' => 'FILE NOT FOUND',
-  '405' => 'METHOD NOT ALLOWED',
-  '500' => 'INTERNAL SERVER ERROR',
-  '505' => q{},
 );
 
 ########################################################################
 sub TIEHASH {
 ########################################################################
-  my ( $class, $ctx, $config ) = @_;
+  my ( $class, $ctx, $config, $tagx ) = @_;
 
   my $self = bless {}, $class;
 
   $self->set_context($ctx);
+
+  $self->set_tagx( $tagx // {} );
 
   $self->set_config($config);
 
@@ -74,14 +68,93 @@ sub TIEHASH {
     $self->get_logger->level($DEBUG);
   }
 
-  $self->set_routes(
-    [ [ 'GET', 'version', \&version,                    'returns the version' ],
-      [ 'GET', 'routes',  sub { return routes($self) }, 'returns routes by request method' ],
-      [ 'GET', 'env',     sub { return $self->get_env_ok ? \%ENV : {}; } ],
-    ]
+  $self->set_default_routes(
+    { GET => {
+        '/version' => \&version,
+        '/env'     => sub { return $self->get_env_ok ? \%ENV : {}; },
+      }
+    }
   );
 
   return $self;
+}
+
+########################################################################
+sub find_route {
+########################################################################
+  my ($self) = @_;
+
+  my $routes = $self->get_routes // {};
+
+  my $method = $self->get_method;
+
+  my $route_list = $routes->{$method};
+
+  my $r = $self->_find_route($route_list);
+
+  return $r
+    if $r;
+
+  my $default_routes = $self->get_default_routes->{$method};
+
+  $r = $default_routes->{ $self->get_path_info };
+
+  return $r
+    if !$r || reftype($r) ne 'CODE';
+
+  return $r->($self);
+}
+
+########################################################################
+sub _find_route {
+########################################################################
+  my ( $self, $routes ) = @_;
+
+  return
+    if !$routes;
+
+  my $path = $self->get_path_info();
+
+  foreach my $r ( keys %{$routes} ) {
+
+    my $re = regexp_compile( $routes->{$r} );
+
+    next if $self->get_path_info !~ $re;
+
+    my $capture_groups = regexp_capture_group();
+
+    $self->export( %{$capture_groups} );
+
+    return $r;
+  }
+
+  return;
+}
+
+########################################################################
+sub fetch_routes {
+########################################################################
+  my ( $self, $routes ) = @_;
+
+  $self->set_routes( slurp_json($routes) );
+
+  return $self->get_routes;
+}
+
+########################################################################
+sub export {
+########################################################################
+  my ( $self, %params ) = @_;
+
+  # export matches
+  my $tagx = $self->get_tagx;
+
+  return
+    if !$tagx || ref($tagx) !~ /tagx/xsmi;
+
+  $tagx->param(%params);
+
+  return;
 }
 
 ########################################################################
@@ -129,10 +202,16 @@ sub run {
     }
   );
 
+  die "routes must be an array\n"
+    if !is_array($routes);
+
   die "no routes\n"
-    if !is_array($routes) || !@{$routes};
+    if !@{$routes};
 
   my $result;
+  my $status;
+
+  my $route;
 
   foreach my $r ( @{$routes} ) {
 
@@ -148,16 +227,21 @@ sub run {
 
     next if $ENV{PATH_INFO} !~ $re;
 
+    $route = $path;
+
     $self->get_logger->debug("route: [$path] matches");
 
     my $capture_group = regexp_capture_group();
 
-    $result = eval { $sub->($capture_group); };
+    ( $result, $status ) = $sub->($capture_group);
 
     last;
   }
 
-  return $result;
+  die "invalid route\n"
+    if !$route;
+
+  return { result => $result, status => $status };
 }
 
 ########################################################################
@@ -223,50 +307,61 @@ __END__
 
 =head1 PUBLIC
 
-BLM::Startup::REST - Plugin to support REST APIs
+BLM::Startup::REST - Plugin to support creating or prototyping REST APIs
 
 =head1 SYNOPSIS
 
- <sink><try>
- 
-  <if $REST.get_method() --eq 'GET'>
- 
-    <!-- /(\d+) -->
-    <if $REST.get_path_info() --re '^/(?<id\>\\d+)\/?'>
-
-      <if $_1 --eq 123>
-        <hash:contact name rob address '211 Southgate' id $_1>
-        <null $REST.set_result($contact)>
+  <try>
+      
+    <if $REST.get_method() --eq 'GET'>
+    
+      <!-- /(\d+) : /123 -->
+      <if $REST.get_path_info() --re '^/(?<id\>\\d+)\/?'>
+    
+        <if $id --eq 123>
+          <hash:contact name rob address '211 Southgate' >
+          <null $contact.set('id', $id)>
+          <null $REST.set_result($contact)>
+        <else>
+          <raise ('404|' + $REST.get_path_info())>
+        </if>
+    
+      <!-- /first-letter/([:letter:]) : /api/v1/first-letter/r -->
+      <elsif $REST.get_path_info() --re '^/?first-letter/(?<letter\>[[:lower:]])\/?'>
+          <hash:contact name rob address '211 Southgate' >
+          <null $REST.set_result($contact)>
       <else>
-        <raise ('404|' + $REST.get_path_info())>
+         <raise 'bad letter'>
       </if>
-
-    <!-- /first-letter/([:letter:]) ... another URI --->
-    <elsif $REST.get_path_info() --re '^/first_letter/(?<letter>[:lower:])\/?'>
-       ...blah blah blah
+    
+    <elsif $REST.get_method() --eq 'POST'>
+      <null $REST.set_result($input.POSTDATA)>
+    <else>
+      <rais 'bad request'>
     </if>
-
-  <!-- another REST method -->  
-  <elsif $REST.get_method() --eq 'POST'>
-    ...blah blah blah
-  </if>
-   
-  <catch 'invalid session'>
-    <null:result $REST.raise(status, 401, error, $@)>
+    
+    <catch 'bad (letter|request)'>
+      <null:result $REST.raise(status, 400, error, $@)>
+    
+    <catch 'invalid session'>
+      <null:result $REST.raise(status, 401, error, $@)>
+    
+    <catch "^(?<status\>40[0-4])(\\|?(?<message\>[^\\|]*))$">
+      <null:result $REST.raise(status, $status, error, $@)>
+    
+    <catch>
+      <null $REST.raise(status, 500, error, $@)>
+  </try>
   
-  <catch "^(?<status\>40[0-4])(\\|?(?<message\>[^\\|]*))$">
-    <null:result $REST.raise(status, $status, error, $@)>
- 
-  <catch>
-    <null $REST.raise(status, 500, error, $@)>
-  </try></sink><var $REST.print_result(1)>
+  <var --flush $REST.print_result(1)>
+  
 
 =head1 DESCRIPTION
 
-Plugin that helps you to create Bedroc REST APIs. You can also use
+Plugin designed to help create Bedrock REST APIs. You can also use
 this module in a Perl script as well.
 
-The L<SYNOPSIS> lays out the pattern for creating REST APIs in
+The L<SYNOPSIS> lays out one pattern for creating REST APIs in
 Bedrock.  Essentially you create a cascading if/then/elsif block that
 tests the method and the URI to determine the block of Bedrock code to
 process.  Admittedly this is not how one I<should> create a REST API,
@@ -277,11 +372,21 @@ writing a more robust script.
 
 =head2 get_method
 
-Essentially returns C<$ENV{HTTP_METHOD}>.
+Essentially returns C<$ENV{HTTP_METHOD}>. You can also use the request
+object from the C<$bedrock> object to get the method and other
+attributes of the request. See L<BLM::Startup::Bedrock>.
+
+ <null:r $bedrock.request()>
+ <null:method $r.method()>
 
 =head2 get_path_info
 
-Essentially returns C<$ENV{PATH_INFO}>.
+Essentially returns C<$ENV{PATH_INFO}>.  You can also use the request
+object from the C<$bedrock> object to get the path and other
+attributes of the request. See L<BLM::Startup::Bedrock>.
+
+ <null:r $bedrock.request()>
+ <null:path_info $r.path_info()>
 
 =head2 print_result
 
@@ -294,6 +399,79 @@ Prints the JSON representation of your result object. Set C<pretty> to
 
 Sets the result object that will be returned in the payload. Set the
 result prior to invoking C<print_result()>,
+
+=head2 find_route
+
+Using the pattern:
+
+ <if $REST.get_method() --eq 'GET'>
+   <if $REST.get_path_info() --re '^\/?first-letter/(?<letter\>[[:lower:]])\/?'>
+   ...
+   <elsif>
+   ...
+   </if>
+ <elsif>
+   ...
+ </if>
+
+...works fine, but as you can see using named capture groups can get
+hairy trying to figure out how to escape things to prevent tripping up
+Bedrock's parser.
+
+To help make it easier to create routes with regular expression you
+can set the C<routes> variable using the C<set_routes> method to a
+hash of routes with regular expressions. Then use this method which
+will return a key from that hash if any of the routes defined there
+match the current path that was requested.  The pattern then becomes:
+
+ <null:route_id $REST.find_route()>
+ <if $route_id --eq 'first-letter'>
+ ...
+ <elsif $route_id --eq 'blah' >
+ ...
+ </if>
+
+The route definition object should be a hash where the keys are the
+HTTP methods your API supports and the values are hash of route ids
+and regular expressions to match the routes. The regular expressions
+can contain named or numbered capture groups which are exported into
+into your namespace by this method. Named captured groups are exported
+as that name, numbered capture groups are exported as C<$_N>.
+
+You can define these routes in your Bedrock REST dispatcher or store
+them in a configuration file.
+
+=head3 In Your Bedrock Dispatcher
+
+You can define the routes in the same file with your dispatching
+logic. The advantage of this approach is that your routes and logic
+are defined in one place making it easier to understand everything
+your API does. Define the routes in what ever way works using Bedrock
+tags like C<E<lt>sinkE<gt>>. Then call C<set_routes>.
+
+
+ <sink:routes --json>
+  {
+   "GET" : {
+           "id" : "^/?(?<id>[[:digit:]]+)/?$",
+           "first-letter" : "^/?first-letter/(?<letter>[[:lower:]])/?"
+           }
+  }
+ </sink>
+ <null $REST.set_routes($routes)>
+
+=head3 In A JSON file
+
+If you would prefer to store your routes in a separate file, store
+them as F<.json> files in Bedrock's configuration path. Call the
+C<fetch_routes> method with the name of the file.
+
+ <null $REST.fetch_routes('customer')>
+
+=head2 export
+
+Exports any named capture groups or numbered groups that are have been
+found when C<find_route()> is called.
 
 =head2 raise
 
@@ -334,6 +512,8 @@ the string.
 
 =head1 CONFIGURATION
 
+=head2 Plugin Configuration
+
 Add this to your site's configuration directory.
 
  <object> 
@@ -350,9 +530,39 @@ to return the environment.  The default is C<no>.
 
 Set the C<loglevel> value to debug for verbose output in the error log.
 
-=head1 SUB-CLASSING
+=head2 Apache Configuration
 
-This method is suitable for sub-classing to create more robust REST APIs.
+Add something like this to Apache's configuration file.
+
+ <VirtualHost *:80>
+   RewriteEngine On
+   RewriteRule ^/?api/v1/(.*)$ /api.jroc/$1 [QSA,L]
+
+   RewriteCond %{REQUEST_URI} ^/api[.]jroc
+   RewriteRule ^ - [F]
+ </VirtualHost>
+
+=head1 INPUT
+
+Input to your API is done via the C<$input> object. For query string
+or application/x-www-form-urlencoded data variables will be exposed as
+attributes of the C<$input> object.
+
+ <var $input.action>
+
+For stream data like application/json, use the POSTDATA attribute of
+the input object.
+
+ <var $input.POSTDATA>
+
+To convert some JSON input:
+
+ <null:data --json $input.POSTDATA>
+
+=head1 SUBCLASSING
+
+This method is suitable for sub-classing to create more robust REST
+APIs.
 
 =head1 AUTHOR
 

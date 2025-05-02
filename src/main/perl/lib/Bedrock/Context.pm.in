@@ -238,6 +238,54 @@ sub init_log4perl_logger {
   return $initialized;
 }
 
+# rewrite this to use hooks or mod_perl, if rewritten for mod_perl we
+# need keep this in mind:
+
+=pod
+
+Re: Uploading Files bigger the 64M
+Ryan Gies Tue, 25 Jan 2011 10:41:17 -0800
+
+1) You may lower the limit, not raise it. If you are trying to raise
+it, you will get "Conflicting information".
+
+2) Your server config trumps your virtual-host config. If you have not
+set APREQ2_ReadLimit outside of your VirtualHost, then it is set for
+you (64M).
+
+Personally, I do this:
+
+A) Set APREQ2_ReadLimit in /etc/httpd/conf.d/apreq.conf to the largest
+value I would allow for any virtual host.
+
+B) Set APREQ2_ReadLimit to the largest upload value appropriate for
+the client inside their VirtualHost container.
+
+C) Set $req->read_limit inside a PerlResponseHandler depending on the
+logical type of request:
+
+# The Apache request library only allows lowering the read limit
+# (POST_MAX). # The default is 64M (64 * 1024 * 1024) so if larger
+# uploads are desired, one # must raise the limit by setting
+# APREQ2_ReadLimit in the Apache configuration. # When using
+# VirtualHosts, the larger limit *must* be specified in server
+# configuration, and then optionally reduced in the vhost config.
+# http://marc.info/?l=apreq-dev&m=115829354028472&w=2
+
+  my $limit = $req->read_limit();
+  my $max = $rr->max_post_size; # the max post size allowed for the current request
+  if ($max > $limit) {
+    $Log->warn(sprintf('Cannot raise read_limit from %d to %d', $limit, $max));
+  }
+   else {
+    $req->read_limit($max) or die $!;
+    $limit = $req->read_limit();
+    $Log->error('Error setting read_limit') unless $limit == $max;
+  }
+
+=cut
+
+#
 ########################################################################
 sub upload_file {
 ########################################################################
@@ -338,8 +386,8 @@ sub upload_file {
     $uploaded_file .= '.enc';
   }
 
-  open my $tmp_fh, '>', $uploaded_file  ## no critic (RequireBriefOpen)
-    or die "could not open $uploaded_file for writing";
+  open my $tmp_fh, '>', $uploaded_file
+    or die sprintf 'could not open %s for writing', $uploaded_file;
 
   my $size;
 
@@ -378,7 +426,7 @@ sub upload_file {
     ( file           => $uploaded_file,
       $form_var      => "$name$ext",
       'content-type' => $upload_content_type,
-      'cipher'       => $options->{cipher} // $EMPTY,
+      cipher         => $options->{cipher} // $EMPTY,
     )
   );
 
@@ -730,7 +778,38 @@ Sends the array of output to the destination.
 
  upload_file(form-var-name, options ... | {})
 
-Upload a file.
+Upload a file to the web server. Returns a hash containing metadata about the file.
+
+  @stats{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @file_info;
+
+  %stats = (
+    %stats,
+    ( file           => $uploaded_file,
+      $form_var      => "$name$ext",
+      'content-type' => $upload_content_type,
+      cipher         => $options->{cipher} // $EMPTY,
+    )
+  );
+
+=over 5
+
+=item dev, ino, mode, nlink, uid, gid, rdev, size, atime, mtime, ctime, blksize, blocks
+
+Stats from C<stat>
+
+=item file
+
+Path to the uploaded file
+
+=item $form_var
+
+Name of the file
+
+=item cipher
+
+The cipher used (if any) to encrypt the file.
+
+=back
 
 C<options> is a hash reference or a hash of options described below.
 
@@ -738,8 +817,10 @@ C<options> is a hash reference or a hash of options described below.
 
 =item path
 
-Path where file should be stored.  Looks for C<UPLOAD_PATH> in the
-configuration object.  Defaults to F</tmp>.
+Path where the file should be stored. Looks for C<UPLOAD_PATH> in the
+configuration object. If no UPLOAD_PATH is specified, a temporary
+directory will be created and the file will be update there. The
+return value will be the fully qualified path to the file.
 
 =item 'Content-Type'
 
