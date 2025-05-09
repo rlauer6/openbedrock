@@ -35,7 +35,7 @@ fi
 
 AC_SUBST([BEDROCK_RELEASE])
 
-# sets automake conditional RPM_BUILD_MODE, $rpm_build_mode
+dnl sets automake conditional RPM_BUILD_MODE, $rpm_build_mode
 RPM_BUILD_MODE
 
 dnl +------------------------+
@@ -101,25 +101,19 @@ if test -z "$PROVE" ; then
   AC_MSG_WARN([prove not found?])
 fi
 
-apache_layout=RedHat
-
-dnl ...for Debian layouts, we use a2ensite to enable a virtual host, a2enconf for configuations, etc.
-AC_PATH_PROG([A2ENSITE],
-        [a2ensite])
-
 AC_ARG_WITH(
         [apache-layout],[  --with-apache-layout=LAYOUT Apache layout style (Debian or RedHat), default=RedHat],
         [
          case "$withval" in
 
            'Debian')
-                     apache_layout="$withval"
+                     apache_layout=$(echo "$withval" |tr A-Z a-z)
                      if test -z "$A2ENSITE"; then
                        AC_ERROR([Debian layout doubtful, no a2ensite? try: apt-get install apache2])
                      fi
                      ;;
           'RedHat')
-                     apache_layout="$withval"
+                     apache_layout=$(echo "$withval" |tr A-Z a-z)
                      ;;
                  *)
                     if test "$withval"; then
@@ -131,6 +125,38 @@ AC_ARG_WITH(
         )
 
 AC_SUBST([apache_layout])
+
+if test -e "/etc/os-release"; then
+  old_version=$VERSION
+
+  source /etc/os-release
+
+  VERSION=$old_version
+
+  id=$(echo $ID | tr A-Z a-z)
+
+  if test "$id" = "debian"; then
+     OS_TYPE="debian"
+  elif test "$id" = "ubuntu"; then
+     OS_TYPE="debian"
+  elif test "$id" = "fedora"; then
+     OS_TYPE="redhat"
+  elif test "$id" = "amzn"; then
+     OS_TYPE="redhat"
+  else
+     OS_TYPE="redhat"
+  fi
+fi
+
+AC_SUBST([OS_TYPE])
+
+if test -z "$apache_layout"; then
+  apache_layout=$OS_TYPE
+fi
+
+dnl ...for Debian layouts, we use a2ensite to enable a virtual host, a2enconf for configuations, etc.
+AC_PATH_PROG([A2ENSITE],
+        [a2ensite])
 
 apache_default_htdocsdir=/var/www/html
 apache_default_sessiondir=/var/www/session
@@ -401,6 +427,7 @@ do_subst_command='do_subst = sed \
 \
   -e '"'"'s,[@]apache_default_htdocsdir[@],$(apache_default_htdocsdir),g'"'"' \
   -e '"'"'s,[@]apache_sessiondir[@],$(apache_sessiondir),g'"'"' \
+  -e '"'"'s,[@]OS_TYPE[@],$(OS_TYPE),g'"'"' \
 \
   -e '"'"'s,[@]mysql_user[@],$(MYSQL_USER),g'"'"' \
   -e '"'"'s,[@]mysql_password[@],$(MYSQL_PASSWORD),g'"'"' \
@@ -469,6 +496,7 @@ AC_CONFIG_FILES(
         [bin/Makefile]
         [cpan/Makefile]
         [cpan/bedrock-lite/Makefile]
+        [docker/Makefile]
         [src/Makefile]
         [src/main/Makefile]
         [src/main/bash/Makefile]
@@ -486,7 +514,6 @@ AC_CONFIG_FILES(
         [src/main/perl/cgi-bin/Makefile]
         [src/main/perl/lib/Makefile]
         [src/main/resources/Makefile]
-        [docker/Makefile]
 )
 
 dnl Actually output the declared files
@@ -540,6 +567,7 @@ printf "           Configuration files: %s\n" "`__poor_mans_expand_file_name sys
 printf "                  Manual pages: %s\n" "`__poor_mans_expand_file_name mandir`"
 printf "\n"
 printf "                 Apache Layout: %s\n" "`__poor_mans_expand_file_name apache_layout`"
+printf "                   Distro Type: %s\n" "`__poor_mans_expand_file_name OS_TYPE`"
 printf "\n"
 printf "                     pkglibdir: %s\n" "`__poor_mans_expand_file_name pkglibdir`"
 printf "                     cgibindir: %s\n" "`__poor_mans_expand_file_name cgibindir`"
@@ -547,6 +575,9 @@ printf "                     htdocsdir: %s\n" "`__poor_mans_expand_file_name htd
 printf "                    pebblesdir: %s\n" "`__poor_mans_expand_file_name pebblesdir`"
 printf "                        imgdir: %s\n" "`__poor_mans_expand_file_name imgdir`"
 printf "\n"
+printf "                    +---------------------+\n"
+printf "                    | MySQL Configuration |\n"
+printf "                    +---------------------+\n"
 printf "                    mysql_user: %s\n" "`__poor_mans_expand_file_name mysql_user`"
 printf "                mysql_password: %s\n" "`__poor_mans_expand_file_name mysql_password`"
 printf "                    mysql_host: %s\n" "`__poor_mans_expand_file_name mysql_host`"

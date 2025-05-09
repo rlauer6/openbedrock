@@ -50,7 +50,12 @@
         "name" : [
           "index.roc",
           "bedrock.css",
-          "bedrock.js"
+          "bedrock.js",
+          "handler.inc",
+          "login-container.inc",
+          "register.roc",
+          "plugins-container.inc",
+           "register-container.inc"
           ]
       }
       ]
@@ -101,16 +106,33 @@
       "exclude" : [ "qr/Makefile.*/" ]
     },
     {
-      "name" : "<var $dest.apache_config_extra>",
+      "recurse" : 0,
+      "name" : "<var $dest.pebbles>",
+      "source" : "<var $source.pebbles>",
+      "exclude" : [ "qr/Makefile.*/" ]
+    },
+    {
+      "name" : "<var $dest.apache_extra_conf>",
       "files" : [ 
         {
           "source": "<var $source.config>",
           "name" : [
-              "bedrock.conf",
               "dbi.conf"
           ]
         }
       ]
+    },
+    {
+      "name" : "<var $dest.apache_site_conf>",
+      "files" : [
+        {
+          "source": "<var $source.config>",
+          "name" : [
+              "bedrock.conf"
+          ]
+        }
+      ]
     }
+
   ]
 }

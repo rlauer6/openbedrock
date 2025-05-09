@@ -9,16 +9,18 @@ use warnings;
 BEGIN {
   use File::ShareDir qw(dist_dir);
   use English qw(-no_match_vars);
+  use Bedrock::BedrockConfig;
 
   if ( !$COMPILING ) {
     $ENV{BEDROCK_CONFIG_PATH} //= sprintf '%s/config', dist_dir('Bedrock');
+    Bedrock::Config->import('source');
   }
 }
 
 use Bedrock qw(slurp_file perl_config);
 use HTML::Entities;
-use Bedrock::BedrockConfig;
-use Bedrock::Constants qw(:booleans :log_levels);
+
+use Bedrock::Constants qw(:booleans :log_levels :chars);
 use Bedrock::Install;
 use Bedrock::Template;
 use Cwd;
@@ -28,6 +30,7 @@ use File::Copy qw(cp);
 use File::Temp qw(tempfile);
 use List::Util qw(none);
 use Readonly;
+use Text::ASCIITable;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -43,7 +46,7 @@ use parent qw(Bedrock::Application);
 #   apache2x-env-redhat  => RedHat layout for Apache 2.2/2.4
 #   site-config.inc      => configuration assigned from environment files above
 
-__PACKAGE__->main();
+exit __PACKAGE__->main();
 
 ########################################################################
 sub install_web_site {
@@ -53,28 +56,6 @@ sub install_web_site {
   my $install = Bedrock::Install->new( %{ $self->get_options }, manifest => $manifest, );
 
   $install->install();
-
-  return;
-}
-
-########################################################################
-sub add_env_vars {
-########################################################################
-  my ($self) = @_;
-
-  my $file = $self->get_env;
-
-  die "env file $file not found"
-    if !-f $file;
-
-  my @env = slurp_file $file;
-
-  foreach (@env) {
-    next if /^[#]/xsm;
-
-    my ( $k, $v ) = split /\s*=\s*/xms;
-    $ENV{$k} //= $v;
-  }
 
   return;
 }
@@ -142,9 +123,49 @@ Options
 
 See man bedrock-site-install.pl for more information.
 
-(c) 2024 TBC Development Group, LLC
+(c) 2025 TBC Development Group, LLC
 All rights reserved.
 END_OF_HELP
+
+  return;
+}
+
+########################################################################
+sub print_configuration_summary {
+########################################################################
+  my ($template) = @_;
+
+  STDOUT->autoflush(1);
+
+  my $summary = <<'END_OF_TEXT';
+<include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")>
+<var --flush --json --pretty $site_config >
+END_OF_TEXT
+
+  my $site_config = JSON->new->decode( $template->parse($summary) );
+
+  my $heading = sprintf 'Site Configuration (root: %s)', $site_config->{site_root};
+
+  my $t = Text::ASCIITable->new( { headingText => $heading } );
+
+  $t->setCols( $EMPTY, 'Description', 'Path' );
+
+  my $col = 'Source';
+
+  foreach ( sort keys %{ $site_config->{ lc $col } } ) {
+    $t->addRow( $col, $_, $site_config->{source}->{$_} );
+    $col = $EMPTY;
+  }
+
+  $t->addRowLine();
+
+  $col = 'Destination';
+  foreach ( sort keys %{ $site_config->{ lc $col } } ) {
+    $t->addRow( $col, $_, $site_config->{destination}->{$_} );
+    $col = $EMPTY;
+  }
+
+  print {*STDOUT} $t;
 
   return;
 }
@@ -198,7 +219,7 @@ sub main {
     $app->set_env( sprintf '%s/apache%s-env-%s', $config_dir, $apache_version, lc $app->get_distro );
   }
 
-  $app->add_env_vars();
+  source( $app->get_env );
 
   $config->{BEDROCK_INCLUDE_DIR} = $config_dir;
   $config->{BEDROCK_CONFIG_PATH} = $config_dir;
@@ -217,6 +238,8 @@ sub main {
 
   $template->config->{ABSOLUTE_PATHS} = 'yes';
 
+  print_configuration_summary($template);
+
   foreach my $file (qw(bedrock.conf dbi.conf default_form_config.json)) {
     $template->file( sprintf '%s.roc', $file );
 
@@ -226,7 +249,7 @@ sub main {
 
   $template->disable_tag('array');
 
-  foreach my $template_file (qw(tagx.xml mysql-session.xml)) {
+  foreach my $template_file (qw(tagx.xml mysql-session.xml data-sources.xml)) {
 
     $template->file( $template_file . '.roc' );
 
@@ -324,22 +347,23 @@ Each will look similar to the file below:
 You can customize any of these files based on your own
 configuration. Some defaults are defined below:
 
- APACHE_SITE_ROOT = APACHE_ROOT
- APACHE_DOCUMENT_ROOT = APACHE_SITE_ROOT/html
-
 =over 10
 
 =item APACHE_ROOT
 
-Directory where apache was installed.
+Directory where Apache was installed. On Debian systems this
+is typicall F</etc/apache2>. On RedHat type systems and Amazon Linux this is
+F</etc/httpd>.
 
 =item APACHE_SITE_ROOT
 
-Directory that contains the Apache website.
+Directory that contains the Apache website.  On Debian systems this
+is typicall F</var/wwww>. On RedHat type systems and Amazon Linux this is
+F</var/www>.
 
 =item APACHE_DOCUMENT_ROOT
 
-Directory that contains documents to be served by Apache.
+Directory that contains documents to be served by Apache. Typically F</var/www/html>
 
 =item APACHE_MOD_PERL=yes
 
@@ -347,12 +371,23 @@ Whether to use mod_perl or not (yes/no).
 
 =item APACHE_CONF_DIR
 
-Directory that contains Apache's configuration file
+Directory that contains Apache's configuration file.  On Debian systems this
+is typicall F</etc/apache2>. On RedHat type systems and Amazon Linux this is
+F</etc/httpd>.
 
 =item APACHE_CONF_INCLUDE_DIR
 
-Sub-directory of APACHE_CONF_DIR that will contain the Apache
-directives to enable Bedrock.
+Directory where additional Apache configuration files to be loaded are
+located. On Debian systems this is typically
+F</etc/apaches/conf-available>. On Redhat systems and Amazon Linux
+this is F</etc/httd/conf.d>.
+
+=item APACHE_CONF_SITE_DIR
+
+Directory where additional Apache configuration files defining virtual
+hosts to be loaded are located. On Debian systems this is typically
+F</etc/apaches/sites-available>. On Redhat systems and Amazon Linux
+this is F</etc/httd/conf.d>.
 
 =item APACHE_VERSION
 
@@ -362,25 +397,26 @@ the Apache version.
 
 =item BEDROCK_SESSION_DIR
 
-If you are using sessions, this directory can be used for session specific files.
+If you are using sessions, this directory can be used for session
+specific files.
 
 =item DEST_DIR
 
 Destination directory for Bedrock's file for use with Apache. This
-directory should always be outside fo the document root.  It will
-contain, among other artifacts configuration files.
+directory should always be outside of the document root.  It will
+contain, among other artifacts various configuration files.
 
 =item OWNER
 
-Owner of the files to be installed. This is normally the owner that
-runs Apache (either www-data for debian based distros or apache for
-RedHat based distros).
+Owner name for the files to be installed. This is normally the owner that
+runs Apache. On Debian systems this is typically I<www-data>. On
+Redhat and Amazon Linux systems this is I<apache>.
 
 =item GROUP
 
-Group owner of the files to be installed. This is normally the group that
-runs Apache (either 'www-data' for debian based distros or 'apache' for
-RedHat based distros).
+Group name for the files to be installed. This is normally the group that
+runs Apache. On Debian systems this is typically I<www-data>. On
+Redhat and Amazon Linux systems this is I<apache>.
 
 =back
 
@@ -399,13 +435,13 @@ destination locations using the environment files described above.
 It uses the F<site-config.inc> file to provide the parameters for
 creating the final manifest (F<bedrock-manifest.roc>), the Apache
 configuration file (F<bedrock.conf>) and Bedrock's configuration file
-(F<tagx.xl.roc>).
+(F<tagx.xml.roc>).
 
 The script then copies files from Bedrock's distribution directory to
 their target locations as specified in the manifest.
 
 As noted above, you can customize the environment files as needed. You
-can also provide environment varialbes on the command line instead of
+can also override environment variables on the command line instead of
 editing any of the environment files.
 
  APACHE_VERSION=2.4 APACHE_DOCUMENT_ROOT=/var/www/vhosts/html bedrock-site-install.pl 
@@ -421,19 +457,19 @@ described in L<Bedrock::Install>.
 
 =item apache22-env-debian
 
-Environment file for Apache 2.2 running on debian.
+Environment file for Apache 2.2 running on Debian based systems.
 
 =item apache24-env-debian
 
-Environment file for Apache 2.4 running on debian.
+Environment file for Apache 2.4 running on Debian based systems.
 
 =item apache22-env-redhat
 
-Environment file for Apache 2.2 running on RedHat.
+Environment file for Apache 2.2 running on RedHat based systems.
 
 =item apache24-env-redhat
 
-Environment file for Apache 2.4 running on RedHat.
+Environment file for Apache 2.4 running on RedHat based systems.
 
 =item site-config.inc
 
@@ -469,7 +505,7 @@ Bedrock's configuration file.
  
  See man bedrock-site-install.pl for more information.
  
- (c) 2024 TBC Development Group, LLC
+ (c) 2025 TBC Development Group, LLC
  All rights reserved.
 
 =head1 AUTHOR

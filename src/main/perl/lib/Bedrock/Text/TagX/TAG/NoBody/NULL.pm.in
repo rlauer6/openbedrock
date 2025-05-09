@@ -23,16 +23,17 @@ package TagX::TAG::NoBody::NULL;
 use strict;
 use warnings;
 
-use Bedrock qw(is_array);
+use Bedrock qw(is_array is_hash);
 use Bedrock::Array;
 use Bedrock::BedrockJSON;
-use Bedrock::Constants qw(:chars);
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Dump;
 use Bedrock::Hash;
-use Bedrock::Object;
+use Bedrock::Object qw(create_object);
 use Bedrock::Serializer qw(evolve devolve);
 use Bedrock::XML;
 use English qw(-no_match_var);
+use List::Util qw(pairs);
 use MIME::Base64;
 use Scalar::Util qw(reftype blessed openhandle);
 
@@ -59,17 +60,13 @@ sub param {
 ########################################################################
   my ( $options, $tx, $obj ) = @_;
 
-  my $name;
-
-  foreach (qw(define-var define-array define-object)) {
-    last if $name = $options->{$_};
-  }
+  my $name = _get_name_from_options($options);
 
   # create a Bedrock::RecordSet object
   if ( $options->{recordset} && ref $obj ) {
 
     die 'invalid object type: must be array'
-      if reftype($obj) ne 'ARRAY';
+      if !is_array($obj);
 
     $obj = Bedrock::RecordSet->new($obj);
   }
@@ -105,9 +102,11 @@ sub define_options {
     'filter-hash=s'   => undef,
     'handle'          => undef,
     'json'            => undef,
+    'lc'              => undef,
     'recordset'       => undef,
     'range=s'         => undef,
     'serializer=s'    => undef,
+    'uc'              => undef,
     'xml'             => undef,
     'yaml'            => undef,
   );
@@ -127,93 +126,68 @@ sub finalize {
 
   my $tag_opts = $self->parse_tag_name( $argv[0] );
 
+  my ( $type, $name, $default ) = @{$tag_opts}{qw(type name default)};
+
+  $self->get_logger->debug(
+    Dumper(
+      [ type    => $type,
+        name    => $name,
+        default => $default,
+        argv    => \@argv
+      ]
+    )
+  );
+
+  if ($name) {
+    shift @argv;
+  }
+
+  $type = $type eq 'hash' ? 'object' : $type;
+
+  die "Argument for --handle option and must be a handle.\n"
+    if $options{handle} && !( openhandle( $options{handle} ) && @argv );
+
+  die "Argument for --file option and must be filename.\n"
+    if $options{file} && !@argv;
+
   # synonymous tags
   if ( exists $options{expand} ) {
-    $options{'expand-args'} = 1;
+    $options{'expand-args'} = delete $options{expand};
   }
 
-  if ( $tag_opts->{type} ) {
-    if ( $tag_opts->{type} =~ /object|hash/xsm ) {
-      $options{'create-object'} = $tag_opts->{name};
-    }
-    elsif ( $tag_opts->{type} =~ /array/xsm ) {
-      $options{'define-array'} = $tag_opts->{name};
-    }
-    elsif ( $tag_opts->{type} =~ /var/xsm ) {
-      $options{'define-var'} = $tag_opts->{name};
-    }
-    shift @argv;
-  }
-  elsif ( $tag_opts->{name} ) {
-    $options{'define-var'} = $tag_opts->{name};
-    shift @argv;
-  }
-
-  my $default = $options{default};
-  $self->get_logger->debug( sprintf 'default value is: [%s]', $default // 'undef' );
-
-  if ( exists $options{handle}
-    && ( @argv != 1 || !( -r $argv[0] || $argv[0]->can('getline') ) ) ) {
-    die "Use only 1 argument with --handle option and must be a handle.\n";
-  }
-  elsif ( exists $options{file} && ( @argv != 1 || ref $argv[0] ) ) {
-    die "Use only 1 argument with --file option and must be filename.\n";
-  }
-
-  if ( exists $options{'create-object'} ) {
+  if ( $options{'create-object'} ) {
     $options{'define-object'} = $options{'create-object'};
     delete $options{'create-object'};
   }
 
-  if ( exists $options{'define-var'} and exists $options{'define-array'} ) {
-    die "Use either `--define-var' or `--define-array' here.\n";
+  $self->get_logger->debug( sprintf 'default value is: [%s]', $default // '<undef>' );
+
+  if ( !$name ) {
+    $name = _get_name_from_options( \%options );
   }
 
-  if ( exists $options{'define-var'} and exists $options{'define-object'} ) {
-    die "Use either `--define-var' or `--define-object' here.\n";
-  }
+  if ( !$name ) {
+    $name = $UNDERSCORE;
 
-  if ( exists $options{'define-array'} and exists $options{'define-object'} ) {
-    die "Use either `--define-array' or `--define-object' here.\n";
-  }
+    my $val = $context[0]->{$UNDERSCORE};
 
-  die "Use `--define-var' once only.\n"
-    if exists $options{'define-var'} and ref $options{'define-var'};
-
-  die "Use `--define-array' once only.\n"
-    if exists $options{'define-array'} and ref $options{'define-array'};
-
-  die "Use `--define-object' once only.\n"
-    if exists $options{'define-object'} and ref $options{'define-object'};
-
-  die "Use `--json only' only for `--define-var'.\n"
-    if exists $options{'json'} and exists $options{'define-array'};
-
-  if ( $options{cache} ) {
-    push @argv, $tx->read_cache( $options{cache} );
-  }
-
-  # locally define $_
-  if ( !exists $options{'define-var'}
-    && !exists $options{'define-object'}
-    && !exists $options{'define-array'} ) {
-
-    # see if current context has a default variable?
     if ( exists $context[0]->{$UNDERSCORE} ) {
+
       $self->get_logger->warn(
         sub {
-
-          my $val = $context[0]->{$UNDERSCORE};
-          $val //= 'undef';
-
-          sprintf
-            'You are about to overwrite the default variable _ => (%s)!',
-            $val;
+          sprintf 'You are about to overwrite the default variable _ => (%s)!', $val // '<undef>';
         }
       );
     }
+  }
 
-    $options{'define-var'} = $UNDERSCORE;
+  ($type) ||= grep { $options{ 'define-' . $_ } } qw(var array object);
+  $type   ||= 'var';
+
+  $options{ 'define-' . $type } = $name;
+
+  if ( exists $options{cache} ) {
+    push @argv, $tx->read_cache( $options{cache} );
   }
 
   # --base64 option tells Bedrock that the argument to the <null> tag is
@@ -227,417 +201,476 @@ sub finalize {
   #   <null:decoded --json --base64 $input.encoded>
 
   if ( exists $options{base64} ) {
-    if ( @argv == 1 && !ref $argv[0] ) {
-      $argv[0] = decode_base64( $argv[0] );
-    }
-    elsif ( reftype( $argv[0] ) eq 'ARRAY' ) {
-      @argv = map { decode_base64($_); } @{ $argv[0] };
-    }
-    else {
-      die sprintf
-        "'Use --base64 with single argument: scalar or array reference - not %s\n",
-        ref $argv[0];
-    }
+    @argv = $self->handle_base64(@argv);
   }
 
-  # Vanilla define-var does the following
-  #  1. If there is a single argument, the argument is bound to the
-  #     specified name
-  #  2. If there is more than one argument, an array is created out of
-  #     the args
-  #  3. If there are no args, a generic object is bound to the specified name
-  if ( exists $options{'define-var'} ) {
-    if ( @argv > 1 ) {
+  if ( $options{range} ) {
+    my $range = $tx->parse_range( $options{range} );
 
-      $self->get_logger->debug(
-        sub {
-          sprintf 'Defining an array with (%s)[%s items]', join( $EMPTY, @argv ), scalar @argv;
-        }
-      );
+    die "invalid range"
+      if !$range;
 
-      # check to see if it's possible that this is just a trick
-      # of quoting that resulted in the parser creating multiple
-      # arguments - qw{ a b c d }
-      my $arg = join $SPACE, grep {defined} @argv;
+    @argv = @{$range};
+  }
 
-      if ( $arg =~ /^\s*qw[{]\s*([^}]+)\s*[}]\s*$/xsm ) {
-        param( \%options, $tx, Bedrock::Array->new( split /\s+/xsm, $1 ) );
+  my %type_rules = (
+    var => sub {
+      if ( @argv == 1 ) {
+        $self->_single_value( \%options, $tx, @argv );
+      }
+      elsif ( @argv > 1 ) {
+        $self->_multiple_values( \%options, $tx, @argv );
       }
       else {
-        if ( exists $options{json} ) {
-
-          my $json_string = $arg || $default;
-
-          my $handler = $self->io_handler( $tx, 'JSON' );
-
-          my $ref = $handler->in($json_string);
-
-          param( \%options, $tx, $ref );
-        }
-        else {
-          # arguments may be taken solely as list, first as expanded, or
-          # all as expanded...
-          if ( exists $options{'expand-args'}
-            && reftype( $argv[0] ) eq 'ARRAY' ) {
-            param( \%options, $tx, Bedrock::Array->new( @{ shift @argv }, @argv ) );
-          }
-          elsif ( exists $options{'expand-all'} ) {
-            param( \%options, $tx,
-              Bedrock::Array->new( map { ( reftype($_) eq 'ARRAY' ) ? @{$_} : $_ } @argv ) );
-          }
-          else {
-            param( \%options, $tx, Bedrock::Array->new(@argv) );
-          }
-        }
+        param( \%options, $tx, $default );
       }
-    }
-    elsif ( @argv == 1 ) {
-      $self->get_logger->debug(
-        sub {
-          my $val = $argv[0] // 'undef';
-
-          sprintf 'Assigning %s to %s', $val, $options{'define-var'};
-        }
-      );
-
-      if ( defined $options{file} || defined $options{handle} ) {
-        my ( $fh, $file ) = ( openhandle( $argv[0] ), $argv[0] );
-
-        die "no handle or file specified\n"
-          if !$fh && !$file;
-
-        if ( !$fh ) {
-          $file = $tx->find_file( $file, undef, $DOT );
-
-          if ( !$file || !-s $file ) {
-            die "error: can't read [$fh]. Either it does not exist or is empty\n";
-          }
-
-          open $fh, '<', $file or  ## no critic (RequireBriefOpen)
-            die "Could not open file ( $argv[0] ) for reading.";
-        }
-
-        local $RS = undef;
-
-        $argv[0] = <$fh>;
-      }
-
-      my $encode = $options{encode};
-
-      if ( defined $options{json} ) {
-
-        my $handler = $self->io_handler( $tx, 'JSON' );
-
-        my $value = shift @argv || $default;
-
-        $value
-          = $encode
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        if ( !$options{endcode} ) {
-          _promote($value);
-        }
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{'bedrock-xml'} ) {
-        my $handler = $self->io_handler( $tx, 'BedrockXML' );
-        my $value   = shift @argv || $default;
-        $value
-          = $encode
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        _promote($value) if !$options{endcode};
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{xml} ) {
-        my $handler = $self->io_handler( $tx, 'XML' );
-        my $value   = shift @argv || $default;
-        $value
-          = $encode
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        if ( !$options{endcode} ) {
-          _promote($value);
-        }
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{yaml} ) {
-        my $handler = $self->io_handler( $tx, 'YAML' );
-
-        my $value = shift @argv || $default;
-
-        $value
-          = $encode
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        _promote($value) if !$options{endcode};
-
-        param( \%options, $tx, $value );
-      }
-      elsif ( defined $options{serializer} ) {
-        my $handler
-          = $self->io_handler( $tx, $options{serializer}, { 'out', @argv } );
-
-        my $value = shift @argv || $default;
-        $value
-          = $encode
-          ? $handler->serialize( $value, { %options, @argv } )
-          : $handler->deserialize( $value, { %options, @argv } );
-
-        if ( !$encode ) {
-          _promote($value);
-        }
-
-        param( \%options, $tx, $value );
-      }
-
-      elsif ( defined $options{'filter-hash'} ) {
-        $self->get_logger->debug(
-          sub {
-            'filter-hash:' . $options{'filter-hash'};
-          }
-        );
-
-        my $filter = Bedrock::JSON::decode( $options{'filter-hash'} );
-        my ( $key, $value );
-
-        if ( reftype($filter) eq 'ARRAY' ) {
-          ( $key, $value ) = @{$filter};
-        }
-        elsif ( reftype($filter) eq 'HASH' ) {
-          ( $key, $value ) = %{$filter};
-        }
-
-        $self->get_logger->debug(
-          sub {
-            'fltering on key: ' . $key . " value: " . $value;
-          }
-        );
-
-        my @filtered_array;
-
-        foreach ( @{ $argv[0] } ) {
-          if ( reftype($_) eq 'HASH' ) {
-            if ( $_->{$key} eq $value ) {
-              push @filtered_array, $_;
-            }
-          }
-          else {
-            push @filtered_array, $_;
-          }
-        }
-
-        param( \%options, $tx, Bedrock::Array->new(@filtered_array) );
-      }
-      elsif ( defined $default ) {
-
-        $self->get_logger->debug(
-          Dumper(
-            [ options => \%options,
-              argv    => \@argv,
-              default => $default,
-            ]
-          )
-        );
-
-        param( \%options, $tx, defined $argv[0] ? $argv[0] : $default );
-      }
-      elsif ( defined $options{'expand-args'}
-        && reftype( $argv[0] ) eq 'ARRAY' ) {
-        param( \%options, $tx, Bedrock::Array::Reference->new( $argv[0] ) );
+    },
+    array => sub {
+      if ( $options{expand} || $options{'expand-args'} ) {
+        param( \%options, $tx, Bedrock::Array->new( map { is_array($_) ? @{$_} : $_; } @argv ) );
       }
       else {
-        ## no critic (RequireInterpolationOfMetachars)
-        if ( defined $options{escape} ) {
-          my %sub_strings = (
-            '\n' => "\n",
-            '\t' => "\t",
-            '\r' => "\r",
-          );
-
-          $argv[0] =~ s/(\\n|\\t|\\r)/$sub_strings{$1}/xsm;
-        }
-
-        param( \%options, $tx, Bedrock::Object::create_object( $argv[0] ) );
+        param( \%options, $tx, Bedrock::Array->new(@argv) );
       }
-    }
-    elsif ( $options{range} ) {
-      my $range = $tx->parse_range( $options{range} );
-
-      die sprintf "invalid range %s\n", $options{range}
-        if !$range;
-
-      param( \%options, $tx, Bedrock::Array->new( @{$range} ) );
-    }
-    else {
-      # no arguments (@argv is empty)
-      $self->get_logger->debug(
-        sub {
-          'Creating an undefined scalar named ' . $options{'define-var'};
-        }
-      );
-
-      param( \%options, $tx, $default );
-    }
-  }
-  elsif ( exists $options{'define-array'} ) {
-    # define-array explicitly specifies array creation with the arguments, if any
-    $self->get_logger->debug(
-      sub {
-        sprintf 'Defining an array with (%s)[%s items]', join( $EMPTY, @argv ), scalar @argv;
-      }
-    );
-
-    if ( defined $options{expand} || defined $options{'expand-args'} ) {
-      param( \%options, $tx, Bedrock::Array->new( map { ( reftype($_) eq 'ARRAY' ) ? @{$_} : $_; } @argv ) );
-    }
-    else {
-      param( \%options, $tx, Bedrock::Array->new(@argv) );
-    }
-  }
-  elsif ( exists $options{'define-object'} ) {
-    # define-object creates an object and does the following
-    #  0. If $options{json} then assume all args represent a JSON string
-    #     to be converted into an object
-    #  1. If the number of args is even, uses the arguments as
-    #     key-value pairs to initialize the object
-    #  2. If the number of args is odd and the first or last argument is
-    #     an array, this array is expanded one level and combined with the
-    #     rest of the arguments to use as key-value pairs
-    #  3. In both cases, the key must be a scalar -- cannot be an object, array ..
-    #  4. Anything else is an error
-
-    if ( $options{json} && @argv % 2 ) {
-
-      my $json_string = join $EMPTY, @argv;
-
-      # interpret the arguments as JSON string
-      my $json = Bedrock::JSON->new($json_string);
-
-      $self->get_logger->trace(
-        sub {
-          Bedrock::Dump::compact( $json->decode );
-        }
-      );
-
-      param( \%options, $tx, $json->decode );
-    }
-    else {
-      # if odd number of elements, see if first or last element is a reference
-      my $obj;
-
-      if ( @argv % 2 ) {
-
-        $self->get_logger->warn(
-          sub {
-            sprintf
-              'Odd number of elements in object creation list, merging in %s',
-              $argv[0];
-          }
-        );
-
-        my $aref = $argv[0];
-
-        if ( @argv == 1 ) {
-          if ( reftype($aref) eq 'HASH' ) {
-            $obj = Bedrock::Hash->new( %{$aref} );
-          }
-          elsif ( reftype($aref) eq 'ARRAY' ) {
-            $obj = Bedrock::Hash->new( @{$aref} );
-          }
-          else {
-            my $json = Bedrock::JSON->new($aref);
-            $obj = $json->decode;
-          }
-
-          $self->get_logger->trace(
-            sub {
-              Bedrock::Dump::compact($obj);
-            }
-          );
-        }
-        elsif ( reftype($aref) =~ /HASH|ARRAY/xsm ) {
-          shift @argv;
-
-          if ( reftype($aref), 'ARRAY' ) {
-            $self->get_logger->debug(
-              sub {
-                sprintf "Prepending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$aref};
-              }
-            );
-
-            unshift @argv, @{$aref};
-          }
-          else {
-            $self->get_logger->debug(
-              sub {
-                sprintf "Prepending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$aref};
-              }
-            );
-
-            unshift @argv, %{$aref};
-          }
-        }
-        elsif ( defined( $aref = $argv[-1] )
-          and ( reftype($aref) =~ /HASH|ARRAY/xsm ) ) {
-          pop @argv;
-
-          if ( reftype($aref) eq 'ARRAY' ) {
-            $self->get_logger->debug(
-              sub {
-                return sprintf "Appending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$aref};
-              }
-            );
-
-            push @argv, @{$aref};
-          }
-          else {
-            $self->get_logger->debug(
-              sub {
-                return sprintf "Appending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$aref};
-              }
-            );
-
-            push @argv, %$aref;
-          }
-        }
-      }
-
-      die sprintf
-        "Odd number of elements [%d] in object creation list. Use --json if this is a JSON string.\n",
-        scalar @argv
-        if @argv % 2 && !defined $obj;
-
-      if ( !defined $obj ) {
-        $self->get_logger->debug(
-          sub {
-            return sprintf "Key-value pairs for object creation are\n(%s)", join $SPACE, @argv;
-          }
-        );
-      }
-
-      if ( !defined $obj ) {
-        $obj = Bedrock::Hash->new(@argv);
-      }
-
-      $self->get_logger->debug(
-        sub {
-          return sprintf 'Creating an object named %s', $options{'define-object'};
-        }
-      );
+    },
+    object => sub {
+      my $obj = $self->define_object( \%options, @argv );
 
       param( \%options, $tx, $obj );
+    },
+  );
+
+  my ($obj_type) = grep { $options{ 'define-' . $_ } } qw(var array object);
+
+  $self->get_logger->debug(
+    sub {
+      return sprintf 'Creating an object of type: [%s], named: [%s]', $obj_type,
+        $options{ 'define-' . $obj_type };
+    }
+  );
+
+  die "$obj_type not defined!\n"
+    if !$obj_type;
+
+  $type_rules{$obj_type}->();
+
+  return;
+}
+
+########################################################################
+sub _get_name_from_options {
+########################################################################
+  my ($options) = @_;
+
+  my ($name) = grep { defined $options->{ 'define-' . $_ } } qw(var array object);
+
+  return
+    if !$name;
+
+  return $options->{ 'define-' . $name };
+}
+
+########################################################################
+sub handle_base64 {
+########################################################################
+  my ( $self, @argv ) = @_;
+
+  if ( @argv == 1 && !ref $argv[0] ) {
+    $argv[0] = decode_base64( $argv[0] );
+  }
+  elsif ( is_array( $argv[0] ) ) {
+    @argv = map { decode_base64($_); } @{ $argv[0] };
+  }
+  else {
+    die sprintf
+      "'Use --base64 with single argument: scalar or array reference - not %s\n",
+      reftype( $argv[0] );
+  }
+
+  return @argv;
+}
+
+########################################################################
+sub define_object {
+########################################################################
+  my ( $self, $options, @argv ) = @_;
+
+  my $value = $argv[0];
+
+  if ( @argv == 1 ) {
+    return Bedrock::Hash->new( %{$value} )
+      if is_hash($value);
+
+    return Bedrock::Hash->new( @{$value} )
+      if is_hash($value);
+
+    my $json = Bedrock::JSON->new($value);
+
+    return $json->decode;
+  }
+
+  ########################################################################
+  # not sure what the exact use case is for this but...
+  # since we are trying to create a hash from a list:
+  # --------------------------------------------------------------------
+  # 1. if the first element is an array then unravel it and prepend it to the rest of the list
+  # 2. if the first element is a hash then unravel it and prepend it to the rest of the list
+  # 3. repeat above for last element of the list
+  # 4. if we end up with an odd
+  # --------------------------------------------------------------------
+  # array, scalar, scalar, ...
+  # hash, scalar, scalar, ...
+  # scalar, ..., array
+  # scalar, ..., hash
+  ########################################################################
+
+  if ( reftype($value) && reftype($value) =~ /HASH|ARRAY/xsm ) {
+    shift @argv;
+
+    if ( is_array($value) ) {
+      $self->get_logger->debug(
+        sub {
+          sprintf "Prepending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$value};
+        }
+      );
+
+      unshift @argv, @{$value};
+    }
+    else {
+      $self->get_logger->debug(
+        sub {
+          sprintf "Prepending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), %{$value};
+        }
+      );
+
+      unshift @argv, %{$value};
+    }
+  }
+  elsif ( $argv[-1] && reftype( $argv[-1] =~ /HASH|ARRAY/xsm ) ) {
+    $value = pop @argv;
+
+    if ( is_array($value) ) {
+      $self->get_logger->debug(
+        sub {
+          return sprintf "Appending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), @{$value};
+        }
+      );
+
+      push @argv, @{$value};
+    }
+    else {
+      $self->get_logger->debug(
+        sub {
+          return sprintf "Appending the following array to (%s)\n(%s)", join( $EMPTY, @argv ), %{$value};
+        }
+      );
+
+      push @argv, %{$value};
     }
   }
 
-  return;
+  die sprintf "Odd number of elements [%d] in object creation list\n", scalar @argv
+    if @argv % 2;
+
+  $self->get_logger->debug(
+    sub {
+      return sprintf "Key-value pairs for object creation are\n(%s)", join $SPACE, @argv;
+    }
+  );
+
+  return Bedrock::Hash->new(@argv);
+}
+
+########################################################################
+sub _read_scalar_from_file {
+########################################################################
+  my ( $self, $tx, $fh_or_file ) = @_;
+
+  local $RS = undef;
+
+  return <$fh_or_file>
+    if openhandle $fh_or_file;
+
+  die "no handle or file specified\n"
+    if !$fh_or_file;
+
+  my $file = $tx->find_file( $fh_or_file, undef, $DOT );
+
+  die "error: can't read [$file]. Either it does not exist or is empty\n"
+    if !$file || !-s $file;
+
+  open my $fh, '<', $file
+    or die sprintf "Could not open file [%s] for reading.\n", $file;
+
+  my $scalar = <$fh>;
+
+  close $fh;
+
+  return $scalar;
+}
+
+########################################################################
+sub _multiple_values {
+########################################################################
+  my ( $self, $options, $tx, @argv ) = @_;
+
+  my ( $default, $json, $expand, $expand_all ) = @{$options}{qw( default json expand-args expand-all)};
+
+  $self->get_logger->debug(
+    sub {
+      sprintf 'Defining an array with (%s)[%s items]', join( $EMPTY, @argv ), scalar @argv;
+    }
+  );
+
+  # check to see if it's possible that this is just a trick
+  # of quoting that resulted in the parser creating multiple
+  # arguments - qw{ a b c d }
+  my $arg = join $SPACE, grep {defined} @argv;
+
+  return param( $options, $tx, Bedrock::Array->new( split /\s+/xsm, $1 ) )
+    if $arg =~ /^\s*qw[{(]\s*([^)}]+)\s*[}]\s*$/xsm;
+
+  if ($json) {
+
+    my $json_string = $arg // $default;
+
+    my $handler = $self->io_handler( $tx, 'JSON' );
+
+    my $ref = $handler->in($json_string);
+
+    return param( $options, $tx, $ref );
+  }
+
+  # arguments may be taken solely as list, ony first as expanded, or
+  # all as expanded...
+
+  # expand none
+  return param( $options, $tx, Bedrock::Array->new(@argv) )
+    if !is_array( $argv[0] ) || !( $expand || $expand_all );
+
+  # expand one or all
+  my @array = $expand ? ( @{ shift @argv }, @argv ) : map { is_array($_) ? @{$_} : $_ } @argv;
+
+  return param( $options, $tx, Bedrock::Array->new(@array) );
+}
+
+########################################################################
+sub _single_value {
+########################################################################
+  my ( $self, $options, $tx, @argv ) = @_;
+
+  my ( $lc, $uc, $encode, $default ) = @{$options}{qw(lc uc encode default)};
+
+  my ( $file, $handle ) = @{$options}{qw( file handle)};
+
+  my $value = $argv[0];
+
+  $self->get_logger->debug( Dumper( [ single_value => $value ] ) );
+
+  if ( $file || $handle ) {
+    $value = $self->_read_scalar_from_file( $tx, $value );
+  }
+
+  my @rules = (
+    json => sub {
+      return if !exists $options->{json};
+
+      my $handler = $self->io_handler( $tx, 'JSON' );
+
+      $value //= $default;
+
+      $self->get_logger->debug(
+        Dumper(
+          [ json    => $value,
+            options => $options
+          ]
+        )
+      );
+
+      $value
+        = $encode
+        ? $handler->serialize( $value, $options )
+        : $handler->deserialize( $value, $options );
+
+      if ( !$encode ) {
+        _promote($value);
+      }
+
+      return param( $options, $tx, $value );
+    },
+    'bedrock-xml' => sub {
+      return if !exists $options->{'bedrock-xml'};
+
+      my $handler = $self->io_handler( $tx, 'BedrockXML' );
+      $value //= $default;
+
+      $value
+        = $encode
+        ? $handler->serialize( $value, { %{$options}, @argv } )
+        : $handler->deserialize( $value, { %{$options}, @argv } );
+
+      if ( !$encode ) {
+        _promote($value);
+      }
+
+      return param( $options, $tx, $value );
+    },
+    xml => sub {
+      return if !exists $options->{xml};
+
+      my $handler = $self->io_handler( $tx, 'XML' );
+
+      $value //= $default;
+
+      $value
+        = $encode
+        ? $handler->serialize( $value, { %{$options}, @argv } )
+        : $handler->deserialize( $value, { %{$options}, @argv } );
+
+      if ( !$encode ) {
+        _promote($value);
+      }
+
+      return param( $options, $tx, $value );
+    },
+    yaml => sub {
+      return if !exists $options->{yaml};
+
+      my $handler = $self->io_handler( $tx, 'YAML' );
+
+      $value //= $default;
+
+      $value
+        = $encode
+        ? $handler->serialize( $value, { %{$options}, @argv } )
+        : $handler->deserialize( $value, { %{$options}, @argv } );
+
+      if ( !$encode ) {
+        _promote($value);
+      }
+
+      return param( $options, $tx, $value );
+    },
+    serializer => sub {
+      return if !defined $options->{serializer};
+
+      my $handler
+        = $self->io_handler( $tx, $options->{serializer}, { 'out', @argv } );
+
+      $value //= $default;
+
+      $value
+        = $encode
+        ? $handler->serialize( $value, { %{$options}, @argv } )
+        : $handler->deserialize( $value, { %{$options}, @argv } );
+
+      if ( !$encode ) {
+        _promote($value);
+      }
+
+      return param( $options, $tx, $value );
+    },
+    'filter-hash' => sub {
+      my ( $filter_spec, $mode ) = @{$options}{qw( filter-hash filter-mode)};
+
+      $mode //= 'exclude';
+
+      return if !defined $filter_spec || !is_array($value);
+
+      my %wanted = eval {
+        my $filter = Bedrock::JSON::decode($filter_spec);
+
+        # it has to be a hash or array!
+        if ( is_array($filter) ) {
+          die 'filter-hash array must have even number of elements (key/value pairs)'
+            if @{$filter} % 2 != 0;
+
+          return @{$filter};
+        }
+
+        return %{$filter};
+      };
+
+      die $EVAL_ERROR
+        if $EVAL_ERROR;
+
+      die "filter-mode must be 'include' or 'exclude', got: '$mode'"
+        if $mode ne 'include' && $mode ne 'exclude';
+
+      $self->get_logger->debug( sub { Dumper( [ 'filter-hash' => $mode, wanted => \%wanted ] ) } );
+      my $filtered_array = filter( array => $argv[0], wanted => \%wanted, mode => $mode );
+
+      return param( $options, $tx, $filtered_array );
+    },
+    'expand-args' => sub {
+      return if !exists $options->{'expand-args'} || !is_array($value);
+
+      return param( $options, $tx, Bedrock::Array::Reference->new($value) );
+    },
+    'default' => sub {
+      $value //= $default;
+      $value = $lc ? lc $value : $uc ? uc $value : $value;
+
+      $self->get_logger->debug( sprintf 'setting single value: %s', $value // '<undef>' );
+
+      return param( $options, $tx, $value );
+    },
+  );
+
+  # first rule wins...
+  foreach my $r ( pairs @rules ) {
+    my ( $rule, $sub ) = @{$r};
+
+    return if $sub->();
+  }
+
+  if ( defined $options->{escape} ) {
+    my %sub_strings = (
+      $LITERAL_NEWLINE => "\n",
+      $LITERAL_TAB     => "\t",
+      $LITERAL_RETURN  => "\r",
+    );
+
+    $value =~ s/(\\n|\\t|\\r)/$sub_strings{$1}/gxsm;
+  }
+
+  # value might be a scalar, array or hash - promote $value to a
+  # Bedrock::Array or Bedrock::Hash if it is a reference
+  return param( $options, $tx, create_object($value) );
+}
+
+########################################################################
+sub filter {
+########################################################################
+  my (%args) = @_;
+
+  my ( $array, $mode, $wanted ) = @args{qw(array mode wanted)};
+
+  my $filtered_array = Bedrock::Array->new();
+
+  foreach my $item ( @{$array} ) {
+    next if !is_hash($item);
+
+    my $match = _filter( $item, $wanted );
+    next if $mode eq 'include' && !$match;
+    next if $mode eq 'exclude' && $match;
+
+    push @{$filtered_array}, $item;
+  }
+
+  return $filtered_array;
+}
+
+########################################################################
+sub _filter {
+########################################################################
+  my ( $item, $wanted ) = @_;
+
+  for my $k ( keys %{$wanted} ) {
+    return $TRUE if exists $item->{$k} && $item->{$k} eq $wanted->{$k};
+  }
+
+  return $FALSE;
 }
 
 1;
@@ -651,10 +684,10 @@ __END__
 =head1 PURPOSE
 
 The C<null> tag is the I<do something> tag or more correctly I<the
-possibly do something but donE<039>t output anything tag>.  It allows
-for invocation of object methods and/or the creation of Bedrock
-objects without inserting anything at the point at which the
-C<E<lt>nullE<gt>> tag is encountered.
+possibly do something but donE<039>t output anything> tag.  It
+provides a mechanism to invoke methods on objects and create Bedrock
+objects of any type. No text is inserted at the point the tag is
+encountered. Use the C<E<lt>varE<gt>> tag for inserting text.
 
 =head1 SYNTAX
 
@@ -668,9 +701,25 @@ I<type> should be one of:
 
 Create a Bedrock hash object
 
+B<Example:>
+
+ <null:hash --define-var=foobar foo bar buz biz>
+ <null:hash:foobar foo bar buz biz>
+
 =item array
 
 Create a Bedrock array object
+
+B<Example:>
+
+ <null:fruits apple orange pear lime lemon>
+ <null:array:fruit apple orange pear lime lemon>
+
+=item scalar
+
+B<Example:>
+
+ <null:perl TIMTOWDI>
 
 =back
 
@@ -690,7 +739,6 @@ objects when no output is desired.
  --base64
  --bedrock-xml
  --cache = "key-name"
- --create-object = "var-name" I<deprecated>
  --default
  --define-array  = "var-name"
  --define-object = "var-name"
@@ -699,10 +747,13 @@ objects when no output is desired.
  --expand-all
  --expand-args
  --file
+ --filter-hash
  --handle
  --json
+ --lc
  --range
  --recordset
+ --uc
  --xml
 
 =over 5

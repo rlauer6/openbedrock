@@ -31,10 +31,52 @@ setup-sql: setup.sql.in
 CLEANFILES += setup-sql
 
 COMMON_DEPS = \
+    $(TARBALL) \
+    $(ENV_FILES) \
     $(CONFIG_FILES) \
     start-server \
-    setup.sql \
-    Bedrock-$(BEDROCK_VERSION).tar.gz
+    setup.sql
+
+.PHONY: bedrock.md5sum
+bedrock.md5sum:
+	set -e; \
+	FILES=$$( \
+	  (pushd $(top_srcdir); git ls-files; popd; git diff --cached --name-only) \
+	  | sort -u \
+	  | grep -vE '^(docker/|cpan/)' \
+	); \
+	HASH=$$( \
+	  for f in $$FILES; do \
+	    test -f "$(top_srcdir)/$$f" && echo "$(top_srcdir)/$$f"; \
+	  done \
+	  | LC_ALL=C sort \
+	  | xargs cat \
+	  | sha256sum \
+	  | cut -d' ' -f1 \
+	); \
+	if test -e $@; then \
+	  md5sum=$$(cat $@); \
+	else \
+	  md5sum=""; \
+	fi; \
+	echo $$HASH > $@; \
+	if ! test "$$HASH" = "$$md5sum"; then \
+	  rm -f $(top_builddir)/cpan/$(TARBALL); \
+	  rm -f $(TARBALL); \
+	else \
+	  echo "no changes to source..."; \
+	fi	
+
+ENV_FILES = \
+    debian.env \
+    fedora.env \
+    al2023.env
+
+CLEANFILES += $(ENV_FILES)
+
+$(ENV_FILES): bedrock.env.in
+	os_type=$$(basename $@ .env); \
+	$(do_subst) $< | sed "s/[@]os_type[@]/$$os_type/" > $@
 
 ########################################################################
 # debian
@@ -44,7 +86,6 @@ DOCKERFILE_DEBIAN_BASE = Dockerfile.bedrock-debian-base
 
 BEDROCK_DEBIAN_DEPS = \
     $(DOCKERFILE_DEBIAN) \
-    debian.env \
     bedrock-debian-base \
     $(COMMON_DEPS)
 
@@ -57,13 +98,6 @@ bedrock-debian-base: $(DOCKERFILE_DEBIAN_BASE)
 bedrock-debian: $(BEDROCK_DEBIAN_DEPS)
 include bedrock-image.mk
 
-debian.env: bedrock.env.in
-	os_type="debian"; \
-	$(do_subst) $< | \
-	sed -e "s/[@]os_type[@]/$$os_type/g" > $@
-
-CLEANFILES += debian.env
-
 ########################################################################
 # Fedora
 ########################################################################
@@ -72,7 +106,6 @@ DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-fedora-base
 
 BEDROCK_FEDORA_DEPS = \
     $(DOCKERFILE_FEDORA) \
-    fedora.env \
     $(CONFIG_FILES) \
     bedrock-fedora-base \
     Bedrock-$(BEDROCK_VERSION).tar.gz
@@ -86,13 +119,6 @@ bedrock-fedora-base: $(DOCKERFILE_FEDORA_BASE)
 bedrock-fedora: $(BEDROCK_FEDORA_DEPS)
 include bedrock-image.mk
 
-fedora.env: bedrock.env.in
-	os_type="fedora"; \
-	$(do_subst) $< | \
-	sed -e "s/[@]os_type[@]/$$os_type/g" > $@
-
-CLEANFILES += fedora.env
-
 ########################################################################
 # Amazon Linux 2023
 ########################################################################
@@ -101,7 +127,6 @@ DOCKERFILE_AL2023_BASE = Dockerfile.bedrock-al2023-base
 
 BEDROCK_AL2023_DEPS = \
     $(DOCKERFILE_AL2023) \
-    al2023.env \
     $(CONFIG_FILES) \
     bedrock-al2023-base \
     Bedrock-$(BEDROCK_VERSION).tar.gz
@@ -114,11 +139,4 @@ bedrock-al2023-base: $(DOCKERFILE_AL2023_BASE)
 
 bedrock-al2023: $(BEDROCK_AL2023_DEPS)
 include bedrock-image.mk
-
-al2023.env: bedrock.env.in
-	os_type="al2023"; \
-	$(do_subst) $< | \
-	sed -e "s/[@]os_type[@]/$$os_type/g" > $@
-
-CLEANFILES += al2023.env
 

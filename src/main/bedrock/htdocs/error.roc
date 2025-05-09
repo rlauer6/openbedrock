@@ -1,5 +1,6 @@
 <html>
   <head>
+    <title>Bedrock Error</title>
     <link rel="stylesheet" href="<var $config.BEDROCK_SOURCE_CSS_URL>" type="text/css" />
     <plugin:Timenow>
   </head>
@@ -11,8 +12,7 @@
       </tr>
 
       <tr>
-        <td><i>Bedrock version:&nbsp;</i><b><var
-                                              $Bedrock.version></b></td>
+        <td><i>Bedrock version:&nbsp;</i><b><var $bedrock.version()></b></td>
       </tr>
       <tr>
         <td ><i>Timestamp:&nbsp;</i><b><var $Timenow.ctime></b></td>
@@ -27,7 +27,7 @@
       </tr>
       
       <tr>
-        <null --define-var = "msg" $ERROR.mesg()>
+        <null:msg $ERROR.mesg()>
         <if $msg --re "^(PebbleDoc|BedrockDoc|BLMDoc)">
           <td class=pebble><var $msg.replace("^(PebbleDoc|BedrockDoc|BLMDoc)")></td>
          <elseif $msg --re "^(PebbleDocRef|BedrockDocRef|BLMDocRef)">
@@ -41,13 +41,13 @@
         <tr>
           <th align=left bgcolor="#dcdcdc" >
             Location: <code ><var $file>(
-                <font color="red"><a href="#error_<var $i>"><var --default = "???" $line></a></font>
+                <font color="red"><a href="#error_<var $i>"><var --default="???" $line></a></font>
                 )</code>
           </th>
         </tr>
         
-        <tr >
-          <td >
+        <tr>
+          <td>
             <pre class=junk>
               <var $ERROR.view_source($i, "context", 2, "compact", 0)>
             </pre>

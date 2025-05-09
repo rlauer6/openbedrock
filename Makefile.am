@@ -44,10 +44,11 @@ MAINTAINERCLEANFILES = config.status \
 
 DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 
-.PHONY: ensure-clean-build-from-top
-ensure-clean-build-from-top:
-	@echo "Performing clean build check from top level..."
-	$(MAKE) clean all dist
+.PHONY: cpan
+cpan:	tmpdir=$$(mktemp -d); \
+	$(MAKE) install DESTDIR=$$tmpdir; \
+	$(MAKE) -C $(top_builddir)/cpan DESTDIR=$$tmpdir cpan; \
+	rm -rf $$tmpdir
 
 clean-local:
 	for a in $$(ls bedrock*.tar.gz 2>/dev/null); do \

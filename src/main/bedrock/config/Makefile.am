@@ -4,17 +4,30 @@ ax_perl5_extra_includes = @ax_perl5_extra_includes@
 
 VERSION = @VERSION@
 
+MYSQL_HOST     = @mysql_host@
+MYSQL_DATABASE = @mysql_database@
+MYSQL_USER     = @mysql_user@
+MYSQL_PASSWORD = @mysql_password@
+
+APACHE_ENV_FILES = \
+    apache24-env-debian.in \
+    apache22-env-debian.in \
+    apache24-env-redhat.in \
+    apache22-env-redhat.in
+
+GAPACHE_ENV_FILES = $(APACHE_ENV_FILES:.in=)
+
+$(GAPACHE_ENV_FILES): % : %.in
+	$(do_subst) $< > $@
+
 EXTRA_FILES = \
     bedrock.users \
-    apache24-env-debian \
-    apache22-env-debian \
-    apache24-env-redhat \
-    apache22-env-redhat \
     site-config.inc
 
 ROC_FILES= \
     bedrock.conf.roc \
     bedrock-manifest.roc \
+    data-sources.xml.roc \
     dbi.conf.roc \
     default_form_config.json.roc \
     mysql-session.xml.roc \
@@ -25,7 +38,12 @@ ROC_FILES= \
 ADMIN = \
     admin/index.roc \
     admin/bedrock.css \
-    admin/bedrock.js
+    admin/bedrock.js \
+    admin/handler.inc \
+    admin/register-container.inc \
+    admin/login-container.inc \
+    admin/plugins-container.inc \
+    admin/register.roc
 
 admindir = $(configdir)/admin
 
@@ -36,8 +54,6 @@ CONFIG = \
     bedrock-rest-framework.conf.in \
     data-sources.xml.in \
     mysql-session.xml.in \
-    perl_bedrock.conf22.in \
-    perl_bedrock.conf24.in \
     rest.xml.in \
     pod_paths.xml.in \
     markdown_paths.xml.in \
@@ -45,7 +61,7 @@ CONFIG = \
     tagx.xml.in \
     tagx_apps.xml.in
 
-CONFFILES = \
+CONF_FILES = \
     log4perl.conf
 
 GCONFIG = $(CONFIG:.in=)
@@ -53,12 +69,20 @@ GCONFIG = $(CONFIG:.in=)
 $(GCONFIG): % : %.in
 	$(do_subst) $< > $@
 
-config_DATA = $(GCONFIG) $(EXTRA_FILES) $(ROC_FILES)
+config_DATA = \
+    $(GCONFIG) \
+    $(EXTRA_FILES) \
+    $(ROC_FILES) \
+    $(GAPACHE_ENV_FILES)
 
-dist_config_DATA = $(EXTRA_FILES) $(CONFFILES) $(ROC_FILES)
+dist_config_DATA = \
+    $(EXTRA_FILES) \
+    $(CONF_FILES) \
+    $(ROC_FILES) \
+    $(APACHE_ENV_FILES)
 
 dist_noinst_DATA = $(CONFIG)
 
 all: 
 
-CLEANFILES = $(GCONFIG)
+CLEANFILES = $(GCONFIG) $(GAPACHE_ENV_FILES)

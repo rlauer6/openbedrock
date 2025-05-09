@@ -47,20 +47,17 @@ $(G1MANPAGES): %.1bedrock : %.pl
 	"$(POD2MAN)" $< \
 	--center='Bedrock' \
 	--name="$${tname}" \
-	--release=$(PACKAGE)-$(VERSION) \
+	--release=$(PACKAGE_VERSION) \
 	--section=1bedrock > "$${target_name}"
 
-if DISTCHECK_HACK_ENABLED
-else
 install-data-hook: installdirs
 	test -e $(DESTDIR)/bin || mkdir $(DESTDIR)/bin
-	ln -f -s @bindir@/bedrock.pl  $(DESTDIR)/bin/bedrock
-	ln -f -s @bindir@/bedrock-model.pl  $(DESTDIR)/$(bindir)/bedrock-model
-	ln -f -s @bindir@/bedrock-site-install.pl  $(DESTDIR)/$(bindir)/bedrock-site-install
-	ln -f -s @bindir@/bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
-	ln -f -s @bindir@/bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
-	ln -f -s @bindir@/dnky-config.pl $(DESTDIR)$(bindir)/dnky-config
-endif
+	ln -f -s ../usr/bin/bedrock.pl  $(DESTDIR)/bin/bedrock
+	ln -f -s bedrock-model.pl  $(DESTDIR)/$(bindir)/bedrock-model
+	ln -f -s bedrock-site-install.pl  $(DESTDIR)/$(bindir)/bedrock-site-install
+	ln -f -s bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
+	ln -f -s bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
+	ln -f -s dnky-config.pl $(DESTDIR)$(bindir)/dnky-config
 
 .PHONY: clean-local
 clean-local:

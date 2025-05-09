@@ -4,18 +4,28 @@ CPAN_DIST_MAKER = make-cpan-dist.pl
 
 PACKAGE_VERSION = @PACKAGE_VERSION@
 
-TARBALL = Bedrock-$(PACKAGE_VERSION).tar.gz
+TARBALL = $(builddir)/Bedrock-$(PACKAGE_VERSION).tar.gz
 
 REQUIRES_FILE = $(srcdir)/requires
 TEST_REQUIRES_FILE = $(srcdir)/test-requires
 
+all:
+
 .PHONY: cpan
-cpan: buildspec.yml
-	rm -f $(TARBALL); \
-	$(MAKE) -C $(top_builddir) ensure-clean-build-from-top
-	tmpdir=$$(mktemp -d); \
-	project_root="$${tmpdir}/usr"; \
-	$(MAKE) -C $(top_builddir) install DESTDIR=$$tmpdir; \
+cpan: $(TARBALL)
+
+if RPMBUILD_ENABLED
+$(TARBALL):
+	touch $@
+else
+$(TARBALL): buildspec.yml
+	if test -z "$(DESTDIR)"; then \
+	  tmpdir=$$(mktemp -d); \
+	  project_root="$${tmpdir}/usr"; \
+	  $(MAKE) -C $(top_builddir) prefix=/usr install DESTDIR=$$tmpdir; \
+	else \
+	  project_root="$(DESTDIR)/usr"; \
+	fi; \
 	test -n "$$DEBUG" && set -x; \
 	test -n "$$DEBUG" && DEBUG="--debug"; \
 	REQUIRES="-r $$project_root/share/bedrock/requires"; \
@@ -27,8 +37,11 @@ cpan: buildspec.yml
 	SKIP_TESTS=1 \
 	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES \
 	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || true; \
-	rm -rf "$$tmpdir"
-	test -e $(TARBALL) || false
+	test -e $(TARBALL) || false; \
+	if test -n "$$tmpdir"; then \
+	  echo "rm -rf $$tmpdir"; \
+	fi
+endif
 
 cpandir = $(datadir)/bedrock
 

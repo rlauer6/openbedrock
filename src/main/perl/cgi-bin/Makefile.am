@@ -58,7 +58,7 @@ bedrock.cgi.1: bedrock.cgi.in
 	"$(POD2MAN)" $< \
 	    --center='Bedrock' \
 	    --name=$$(echo $< | sed -e 's/\.in$$//' | tr '[:lower:]' '[:upper:]') \
-	    --release=$(PACKAGE)-$(VERSION) \
+	    --release=$(PACKAGE_VERSION) \
 	    --section=1 > $@
 
 install-data-hook:

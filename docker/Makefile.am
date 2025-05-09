@@ -3,7 +3,9 @@ SUBDIRS = .
 
 @do_subst_command@
 
-all: bedrock
+TARBALL = $(builddir)/Bedrock-$(PACKAGE_VERSION).tar.gz
+
+all: bedrock.md5sum $(TARBALL) $(ENV_FILES) apache2.conf $(CONFIG_FILES)
 
 MYSQL_HOST          = @mysql_host@
 MYSQL_PASSWORD      = @mysql_password@
@@ -76,6 +78,9 @@ DOCKERHUB_TOKEN ?= $(shell cat ~/.ssh/dockerhub.token)
 OSTYPES := debian fedora al2023
 
 public-all: $(addprefix public-,$(OSTYPES))
+	echo "$(DOCKERHUB_TOKEN)" | docker login -u rlauer --password-stdin
+	docker tag bedrock-debian:latest $(REPO):latest
+	docker push $(REPO):latest
 
 .PHONY: $(addprefix public-,$(OSTYPES)) public-all
 
@@ -95,6 +100,8 @@ dist_noinst_DATA = \
     $(BEDROCK_CONF) \
     $(DOCKER_COMPOSE) \
     requires \
-    test-requires
+    test-requires \
+    bedrock.env.in \
+    apache2.conf.in
 
-CLEANFILES += $(CONFIG_FILES)
+CLEANFILES += $(CONFIG_FILES) bedrock.md5sum $(TARBALL)

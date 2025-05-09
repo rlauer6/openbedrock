@@ -1,5 +1,5 @@
 <sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
-<object >
+<object>
   <!--
       
    Reference Implmentation of `tagx.xml'
@@ -22,22 +22,29 @@
    starting point for Bedrock enabling your Apache server or a
    specific virtual host.
 
-   To do that, you should either:
+   To do that, you should copy the file to the Apache configuration
+   directory.
 
-     - copy the contents of the 'bedrock.conf' file into your Apache
-       configuration file (apache2.conf or httpd.conf) or
-  
-     - copy the file to the Apache configuration directory and include
-       the file using the Include directive similar to what is shown
-       below.
+   Debian:
+
+     cp bedrock.conf /etc/apache2/sites-available
+     a2ensite bedrock
+
+   Redhat
+
+      cp bedrock.conf /etc/httpd/conf.d
+
+      ...and add this to httpd.conf
 
        Include bedrock.conf
 
-   A 'startup.pl' script can be found in <var $config.BEDROCK_CONFIG_PATH>
-   which will be  invoked by Apache if mod_perl is enabled.  This is the default
-   mod_perl startup file for Bedrock. It's chief responsibility is to
-   let Perl know where to find Bedrock modules.  If you want Bedrock
-   to find additional modules, you may need to modify this file.
+   A 'startup.pl' script can be found in <var
+   $config.BEDROCK_CONFIG_PATH> which will be invoked by Apache if
+   mod_perl is enabled.  This is the default mod_perl startup file for
+   Bedrock. It's chief responsibility is to let Perl know where to
+   find Bedrock modules.  If you want Bedrock to find additional
+   modules in non-standard locations, you may need to modify this
+   file.
 
    Once you've done all that, you'll want to restart your web server
    in the usual way:
@@ -46,16 +53,13 @@
 
       $ service httpd restart
 
-   On newer Red Hat based systems:
+   On newer Red Hat and Debian based systems:
 
       $ systemctl start httpd
 
    On Debian based systems:
 
-      $ apachectl restart
-
-   ...however your system might have a different mechanism if you have
-   installed Apache from source.
+      $ apachectl start
 
   -->
 

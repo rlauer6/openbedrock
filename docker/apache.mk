@@ -1,26 +1,6 @@
 #-*- mode: makefile; -*-
 
 ########################################################################
-# Apache - configuration files that will be installed into images
-########################################################################
-APACHE_CONF = \
-  httpd.conf.in
-
-GAPACHE_CONF = $(APACHE_CONF:.conf.in=.conf)
-CONFIG_FILES += $(GPACHE_CONF)
-
-BEDROCK_CONF = \
-  perl_bedrock.conf.in \
-  bedrock.conf.in \
-  bedrock-info.conf.in \
-  bedrock-session-files.conf.in \
-  bedrock-autocomplete.conf.in \
-  rest.conf.in
-
-GBEDROCK_CONF = $(BEDROCK_CONF:.conf.in=.conf)
-CONFIG_FILES += $(GBEDROCK_CONF)
-
-########################################################################
 # Bedrock - configuration files that will be installed into images
 ########################################################################
 XML_FILES = \

@@ -7,6 +7,8 @@ LITE = Lite.pm.in
 
 @do_subst_command@
 
+all:
+
 lib/Bedrock/Lite.pm: $(LITE)
 	test -d $(builddir)/lib/Bedrock || mkdir -p $(builddir)/lib/Bedrock
 	$(do_subst) $< > $@
