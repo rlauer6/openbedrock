@@ -31,7 +31,20 @@ Bedrock and test the results.
 
 See [README-github.md](docker/README-github.md) for details regarding
 how to create the Docker image used for continuous integration when
-commits are pushed to GitHub.
+commits are pushed to GitHub. Builds may fail in the GitHub Actions
+even if they succeed in a local environment if the local environment
+is different that the CI container. You can debug the GitHub build by
+using the `bedrock-test` container locally.
+
+```
+docker run --rm -it bedrock-test /bin/bash
+```
+
+...then inside the container:
+
+```
+./build-github
+```
 
 # Building the Bedrock Images
 
@@ -48,7 +61,10 @@ install Bedrock or website updates manually inside your container. See
 
 Since you are reading the `README` in the `docker` directory you are
 presumably interested in creating Docker images for running a Bedrock
-website. The `Makefile.am` here will create Docker images for three
+website. The latest releases of the images can be found in
+[dockerhub](https://hub.docker.com/r/rlauer/openbedrock).
+
+The `Makefile.am` here will create Docker images for three
 Linux distributions:
 
 | Image | Description |
@@ -57,9 +73,8 @@ Linux distributions:
 | `bedrock-fedora` | image based on `fedora:40`        |
 | `bedrock-al2023` | image based on `amazonlinux:2023` |
 
-When you run `make` in the `docker` directory it will run `make` from
-the root of the project creating the distribution tarball and a CPAN
-distribution that is then used to install Bedrock on images.
+When you run `make` in the `docker` directory it will run create a
+CPAN distribution that is then used to install Bedrock on each image.
 
 To create the images:
 
@@ -70,8 +85,8 @@ make && make images
 `make images` will creates the base images which include all
 dependencies for building bedrock for each of the supported
 distributions. After the base images are created it will create the
-final images by installing Bedrock in the base image and running the
-`bedrock-site-install` script is run which installs and configures the
+final images by installing Bedrock in the base image and run the
+`bedrock-site-install` script that installs and configures the
 Bedrock enabled Apache website.
 
 You can use this site for developing Bedrock applications or for
@@ -95,8 +110,12 @@ images you created, verify that Bedrock is installed and working properly.
 
 ```
 docker run -d -p 80:80 bedrock-debian
-curl http:://localhost
+curl http:://localhost/itworks.rock
 ```
+
+You can find the Bedrock documentation by visiting
+http://localhost/bedrock. The site is protectd with Basic
+Authentication, username is `fred`, password is `flintstone`.
 
 ## Docker Compose
 
@@ -111,30 +130,30 @@ There is a `.env` file for each distribution for use with
 docker-compose --env debian.env up
 ```
 
-or 
+Once your stack is launched visit the Bedrock documentation at
+http://localhost/bedrock to verify installation and learn more about
+Bedrock.
 
-```
-DOCKERFILE=Dockerfile.fedora DOCKERIMAGE=bedrock-fedora docker-compose up
-```
+See [Bedrock Documenation](#bedrock-documentation) for more details
+regarding how to enable the documentation server. 
 
-## Localstack & Redis
+## LocalStack & Redis
 
 The `docker-compose.yml` file also contains the configurations to
-bring up a Redis server and the Localstack (AWS emulator)
+bring up a Redis server and the
+[LocalStack](https://www.localstack.cloud/) (AWS emulator)
 environments.
 
 These can be enabled using the `--profile` option when you invoke
 `docker-compose`.
 
-```
-BEDROCK=~/git/openbedrock docker-compose --profile redis --profile localstack up
-```
+There are Bedrock plugins for working with AWS services. Redis can be
+used for session management, caching and other applications using
+Bedrock plugins.
 
-Visit the Bedrock documentation at http://localhost/bedrock to
-learn more about Bedrock.
-
-See [Bedrock Documenation](#bedrock-documentation) for more details
-regarding how to enable the documentation server. 
+```
+docker-compose --env debian.env --profile redis --profile localstack up
+```
 
 # Bedrock Enabled Apache Website
 
@@ -145,7 +164,7 @@ enabled website is installed using the `bedrock-site-install`
 script. Essentially the final image is produced like this:
 
 ```
-cpanm -n -v Bedrock-3.3.1.tar.gz
+cpanm -n -v Bedrock-m.n.r.tar.gz
 bedrock-site-install --distro=redhat
 ```
 
@@ -164,16 +183,16 @@ file.
 | bedrock.conf.roc | Bedrock's Apache configuration template | `site-config.inc` |
 | bedrock-manifest.roc | Files to be installed by the `bedrock-site-install` | `site-config.inc` |
 
-> Hint: If a change is made to Bedrock or the files to be installed
-> to enable the Apache website, you can shortcut the image creation
-> process. Copy the new Bedrock distribution to the contain Bedrock
-> using `cpanm`.
+> Hint: If a change is made to Bedrock or the files to be installed to
+> enable the Apache website, you can shortcut the image creation
+> process. Copy the new Bedrock distribution to the container and
+> install Bedrock using `cpanm`.
 
 ```
 docker cp Bedrock-3.3.2.tar.gz docker_web_1:/tmp
 ```
 
-...then inside the container
+...then inside the container:
 
 ```
 cpanm -n -v Bedrock-3.3.2.tar.gz
@@ -220,7 +239,6 @@ configuration for the container environment.
 Likewise this file contains a database configuration for the database
 running inside the container environment.
 
-
 ## Bedrock Documentation
 
 By default Bedrock documentation is enabled (See `ALLOW_BEDROCK_INFO`
@@ -237,19 +255,23 @@ if you enabled that in your `tagx.xml` file.
 > The reference container is designed to be used in a _local
 > development environment_. For production sites, make sure you do not
 > include the directives in your Apache configuration which enable
-> this URI. One way to achieve that is to edit the environment files
-> described below that control the configuration of each image flavor.
+> this URI. Edit the appropriate environment file
+> (e.g. apache24-debian.env) and set `BEDROCK_DOCS_ENABLED` to *Off*
+> then re-run `bedrock-site-install`.
 
 # Connecting to the MySQL Server
+
+If you want to connect to the MySQL server running in your container
+environment follow the instructions below.
 
 ## Connecting to `localhost`
 
 To connect to the MySQL server running in the container without using
 TCP you need to expose the socket to your host.  The
-`docker-compose.yml` file will export mount
-`/tmp/mysqld` locally to `/var/run/mysqld` on the container. This will
-allow you to connect to the container's MySQL instance on `localhost`.
-You must however provide the path to the socket file when connecting.
+`docker-compose.yml` file will mount `/tmp/mysqld` locally to
+`/var/run/mysqld` on the container. This will allow you to connect to
+the container's MySQL instance on `localhost`.  You must however
+provide the path to the socket file when connecting.
 
 ```
 mysql -u root -p -h localhost -S /tmp/mysqld/mysqld.sock
@@ -278,30 +300,31 @@ use DBI;
 Use 127.0.0.1 or find the IP address of the MySQL server running in the container:
 
 ```
-export DBI_HOST=$(docker inspect docker_db_1 | \
+export DBI_HOST=$(docker inspect bedrock_db_1 | \
  jq -r '.[]|.NetworkSettings.Networks.docker_default.IPAddress')
  
 mysql -u root --password=bedrock -h $DBI_HOST
 ```
 
-# Local Bedrock Development with Docker
+# Bedrock Application Development
 
 ## Using a Remote Host
 
-### Creating an SSH Tunnel
+If you're doing your development on a remote server that is not
+publicly accessible (but accessible to you via ssh) and you want to
+view your application in your local browser you'll need to setup an
+ssh tunnel.
 
-If you're doing your development on a remote server that you access
-via a bastion host (for example an EC2) and access that server through
-a local terminal, you can create an ssh tunnel through the bastion to
-your development server.
+### Creating an SSH Tunnel
 
 Typically I connect to my development server (EC2) via a bastion host
 using my Chromebook. Running Linux on my Chromebook allows me to use
-GNOME terminal to access remote servers.
+terminal programs like GNOME `terminal` or `terminataor` to access
+remote servers.
 
 My EC2 development server is behind a firewall accessible only from
 the bastion host in the same subnet.  The bastion host is accessible
-__only__ from my home's IP address. 
+__only__ from my home's IP address.
 
 The goal is to run a Docker container _on my development EC2 instance_
 exposing port 80 to my bastion host while using an ssh tunnel through
@@ -327,13 +350,14 @@ port 8080.  The setup Looks something like this...
 >Note: By default Chrome on your Chromebook is unable to access ports
 >opened in your Linux container.  You must configure your Chromebook
 >for port forwarding. Do this by going to the settings menu on your
->Chromebook. Access the "Advanced>Developers" settings.  There you can
->configure port forwarding for port 8080.
+>Chromebook. Go to the setting menu on your Chromebook, then click on
+>_About ChromeOS_. In the Developers section click on _Linux development
+>environment_. Click on _Port forwarding_. Enable 8080 port forwarding.
 
-Additionally, all ports are normally blocked to my EC2 except 22. In this scenario
-we open port 80 of my EC2 to the bastion host (only) as well as port 22. Keep
-in mind you still want to restrict port 22 on your bastion host to
-your local IP address!
+Additionally, all ports are normally blocked to my EC2 except
+port 22. In this scenario we open port 80 of my EC2 to the bastion
+host (only) as well as port 22. Keep in mind you still want to
+restrict port 22 on your bastion host to your local IP address!
 
 To bring up the tunnel I use the command below in Linux running on my
 Chromebook.

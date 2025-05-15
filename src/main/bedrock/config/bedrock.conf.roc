@@ -88,7 +88,7 @@
   </if>
 
   <Directory "<var $site.CGI_BIN>">
-    Options +SymLinksIfOwnerMatch
+    Options +FollowSymLinks -SymLinksIfOwnerMatch
   </Directory>
 
   # Bedrock - mod-perl for .roc (if mod_perl)
