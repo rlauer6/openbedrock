@@ -357,11 +357,13 @@ sub remove_user {
 ########################################################################
 sub lookup_user {
 ########################################################################
-  my ( $obj, $username ) = @_;
+  my ( $obj, $username, $return_ref ) = @_;
 
   my $self = tied %{$obj} || $obj;
 
-  return $self->do_select( 'LOOKUP_USER', 'username', $username );
+  my $rows = $self->do_select_ref( 'LOOKUP_USER', 'username', $username );
+
+  return $return_ref ? $rows->[0] : $rows->[0]->{user};
 }
 
 ########################################################################
@@ -518,24 +520,31 @@ sub logout {
 ########################################################################
 sub change_passwd {
 ########################################################################
-  my ( $obj, $opasswd, $npasswd ) = @_;
+  my ( $obj, $old_password, $new_password ) = @_;
 
   my $self = tied %{$obj} || $obj;
 
   my $username = $self->{data}->{username};
 
   die "Cannot change password: user not logged in.\n"
-    if !length $username;
+    if !$username;
 
   my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
   my $t = $config->{table_name};
 
   $self->get_logger->debug( sprintf 'Attempting to change password for user: [%s]', $username );
 
+  if ($old_password) {
+    $self->LOGIN(
+      username => $username,
+      password => $old_password,
+    );
+  }
+
   return $self->UPDATE_LOGIN_PASSWORD(
     table    => $config->{table_name},
     username => $username,
-    password => [ $npasswd, $opasswd ],
+    password => [ $new_password, $old_password ],
     session  => $self->{session},
   );
 }
@@ -547,10 +556,10 @@ sub remember_user {
 
   my $self = tied %{$obj} || $obj;
 
-  die "No user logged in to remember\n"
-    if !length $self->{data}->{username};
-
   my $username = $self->{data}->{username};
+
+  die "No user logged in to remember\n"
+    if !$username;
 
   my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
 
@@ -570,8 +579,8 @@ sub remember_user {
     # Delete the login cookie
     $self->cookie(
       $login_cookie_name,
-      'value'   => 'killed',
-      'expires' => -$SECONDS_IN_A_DAY,
+      value   => 'killed',
+      expires => -$SECONDS_IN_A_DAY,
     );
 
     $login_id = $EMPTY;
@@ -614,9 +623,9 @@ sub create_temp_login_session {
   if ( $session_timeout =~ /^(\d+)([smdh])?$/xsmi ) {
     $session_timeout = $1;
 
-    my $unit = $2;
+    my $unit = lc $2;
 
-    $unit = lc( $unit // 'm' );
+    $unit //= 'm';
 
     $seconds = {
       d => 24 * 60 * 60,
@@ -640,7 +649,7 @@ sub create_temp_login_session {
   # Create a new session id for the user
   my $session;
 
-  # Delete the `new_session' flag
+  # Delete the 'new_session' flag
   delete $self->{new_session};
 
   my $data;
@@ -654,7 +663,7 @@ sub create_temp_login_session {
       );
       return $data->[5];
     };
-  } ## end if ($recycle)
+  }
 
   if ( !$session || $EVAL_ERROR ) {
     $session = $self->newSessionID;
@@ -682,6 +691,7 @@ sub create_temp_login_session {
     config   => $self->{config}
   );
 
+  # logs out the user...
   $self->UPDATE_LOGIN_SESSION(
     config   => $self->{config},
     username => $username,
@@ -716,6 +726,8 @@ sub session_root {
   return $obj->context->{CONFIG}->{SESSION_DIR};
 }
 
+########################################################################
+sub create_session_directory { goto &create_session_dir; }
 ########################################################################
 sub create_session_dir {
 ########################################################################

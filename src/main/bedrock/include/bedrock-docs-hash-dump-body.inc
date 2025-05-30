@@ -1,4 +1,3 @@
-<var $head>
 <div class="bedrock-hash">
   <foreach $hash.sorted()>
 
@@ -17,5 +16,3 @@
     </div>
   </foreach>
 </div>
-  </body>
-</html>

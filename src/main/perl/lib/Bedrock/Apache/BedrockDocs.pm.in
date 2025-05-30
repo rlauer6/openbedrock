@@ -40,7 +40,6 @@ use Bedrock::Dump;
 use Bedrock::Handler qw(%BEDROCK_CONFIG_CACHE);
 use Bedrock::Template;
 use Bedrock::VERSION qw(version);
-use BLM::Startup::UserSession;
 
 use Carp;
 use CGI;
@@ -51,6 +50,7 @@ use File::Temp qw(tmpnam tempfile);
 use File::Find;
 use JSON;
 use Markdown::Render;
+use Module::Load;
 use Scalar::Util qw(reftype blessed);
 use List::Util qw(any pairs none);
 use LWP::UserAgent;
@@ -60,6 +60,8 @@ use Log::Log4perl;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+with 'Bedrock::Apache::HandlerUtils';
+
 use Readonly;
 
 Readonly our $DEFAULT_IMAGE_URL => '/bedrock/img';
@@ -74,6 +76,93 @@ if ( $OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
 
 our $LOGGER;
 our $SESSION;
+
+# order is important, 'docs' comes last always...
+my @routes = (
+  plugins  => qr{plugins/?(.*?)$}xsm,
+  system   => qr{system/?(.*?)/?$}xsm,
+  internal => qr{bedrock-internal/?(.*?)/?$}xsm,
+  pod      => qr{pod/?(.*?)/?$}xsm,
+  markdown => qr{markdown/?(.*?)/?$}xsm,
+  tag      => qr{tag/?(.*?)/?$}xsm,
+  env      => qr{environment$}xsm,
+  config   => qr{configuration$}xsm,
+  session  => qr{session}xsm,
+  clear    => qr{clear\-cache$}xsm,
+  docs     => qr{/bedrock/docs/?(.*?)/?$}xsm,
+  index    => qr{/bedrock/$}xsm,
+);
+
+my %dispatcher = (
+  plugins => \&plugin_docs,
+  system  => sub {
+    my ( $bedrock_handler, $arg ) = @_;
+    return system_docs( $bedrock_handler, module => $arg, type => 'system' );
+  },
+  internal => sub {
+    my ( $bedrock_handler, $arg ) = @_;
+    return system_docs( $bedrock_handler, module => $arg, type => 'bedrock-internal' );
+  },
+  pod => sub {
+    my ( $bedrock_handler, $arg ) = @_;
+    my $module = $arg ? $arg : CGI->new->param('module');
+    return pod_docs( $bedrock_handler, $module );
+  },
+  markdown => \&markdown_docs,
+  tag      => sub {
+    my ( $bedrock_handler, $arg ) = @_;
+    return tag_docs( $bedrock_handler, lc $arg );
+  },
+  env     => \&env_docs,
+  session => \&session_state,
+  config  => \&config_docs,
+  clear   => sub {
+    my ( $bedrock_handler, $arg ) = @_;
+    %BEDROCK_CONFIG_CACHE = ();
+    return $OK;
+  },
+  docs  => \&generic_docs,
+  index => \&index_html,
+);
+
+########################################################################
+# get_route()
+########################################################################
+#
+# Returns a 2-element array or undef if no route is found in the route table
+#     [ route-id, arg ]
+#
+# Where:
+#    'arg' is the first segment after the route suffix
+# Example:
+#    /bedrock/docs/pod/Foo::Bar -> arg = Foo::Bar
+#
+# The route table is a list of key/value pairs where the key is a
+# route-id and the value is regular expression that should match a
+# route.
+#
+# The route id is used to look up a subroutine reference in the
+# dispatch table. The dispatch table is a hash of key/value pairs
+# where the key is the route-id which should exist in our route table
+# and the value is a subroutine reference that accepts a
+# Bedrock::Handler object, 'arg' and the Bedrock::Config object.
+#
+########################################################################
+sub get_route {
+########################################################################
+  my (%args) = @_;
+
+  my ( $r, $uri, $routes ) = @args{qw(r uri routes)};
+
+  for my $route ( pairs @{$routes} ) {
+    my ( $id, $regexp ) = @{$route};
+
+    return [ $id, $1 ]
+      if $uri =~ /$regexp/xsm;
+  }
+
+  return;
+}
 
 ########################################################################
 sub handler {
@@ -96,11 +185,13 @@ sub handler {
 
   $LOGGER = get_logger(__PACKAGE__);
 
-  $SESSION = eval { return get_session($bedrock_handler); };
+  $SESSION = eval { return bind_session($bedrock_handler); };
 
   if ($SESSION) {
-
     $SESSION->set( 'Referer', $headers{Referer} );
+  }
+  else {
+    $r->log->warn( 'unable to load session manager: ' . $EVAL_ERROR );
   }
 
   my $status = eval {
@@ -133,136 +224,15 @@ sub handler {
     # router
     ####################################################################
     my $uri = $r->uri;
-    $uri =~ s/^$config->{BEDROCK_ADMIN_DIR}//xsm;
 
     $LOGGER->debug("handling: $uri");
 
-    for ($uri) {
-      /plugins\/?(.*?)$/xsm && do {
-        return plugin_docs( $bedrock_handler, $1 );
-      };
+    my ( $route_id, $arg ) = @{ get_route( r => $r, uri => $uri, routes => \@routes ) // [] };
 
-      /system\/?(.*?)\/?$/xsm && do {
-        return system_docs( $bedrock_handler, module => $1, type => 'system' );
-      };
+    return $HTTP_BAD_REQUEST
+      if !$route_id;
 
-      /bedrock-internal\/?(.*?)\/?$/xsm && do {
-        return system_docs( $bedrock_handler, module => $1, type => 'bedrock-internal' );
-      };
-
-      /pod\/?(.*?)\/?$/xsm && do {
-        my $module = $1 ? $1 : CGI->new->param('module');
-        return pod_docs( $bedrock_handler, $module );
-      };
-
-      /markdown\/?(.*?)\/?$/xsm && do {
-        return markdown_docs( $bedrock_handler, $1 );
-      };
-
-      /tag\/?(.*?)\/?$/xsm && do {
-        return tag_docs( $bedrock_handler, lc $1 );
-      };
-
-      /docs\/?(.*?)\/?$/xsm && do {
-        return generic_docs( $bedrock_handler, lc $1 );
-      };
-
-      /^\/env\/?$/xsm && do {
-        return env_docs($bedrock_handler);
-      };
-
-      /^\/config\/?$/xsm && do {
-        return config_docs($bedrock_handler);
-      };
-
-      /^\/clear\-cache/xsm && do {
-        %BEDROCK_CONFIG_CACHE = ();
-        return $OK;
-      };
-
-      /^\/session/xsm && do {
-        my $users = $SESSION->lookup_users();
-        output( $r, { users => $users, session => $SESSION } );
-        return $OK;
-      };
-    }
-
-    ####################################################################
-    # documentation home page
-    ####################################################################
-
-    my $template = fetch_template( $config, 'bedrock-docs-index' );
-
-    my %parameters;
-
-    $parameters{head} = listing_head( $bedrock_handler, 'Bedrock Reference Guide' );
-
-    ####################################################################
-    # head
-    ####################################################################
-    $parameters{tags} = ul_links(
-      $config,
-      tag     => 'Bedrock Tags',
-      plugins => 'Bedrock Plugins',
-    );
-
-    ####################################################################
-    # system modules
-    ####################################################################
-    $parameters{system_docs} = ul_links( $config, system => 'System Modules' );
-
-    ####################################################################
-    # Bedrock internal modules
-    ####################################################################
-    $parameters{bedrock_internal_docs}
-      = ul_links( $config, 'bedrock-internal' => 'Bedrock Internal Documentation' );
-
-    ####################################################################
-    # user modules
-    ####################################################################
-    my $pod_paths = get_pod_paths($bedrock_handler);
-
-    if ($pod_paths) {
-      $parameters{user_docs} = ul_links( $config, pod => 'Module Listing' );
-    }
-
-    ####################################################################
-    # markdown
-    ####################################################################
-    my $markdown_paths = get_markdown_paths($bedrock_handler);
-
-    if ($markdown_paths) {
-      $parameters{markdown_docs} = ul_links( $config, markdown => 'Documentation Listing' );
-    }
-
-    ####################################################################
-    # config & environment
-    ####################################################################
-    if ( $config->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
-
-      my $allow_config = $config->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
-      $allow_config = $allow_config =~ /^y|1|on/xsmi;
-
-      my $allow_env = $config->{ALLOW_BEDROCK_ENV_INFO} // $EMPTY;
-      $allow_env = $allow_env =~ /^y|1|on/xsmi;
-
-      $parameters{bedrock_env} = ul_links(
-        $config,
-        config => $allow_config ? 'Bedrock Configuration' : '(disabled)',
-        env    => $allow_env    ? 'Bedrock Environment'   : '(disabled)',
-      );
-    }
-
-    if ( $config->{LOG4PERL} && -e $config->{LOG4PERL} ) {
-      $parameters{log4perl} = slurp_file $config->{LOG4PERL};
-    }
-
-    ####################################################################
-    # finalize and output
-    ####################################################################
-    output( $r, template( $config, $template, %parameters ) );
-
-    return $OK;
+    return $dispatcher{$route_id}->( $bedrock_handler, $arg, $config );
   };
 
   if ($SESSION) {
@@ -270,6 +240,94 @@ sub handler {
   }
 
   return $EVAL_ERROR ? internal_server_error( $r, $EVAL_ERROR ) : $status;
+}
+
+########################################################################
+sub index_html {
+########################################################################
+  my ( $bedrock_handler, $arg, $config ) = @_;
+
+  my $r = $bedrock_handler->request;
+
+  return $HTTP_BAD_REQUEST
+    if is_api($r);
+
+  ####################################################################
+  # documentation home page
+  ####################################################################
+
+  my $template = fetch_template( $config, 'bedrock-docs-index' );
+
+  my %parameters;
+
+  $parameters{head} = listing_head( $bedrock_handler, 'Bedrock Reference Guide' );
+
+  ####################################################################
+  # head
+  ####################################################################
+  $parameters{tags} = ul_links(
+    $config,
+    tag     => 'Bedrock Tags',
+    plugins => 'Bedrock Plugins',
+  );
+
+  ####################################################################
+  # system modules
+  ####################################################################
+  $parameters{system_docs} = ul_links( $config, system => 'System Modules' );
+
+  ####################################################################
+  # Bedrock internal modules
+  ####################################################################
+  $parameters{bedrock_internal_docs}
+    = ul_links( $config, 'bedrock-internal' => 'Bedrock Internal Documentation' );
+
+  ####################################################################
+  # user modules
+  ####################################################################
+  my $pod_paths = get_pod_paths($bedrock_handler);
+
+  if ($pod_paths) {
+    $parameters{user_docs} = ul_links( $config, pod => 'Module Listing' );
+  }
+
+  ####################################################################
+  # markdown
+  ####################################################################
+  my $markdown_paths = get_markdown_paths($bedrock_handler);
+
+  if ($markdown_paths) {
+    $parameters{markdown_docs} = ul_links( $config, markdown => 'Documentation Listing' );
+  }
+
+  ####################################################################
+  # config & environment
+  ####################################################################
+  if ( $config->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
+
+    my $allow_config = $config->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
+    $allow_config = $allow_config =~ /^y|1|on/xsmi;
+
+    my $allow_env = $config->{ALLOW_BEDROCK_ENV_INFO} // $EMPTY;
+    $allow_env = $allow_env =~ /^y|1|on/xsmi;
+
+    $parameters{bedrock_env} = ul_links(
+      $config,
+      config => $allow_config ? 'Bedrock Configuration' : '(disabled)',
+      env    => $allow_env    ? 'Bedrock Environment'   : '(disabled)',
+    );
+  }
+
+  if ( $config->{LOG4PERL} && -e $config->{LOG4PERL} ) {
+    $parameters{log4perl} = slurp_file $config->{LOG4PERL};
+  }
+
+  ####################################################################
+  # finalize and output
+  ####################################################################
+  output( $r, template( $config, $template, %parameters ) );
+
+  return $OK;
 }
 
 ########################################################################
@@ -1202,20 +1260,33 @@ sub env_docs {
 
   my $allow_env = $config->{ALLOW_BEDROCK_ENV_INFO} // $EMPTY;
 
-  my $env
-    = $allow_env =~ /^y/xsmi
-    ? \%ENV
-    : { ALLOW_BEDROCK_ENV_INFO => $allow_env };
+  my $env = $allow_env =~ /^y/xsmi ? \%ENV : { ALLOW_BEDROCK_ENV_INFO => $allow_env };
+
+  return dump_hash( $bedrock_handler, $env )
+    if is_api($bedrock_handler);
 
   return hash_docs( $bedrock_handler, 'Environment', $env );
 }
 
 ########################################################################
+sub session_state {
+########################################################################
+  my ($bedrock_handler) = @_;
+
+  my $config = $bedrock_handler->config;
+
+  return dump_hash( $bedrock_handler, $SESSION // {} )
+    if is_api($bedrock_handler);
+
+  return hash_docs( $bedrock_handler, 'Environment', $SESSION // {} );
+}
+
+########################################################################
 sub is_api {
 ########################################################################
-  my ($r) = @_;
+  my ($bedrock_handler) = @_;
 
-  $r = ref($r) =~ /Bedrock::Handler/xsm ? $r->request_handler : $r;
+  my $r = ref($bedrock_handler) =~ /Bedrock::Handler/xsm ? $bedrock_handler->request : $bedrock_handler;
 
   my $accept = $r->header_in('Accept');
 
@@ -1223,27 +1294,55 @@ sub is_api {
 }
 
 ########################################################################
+sub dump_hash {
+########################################################################
+  my ( $bedrock_handler, $hash ) = @_;
+
+  $hash = blessed $hash && $hash->isa('Bedrock::Hash') ? $hash->devolve : $hash;
+
+  my $config = $bedrock_handler->config;
+
+  bless_all($hash);
+
+  my $template = fetch_template( $config, 'bedrock-docs-hash-dump-body' );
+
+  my $html = template( $config, $template, hash => $hash );
+
+  output( $bedrock_handler->request_handler, { html => $html } );
+
+  return $OK;
+}
+
+########################################################################
 sub config_docs {
 ########################################################################
   my ($bedrock_handler) = @_;
 
-  my $config       = $bedrock_handler->config;
+  my $config = $bedrock_handler->config;
+
   my $allow_config = $config->{ALLOW_BEDROCK_CONFIG_INFO} // $EMPTY;
 
   $config = $allow_config =~ /^y/xsmi ? $config : { ALLOW_BEDROCK_CONFIG_INFO => $allow_config };
 
-  if ( is_api($bedrock_handler) ) {
-    output(
-      $bedrock_handler->request_handler,
-      { config => $config,
-        files  => [ $bedrock_handler->config_files_processed ]
-      }
-    );
-
-    return $OK;
-  }
+  return dump_hash( $bedrock_handler, $config )
+    if is_api($bedrock_handler);
 
   return hash_docs( $bedrock_handler, 'Configuration', $config );
+}
+
+########################################################################
+sub bless_all {
+########################################################################
+  my ($hash) = @_;
+
+  # make sure that all refs can('compact')
+  foreach ( %{$hash} ) {
+    next if !defined $hash->{$_} || !ref $hash->{$_} || blessed $hash->{$_};
+
+    bless $hash->{$_}, 'Bedrock::Dump';
+  }
+
+  return;
 }
 
 ########################################################################
@@ -1255,12 +1354,7 @@ sub hash_docs {
 
   my $template = fetch_template( $config, 'bedrock-docs-hash-dump' );
 
-  # make sure that all refs can('compact')
-  foreach ( %{$hash} ) {
-    next if !ref $_ || blessed $_;
-
-    bless $_, 'Bedrock::Dump';
-  }
+  bless_all($hash);
 
   my $head = listing_head( $bedrock_handler, 'Bedrock ' . $title );
 
@@ -1555,16 +1649,23 @@ sub get_session {
 ########################################################################
   my ($bedrock_handler) = @_;
 
-  my $r = $bedrock_handler->apache_handler;
+  my $r      = $bedrock_handler->request;
+  my $config = $bedrock_handler->get_config;
 
   my $ctx = Bedrock::Context->new(
     REQUEST_HANDLER => $r,
-    CONFIG          => $bedrock_handler->get_config
+    CONFIG          => $config,
   );
 
-  my $module_config = $bedrock_handler->get_config->get_module_config('UserSession');
+  my $session_manager = $config->{BEDROCK_SESSION_MANAGER} ? $config->{BEDROCK_SESSION_MANAGER} : 'UserSession';
 
-  return BLM::Startup::UserSession->new( $ctx, $module_config );
+  my $module_config = $config->get_module_config($session_manager);
+
+  my $class = "BLM::Startup::$session_manager";
+
+  load $class;
+
+  return $class->new( $ctx, $module_config );
 }
 
 1;

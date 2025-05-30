@@ -5,8 +5,8 @@ var spinner = '<div class="d-flex mt-5 justify-content-center"><div class="spinn
 // -------------------------------------------------
 function enable_tooltips() {
 // -------------------------------------------------
-const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
+    const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]');
+    const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl));
 }
 
 // -------------------------------------------------

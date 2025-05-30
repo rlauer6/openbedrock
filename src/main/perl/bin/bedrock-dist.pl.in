@@ -1,0 +1,109 @@
+#!/usr/bin/env perl
+
+package Bedrock::Dist;
+
+use strict;
+use warnings;
+
+use Cwd qw(realpath getcwd);
+use Data::Dumper;
+use English qw(no_match_vars);
+use File::Basename qw(basename dirname);
+use File::Copy qw(cp);
+use File::Find;
+use File::ShareDir qw(dist_dir);
+
+use parent qw(CLI::Simple);
+
+caller or __PACKAGE__->main();
+
+########################################################################
+sub print_tree {
+########################################################################
+  my ( $root, $prefix ) = @_;
+
+  $prefix //= q{};
+
+  opendir my $dh, $root
+    or return;
+
+  my @entries = grep { $_ ne q{.} && $_ ne '..' } readdir $dh;
+
+  closedir $dh;
+
+  for my $i ( 0 .. $#entries ) {
+    my $entry   = $entries[$i];
+    my $full    = "$root/$entry";
+    my $is_last = $i == $#entries;
+
+    print {*STDOUT} $prefix;
+
+    print {*STDOUT} $is_last ? '└── ' : '├── ';
+
+    print {*STDOUT} "$entry\n";
+
+    print_tree( $full, $prefix . ( $is_last ? '    ' : '│   ' ) ) if -d $full;
+  }
+
+  return;
+}
+
+########################################################################
+sub copy_file {
+########################################################################
+  my ($self) = @_;
+
+  my ( $source, $dest ) = $self->get_args;
+
+  $dest = realpath($dest);
+
+  if ( -d $dest ) {
+    $dest = sprintf '%s/%s', $dest, basename($source);
+  }
+  elsif ( !-d dirname($dest) ) {
+    die "not a valid destination ($dest)\n";
+  }
+
+  $source = sprintf '%s/%s', $self->get_dist_dir, $source;
+
+  die "$source not found\n"
+    if !-e $source;
+
+  die "unable to copy $source => $dest\n"
+    if !cp( $source, $dest );
+
+  return 0;
+}
+
+########################################################################
+sub main {
+########################################################################
+
+  my $dist_dir = dist_dir('Bedrock');
+
+  my $cli = Bedrock::Dist->new(
+    option_specs    => [qw( help )],
+    default_options => {},             # set some defaults
+    extra_options   => [qw(dist_dir)],
+    commands        => {
+      cp   => \&copy_file,
+      dist => sub {
+        print {*STDOUT} $dist_dir;
+        return 0;
+      },
+      show => sub {
+        my ($self) = @_;
+        print_tree( $self->get_dist_dir );
+        return 0;
+      },
+
+    }
+  );
+
+  $cli->set_dist_dir($dist_dir);
+
+  return $cli->run();
+
+}
+
+1;

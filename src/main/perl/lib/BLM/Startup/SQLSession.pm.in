@@ -137,6 +137,18 @@ sub do_select_set {
 }
 
 ########################################################################
+sub do_select_ref {
+########################################################################
+  my ( $self, $what, %options ) = @_;
+
+  my $sql_spec = $self->{sql}->{$what};
+
+  my ( $sql, $args ) = @{$sql_spec}{qw(sql args)};
+
+  return $self->_do_select_ref( $sql, @options{ @{$args} } );
+}
+
+########################################################################
 sub do_select {
 ########################################################################
   my ( $self, $what, %options ) = @_;
@@ -238,7 +250,7 @@ sub remove_expired_session_dirs {
 }
 
 ########################################################################
-sub _do_select_set {
+sub _select {
 ########################################################################
   my ( $self, $stm, @args ) = @_;
 
@@ -258,10 +270,39 @@ sub _do_select_set {
   die sprintf $SQL_ERROR, $stm, $sth->errstr
     if !defined $success;
 
+  return $sth;
+}
+
+########################################################################
+sub _do_select_set {
+########################################################################
+  my ( $self, $stm, @args ) = @_;
+
+  my $sth = $self->_select( $stm, @args );
+
   my @rows;
 
   while ( my @data = $sth->fetchrow_array ) {
     push @rows, \@data;
+  }
+
+  die sprintf $FETCH_ERROR, $sth->errstr
+    if $sth->err;
+
+  return \@rows;
+}
+
+########################################################################
+sub _do_select_ref {
+########################################################################
+  my ( $self, $stm, @args ) = @_;
+
+  my $sth = $self->_select( $stm, @args );
+
+  my @rows;
+
+  while ( my $row = $sth->fetchrow_hashref ) {
+    push @rows, $row;
   }
 
   die sprintf $FETCH_ERROR, $sth->errstr
@@ -618,7 +659,7 @@ sub REMOVE_USER {
 # |                                                               |
 # | config    => configuration object                             |
 # | username  => username                                         |
-# | password  => [new-password, old-password                      |
+# | password  => [new-password, old-password]                     |
 # | session   => session-id                                       |
 # |                                                               |
 # | Purpose:  Change a user's password. Note that                 |
@@ -734,7 +775,7 @@ override methods if necessary.
 
 In general, a parent class should provide a package global named
 C<%BLM::Startup::SQLSession::SQL> with keys that correspond to the
-method names below. The value of each of the hash members is a has
+method names below. The value of each of the hash members is a hash
 that contains two keys, C<sql> and <args>.  For example:
 
    FETCH_SESSION => {
@@ -750,8 +791,10 @@ that contains two keys, C<sql> and <args>.  For example:
      , args => [qw(session)]
    },
 
-The SQL statement is formatted using C<sprintf> with an argument of
-the table name, which is passed as C<table> in the C<args> hash.
+The SQL statements are pre-formatted using C<sprintf> with an argument
+of the name of the session table specified in the Bedrock XML startup
+configuration file.
+
 C<args> here contains the names of keys that will be used to populate
 the bind values in the query. The C<BLM::Startup::SessionManager>
 class implements all of the methods necessary for session
@@ -762,7 +805,6 @@ For example, the C<change_password()> method in the session manager
 calls UPDATE_LOGIN_PASSWORD like this:
 
    $self->UPDATE_LOGIN_PASSWORD(
-    table    => $config->{table_name},
     username => $username,
     password => [ $npasswd, $opasswd ],
     session  => $self->{session},

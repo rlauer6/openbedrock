@@ -91,45 +91,54 @@ sub check_session {
 }
 
 ########################################################################
-sub validate_session {
+sub bind_session {
 ########################################################################
-  my ( $handler, $verify_user ) = @_;
+  my ( $bedrock_handler, $validate ) = @_;
 
-  my $r = $handler->request;
+  my $r = $bedrock_handler->request;
 
-  my $config = $handler->config->get_module_config('usersession');
+  my $config = $bedrock_handler->get_config;
 
-  $verify_user = defined $verify_user ? $verify_user : $config->{session_files}->{verify_user} // $TRUE;
+  my $session_manager = $config->{BEDROCK_SESSION_MANAGER} ? $config->{BEDROCK_SESSION_MANAGER} : 'UserSession';
+
+  $r->log->warn("no BEDROCK_SESSION_MANAGER defined in configuration, using BLM::Startup::UserSession\n");
+
+  my $module_config = $config->get_module_config($session_manager);
+
+  die "no session manager ($session_manager) defined in configuration\n"
+    if !$module_config;
 
   my $ctx = Bedrock::Context->new(
-    request => $handler->request,
-    config  => $handler->get_config,
+    request => $r,
+    config  => $config,
   );
 
   my $session = eval {
     my $module = bind_module(
-      config  => $config,
-      module  => 'BLM::Startup::UserSession',
+      config  => $module_config,
+      module  => 'BLM::Startup::' . $session_manager,
       context => $ctx,
     );
 
     return $module;
   };
 
-  die "unable to bind BLM::Startup::Session module\n$EVAL_ERROR"
+  die sprintf "unable to bind BLM::Startup::%s module\n%s", $session_manager, $EVAL_ERROR
     if !$session;
 
-  $verify_user = defined $verify_user ? $verify_user : $TRUE;
-
-  if ( $verify_user && !$session->{username} ) {
-    $r->log->error( sprintf 'no username in session, invalid session or session timed out? error: [%s]',
-      $EVAL_ERROR );
-
-    die "no or expired session\n";
+  if ( !defined $validate ) {
+    $validate = $module_config->{session_files}->{verify_user};
   }
+
+  die "invalid session or session timed out\n"
+    if $validate && !$session->{username};
 
   return $session;
 }
+
+########################################################################
+sub validate_session { goto &bind_session; }
+########################################################################
 
 ########################################################################
 sub dump_session_info {
@@ -167,14 +176,28 @@ sub get_session_file_info { goto &get_file_info; }
 ########################################################################
 sub get_file_info {
 ########################################################################
-  my ( $r, $verify, $verify_user ) = @_;
+  my ( $r, @args ) = @_;
 
-  $verify //= $TRUE;
+  my $options;
+
+  if ( !ref $args[0] ) {
+    $options = { verify => $args[0], verify_user => $args[1] };
+  }
+  else {
+    $options = $args[0];
+  }
+
+  my ( $verify, $verify_user, $default_ext ) = @{$options}{qw(verify verify_user ext)};
+
+  if ( $default_ext && $default_ext !~ /^[.]/xsm ) {
+    $default_ext = ".$default_ext";
+  }
 
   dump_request_info($r);
 
   # filename (however actual file will exist under user's session directory)
   my ( $name, $path, $ext ) = fileparse( $r->filename, qr/[.]([^.]*)$/xsm );
+  $ext //= $default_ext;
 
   my $bedrock_handler = Bedrock::Handler->new($r);
 

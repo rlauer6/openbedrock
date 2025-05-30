@@ -16,6 +16,7 @@ POD2MAN = /usr/bin/pod2man
 
 PERLSCRIPTS = \
     bedrock.pl.in \
+    bedrock-dist.pl.in \
     bedrock-plugin.pl.in \
     bedrock-model.pl.in \
     bedrock-model-importer.pl.in \
@@ -48,7 +49,7 @@ $(G1MANPAGES): %.1bedrock : %.pl
 	--center='Bedrock' \
 	--name="$${tname}" \
 	--release=$(PACKAGE_VERSION) \
-	--section=1bedrock > "$${target_name}"
+	--section=1bedrock > "$${target_name}" || true
 
 install-data-hook: installdirs
 	test -e $(DESTDIR)/bin || mkdir $(DESTDIR)/bin
