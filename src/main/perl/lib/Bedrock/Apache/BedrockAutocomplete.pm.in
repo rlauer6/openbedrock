@@ -27,6 +27,7 @@ use Role::Tiny::With;
 with 'Bedrock::Apache::HandlerUtils';
 
 use Bedrock qw(slurp_file);
+use Bedrock::Handler;
 use Bedrock::Apache::Constants qw(:all);
 use Data::Dumper;
 use English qw(-no_match_vars);
@@ -41,12 +42,21 @@ sub handler {
 ########################################################################
   my ($r) = @_;
 
-  # TBD S3: get_file_info($r, 0)
-  my $file_info = eval { return get_file_info($r); };
+  # TBD S3: get_session_file_info($r, 0)
+
+  my $file_info = eval { return get_session_file_info($r); };
 
   if ( !$file_info || $EVAL_ERROR ) {
-    $r->log->error( "no file information\n" . $EVAL_ERROR );
-    return set_error_status( $r, $EVAL_ERROR );
+    $r->log->error( "file not found in session\n" . $EVAL_ERROR );
+
+    return set_error_status( $r, "file not found\n" )
+      if !-e $r->filename;
+
+    $file_info = {
+      filename => $r->filename,
+      mtime    => ( stat $r->filename )[9],
+      config   => Bedrock::Handler->new($r),
+    };
   }
 
   my ( $filename, $config, $mtime )
@@ -132,19 +142,29 @@ sub get_result_set {
 ########################################################################
   my ($list) = @_;
 
-  my $term = $ENV{QUERY_STRING};
+  my $query  = $ENV{QUERY_STRING} // q{};
+  my ($term) = $query =~ /(?:^|&)term=([^&]*)/xsmi;
+  my ($type) = $query =~ /(?:^|&)type=([^&]*)/xsmi;
+  $type //= 'word';  # default match mode
 
-  if ( $term =~ /term\=([^&]*)\&?/ixsm ) {
-    return [ map { $_->{label} =~ /^$1/ixsm ? $_ : () } @{$list} ];
-  }
-  else {
-    return $list;
-  }
+  return $list if !defined $term || $term eq q{};
+
+  $term = lc $term;
+
+  my @matches = grep {
+    my $label = lc $_->{label};
+
+        $type eq 'exact'    ? $label eq $term
+      : $type eq 'prefix'   ? $label =~ /^\Q$term\E/xsm
+      : $type eq 'word'     ? $label =~ /\b\Q$term\E/xsm
+      : $type eq 'contains' ? index( $label, $term ) >= 0
+      : 0
+  } @{$list};
+
+  return \@matches;
 }
 
 1;
-
-## no critic (RequirePodSections)
 
 __END__
 
@@ -152,22 +172,61 @@ __END__
 
 =head1 NAME
 
-Apache::BedrockAutocomplete - autocomplete handler
+Apache::BedrockAutocomplete - A handler for creating autocompletion result sets
 
 =head1 SYNOPSIS
 
  cookie="session=32733cca688df39044832be9928183ed; path=/; expires=Mon, 24-Oct-2022 20:53:58 GMT;"; \
- curl -b "$cookie" http://example.com/autocomplete/clients.jroc?term=gro
+ curl -b "$cookie" http://example.com/autocomplete/clients.json?term=gro
 
 =head1 DESCRIPTION
 
 Implements an Apache handler that serves L<autocomplete
-files|/Autocomplete Files> files from a user's session directory.
-This module is typically used as part of a web application that
-requires an autocomplete API.
+files|/Autocomplete Files> files from a specified directory or from
+the user's session directory.  This module is typically used as part
+of a web application that requires an autocomplete API.
 
 Autcomplete files are JSON files with strings (terms) that will be
 searched for when a query is sent with a term fragment.
+
+The autocomplete API accepts two query parameters: C<term>, C<type>.
+
+=over 5
+
+=item term
+
+Search term or term fragment.
+
+=item type
+
+Using the API you can search for terms in one of four modes:
+
+=over 10
+
+=item exact
+
+Only exact matches will be returned.
+
+=item prefix
+
+Terms that begin with the search string are returned.
+
+=item word
+
+Terms that have any word that begins with the search string are returned.
+
+Example:
+
+If the search term is "blu" and you list of terms contains "Bluebird"
+and "Eastern Bluebird", then both terms would be returned.
+
+=item contains
+
+Returns any term that matches anywhere in the list of terms.
+
+=back
+
+=back
 
 =head1 INSTALLATION NOTES
 
@@ -176,20 +235,21 @@ Apache server.
 
 =head2 1. Set Up the Apache Handler
 
+  # if not using mod_perl
   Action bedrock-autocomplete /cgi-bin/bedrock-autocomplete.cgi virtual
 
-  Alias /autocomplete /var/www/vhosts/mysite/autocomplete
+  Alias /autocomplete /var/www/autocomplete
 
-  <Directory /var/www/vhosts/mysite/autocomplete>
+  <Directory /var/www/autocomplete>
     AcceptPathInfo On
     Options -Indexes
   
-    <IfModule mod_perl.c>
+    <IfModule perl_module>
       SetHandler perl-script
       PerlHandler Apache::BedrockAutocomplete
     </IfModule>
   
-    <IfModule !mod_perl.c>
+    <IfModule !perl_module>
       SetHandler bedrock-autocomplete
     </IfModule>
   
@@ -200,14 +260,14 @@ You can configure the handler for use with C<mod_perl> or as a CGI script.
 To use the CGI version, copy the CGI handler to your F</cgi-bin>
 directory.
 
- cp @libdir@/bedrock/cgi-bin/bedrock-autocomplete.cgi /var/www/cgi-bin
+ cp /var/www/cgi-bin/bedrock.cgi /var/www/cgi-bin/bedrock-autocomplete.cgi
  chmod +x /var/www/cgi-bin/bedrock-autocomplete.cgi
  chown apache:apache /var/www/cgi-bin/bedrock-autocomplete.cgi
 
 =head2 2. Create a Session Directory
 
 The C<Apache::BedrockAutocomplete> handler reads a JSON file that is
-stored in a user's session directory.
+stored in a user's session directory or in the autocomplete directory.
 
 Assuming you have configured user sessions using something similar to
 L<BLM::Startup::UserSession>, user session directories can be created
@@ -222,29 +282,45 @@ sessions in the first place, users should have cookies enabled.
 You place an appropriately formatted file in that directory and then
 access the session url (F</autocomplete/filename.jroc>).
 
+You can also used use the C<create_session_file()> method to create the
+file.
+
 =head2 3. Create an Autocomplete File
 
 Create a JSON autocomplete file and place it in your user's session
 directory.
 
  <sink:list>
- [ { "label" : "Bedrock", "value" : "1" },
-   {  "label" : "Perl", "value" : "2"} ]
+ [ 
+   { "label" : "Bedrock", "value" : "1" },
+   { "label" : "Perl",    "value" : "2"}
+ ]
  </sink>
 
- <null $session.create_session_file("test.jroc", $list)>
+ <null $session.create_session_file("items.json", $list)>
+
+The autocomplete URL then becomes
+C<http://your-host/autocomplete/items.json>.  You do not need to
+include the extension if it is a F<.json> file. The handler first
+looks in the user's session directory if a session cookie is
+available.  If the file is not found in the user's session directory
+then the handler will look in the directory specified when configured
+the handler.
 
 =head1 Autocomplete Files
 
-The format of file is really up to you based on  how you expect to process
-the file on your client. If you use the F<.jroc> extension, the handler will return
-the file with an I<application/json> Content-Type header.
+The format of file is really up to you based on how you expect to
+process the file on the client side. If you use the F<.jroc>
+extension, the handler will return the result set with an
+I<application/json> Content-Type header.
 
 Typically, an autocomplete file looks some like this if you are using
 jQuery's autocomplete facility:
 
- [ { "label" : "Bedrock", "value" : "1" },
-   {  "label" : "Perl", "value" : "2"} ]
+ [
+   { "label" : "Bedrock", "value" : "1" },
+   { "label" : "Perl",    "value" : "2"}
+ ]
 
 I<From jQuery's documentation:>
 
@@ -261,6 +337,29 @@ B<Multiple types supported:>
       selects an item. If just one property is specified, it will be
       used for both, e.g., if you provide only value properties, the
       value will also be used as the label.
+
+=head1 jQuery AUTOCOMPLETE EXAMPLE
+
+  $('#search').autocomplete({
+      source: function(request, response) {
+          $.ajax({
+              url: 'http://localhost:8080/autocomplete/birds',
+              dataType: 'json',
+              data: {
+                  term: request.term,
+                  type: getMatchType()
+              },
+              success: function(data) {
+                  console.log(dat);
+              },
+              error: function(xhr, status, error) {
+                  console.error('Autocomplete error:', error);
+                  response([]);
+              }
+          });
+      },
+      minLength: 1
+  });
 
 =head1 SEE ALSO
 

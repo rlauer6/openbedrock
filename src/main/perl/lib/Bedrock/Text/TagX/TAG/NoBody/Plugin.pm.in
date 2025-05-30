@@ -48,6 +48,7 @@ sub define_options {
     'tie'                     => undef,
     'init=s'                  => undef,
     'enable-custom-options=s' => undef,
+    'module=s'                => undef,
   );
 }
 
@@ -99,7 +100,9 @@ sub finalize {
   my ( $name, $class ) = $self->parse_tag_name( $tag, $options{'define-plugin'} );
   $tx->var_exists($name);
 
-  my $plugin = $class =~ /^BLM/xsm ? $class : 'BLM::' . $class;
+  my $plugin = $class ? $class =~ /^BLM/xsm ? $class : 'BLM::' . $class : q{};
+
+  $class ||= $options{module};
 
   my @plugin_path;
 
@@ -307,13 +310,15 @@ sub isa_plugin {
 }
 
 ########################################################################
+# plugin  => will always have a prefix of BLM::
+# class   => is the actual plugin name specified in the tag
+########################################################################
 sub loadPlugin {
 ########################################################################
   my ( $self, $plugin, $class ) = @_;
 
-  # We first look for a BLM, then a class with the name which allows
-  # us to use some Perl modules as Plugins.
-  if ( $self->loadModule($plugin) ) {
+  # We first look for a BLM (plugin), then a Perl module (class)
+  if ( $plugin && $self->loadModule($plugin) ) {
     $class = $plugin;
   }
   elsif ( $self->loadModule($class) ) {
@@ -350,19 +355,17 @@ sub loadModule {
 
   my $retval = eval { return require $module; };
 
+  # we warn here because we know that the upstream caller is calling
+  # us in an eval {} and will handle errors...so this may not actually
+  # be an error but just an attempt at loading a module that may not
+  # exists
   if ( !$retval || $EVAL_ERROR ) {
-    $logger->error(
+    $logger->warn(
       sub {
         "module: [$module] not loaded!\n" . $EVAL_ERROR;
       },
     );
   }
-
-  $logger->debug(
-    sub {
-      "module: [$module] loaded successfully";
-    },
-  );
 
   return $EVAL_ERROR ? undef : $module;
 }
@@ -398,12 +401,14 @@ See L<BLM::Plugin> for a detailed guide on building custom plugins.
 
 =head1 OPTIONS
 
- --define-var    = "var-name"
- --define-plugin = "var-name"
- --dir-prefix    = "path"
- --init          = "sub"
+ --define-var             = "var-name"
+ --define-plugin          = "var-name"
+ --dir-prefix             = "path"
+ --enable-custom-options
+ --init                   = "sub"
+ --module                 = "module-name"
  --tie
-
+ 
 =over 5
 
 =item --define-var
@@ -421,9 +426,9 @@ If not supplied the object will have the same name as the Plugin.  Some examples
 
  <plugin:BLM::Mail> <=> <plugin:BLM::Mail --define-plugin="BLMMail">
 
-I<By convention, you we don't use the full package name when
-specifying the plugin, although you are more than welcome to do that
-if you would like.>
+I<By convention, we don't use the full package name when specifying
+the plugin (when the packagae name is C<BLM::*>), although you are
+more than welcome to do that if you would like.>
 
 =item --enable-custom-options
 
@@ -459,6 +464,13 @@ Name of the subroutine to call in order to initialize the plugin.
 default: init_plugin
 
 I<C<init_plugin()> is only invoked if it exists.>
+
+=item --module
+
+Name of the Perl module. You can use this in lieu of the alternate
+syntax for specifying the plugin name.
+
+ <plugin --define-plugin="email" --module="Email::Valid" >
 
 =back
 
@@ -571,17 +583,36 @@ Load the L<BLM::FileIO> plugin and write something to the error log.
 Beginning with Bedrock 2.3.1 you can load most Perl modules and use
 their methods as if they were a true Bedrock Plugin.  
 
-Keep in mind that objects returned by these Perl modules are B<not>
-I<Bedrock> objects.  Use the C<E<lt>hashE<gt>> and C<E<lt>arrayE<gt>>
-tags to coerce these objects into Bedrock objects.
+ <plugin:Email::Valid --define-plugin="email">
+ <null:result $email.address('fred@openbedrock.net')>
 
-Example. Assume method C<bar()> returns an array.
+=head2 Notes
+
+=item Methods are called in list context
+
+Bedrock always calls methods of objects in list context. If there is a
+method of the module you are using that requires that you call it in
+scalar context you should create a wrapper class using the
+C<BLM::Plugin> as the base class.
+
+=item Returned results are POPOs
+
+Unlike results returned by actual plugins, objects returned by loading
+plain Perl modules are B<not> I<Bedrock> objects.  Use the
+C<E<lt>hashE<gt>> and C<E<lt>arrayE<gt>> tags to coerce these objects
+into Bedrock objects if that's what you need.
+
+Example:
+
+Assume method C<bar()> returns an array.
 
  <plugin:Foo>
 
  <array:bar --expand-args $Foo.bar()>
 
-Example. Assume method c<bas()> returns a hash reference.
+Example:
+
+Assume method C<baz()> returns a hash reference.
 
  <plugin:Foo>
  

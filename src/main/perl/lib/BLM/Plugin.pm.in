@@ -100,7 +100,12 @@ sub options {
 ########################################################################
 sub argv {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $index ) = @_;
+
+  my $argv = $self->get__argv();
+
+  return $argv->[$index]
+    if $index;
 
   return @{ $self->get__argv() };
 }
@@ -165,7 +170,7 @@ sub init_plugin {
   # exports $_
   $self->export( $UNDERSCORE, $TRUE );
 
-  $self->_create_accessors($params);
+  $self->_create_accessors();
 
   $self->_check_options();
 
@@ -175,22 +180,26 @@ sub init_plugin {
 ########################################################################
 sub _create_accessors {
 ########################################################################
-  my ( $self, $params ) = @_;
+  my ($self) = @_;
 
-  my ( $args, $options ) = @{$params}{qw(params options)};
+  my $options = $self->options;
+
+  my @custom_options = @{ $self->custom_options // [] };
 
   return
-    if $options->{'disable-accessors'} || @{$args} % 2;
+    if $options->{'disable-accessors'};
 
   my $class = ref $self;
 
   no strict 'refs';  ## no critic (ProhibitNoStrict)
 
-  foreach my $p ( pairs @{$args} ) {
-    my $method = $p->[0];
-    next if *{ $class . '::get_' . $method } || *{ $class . '::set_' . $method };
+  foreach my $opt (@custom_options) {
+    next if *{ $class . '::get_' . $opt }{CODE} || *{ $class . '::set_' . $opt }{CODE};
 
-    $self->mk_accessors( $p->[0] );
+    $self->mk_accessors($opt);
+    next if !exists $options->{$opt};
+
+    $self->set( $opt, $options->{$opt} );
   }
 
   return;
@@ -260,15 +269,23 @@ Create an application plugin:
 The constructor is passed the list of arguments that you specfied in
 the C<E<lt>>pluginC<E<gt>> tag.
 
+=head2 argv
+
+ argv([index])
+
+Returns a list of the arguments passed to the plugin. If called from a
+Bedrock page, returns a C<BLM::Array> object.
+
 =head2 custom_options
 
 Set or retrieve a list of custom options.
 
  $self->custom_options('export');
 
-These options are then available in your plugin using the C<options()> method.
+These options are then available in your plugin using the C<options()>
+method or using the getters that will be created for you.
 
-Make sure you call C<custom_options()> BEFORE the C<init_plugin()>
+Make sure you call C<custom_options()> B<BEFORE> the C<init_plugin()>
 method of the parent class is called. You can call this method in your
 C<new()> method or if you override the C<init_plugin()> method, call
 this method prior to calling the parent's C<init_plugin()> method.
@@ -284,7 +301,7 @@ this method prior to calling the parent's C<init_plugin()> method.
 }
 
 After the call to the parent's C<init_plugin()> the options are
-availble via the C<options()> method.
+availble via the C<options()> or getter methods.
 
 =head2 export
 
@@ -298,7 +315,7 @@ Shorthand for:
 
 Example:
 
- $self->export('foo', 'bar');
+ $self->export(foo => 'bar');
 
 ...then in your Bedrock page:
 
@@ -306,8 +323,9 @@ Example:
 
 =head2 init_plugin
 
-The C<init_plugin> method is called with a hash ref of potentially
-useful parameters.
+The C<init_plugin> method is called when Bedrock instantiates your
+plugin. It is passed a reference to a hash that contains the keys
+described below:
 
 =over 5
 
@@ -352,31 +370,33 @@ context:
 In general it is more convenient to use the C<export()> method for
 exporting data into Bedrock's context.
 
- $self->export('foo', 'bar');
+ $self->export(foo => 'bar');
 
 =item params
 
-An array of arguments passed to the plugin. This I<should> be a list
-of key/value pairs in the same vein as you would pass to
-C<Class::Accessor::Fast>.
+An array of arguments passed to the plugin. You can access this list
+of arguments using the C<argv()> method.
 
- <plugin:Plugin a 1 b 2 c 2>
-
-The C<init_plugin()> method will create setters/getters for these
-arguments if you have not defined your own methods with the same
-names.
+ <plugin:QRCode foo>
+ <var $QRCode.argv(0)>
 
 =item options
 
-The options passed to the plugin if any. This is a hash reference of
-the currently valid options for plugins which at this writing consists
-of:
+A reference to a hash containing the options passed to the
+plugin if any.  The currently valid options for plugins consists of:
 
  --define-var
  --init
  --define-plugin
 
 =back
+
+=head2 options
+
+ options([option-name])
+
+Returns the value of an option if called with an argument or returns a
+hash reference containing all of the options.
 
 =head1 CUSTOM OPTIONS
 
@@ -393,7 +413,7 @@ some variables into the Bedrock page's namespace.  Here's an example:
 
  <plugin:Stat --no-export $file>
 
-The C<BLM::Stat> plugin can be told to not to export the values that you
+The C<BLM::Stat> plugin can be told not to export the values that you
 would normally access as attributes of the plugin.
 
  file size: <var $size>

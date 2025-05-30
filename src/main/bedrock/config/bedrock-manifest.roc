@@ -9,6 +9,14 @@
   },
   "directories" : [
     {
+     "name": "<var $site.BEDROCK_AUTOCOMPLETE_DIR>",
+     "files" : []
+    },
+    {
+     "name": "<var $site.BEDROCK_SESSION_DIR>",
+     "files" : []
+    },
+    {
       "name" : "<var $dest.cgibin>",
       "link" : 1,
       "file_mode" : "0700",
@@ -39,8 +47,17 @@
           "log4perl.conf",
           "bedrock.users"
           ]
-      }
+       }
       ]
+    },
+    {
+     "name": "<var $dest.config>",
+     "files": [
+         {
+          "source" : "<var $source.htdocs>",
+          "name" : [ "register.xml"]
+         }
+       ]
     },
     {
       "name" : "<var $dest.config>/admin",
@@ -57,7 +74,7 @@
           "plugins-container.inc",
            "register-container.inc"
           ]
-      }
+       }
       ]
     },
     {
@@ -98,12 +115,36 @@
       "recurse" : 0,  
       "name" : "<var $dest.htdocs>",
       "source" : "<var $source.htdocs>",
-      "exclude" : [ "qr/Makefile.*/" ]
+      "exclude" : [ "qr/Makefile.*/",
+                    "register-notes.inc",
+                     "index.roc",
+                     "register.xml",
+                     "register.css",
+                     "register.js"
+                  ]
+    },
+    {
+      "name" : "<var $dest.htdocs>/register",
+      "files" : [
+        {
+         "source" : "<var $source.htdocs>",
+         "name" : [ "index.roc", "register.css", "register.js" ]
+        }
+      ]
     },
     {
       "name" : "<var $dest.include>",
       "source" : "<var $source.include>",
       "exclude" : [ "qr/Makefile.*/" ]
+    },
+    {
+      "name" : "<var $dest.include>",
+      "files" : [
+        {
+          "source" : "<var $source.htdocs>",
+          "name": [ "register-notes.inc"]
+        }
+      ]
     },
     {
       "recurse" : 0,

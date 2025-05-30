@@ -67,9 +67,9 @@
   <scalar name="LOG4PERL"><var $config.BEDROCK_CONFIG_PATH>/log4perl.conf</scalar>
     
   <!-- Directories -->
-  <scalar name="PEBBLE_DIR"><var $site_root>/pebbles</scalar>
-  <scalar name="SESSION_DIR"><var $site_root>/session</scalar>
-  <scalar name="INCLUDE_DIR"><var $site_root>/include</scalar>
+  <scalar name="PEBBLE_DIR"><var $dest.pebbles>/pebbles</scalar>
+  <scalar name="SESSION_DIR"><var $site.BEDROCK_SESSION_DIR></scalar>
+  <scalar name="INCLUDE_DIR"><var $dest.include>/include</scalar>
 
   <!-- Configuration file path -->
   <scalar name="BEDROCK_CONFIG_PATH"><var $config.BEDROCK_CONFIG_PATH></scalar>

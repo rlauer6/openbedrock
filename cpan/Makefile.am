@@ -39,7 +39,7 @@ $(TARBALL): buildspec.yml
 	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || true; \
 	test -e $(TARBALL) || false; \
 	if test -n "$$tmpdir"; then \
-	  echo "rm -rf $$tmpdir"; \
+	  rm -rf "$$tmpdir"; \
 	fi
 endif
 

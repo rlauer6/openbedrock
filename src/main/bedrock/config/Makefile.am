@@ -2,6 +2,8 @@ SUBDIRS = .
 
 ax_perl5_extra_includes = @ax_perl5_extra_includes@
 
+apache_layout = @apache_layout@
+
 VERSION = @VERSION@
 
 MYSQL_HOST     = @mysql_host@

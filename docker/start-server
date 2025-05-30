@@ -12,6 +12,28 @@ if test -n "$MYSQL_ROOT_PASSWORD"; then
     if test -e /usr/local/share/setup.sql; then
         mysql -h $MYSQL_HOST -u root -p"$MYSQL_ROOT_PASSWORD" < /usr/local/share/setup.sql
     fi
+else
+    export PERL_CPANM_OPT="--mirror-only --mirror https://cpan.openbedrock.net/orepan2 --mirror https://cpan.metacpan.org"
+
+    cpanm -n -v BLM::Startup::SQLiteSession
+
+    SQLITE_DIST_DIR=$(perl -MFile::ShareDir=dist_dir -e 'print dist_dir("BLM-Startup-SQLiteSession");')
+
+    rm -f /var/www/bedrock/config.d/startup/mysql-session.xml
+
+    if ! test -e /var/www/bedrock/config.d/startup/sqlite.xml; then
+        echo "Installling sqlite.xml to /var/www/bedrock/config.d/startup" >&2
+        cp $SQLITE_DIST_DIR/sqlite.xml /var/www/bedrock/config.d/startup
+    fi
+
+    mkdir -p /var/lib/bedrock
+
+    dnky-config -r -i /var/www/bedrock/config/tagx.xml BEDROCK_SESSION_MANAGER SQLiteSession
+
+    if ! test -e /var/lib/bedrock/bedrock.db; then
+        echo "Creating new bedrock.db database and session table..." 2>&1
+        sqlite3 /var/lib/bedrock/bedrock.db < $SQLITE_DIST_DIR/create-session-table.sql
+    fi
 fi
 
 source /etc/os-release
@@ -19,9 +41,12 @@ source /etc/os-release
 echo "Starting Apache..."
 
 if test "$ID" = "debian"; then
-  source /etc/apache2/envvars
-
-  exec /usr/sbin/apache2 -k start -D FOREGROUND
+    chown www-data:www-data -R /var/lib/bedrock
+ 
+    source /etc/apache2/envvars
+    
+    exec /usr/sbin/apache2 -k start -D FOREGROUND
 else
-  exec /usr/sbin/httpd -DFOREGROUND
+    chown apache:apache -R /var/lib/bedrock
+    exec /usr/sbin/httpd -DFOREGROUND
 fi

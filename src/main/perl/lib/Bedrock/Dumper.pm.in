@@ -30,6 +30,9 @@ use Bedrock qw(:booleans);
 use Bedrock::Constants qw(:chars :booleans);
 
 use English qw(-no_match_vars);
+use List::Util qw(any);
+use Scalar::Util qw(refaddr);
+
 use parent qw(Exporter);
 
 our @EXPORT_OK = qw(dumper);
@@ -49,10 +52,13 @@ sub htmlencode {
 
   return;
 }
+
 ########################################################################
 sub compact {
 ########################################################################
-  my ( $ref, $prefix, $string, $encode ) = @_;
+  my ( $ref, $prefix, $string, $encode, $stack ) = @_;
+
+  $stack //= [];
 
   # prefix -- what prints on a line before the current item's key and value
   $prefix //= $EMPTY;
@@ -70,8 +76,6 @@ sub compact {
 
       if ( ref $value ) {
 
-        # recursive invocation if value is a reference
-
         # $p is the prefix for the recursive call to compact()
         # Need to have this since we want $prefix unchanged after the
         # recursive call
@@ -86,7 +90,13 @@ sub compact {
         }
 
         # And invoke compact()
-        $string = compact( $value, $p, $string, $encode );
+        # recursive invocation if value is a reference
+        return
+          if any { refaddr($value) == $_ } @{$stack};
+
+        push @{$stack}, refaddr($value);
+
+        $string = compact( $value, $p, $string, $encode, $stack );
       }
       else {
         $string .= $i ? $SPACE x length $prefix : $prefix;
@@ -128,7 +138,12 @@ sub compact {
         # Append current item index
         $p .= ".[$i]";
 
-        $string = compact( $value, $p, $string, $encode );
+        return
+          if any { refaddr($value) == $_ } @{$stack};
+
+        push @{$stack}, refaddr($value);
+
+        $string = compact( $value, $p, $string, $encode, $stack );
       }
       else {
         $string .= $i ? $SPACE x length $prefix : $prefix;
@@ -160,7 +175,9 @@ sub compact {
 ########################################################################
 sub regular {
 ########################################################################
-  my ( $ref, $nspaces, $string, $encode ) = @_;
+  my ( $ref, $nspaces, $string, $encode, $stack ) = @_;
+
+  $stack //= [];
 
   $nspaces ||= 2;
   $string //= $EMPTY;
@@ -174,7 +191,12 @@ sub regular {
       $string .= $SPACE x $nspaces . "$key => ";
 
       if ( ref $value ) {
-        $string = regular( $value, $nspaces + 2, $string, $encode );
+        return
+          if any { refaddr($value) == $_ } @{$stack};
+
+        push @{$stack}, refaddr($value);
+
+        $string = regular( $value, $nspaces + 2, $string, $encode, $stack );
       }
       else {
         if ( $encode && defined $value ) {
@@ -198,7 +220,12 @@ sub regular {
       $string .= $SPACE x $nspaces . "[$i] .. ";
 
       if ( ref $value ) {
-        $string = &regular( $value, $nspaces + 2, $string, $encode );
+        return
+          if any { refaddr($value) == $_ } @{$stack};
+
+        push @{$stack}, refaddr($value);
+
+        $string = &regular( $value, $nspaces + 2, $string, $encode, $stack );
       }
       else {
         if ($encode) {
@@ -306,7 +333,7 @@ Bedrock::Dumper - Bedrock's Data::Dumper
 
 =head1 DESCRIPTION
 
-An data dumper, ostensibly used to avoid using C<Data::Dumper>.
+A data dumper, ostensibly used to avoid using C<Data::Dumper>.
 
 =head1 METHODS AND SUBROUTINES
 

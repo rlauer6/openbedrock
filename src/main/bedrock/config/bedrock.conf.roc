@@ -28,24 +28,29 @@
   </if>
 
   <if $site.APACHE_MOD_PERL --eq yes >
-  PerlSetEnv BEDROCK_INCLUDE_DIR   <var $site_root>/bedrock/include
-  PerlSetEnv BEDROCK_PEBBLE_DIR    <var $site_root>/bedrock/pebbles
-  PerlSetEnv BEDROCK_IMAGE_DIR     <var $config.DIST_DIR>/img
-  PerlSetEnv BEDROCK_CONFIG_PATH   <var $config.BEDROCK_CONFIG_PATH>
-  PerlSetEnv BEDROCK_CACHE_ENABLED <var $site.BEDROCK_CACHE_ENABLED>
-  PerlSetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
-  PerlSetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
-  PerlSetEnv APACHE_CONF_DIR       <var $site.CONF_DIR>
-  <else>
-  SetEnv BEDROCK_INCLUDE_DIR   <var $site_root>/bedrock/include
-  SetEnv BEDROCK_PEBBLE_DIR    <var $site_root>/bedrock/pebbles
-  SetEnv BEDROCK_IMAGE_DIR     <var $config.DIST_DIR>/img
-  SetEnv BEDROCK_CONFIG_PATH   <var $config.BEDROCK_CONFIG_PATH>
-  SetEnv BEDROCK_CACHE_ENABLED <var $site.BEDROCK_CACHE_ENABLED>
-  SetEnv BEDROCK_BENCHMARK     <var $site.BEDROCK_BENCHMARK>
-  SetEnv BedrockLogLevel       <var $site.BedrockLogLevel>
-  SetEnv APACHE_CONF_DIR       <var $site.CONF_DIR>
+  PerlSetEnv APACHE_SITE_ROOT             <var $site_root>
+  PerlSetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
+  PerlSetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
+  PerlSetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
+  PerlSetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
+  PerlSetEnv BEDROCK_CACHE_ENABLED        <var $site.BEDROCK_CACHE_ENABLED>
+  PerlSetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
+  PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
+  PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
+  PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
   </if>
+
+  # we always set this in case we are using bedrock.cgi
+  SetEnv APACHE_SITE_ROOT             <var $site_root>
+  SetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
+  SetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
+  SetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
+  SetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
+  SetEnv BEDROCK_CACHE_ENABLED        <var $site.BEDROCK_CACHE_ENABLED>
+  SetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
+  SetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
+  SetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
+  SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
 
   LogLevel <var $site.ApacheLogLevel --default=$site.BedrockLogLevel>
 
@@ -253,13 +258,12 @@
   # BedrockSessionFiles has been disabled BEDROCK_SESSIONS_ENABLED="<var $site.BEDROCK_SESSIONS_ENABLED>"
   </if>
 
-  <if $site.BEDROCK_AUTOCOMPLETE>
+  <if $site.BEDROCK_AUTOCOMPLETE_ENABLED --eq 'yes'>
   Action bedrock-autocomplete /cgi-bin/bedrock-autocomplete.cgi virtual
 
-  # TBD: test this with session files  
-  Alias /autocomplete <var $site.DOCUMENT_ROOT>/session/autocomplete
+  Alias /autocomplete <var $site.BEDROCK_AUTOCOMPLETE_DIR>
 
-  <Directory <var $site_root>/autocomplete>
+  <Directory <var $site.BEDROCK_AUTOCOMPLETE_DIR>>
     AcceptPathInfo On
     Options -Indexes
 
@@ -274,7 +278,8 @@
 
   </Directory>
   <else>
-  # BedrockAutocomplete has been disabled BEDROCK_AUTOCOMPLETE="<var $site.BEDROCK_AUTOCOMPLETE>"
+  # Bedrock::Apache::BedrockAutocomplete has been disabled:
+  # BEDROCK_AUTOCOMPLETE_ENABLED=<var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
   </if>
 
 </VirtualHost>

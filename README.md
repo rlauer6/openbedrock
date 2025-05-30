@@ -1,10 +1,15 @@
-This is the README file for the `bedrock` project.
+This is the README file for the `bedrock` project. This page is mostly
+geared toward maintainers. If all you want to do is install Bedrock
+visit Bedrock's [DarkPAN repository](https://cpan.openbedrock.net) or
+download an image from
+[DockerHub](https://hub.docker.com/r/rlauer/openbedrock).
 
-* See the NEWS file for changes and updates to Bedrock
+
+* See the [NEWS](NEWS) file for changes and updates to Bedrock
 
 | Documentation | Description |
 | ------------- | ----------- |
-| [README.md](README.md) | Overview of Bedrock and this repository \
+| [README.md](README.md) | Overview of Bedrock and this repository |
 | [README-CI.md](README-CI.md) | Info on the GitHub Actions build system |
 | [README-Apache.md](README-Apache.md) | Info on running Bedrock as an Apache application |
 | [README-LOGS.md](README-LOGS.md) | Guide to Bedrock logging |
@@ -16,6 +21,10 @@ This is the README file for the `bedrock` project.
 ![build badge](https://codebuild.us-east-1.amazonaws.com/badges?uuid=eyJlbmNyeXB0ZWREYXRhIjoiT1JrZzVFMWVTeGV6bGdWejJGQzM3V0UyZEt4RFhlTVVVYnhERHF3cEsrN0NrVFVFcGc0dUxqKzF2Y3JCSElqNnJLa0ZqK083bUhvOGVyVGQ4Z05jU25FPSIsIml2UGFyYW1ldGVyU3BlYyI6Ijk5UlFFb1R6aFNXRFNHTnkiLCJtYXRlcmlhbFNldFNlcmlhbCI6MX0%3D&branch=master)
 
 # What's New
+
+## 2025-05
+
+* Download Bedrock the [DarkPAN repository](https://cpan.openbedrock.net).
 
 ## 2025-04
 
@@ -60,10 +69,15 @@ built-in objects **$input**, **$header**, **$session**, and **$config**:
 <sqlconnect>
 <foreach>
 ```
+---
 
 > Bedrock is under constant development as it serves as the engine
 > that powers [Treasurer's
 > Briefcase](https://www.treasurersbriefcase.com)
+
+---
+
+> Note that if all you want to do is try Bedrock
 
 # Running Bedrock in a Shell
 
@@ -94,7 +108,7 @@ See the [Prerequisites](#prerequisites) section below for a listing of
 resources that must be installed and configured on your system before
 you can install the Bedrock package.
 
-> Caveat Emptor: Bedrock is in constant development so the list of
+> Caveat Emptor: Bedrock is under constant development so the list of
 > required Perl modules that `configure` will look for may not be
 > complete.
 
@@ -108,14 +122,14 @@ these methods:
 
 1. The standard `autoconf` recipe:
    ```
-   bootstrap
-   configure
+   ./bootstrap
+   ./configure
    make && make install
    ```
 2. From a CPAN distribution tarball
    ```
-   bootstrap
-   configure
+   ./bootstrap
+   ./configure
    make
    cd cpan
    make cpan
@@ -123,12 +137,16 @@ these methods:
    ```
 3. From RPM packages
    ```
-   bootstrap
-   configure
+   ./bootstrap
+   ./configure
    make dist
    rpmbuild -tb bedrock-3.3.6.tar.gz
    rpm -ivh $RPMROOT/RPMS/noarch/bedrock-openbedrock-3.3.6-0.noarch.rpm
    ```
+
+> Installing Bedrock using the standard `autoconf` recipe will not
+> install things in quite the same way the CPAN distribution tarball
+> method will.
 
 ## The standard `autoconf` recipe
 
@@ -143,8 +161,11 @@ bedrock --version
 
 ## From a CPAN distribution tarball
 
->Bedrock is not and may never be, uploaded to CPAN however is now the
->preferred way of installing Bedrock.
+>Bedrock is not and may never be, uploaded to CPAN. However
+>installling from a distribution tarball s now the preferred way of
+>installing Bedrock. Vist Bedrock's
+>[DarkPAN](https://cpan.openbedrock.net) to download the latest
+>tarball.
 
 Installing Bedrock using the tarball installs all of the necessary
 components to enable Bedrock on your Apache server. To finalize the
@@ -158,7 +179,7 @@ In addition to the prerequistes for manually installing Bedrock you
 will also need some of the artifacts listed below for building the
 CPAN tarball and Docker images. Bedrock is under constant development
 so you might want to look at the Dockerfiles for your particular
-environment to see the all of the necessary libaries and artifacts
+environment to see all of the necessary libaries and artifacts
 required.
 
 Distribition | Dockerfile | 

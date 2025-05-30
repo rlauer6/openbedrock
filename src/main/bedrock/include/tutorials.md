@@ -6,7 +6,7 @@
 
 Bedrock is, at its core, a templating framework that allow you to
 substitue variables inside of text documents. Input can come from
-various sources depending on how you using Bedrock.
+various sources depending on how you are using Bedrock.
 
 * Query strings attached to URLs
 * POST data in the form of _application/www-form-urlencode_ input

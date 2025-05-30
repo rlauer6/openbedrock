@@ -5,6 +5,7 @@ dist_bedrock_include_DATA = \
     bedrock-docs-blms.inc \
     bedrock-docs-error.inc \
     bedrock-docs-hash-dump.inc \
+    bedrock-docs-hash-dump-body.inc \
     bedrock-docs-index.inc \
     bedrock-docs-header.inc \
     bedrock-docs-listing.inc \
@@ -14,4 +15,5 @@ dist_bedrock_include_DATA = \
     bugs.md \
     contributing.md \
     examples.md \
+    tutorials.md \
     welcome.md

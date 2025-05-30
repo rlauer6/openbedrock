@@ -21,7 +21,7 @@ You can create scalars, arrays and hashes...
 ## A Scalar
 
 ```
-<null:scalar Fruits>
+<null:label Fruits>
 ```
 
 ## An Array
@@ -81,7 +81,7 @@ The conditionals include:
 
 ## Conditional Operators
 
-Learn more about conditional (here)[#tag-if].
+Learn more about conditionals (here)[#tag-if].
 
 * `--eq`
 * `--gt`

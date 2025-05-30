@@ -10,7 +10,7 @@
   <tr>
     <td colspan="2" align="left" valign="bottom" width="9999">
       <form style="margin-top:0; margin-bottom:0;" action="/bedrock/pod" method="GET">
-        <input type="text" name="module" size="30">&nbsp;<input type="submit" value="Search:">
+        <input type="text" placeholder="Module name" name="module" size="30">&nbsp;<input type="submit" value="Search:">
         <input type="hidden" name="external" value="1">
       </form>
     </td>
