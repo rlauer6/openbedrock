@@ -2,7 +2,7 @@
 
 This is the README file for the `cpan/model` directory which contains
 a Makefile that will help you build a docker image to test the
-`Bedorck::Model` package.
+`Bedrock::Model` package.
 
 # Building the Image
 

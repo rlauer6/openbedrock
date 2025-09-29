@@ -37,7 +37,8 @@ man1_MANS = $(G1MANPAGES)
 
 $(GPERLSCRIPTS): % : %.in 
 	$(do_subst) $< > $@
-	$(perlwc) -I $(abs_builddir)/../lib $@
+	libdir=$(abs_builddir)/../lib; \
+	$(perlwc) -I $$libdir -I $$libdir/Bedrock -I $$libdir/Bedrock/Text $@
 	chmod +x $@
 
 CLEANFILES = $(GPERLSCRIPTS) $(GMANPAGES)

@@ -44,12 +44,6 @@ MAINTAINERCLEANFILES = config.status \
 
 DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 
-.PHONY: cpan
-cpan:	tmpdir=$$(mktemp -d); \
-	$(MAKE) install DESTDIR=$$tmpdir; \
-	$(MAKE) -C $(top_builddir)/cpan DESTDIR=$$tmpdir cpan; \
-	rm -rf $$tmpdir
-
 clean-local:
 	for a in $$(ls bedrock*.tar.gz 2>/dev/null); do \
 	  rm -f $$a; \

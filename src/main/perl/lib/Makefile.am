@@ -427,7 +427,7 @@ test: $(FAUXMODULES)
 	DBI_USER="$${DBI_USER:-root}"; \
 	DBI_SOCKET="$$DBI_SOCKET" DBI_PASS="$$DBI_PASS" DBI_USER="$$DBI_USER" \
 	BEDROCK_CONFIG_PATH=$(top_srcdir)/src/main/bedrock/config \
-	  $(PROVE) -v -I $(srcdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(buildir)/Bedrock/Text $(srcdir)/$$TEST
+	  $(PROVE) -v -I $(srcdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/$$TEST
 
 prove.sh: Bedrock/Test.pm
 	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I $(srdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/t" > prove.sh

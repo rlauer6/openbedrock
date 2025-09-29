@@ -5,13 +5,24 @@ SUBDIRS = .
 
 TARBALL = $(builddir)/Bedrock-$(PACKAGE_VERSION).tar.gz
 
-all: bedrock.md5sum $(TARBALL) $(ENV_FILES) apache2.conf $(CONFIG_FILES)
+TARBALL_CORE = $(builddir)/Bedrock-Core-$(PACKAGE_VERSION).tar.gz 
+
+all: env config apache2.conf bedrock.md5sum
+
+.PHONY: images
+images: bedrock.md5sum $(TARBALL) $(TARBALL_CORE) $(ENV_FILES) apache2.conf $(CONFIG_FILES)
 
 MYSQL_HOST          = @mysql_host@
 MYSQL_PASSWORD      = @mysql_password@
 MYSQL_ROOT_PASSWORD = @mysql_root_password@
 MYSQL_USER          = @mysql_user@
 MYSQL_DATABASE      = @mysql_database@
+
+.PHONY: config
+config: $(CONFIG_FILES)
+
+.PHONY: env
+env: $(ENV_FILES)
 
 ########################################################################
 # generic pattern rules

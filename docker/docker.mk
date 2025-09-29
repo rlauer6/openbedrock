@@ -32,6 +32,7 @@ CLEANFILES += setup-sql
 
 COMMON_DEPS = \
     $(TARBALL) \
+    $(TARBALL_CORE) \
     $(ENV_FILES) \
     $(CONFIG_FILES) \
     start-server \
@@ -62,6 +63,7 @@ bedrock.md5sum:
 	echo $$HASH > $@; \
 	if ! test "$$HASH" = "$$md5sum"; then \
 	  rm -f $(top_builddir)/cpan/$(TARBALL); \
+	  rm -f $(top_builddir)/cpan/$(TARBALL_CORE); \
 	  rm -f $(TARBALL); \
 	else \
 	  echo "no changes to source..."; \

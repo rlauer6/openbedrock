@@ -1,24 +1,48 @@
-SUBDIRS = . bedrock-core
+#-*- mode:makefile; -*-
+SUBDIRS = .
 
-CPAN_DIST_MAKER = make-cpan-dist.pl
+PROJECT_ROOT=$(builddir)
 
-PACKAGE_VERSION = @PACKAGE_VERSION@
-
-TARBALL = $(builddir)/Bedrock-$(PACKAGE_VERSION).tar.gz
-
-REQUIRES_FILE = $(srcdir)/requires
-TEST_REQUIRES_FILE = $(srcdir)/test-requires
+@do_subst_command@
 
 all:
 
-EXCLUDE_LIST = \
+BEDROCK_TESTS = \
+    00-var.yml \
+    01-multi-line.yml \
+    02-null.yml \
+    03-if.yml \
+    04-foreach.yml \
+    05-iif.yml \
+    06-open.yml \
+    07-plugin.yml \
+    08-reftype.yml \
+    09-sink.yml \
+    10-try.yml \
+    11-snippet.yml \
+    14-flush.yml \
+    15-include.yml \
+    16-case.yml \
+    17-array.yml \
+    18-hash.yml \
+    19-pebble.yml \
+    20-benchmark.yml \
+    22-include.yml
+
+ALL_TESTS = \
+    $(BEDROCK_TESTS)
+
+SHELL_MODULES = \
     Bedrock/Apache/Request/Shell.pm \
     Bedrock/Context.pm \
     Bedrock/Handler.pm \
     Bedrock/Apache/Bedrock.pm \
     Bedrock/Apache/Constants.pm \
-    Bedrock/VERSION.pm \
+    Bedrock/VERSION.pm
+
+PACKAGE_MODULES = \
     Bedrock/Array.pm \
+    Bedrock/Core.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
@@ -26,15 +50,23 @@ EXCLUDE_LIST = \
     Bedrock/DBI/Utils.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
+    Bedrock/Handle.pm \
     Bedrock/Hash.pm \
     Bedrock/HTML/Helper.pm \
     Bedrock/LoadConfig.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
-    Bedrock/Model/Role.pm \
+    Bedrock/Model/Serializer/MySQL.pm \
+    Bedrock/Model/ReservedWords/MySQL.pm \
+    Bedrock/Model/Importer.pm \
+    Bedrock/Model/Migration.pm \
     Bedrock/Model/Field.pm \
+    Bedrock/Model/Maker.pm \
+    Bedrock/Model/ReservedWords.pm \
     Bedrock/Model/Handler.pm \
+    Bedrock/Model/Role.pm \
     Bedrock/Object.pm \
+    Bedrock/Pager.pm \
     Bedrock/Plugin.pm \
     Bedrock/RegExp.pm \
     Bedrock/Role/Config.pm \
@@ -46,6 +78,8 @@ EXCLUDE_LIST = \
     Bedrock/Snippet.pm \
     Bedrock/Template.pm \
     Bedrock/Template/Email.pm \
+    Bedrock/Test.pm \
+    Bedrock/Test/Utils.pm \
     Bedrock/Text/URLEncode.pm \
     Bedrock/Text/TagX.pm \
     Bedrock/Text/TagX/Error.pm \
@@ -134,59 +168,15 @@ EXCLUDE_LIST = \
     BLM/IndexedTableHandler/Common.pm \
     BLM/IndexedTableHandler/RecordSet.pm
 
-.PHONY: cpan
-cpan: $(TARBALL)
+PACKAGE_EXE = \
+    bin/bedrock.pl \
+    bin/bedrock
 
-if RPMBUILD_ENABLED
-$(TARBALL):
-	touch $@
-else
-tmpdir := $(shell mktemp -d)
+include $(srcdir)/bedrock-core.mk
 
-$(TARBALL): buildspec.yml
-	if [[ -z "$(DESTDIR)" ]]; then \
-	  rm -f exclude_files; \
-	  for a in $(EXCLUDE_LIST); do \
-	    echo $(tmpdir)/usr/share/perl5/$$a >>exclude_files; \
-	  done; \
-	  $(MAKE) -C $(top_builddir) prefix=/usr install DESTDIR=$(tmpdir); \
-	fi
-	trap 'rm -rf "$(tmpdir)"' EXIT INT TERM HUP; \
-	if [[ -n "$(DESTDIR)" ]]; then \
-	  project_root="$(DESTDIR)/usr"; \
-	else \
-	  project_root="$(tmpdir)/usr"; \
-	fi; \
-	[[ -n "$$DEBUG" ]] && set -x; \
-	[[ -n "$$DEBUG" ]] && DEBUG="--debug"; \
-	REQUIRES="-r $$project_root/share/bedrock/requires"; \
-	[[ -n "$(NOCLEANUP)" ]] && NOCLEANUP="--no-cleanup"; \
-	[[ -n "$(DRYRUN)"    ]] && DRYRUN="--dryrun"; \
-	[[ -n "$(SCANDEPS)"  ]] && SCANDEPS="-s"; \
-	[[ -n "$(NOVERSION)" ]] && NOVERSION="-n"; \
-	PROJECT_ROOT="--project-root $$project_root"; \
-	SKIP_TESTS=1 \
-	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES \
-	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || true; \
-	test -e $(TARBALL) || false;
-endif
-
-cpandir = $(datadir)/bedrock
-
-dist_cpan_DATA = \
+dist_noinst_DATA = \
+    buildspec.yml \
     requires \
     test-requires \
-    buildspec.yml \
+    bedrock-core.mk \
     postamble
-
-CLEANFILES = \
-    extra-files \
-    provides \
-    resources 
-
-clean-local:
-	for a in $(CLEANFILES); do \
-	  rm -f $$a || true; \
-	done
-	rm -f *.tar.gz
-	rm -f *.tmp
