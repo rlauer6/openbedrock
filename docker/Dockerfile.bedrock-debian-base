@@ -17,37 +17,23 @@ COPY trixie-backports.list /etc/apt/sources.list.d/
 RUN apt-get update --fix-missing && \
     apt-get install -y --fix-missing \
     less vim curl git automake less gcc gnupg libzip-dev \
-    apache2 apache2-dev libpcre2-dev libapr1-dev libaprutil1-dev \
+    apache2 apache2-dev libapreq2-dev libpcre2-dev libapr1-dev libaprutil1-dev \
     mysql-client libmysqlclient-dev libssl-dev libperl-dev perl-doc \
     sqlite3 libsqlite3-dev libpng-dev libexpat-dev
 
 RUN curl -L https://cpanmin.us | perl - App::cpanminus
-RUN cpanm -n ExtUtils::XSBuilder::ParseSource
+ENV PERL_CPANM_OPT="-n -v --mirror https://cpan.openbedrock.net/orepan2 --mirror https://cpan.treasurersbriefcase.com/orepan2 --mirror https://cpan.metacpan.org"
+RUN cpanm -n -v Carton
 
-RUN curl -LO https://archive.apache.org/dist/perl/mod_perl-2.0.13.tar.gz && \
-   tar xvzf mod_perl-2.0.13.tar.gz && \
-   cd mod_perl-2.0.13 && \
-   perl Makefile.PL  && \
-   make && make install
+WORKDIR /usr/src/app
+COPY cpanfile cpanfile.snapshot /usr/src/app
+ENV PERL_CARTON_CPANFILE=/usr/src/app/cpanfile
 
-RUN curl -LO https://archive.apache.org/dist/httpd/libapreq/libapreq2-2.17.tar.gz && \
-    tar xfvz libapreq2-2.17.tar.gz && \
-    cd libapreq2-2.17 && \
-    perl Makefile.PL --disabe-static && \
-    make && make install
+# no way (I know of) to pass configure args in cpanfile, so install Apache2::Request first
+RUN cpanm -n -v -l ./local --configure-args='--with-apache2-apxs=/usr/bin/apxs2' Apache2::Request
 
-RUN rm -rf mod_perl-2.0.13*
-RUN rm -rf libapreq2-2.17*
+RUN --mount=type=cache,target=/root/.cpanm carton install --deployment --path ./local
+
+ENV PERL5LIB=/usr/src/app/local/lib/perl5
+
 RUN apt-get autoremove --fix-missing -yq && rm -rf /var/lib/apt/lists/*
-
-RUN cpanm -n -v DBD::mysql DBD::SQLite
-
-COPY requires requires
-COPY test-requires test-requires
-
-RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v": ""; printf q{%s%s}, "\n", $m, $v;' requires); do \
-      cpanm -n -v $a; \
-    done
-RUN for a in $(perl -ne '($m,$v) = split /\s+/; $v ? "\@$v" : ""; printf q{%s%s},"\n", $m, $v;' test-requires); do \
-      cpanm -n -v $a; \
-    done

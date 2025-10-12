@@ -117,7 +117,7 @@
   <scalar name="ALLOW_BEDROCK_CONFIG_INFO">yes</scalar>
   <scalar name="ALLOW_BEDROCK_ENV_INFO">yes</scalar>
   <scalar name="ALLOW_SNIPPET_TAG">no</scalar>
-  <scalar name="REPLACE_CONFIG">no</scalar>
+  <scalar name="REPLACE_CONFIG">yes</scalar>
 
   <!-- XML Options -->
   <object name="XML">

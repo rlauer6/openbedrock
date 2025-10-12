@@ -253,6 +253,12 @@ sub full_path {
 }
 
 ########################################################################
+sub choose(&) {  ## no critic
+########################################################################
+  return $_[0]->();
+}
+
+########################################################################
 # read_config(path, file)
 # returns a Bedrock::Config object
 ########################################################################
@@ -260,12 +266,17 @@ sub read_config {
 ########################################################################
   my ( $self, $path, $filename ) = @_;
 
+  my $full_path = choose {
+    return $path
+      if $path =~ /[.]xml$/xsm;
+
+    return full_path( $path, $filename, '.xml' );
+  };
+
   return
-    if !$path || !$filename;
+    if !$full_path;
 
   my $r = $self->request;
-
-  my $full_path = full_path( $path, $filename, '.xml' );
 
   my $config = eval { return Bedrock::Config->new($full_path); };
 
@@ -396,8 +407,7 @@ sub load_config_from_cache {
 
   $config->{BEDROCK_CACHE_LOADED} //= scalar localtime;
 
-  my $config_files_processed
-    = $cached_config ? $cached_config->{_config_files_processed} : $self->{_config_files_processed};
+  my $config_files_processed = $cached_config ? $cached_config->{_config_files_processed} : $self->{_config_files_processed};
 
   if ( !$cached_config || !%{$cached_config} ) {
     $config->{_config_files_processed} = $config_files_processed;
@@ -778,8 +788,7 @@ sub get_config_paths {
   }
   elsif ($bedrock_config_path) {
     push @config_paths, $bedrock_config_path;
-    $r->log->info( sprintf 'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]',
-      $bedrock_config_path );
+    $r->log->info( sprintf 'No application CONFIG_PATH found. Using BEDROCK_CONFIG_PATH:[%s]', $bedrock_config_path );
   }
   else {
     $r->log->error('No CONFIG_PATH or BEDROCK_CONFIG_PATH. You probably have a misconfigured system.');
@@ -874,45 +883,46 @@ sub get_tagx_config {
 ########################################################################
   my ( $self, %args ) = @_;
 
+  ######################################################################
+  # $bedrock_config_path  => Bedrock's default configuration
+  # $config_paths         => array of paths where we might find `tagx.xml`
+  ######################################################################
+
   my ( $bedrock_config_path, $config_paths, $r ) = @args{qw(bedrock_config_path config_paths r)};
   $r //= $self->request;
 
-  # it's probably okay, not to find this...
-  my $config = $self->read_config( $bedrock_config_path, 'tagx' );
+  $r->log->debug( sprintf 'config paths to search: ', join q{,}, $bedrock_config_path, @{ $config_paths // [] } );
 
-  # remove the path, since we just read the file
-  if ($config) {
-    $config_paths = [ grep { $_ ne $bedrock_config_path } @{$config_paths} ];
+  my @files = map { -e "$_/tagx.xml" ? "$_/tagx.xml" : () } uniq( $bedrock_config_path, @{ $config_paths || [] } );
+
+  die "ERROR: no tagx.xml found. Check BEDROCK_CONFIG_PATH ($bedrock_config_path)\n"
+    if !@files;
+
+  if ( @files == 1 ) {
+    $r->log->info( sprintf 'found 1 tagx.xml file (%s)', $files[0] );
+    return $self->read_config(@files);
   }
 
-  # RULE: tagx.xml must exist in root of the configuration path
-  # RULE: the default tagx.xml should always have REPLACE_CONFIG eq 'yes'
-  # RULE: if there is no default (Bedrock) tagx.xml, then take the first one found
-  # RULE: if there is a default tagx.xml AND REPLACE_CONFIG eq 'yes', take last one found?
-  # RULE: if there is a default tagx.xml AND REPLACE_CONFIG ne 'yes', merge configs
-  if ( !$config ) {
-    foreach ( @{$config_paths} ) {
-      next if !-e "$_/tagx.xml" || /[.]d$/xsm;  # ignore .d/ path
+  ######################################################################
+  # - `tagx.xml` must exist in root of the configuration path
+  # - Bedrock's default `tagx.xml` should always have REPLACE_CONFIG
+  #   eq 'yes' unless you want to merge!
+  # - If multiple paths are found all `tagx.xml` files found are merged
+  ######################################################################
 
-      $config = $self->read_config( $_, 'tagx' );
-      last if $config;
-    }
+  $r->log->info( sprintf q{found multiple tagx.xml files...reading Bedrock's default (%s)}, $files[0] );
+
+  my $config = $self->read_config( shift @files );  # this should be Bedrock's default tagx.xml
+
+  if ( $config->{REPLACE_CONFIG} && $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
+    $r->log->info( sprintf q{REPLACE_CONFIG=%s...replacing Bedrock's `tagx.xml`}, $config->{REPLACE_CONFIG} );
+    # overwrite Bedrock's default `tagx.xml`
+    $config = $self->read_config( shift @files );
   }
-  elsif ( $config->{REPLACE_CONFIG} && $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
-    foreach ( @{$config_paths} ) {
-      next if !-e "$_/tagx.xml" || /[.]d$/xsm;
 
-      $config = $self->read_config( $_, 'tagx' );
-    }
-  }
-  else {
-    # this doesn't necessarily make sense...but we'll merge all
-    # tagx.xml files but last one always wins
-    foreach ( @{$config_paths} ) {
-      next if !-e "$_/tagx.xml" || /[.]d$/xsm;
-
-      $config->merge_config( $self->read_config( $_, 'tagx' ) );
-    }
+  foreach (@files) {
+    $r->log->warn( sprintf q{Merging %s with Bedrock's default `tagx.xml`!}, $_ );
+    $config->merge_config( $self->read_config($_) );
   }
 
   return $config;
@@ -923,8 +933,7 @@ sub merge_tagx_apps_configs {
 ########################################################################
   my ( $self, %args ) = @_;
 
-  my ( $config, $bedrock_config_path, $config_paths, $r )
-    = @args{qw(config bedrock_config_path config_paths r)};
+  my ( $config, $bedrock_config_path, $config_paths, $r ) = @args{qw(config bedrock_config_path config_paths r)};
 
   $bedrock_config_path //= $self->get_bedrock_config_path;
   $r                   //= $self->request;
@@ -938,11 +947,11 @@ sub merge_tagx_apps_configs {
   #  </object>
   # </object>
 
-  my $tagx_apps = $config->{'APP_CONFIG'};
+  my $tagx_apps = $config->{'APP_CONFIG'} // 'tagx_apps.xml';
   $r->log->debug( sprintf 'APP_CONFIG: %s', $tagx_apps // $EMPTY );
 
   if ( !$tagx_apps ) {
-    $r->log->warn('no APP_CONFIG found in config object?');
+    $r->log->warn('no APP_CONFIG found in config object...nothing to merge.');
     return;
   }
 
