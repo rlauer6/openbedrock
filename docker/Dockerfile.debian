@@ -1,20 +1,38 @@
-FROM bedrock-debian-base AS bedrock-debian
+########################################################################
+FROM bedrock-debian-base AS builder
+########################################################################
 
 ARG VERSION
 
 ENV PERL5LIB=/usr/src/app/local/lib/perl5:/usr/src/app/local/lib/perl5/Bedrock:/usr/src/app/local/lib/perl5/Bedrock/Text
 
+RUN apt-get update && apt-get install -y curl perl make ca-certificates libyaml-dev g++
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+#
+ENV PERL_CPANM_OPT="-n -v --mirror https://cpan.openbedrock.net/orepan2 --mirror https://cpan.treasurersbriefcase.com/orepan2 --mirror https://cpan.metacpan.org"
+
 WORKDIR /usr/src/app
+
 COPY Bedrock-$VERSION.tar.gz .
 COPY Bedrock-Core-$VERSION.tar.gz .
 
-RUN cpanm -n -v -l ./local Bedrock-Core-$VERSION.tar.gz
+RUN cpanm -n -v -l ./local \
+  Bedrock-Core-$VERSION.tar.gz \
+  Bedrock-$VERSION.tar.gz \
+  BLM::Startup::SQLiteSession
 
-RUN cpanm -n -v -l ./local Bedrock-$VERSION.tar.gz
+########################################################################
+FROM bedrock-debian-base
+########################################################################
+ENV DEBIAN_FRONTEND=noninteractive
 
+COPY --from=builder /usr/src/app/local /usr/src/app/local
+
+ENV PERL5LIB=/usr/src/app/local/lib/perl5:/usr/src/app/local/lib/perl5/Bedrock:/usr/src/app/local/lib/perl5/Bedrock/Text
 RUN local/bin/bedrock-site-install --distro debian
 
 RUN echo "LoadModule perl_module /usr/lib/apache2/modules/mod_perl.so" > /etc/apache2/mods-available/perl.load
+
 RUN a2enmod perl
 
 RUN a2dismod mpm_event
@@ -30,6 +48,8 @@ RUN a2enconf dbi
 
 COPY setup.sql /usr/local/share/setup.sql
 
-COPY start-server /usr/local/bin/start-server
+COPY entrypoint.sh /entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/start-server"]
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["apachectl", "-D","FOREGROUND"]

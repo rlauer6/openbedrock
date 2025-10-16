@@ -38,7 +38,11 @@
   PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
   PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
   PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
+
+  PerlPassEnv PERL5LIB
   </if>
+
+  PassEnv PERL5LIB
 
   # we always set this in case we are using bedrock.cgi
   SetEnv APACHE_SITE_ROOT             <var $site_root>

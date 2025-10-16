@@ -1,0 +1,73 @@
+FROM debian:trixie AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ----------------------------------------------------
+# ...got the MySQL repo setting by installing the deb
+#    fround here:
+#
+#    https://dev.mysql.com/downloads/repo/apt/
+#
+#  The deb in an interactive install, but then cp'd 
+#  the installed files to this directory
+# ----------------------------------------------------
+COPY mysql-apt-config.gpg /usr/share/keyrings/mysql-apt-config.gpg
+COPY mysql.list /etc/apt/sources.list.d/
+
+COPY trixie-backports.list /etc/apt/sources.list.d/
+
+RUN apt-get update --fix-missing && \
+    apt-get install -y --fix-missing \
+    automake gcc gnupg make perl curl ca-certificates libzip-dev \
+    apache2-dev libapreq2-dev libpcre2-dev libapr1-dev libaprutil1-dev \
+    libmysqlclient-dev libssl-dev libperl-dev \
+    libsqlite3-dev libpng-dev libexpat-dev rsync
+
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+ENV PERL_CPANM_OPT="-n -v --mirror https://cpan.openbedrock.net/orepan2 --mirror https://cpan.treasurersbriefcase.com/orepan2 --mirror https://cpan.metacpan.org"
+RUN cpanm -n -v Carton
+
+WORKDIR /usr/src/app
+# no way (I know of) to pass configure args in cpanfile, so install Apache2::Request first
+RUN cpanm -n -v -l ./local --configure-args='--with-apache2-apxs=/usr/bin/apxs2' Apache2::Request
+
+COPY cpanfile cpanfile.snapshot /usr/src/app
+ENV PERL_CARTON_CPANFILE=/usr/src/app/cpanfile
+RUN --mount=type=cache,target=/cache/local-debian \
+  rsync -a /usr/src/app/local/ /cache/local-debian && \
+  carton install --deployment --path /cache/local-debian && \
+  rm -rf /usr/src/app/local && \
+  cp -a /cache/local-debian /usr/src/app/local
+
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+#
+## --- 1. Setup APT Repositories Again ---
+COPY mysql-apt-config.gpg /usr/share/keyrings/mysql-apt-config.gpg
+COPY mysql.list /etc/apt/sources.list.d/
+COPY trixie-backports.list /etc/apt/sources.list.d/
+
+## --- 2. Install ONLY Runtime Dependencies ---
+## Notice there are no compilers or "-dev" packages here.
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+    apache2  \
+    mysql-client libmysqlclient24 \
+    libssl3 libsqlite3-0 libpng16-16t64 libexpat1 \
+    # Add any other essential runtime packages...
+    && \
+    # --- Final Cleanup ---
+    rm -rf /var/lib/apt/lists/*
+
+## --- 3. Copy the Finished Artifacts from the Builder ---
+## Copy the self-contained Perl environment created by Carton.
+COPY --from=builder /usr/src/app/local /usr/src/app/local
+
+## Copy the mod_perl.so and libapreq2.so.3 file that was compiled earlier...
+COPY --from=builder /usr/lib/apache2/modules/mod_perl.so /usr/lib/apache2/modules/mod_perl.so
+COPY --from=builder /usr/lib/libapreq2.so.3 /usr/lib/libapreq2.so.3
+
+## --- 4. Final Configuration ---
+WORKDIR /usr/src/app
+
+ENV PERL5LIB=/usr/src/app/local/lib/perl5

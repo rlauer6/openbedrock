@@ -107,8 +107,8 @@ done_testing;
 __DATA__
 <object>
   <object name="bedrock">
-    <scalar name="username">fred</scalar>
-    <scalar name="password">flintstone</scalar>
-    <scalar name="database">bedrock</scalar>
+    <scalar name="username">root</scalar>
+    <scalar name="password">bedrock</scalar>
+    <scalar name="database"></scalar>
   </object>
 </object>

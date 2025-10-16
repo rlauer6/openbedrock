@@ -1,26 +1,40 @@
-FROM bedrock-fedora-base AS bedrock-fedora
+########################################################################
+FROM bedrock-fedora-base AS builder
+########################################################################
 
-ARG MOD_PERL=yes
 ARG VERSION
 
-RUN PERL_MM_OPT="CCFLAGS='-std=gnu11'" cpanm Bit::Vector
+RUN dnf install -y perl-core make automake autoconf gcc
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
 
-COPY Bedrock-Core-$VERSION.tar.gz .
-RUN cpanm -n -v Bedrock-Core-$VERSION.tar.gz
+ENV PERL_CPANM_OPT="-n -v --mirror https://cpan.openbedrock.net/orepan2 --mirror https://cpan.treasurersbriefcase.com/orepan2 --mirror https://cpan.metacpan.org"
+
+WORKDIR /usr/src/app
 
 COPY Bedrock-$VERSION.tar.gz .
-RUN cpanm -n -v Bedrock-$VERSION.tar.gz
+COPY Bedrock-Core-$VERSION.tar.gz .
 
-RUN APACHE_MOD_PERL=${MOD_PERL} bedrock-site-install --distro=redhat
+RUN cpanm -n -v -l ./local \
+  Bedrock-Core-$VERSION.tar.gz \
+  Bedrock-$VERSION.tar.gz \
+  BLM::Startup::SQLiteSession
 
-RUN if [ "${MOD_PERL}" = "yes" ]; then \
-      echo "LoadModule perl_module modules/mod_perl.so" > /etc/httpd/conf.modules.d/02-perl.conf; \
-    else \
-      echo  "LoadModule mpm_prefork_module modules/mod_mpm_prefork.so" > /etc/httpd/conf.modules.d/00-mpm.conf; \
-    fi
+########################################################################
+FROM bedrock-fedora-base
+########################################################################
+WORKDIR /usr/src/app
+
+COPY --from=builder /usr/src/app/local /usr/src/app/local
+
+RUN echo "LoadModule perl_module modules/mod_perl.so" > /etc/httpd/conf.modules.d/02-perl.conf
+RUN echo  "LoadModule mpm_prefork_module modules/mod_mpm_prefork.so" > /etc/httpd/conf.modules.d/00-mpm.conf
+
+RUN APACHE_MOD_PERL=yes local/bin/bedrock-site-install --distro redhat
 
 COPY setup.sql /usr/local/share/setup.sql
 
-COPY start-server /usr/local/bin/start-server
+COPY entrypoint.sh /entrypoint.sh
 
-CMD /usr/local/bin/start-server
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["httpd", "-k", "start", "-D","FOREGROUND"]

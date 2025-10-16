@@ -7,10 +7,26 @@ TARBALL = $(builddir)/Bedrock-$(PACKAGE_VERSION).tar.gz
 
 TARBALL_CORE = $(builddir)/Bedrock-Core-$(PACKAGE_VERSION).tar.gz 
 
-all: env config apache2.conf bedrock.md5sum
+all: 
+
+BEDROCK_SOURCE_FILES := $(shell git ls-files $(top_srcdir) | grep -vE '^(docker/|cpan/)')
+
+$(TARBALL): $(BEDROCK_SOURCE_FILES)
+	pushd $(top_builddir); \
+	$(MAKE); \
+	cd cpan && $(MAKE) clean && $(MAKE) cpan; \
+	popd; \
+	cp $(top_builddir)/cpan/$$(basename $@) $@
+
+$(TARBALL_CORE): $(BEDROCK_SOURCE_FILES)
+	pushd $(top_builddir); \
+	$(MAKE); \
+	cd cpan/bedrock-core && $(MAKE) clean && $(MAKE) cpan; \
+	popd; \
+	cp $(top_builddir)/cpan/bedrock-core/$$(basename $@) $@
 
 .PHONY: images
-images: bedrock.md5sum $(TARBALL) $(TARBALL_CORE) $(ENV_FILES) apache2.conf $(CONFIG_FILES)
+images: $(TARBALL) $(TARBALL_CORE)
 
 MYSQL_HOST          = @mysql_host@
 MYSQL_PASSWORD      = @mysql_password@
@@ -18,53 +34,17 @@ MYSQL_ROOT_PASSWORD = @mysql_root_password@
 MYSQL_USER          = @mysql_user@
 MYSQL_DATABASE      = @mysql_database@
 
-.PHONY: config
-config: $(CONFIG_FILES)
-
-.PHONY: env
-env: $(ENV_FILES)
-
 ########################################################################
 # generic pattern rules
 ########################################################################
 %: %.in
 	$(do_subst) $< > $@
 
-ACCESS_LOG := $(shell \
-  if [ -n "$$STREAM_LOGS" ]; then \
-    echo /dev/fd/1; \
-  else \
-    echo /var/www/log/access_log; \
-  fi)
-
-ERROR_LOG := $(shell \
-  if [ -n "$$STREAM_LOGS" ]; then \
-    echo /dev/fd/1; \
-  else \
-    echo /var/www/log/error_log; \
-  fi)
-
-%.conf: %.conf.in
-	$(do_subst) $< | \
-	sed -e 's,@error_log@,'$(ERROR_LOG)',' \
-	    -e 's,@access_log@,'$(ACCESS_LOG)',' \
-	    -e 's,\@PACKAGE_VERSION\@,'@PACKAGE_VERSION@',' > $@
-
 ########################################################################
-# CONFIG_FILES, CLEAN_FILES will be incrementally added to in *.mk sections
+# CLEAN_FILES will be incrementally added to in *.mk sections
 ########################################################################
 CONFIG_FILES = 
 CLEANFILES  =
-
-########################################################################
-# MySQL server certificates for Docker (not used for mysql >8.3)
-########################################################################
-include mysql-certs.mk
-
-########################################################################
-# Bedrock
-########################################################################
-include bedrock.mk
 
 ########################################################################
 # Docker
@@ -82,9 +62,11 @@ include github.mk
 # Dockerhub - push tagged images to Dockerhub
 #
 # make public-{ostype}
+# ...works for me (rlauer) but maybe not you!
 ########################################################################
-REPO ?= rlauer/openbedrock
 DOCKERHUB_TOKEN ?= $(shell cat ~/.ssh/dockerhub.token)
+DOCKERHUB_USER  ?= $(shell id -nu)
+REPO            ?= $(DOCKERHUB_USER)/openbedrock
 
 OSTYPES := debian fedora al2023
 
@@ -105,14 +87,10 @@ public-debian: bedrock-debian
 include dockerhub.mk
 
 dist_noinst_DATA = \
-    $(XML_FILES) \
-    $(APACHE_CONF) \
-    $(TAGX) \
     $(BEDROCK_CONF) \
     $(DOCKER_COMPOSE) \
-    requires \
-    test-requires \
-    bedrock.env.in \
-    apache2.conf.in
+    cpanfile \
+    cpanfile.snapshot \
+    bedrock.env.in
 
-CLEANFILES += $(CONFIG_FILES) bedrock.md5sum $(TARBALL)
+CLEANFILES += $(TARBALL) $(TARBALL_CORE)

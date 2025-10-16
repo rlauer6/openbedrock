@@ -354,8 +354,8 @@ __DATA__
   },
   "database": {
      "dsn": "dbi:mysql:foo",
-     "user": "fred",
-     "password": "flintstone",
+     "user": "root",
+     "password": "bedrock",
      "hostname": "127.0.0.1"
    },
   "title": "Test"

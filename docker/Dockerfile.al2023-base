@@ -1,0 +1,53 @@
+FROM amazonlinux:latest AS builder
+
+RUN curl -L -O https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm
+RUN dnf install -y mysql80-community-release-el9-1.noarch.rpm
+
+RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+
+RUN dnf install -y  --allowerasing --enablerepo=* \
+    perl-core less gcc make gawk curl patch rsync \
+    libpng libpng-devel \
+    httpd httpd-devel \
+    mod_perl mod_perl-devel \
+    apr apr-util \
+    sqlite sqlite-devel \
+    expat-devel \
+    mysql-community-client mysql-community-devel 
+
+RUN curl -L https://cpanmin.us | perl - App::cpanminus
+RUN cpanm -n -v ExtUtils::XSBuilder::ParseSource 
+
+RUN cpanm -n -v Carton
+RUN mkdir -p /usr/src/app/local
+
+WORKDIR /usr/src/app
+
+#########################################################################
+## perl dependencies
+#########################################################################
+COPY cpanfile cpanfile.snapshot /usr/src/app
+ENV PERL_CARTON_CPANFILE=/usr/src/app/cpanfile
+
+RUN cpanm -n -v -l ./local ExtUtils::MakeMaker
+
+RUN --mount=type=cache,target=/cache/local-al2023 \
+  rsync -a /usr/src/app/local/ /cache/local-al2023 && \
+  carton install --deployment --path /cache/local-al2023 && \
+  rm -rf /usr/src/app/local && \
+  cp -a /cache/local-al2023 /usr/src/app/local
+
+##########################################################################
+FROM amazonlinux:latest
+##########################################################################
+RUN curl -L -O https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm
+RUN dnf install -y mysql80-community-release-el9-1.noarch.rpm
+RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+
+RUN dnf install -y sqlite libpng mysql-community-client perl-core httpd
+COPY --from=builder /usr/src/app/local /usr/src/app/local
+COPY --from=builder /usr/lib64/httpd/modules/mod_perl.so /usr/lib64/httpd/modules/
+COPY --from=builder /usr/lib64/httpd/modules/mod_apreq2.* /usr/lib64/httpd/modules/
+COPY --from=builder /usr/lib/libapreq2.so.3 /usr/lib64
+
+ENV PERL5LIB=/usr/src/app/local/lib/perl5:/usr/src/app/local/lib/perl5/Bedrock:/usr/src/app/local/lib/perl5/Bedrock/Text

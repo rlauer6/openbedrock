@@ -17,6 +17,7 @@
     <scalar name="username"><var $site.DBI_USER></scalar>
     <scalar name="password"><var $site.DBI_PASS></scalar>
     <scalar name="table_name">session</scalar>
+    <scalar name="mysql_ssl">1</scalar>
 
     <object name="cookie">
       <scalar name="path">/</scalar>

@@ -35,7 +35,7 @@
    DBI_PASS                     ($env.DBI_PASS)
    DBI_USER                     ($env.DBI_USER)
    DOCUMENT_ROOT                ($env.APACHE_DOCUMENT_ROOT --or ( $site_root + '/html') ) 
-   bedrock_shell                ($perl_config.installsitebin + '/bedrock.pl')
+   bedrock_shell                ($env.BEDROCK_INSTALL_PATH + '/bin/bedrock.pl')
    group                        ($env.GROUP --or 'apache' )
    owner                        ($env.OWNER --or 'apache' )
 >

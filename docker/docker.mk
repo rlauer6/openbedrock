@@ -16,8 +16,6 @@
 #    b. start Apache
 ########################################################################
 
-include apache.mk
-
 ########################################################################
 # Docker images
 ########################################################################
@@ -30,115 +28,128 @@ setup-sql: setup.sql.in
 
 CLEANFILES += setup-sql
 
-COMMON_DEPS = \
-    $(TARBALL) \
-    $(TARBALL_CORE) \
-    $(ENV_FILES) \
-    $(CONFIG_FILES) \
-    start-server \
-    setup.sql
-
-.PHONY: bedrock.md5sum
-bedrock.md5sum:
-	set -e; \
-	FILES=$$( \
-	  (pushd $(top_srcdir); git ls-files; popd; git diff --cached --name-only) \
-	  | sort -u \
-	  | grep -vE '^(docker/|cpan/)' \
-	); \
-	HASH=$$( \
-	  for f in $$FILES; do \
-	    test -f "$(top_srcdir)/$$f" && echo "$(top_srcdir)/$$f"; \
-	  done \
-	  | LC_ALL=C sort \
-	  | xargs cat \
-	  | sha256sum \
-	  | cut -d' ' -f1 \
-	); \
-	if test -e $@; then \
-	  md5sum=$$(cat $@); \
-	else \
-	  md5sum=""; \
-	fi; \
-	echo $$HASH > $@; \
-	if ! test "$$HASH" = "$$md5sum"; then \
-	  rm -f $(top_builddir)/cpan/$(TARBALL); \
-	  rm -f $(top_builddir)/cpan/$(TARBALL_CORE); \
-	  rm -f $(TARBALL); \
-	else \
-	  echo "no changes to source..."; \
-	fi	
-
-ENV_FILES = \
-    debian.env \
-    fedora.env \
-    al2023.env
-
 CLEANFILES += $(ENV_FILES)
+
+perl5libdir = @perl5libdir@
 
 $(ENV_FILES): bedrock.env.in
 	os_type=$$(basename $@ .env); \
 	$(do_subst) $< | sed "s/[@]os_type[@]/$$os_type/" > $@
 
+BEDROCK_VERSION = @PACKAGE_VERSION@
+
+########################################################################
+# TBD: use pattern rule public-%: bedrock:% when `make` can be upgraded to 4+
+########################################################################
+
 ########################################################################
 # debian
 ########################################################################
-DOCKERFILE_DEBIAN      = Dockerfile.debian
-DOCKERFILE_DEBIAN_BASE = Dockerfile.bedrock-debian-base
+DOCKERFILE_DEBIAN_BASE = Dockerfile.debian-base
+
+.PHONY: debian-base
+debian-base: bedrock-debian-base.id
+
+bedrock-debian-base.id: $(DOCKERFILE_DEBIAN_BASE) cpanfile cpanfile.snapshot
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build $$NO_CACHE -f $< . -t $$(basename $@ .id) 2>&1 | tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG
+
+DOCKERFILE_DEBIAN = Dockerfile.debian
 
 BEDROCK_DEBIAN_DEPS = \
     $(DOCKERFILE_DEBIAN) \
-    bedrock-debian-base \
-    $(COMMON_DEPS)
+    debian-base \
+    $(TARBALL) \
+    $(TARBALL_CORE) \
+    entrypoint.sh \
+    setup.sql
 
 .PHONY: debian
-debian: bedrock-debian
+debian: bedrock-debian.id
 
-bedrock-debian-base: $(DOCKERFILE_DEBIAN_BASE)
-	docker build -f $< . -t $@ && touch $@
-
-bedrock-debian: $(BEDROCK_DEBIAN_DEPS)
-include bedrock-image.mk
+bedrock-debian.id: $(BEDROCK_DEBIAN_DEPS)
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build $$NO_CACHE --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $$(basename $@ .id):latest 2>&1 | tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG;
 
 ########################################################################
 # Fedora
 ########################################################################
+
+.PHONY: fedora-base
+fedora-base: bedrock-fedora-base.id
+
+bedrock-fedora-base.id: $(DOCKERFILE_FEDORA_BASE)
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build -f $< . -t $@ 2>&1 | tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG
+
 DOCKERFILE_FEDORA      = Dockerfile.fedora
-DOCKERFILE_FEDORA_BASE = Dockerfile.bedrock-fedora-base
+DOCKERFILE_FEDORA_BASE = Dockerfile.fedora-base
 
 BEDROCK_FEDORA_DEPS = \
     $(DOCKERFILE_FEDORA) \
-    $(CONFIG_FILES) \
-    bedrock-fedora-base \
-    Bedrock-$(BEDROCK_VERSION).tar.gz
+    fedora-base\
+    $(TARBALL) \
+    $(TARBALL_CORE) \
+    entrypoint.sh \
+    setup.sql
 
 .PHONY: fedora
-fedora: bedrock-fedora
+fedora: bedrock-fedora.id
 
-bedrock-fedora-base: $(DOCKERFILE_FEDORA_BASE)
-	docker build -f $< . -t $@ && touch $@
-
-bedrock-fedora: $(BEDROCK_FEDORA_DEPS)
-include bedrock-image.mk
+bedrock-fedora.id: $(BEDROCK_FEDORA_DEPS)
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build $$NO_CACHE --build-arg VERSION=$(BEDROCK_VERSION) -f $< . -t $$(basename $@ .id):latest 2>&1 | tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG;
 
 ########################################################################
 # Amazon Linux 2023
 ########################################################################
 DOCKERFILE_AL2023      = Dockerfile.al2023
-DOCKERFILE_AL2023_BASE = Dockerfile.bedrock-al2023-base
+DOCKERFILE_AL2023_BASE = Dockerfile.al2023-base
+
+.PHONY: al2023-base
+al2023-base: bedrock-al2023-base.id
+
+bedrock-al2023-base.id: $(DOCKERFILE_AL2023_BASE)	
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build $$NO_CACHE -f $< . -t $$(basename $@ .id):latest 2>&1 | tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG;
 
 BEDROCK_AL2023_DEPS = \
     $(DOCKERFILE_AL2023) \
-    $(CONFIG_FILES) \
-    bedrock-al2023-base \
-    Bedrock-$(BEDROCK_VERSION).tar.gz
+    al2023-base \
+    $(TARBALL) \
+    $(TARBALL_CORE) \
+    entrypoint.sh \
+    setup.sql
 
 .PHONY: al2023
-al2023: bedrock-al2023
+al2023: bedrock-al2023.id
 
-bedrock-al2023-base: $(DOCKERFILE_AL2023_BASE)
-	docker build -f $< . -t $@ && touch $@
+bedrock-al2023.id: $(BEDROCK_AL2023_DEPS)
+	set -x; LOG=$$(mktemp); \
+	echo $$LOG; \
+	docker build $$NO_CACHE --build-arg VERSION=$(BEDROCK_VERSION)  -f $< . -t $$(basename $@ .id):latest 2>& 1| tee $$LOG; \
+	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
+	rm $$LOG;
 
-bedrock-al2023: $(BEDROCK_AL2023_DEPS)
-include bedrock-image.mk
-
+CLEANFILES += \
+    bedrock-al2023.id \
+    bedrock-al2033-base.id \
+    bedrock-debian.id \
+    bedrock-debian-base.id \
+    bedrock-fedora.id \
+    bedrock-fedora-base.id

@@ -35,9 +35,10 @@ use Bedrock::Apache::Constants qw($OK);
 use Bedrock::Test::Utils qw(connect_db);
 use Bedrock::XML;
 use Bedrock::Handler qw(bind_blm_module get_blm_config);
-use Cwd qw(getcwd);
+use Cwd qw(getcwd cwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
+use File::Temp qw(tempfile);
 use IO::Scalar;
 use Test::More;
 
@@ -46,7 +47,19 @@ sub create_login_session {
 ########################################################################
   my ( $bedrock_handler, $username, $password ) = @_;
 
-  my $config = $bedrock_handler->fetch_blm_config('mysql-session');
+  my $blm_config = sub {
+    local $RS = undef;
+    return <DATA>;
+    }
+    ->();
+
+  my ( $fh, $filename ) = tempfile( 'mysql-sessionXXXX', UNLINK => 1, SUFFIX => '.xml' );
+
+  print {$fh} $blm_config;
+
+  close $fh;
+
+  my $config = $bedrock_handler->fetch_blm_config( $filename, cwd );
 
   my $user_session_config = $config->get_module_config('usersession');
   delete $user_session_config->{verbose};
@@ -148,3 +161,31 @@ END {
 }
 
 1;
+
+__DATA__
+<!-- Bedrock MySQL Sessions -->
+<object>
+  <scalar name="binding">session</scalar>
+  <scalar name="session">yes</scalar>
+  <scalar name="module">BLM::Startup::UserSession</scalar>
+
+  <object name="config">
+    <scalar name="verbose">2</scalar>
+    <scalar name="param">session</scalar>
+    <scalar name="login_cookie_name">session_login</scalar>
+    <scalar name="login_cookie_expiry_days">365</scalar>
+    <scalar name="purge_user_after">30</scalar>
+
+    <!-- MySQL connect information -->
+    <scalar name="data_source">dbi:mysql:bedrock:localhost</scalar>
+    <scalar name="username">root</scalar>
+    <scalar name="password">bedrock</scalar>
+    <scalar name="table_name">session</scalar>
+
+    <object name="cookie">
+      <scalar name="path">/</scalar>
+      <scalar name="expiry_secs">3600</scalar>
+      <scalar name="domain"></scalar>
+    </object>
+  </object>
+</object>

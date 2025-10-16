@@ -23,7 +23,8 @@ PERLSCRIPTS = \
     bedrock-cache.pl.in \
     brxml2json.pl.in \
     bedrock-site-install.pl.in \
-    dnky-config.pl.in
+    dnky-config.pl.in \
+    create-sqlite-session-table.pl.in
 
 GPERLSCRIPTS = $(PERLSCRIPTS:.pl.in=.pl)
 
@@ -57,6 +58,7 @@ install-data-hook: installdirs
 	ln -f -s ../usr/bin/bedrock.pl  $(DESTDIR)/bin/bedrock
 	ln -f -s bedrock-model.pl  $(DESTDIR)/$(bindir)/bedrock-model
 	ln -f -s bedrock-site-install.pl  $(DESTDIR)/$(bindir)/bedrock-site-install
+	ln -f -s create-sqlite-session-table.pl  $(DESTDIR)/$(bindir)/create-sqlite-session-table
 	ln -f -s bedrock-plugin.pl  $(DESTDIR)$(bindir)/bedrock-plugin
 	ln -f -s bedrock-model-importer.pl  $(DESTDIR)$(bindir)/bedrock-model-importer
 	ln -f -s dnky-config.pl $(DESTDIR)$(bindir)/dnky-config

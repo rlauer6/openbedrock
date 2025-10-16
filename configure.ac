@@ -175,7 +175,7 @@ AC_SUBST([apache_sessiondir])
 AC_ARG_WITH([mysql-host],
   [AS_HELP_STRING([--with-mysql-host=HOST], [MySQL host (default: bedrock_db_1)])],
   [mysql_host="$withval"],
-  [mysql_host="bedrock_db_1"]
+  [mysql_host="db"]
 )
 
 AC_ARG_WITH([mysql-user],
@@ -418,6 +418,7 @@ do_subst_command='do_subst = sed \
 \
   -e '"'"'s,[@]PERL[@],$(PERL),g'"'"' \
   -e '"'"'s,[@]PERL_LIBDIR[@],$(PERL_LIBDIR),g'"'"' \
+  -e '"'"'s,[@]perl5libdir[@],$(perl5libdir),g'"'"' \
   -e '"'"'s,[@]POD2MAN[@],$(POD2MAN),g'"'"' \
   -e '"'"'s,[@]ax_perl5_extra_includes[@],$(ax_perl5_extra_includes),g'"'"' \
   -e '"'"'s,[@]perl5_pkgdatadir[@],$(perl5_pkgdatadir),g'"'"' \
@@ -586,6 +587,8 @@ printf "           mysql_root_password: %s\n" "`__poor_mans_expand_file_name mys
 printf "\n"
 printf "                          bash: %s\n" "`__poor_mans_expand_file_name BASH_SH`"
 printf "                          perl: %s\n" "`__poor_mans_expand_file_name PERL`"
+printf "                           O/S: %s\n" "`__poor_mans_expand_file_name OS_TYPE`"
+printf "                   perl5libdir: %s\n" "`__poor_mans_expand_file_name perl5libdir`"
 printf "\n"
 printf "               Package Version: %s\n"   "${PACKAGE_VERSION}"
 
