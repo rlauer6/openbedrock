@@ -6,8 +6,9 @@ use warnings;
 use Test::More tests => 25;
 
 use Data::Dumper;
-use English qw{-no_match_vars};
-use Scalar::Util qw{blessed reftype};
+use English qw(-no_match_vars);
+use JSON;
+use Scalar::Util qw(blessed reftype);
 
 BEGIN {
   use_ok('Bedrock::Array');
@@ -248,9 +249,7 @@ subtest 'json' => sub {
 
   like( $json, qr/\[.*\]/xsm, 'looks like JSON array' );
 
-  require JSON::PP;
-
-  is_deeply( $array, eval { JSON::PP->new->decode($json) }, 'is a JSON string' )
+  is_deeply( $array, eval { JSON->new->decode($json) }, 'is a JSON string' )
     or diag( Dumper( [ $json, $EVAL_ERROR ] ) );
 };
 
@@ -360,11 +359,7 @@ subtest 'recordset' => sub {
 
   is_deeply( [ map { $_->{id} } @{$new_recordset} ], [ reverse 1 .. 4 ], 'sort a recordset' );
 
-  is_deeply(
-    [ map { $_->{id} } @{ $new_recordset->sort( 'id', 'asc', 'num' ) } ],
-    [ 1 .. 4 ],
-    'sort ascending'
-  );
+  is_deeply( [ map { $_->{id} } @{ $new_recordset->sort( 'id', 'asc', 'num' ) } ], [ 1 .. 4 ], 'sort ascending' );
 
   @records = (
     { lname => 'Smith',
@@ -382,14 +377,10 @@ subtest 'recordset' => sub {
 
   my $sorted_array = $array->sort( 'lname', 'asc', 'alpha', 'fname', 'desc', 'alpha' );
 
-  is_deeply(
-    [ map { $_->{lname} } @{$sorted_array} ],
-    [qw{ Anderson Smith Smith}],
-    'two field sort ascending/descending'
-  ) or diag( Dumper( [$array] ) );
+  is_deeply( [ map { $_->{lname} } @{$sorted_array} ], [qw{ Anderson Smith Smith}], 'two field sort ascending/descending' )
+    or diag( Dumper( [$array] ) );
 
-  is_deeply( [ map { $_->{fname} } @{$sorted_array} ],
-    [qw{ Frank Robert Bob}], 'two field sort ascending/descending' )
+  is_deeply( [ map { $_->{fname} } @{$sorted_array} ], [qw{ Frank Robert Bob}], 'two field sort ascending/descending' )
     or diag( Dumper( [$array] ) );
 
   is_deeply( [ map { $_->{lname} } @{ $array->sort('lname') } ], [qw{ Anderson Smith Smith}], 'default' )

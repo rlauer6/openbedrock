@@ -11,22 +11,19 @@ all:
 
 BEDROCK_SOURCE_FILES := $(shell git ls-files $(top_srcdir) | grep -vE '^(docker/|cpan/)')
 
-$(TARBALL): $(BEDROCK_SOURCE_FILES)
-	pushd $(top_builddir); \
-	$(MAKE); \
-	cd cpan && $(MAKE) clean && $(MAKE) cpan; \
-	popd; \
-	cp $(top_builddir)/cpan/$$(basename $@) $@
+$(top_builddir)/cpan/$(TARBALL): $(BEDROCK_SOURCE_FILES)
+	cd $(top_builddir) && $(MAKE)
+	cd $(top_builddir)/cpan && $(MAKE) clean && $(MAKE) cpan
 
-$(TARBALL_CORE): $(BEDROCK_SOURCE_FILES)
-	pushd $(top_builddir); \
-	$(MAKE); \
-	cd cpan/bedrock-core && $(MAKE) clean && $(MAKE) cpan; \
-	popd; \
-	cp $(top_builddir)/cpan/bedrock-core/$$(basename $@) $@
+$(top_builddir)/cpan/bedrock-core/$(TARBALL_CORE): $(BEDROCK_SOURCE_FILES)
+	cd $(top_builddir) && $(MAKE)
+	cd $(top_builddir)/cpan/bedrock-core && $(MAKE) clean && $(MAKE) cpan
 
-.PHONY: images
-images: $(TARBALL) $(TARBALL_CORE)
+$(TARBALL): $(top_builddir)/cpan/$(TARBALL)
+	cp $<  $@
+
+$(TARBALL_CORE): $(top_builddir)/cpan/bedrock-core/$(TARBALL_CORE)
+	cp $< $@
 
 MYSQL_HOST          = @mysql_host@
 MYSQL_PASSWORD      = @mysql_password@

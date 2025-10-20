@@ -167,8 +167,7 @@ $(TARBALL): buildspec.yml
 	PROJECT_ROOT="--project-root $$project_root"; \
 	SKIP_TESTS=1 \
 	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES \
-	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $< || true; \
-	test -e $(TARBALL) || false;
+	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $<;
 endif
 
 cpandir = $(datadir)/bedrock

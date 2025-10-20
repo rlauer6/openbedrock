@@ -10,22 +10,48 @@ Docker images based on several distributions described below.
 
 | Distribution | Dockerfile | Description |
 | ------------ | ---------- | ----------- |
-| Debian | Dockerfile.bedrock-debian-base | Debian distribution (`bookworm`) - base image |
-| Debian | Dockerfile.debian | Debian distribution (`bookworm`) |
-| Fedora | Dockerfile.bedrock-fedora-base | Fedora distribution (40) - base image |
-| Fedora | Dockerfile.fedora | Fedora distribution (40) |
-| Amazon Linux | Dockerfile.bedrock-al20230base | Amazon Linux 2023 - base image |
+| Debian | Dockerfile.-debian-base | Debian distribution (`trixie`) - base image |
+| Debian | Dockerfile.debian | Debian distribution (`trixie`) |
+| Fedora | Dockerfile.fedora-base | Fedora distribution (42) - base image |
+| Fedora | Dockerfile.fedora | Fedora distribution (42) |
+| Amazon Linux | Dockerfile.al2023-base | Amazon Linux 2023 - base image |
 | Amazon Linux | Dockerfile.al2023 | Amazon Linux 2023 |
 
 Each of these Dockerfiles will create a Docker image that includes the
 latest verison of Bedrock built specifically for that distribution. To
 speed development of Bedrock itself, base images are created for
 Debian, Fedora and Amazon Linux that contain the Apache server
-(`mod_perl` enabled) and the current list of Perl module dependencies.
+(`mod_perl` enabled) and the current list of Perl module
+dependencies. The base images *do not* contain Bedrock.
+
 It can take a relatively long time to build all of the
 dependencies. By creating a base image that contains all of the
 dependencies minus Bedrock itself it becomes easier to make changes to
 Bedrock and test the results.
+
+## Adding New Dependencies
+
+1. Edit the `cpanfile` and add a line like:
+   ```
+   requires "Foo::Bar", "0.01";
+   ```
+2. Run `carton` as root...see note below
+   ```
+   sudo PERL5LIB=$PERL5LIB  $(command -v carton) install
+   ```
+3. Build the base images and the Bedorck Apache images
+   ```
+   for a in debian fedora al2023; do \
+     make $a-base && make $a; \
+   done
+   ```
+4. Go get a cup of coffee...this will take some time!
+
+> You need to run `carton` as root because building `Apache2::Request`
+> needs to build `libapreq2` which by default gets installed in
+> directories owned by root. There is probably a way to prevent this,
+> however I have tried --prefix= with no success and it seems to have
+> some hard coded install paths.
 
 # CI for Bedrock
 
@@ -69,8 +95,8 @@ Linux distributions:
 
 | Image | Description |
 | ----- | ----------- |
-| `bedrock-debian` | image based on `debian:bookworm`  |
-| `bedrock-fedora` | image based on `fedora:40`        |
+| `bedrock-debian` | image based on `debian:trixie`  |
+| `bedrock-fedora` | image based on `fedora:42`        |
 | `bedrock-al2023` | image based on `amazonlinux:2023` |
 
 When you run `make` in the `docker` directory it will run create a
@@ -82,10 +108,10 @@ To create the images:
 make && make images
 ```
 
-`make images` will creates the base images which include all
-dependencies for building bedrock for each of the supported
+`make images` will create the base images which include all
+dependencies for building Bedrock for each of the supported
 distributions. After the base images are created it will create the
-final images by installing Bedrock in the base image and run the
+final images by installing Bedrock in the base image and running the
 `bedrock-site-install` script that installs and configures the
 Bedrock enabled Apache website.
 
@@ -104,7 +130,6 @@ Where `{target}` is one of:
 * `fedora`
 * `al2023`
 
-
 After building and running a Docker container from one of the
 images you created, verify that Bedrock is installed and working properly.
 
@@ -113,29 +138,25 @@ docker run -d -p 80:80 bedrock-debian
 curl http:://localhost/itworks.rock
 ```
 
-You can find the Bedrock documentation by visiting
-http://localhost/bedrock. The site is protectd with Basic
-Authentication, username is `fred`, password is `flintstone`.
-
 ## Docker Compose
 
 This directory also contains a `docker-compose.yml` file you can use
 to bring up a LAMB (Linux/Apache/MySQL/Bedrock) stack.
 
-There is a `.env` file for each distribution for use with
-`docker-compose`.  To bring up the Bedrock server using
-`docker-compose`:
 
 ```
-docker-compose --env debian.env up
+OS=debian DOCKERIMAGE=bedrock-$OS DOCKERFILE=Dockerfile.bedrock-$OS \
+  docker compose up
 ```
 
 Once your stack is launched visit the Bedrock documentation at
 http://localhost/bedrock to verify installation and learn more about
-Bedrock.
+Bedrock. The site is protected with Basic Authentication, username is
+`fred`, password is `flintstone`.
+
 
 See [Bedrock Documenation](#bedrock-documentation) for more details
-regarding how to enable the documentation server. 
+regarding how to enable or disable the documentation server. 
 
 ## LocalStack & Redis
 
@@ -164,6 +185,7 @@ enabled website is installed using the `bedrock-site-install`
 script. Essentially the final image is produced like this:
 
 ```
+cpanm -n -v Bedrock-Core-m.n.r.tar.gz
 cpanm -n -v Bedrock-m.n.r.tar.gz
 bedrock-site-install --distro=redhat
 ```
@@ -189,13 +211,13 @@ file.
 > install Bedrock using `cpanm`.
 
 ```
-docker cp Bedrock-3.3.2.tar.gz docker_web_1:/tmp
+docker cp Bedrock-3.3.13.tar.gz docker_web_1:/tmp
 ```
 
 ...then inside the container:
 
 ```
-cpanm -n -v Bedrock-3.3.2.tar.gz
+cpanm -n -v Bedrock-3.3.13.tar.gz
 ```
 
 >If necessary run the site installation script
@@ -261,7 +283,7 @@ if you enabled that in your `tagx.xml` file.
 
 # Connecting to the MySQL Server
 
-If you want to connect to the MySQL server running in your container
+To connect to the MySQL server running in your container
 environment follow the instructions below.
 
 ## Connecting to `localhost`
@@ -270,8 +292,8 @@ To connect to the MySQL server running in the container without using
 TCP you need to expose the socket to your host.  The
 `docker-compose.yml` file will mount `/tmp/mysqld` locally to
 `/var/run/mysqld` on the container. This will allow you to connect to
-the container's MySQL instance on `localhost`.  You must however
-provide the path to the socket file when connecting.
+the container's MySQL instance on `localhost`.  You must provide the
+path to the socket file when connecting.
 
 ```
 mysql -u root -p -h localhost -S /tmp/mysqld/mysqld.sock
@@ -319,7 +341,7 @@ ssh tunnel.
 
 Typically I connect to my development server (EC2) via a bastion host
 using my Chromebook. Running Linux on my Chromebook allows me to use
-terminal programs like GNOME `terminal` or `terminataor` to access
+terminal programs like GNOME `terminal` or `terminator` to access
 remote servers.
 
 My EC2 development server is behind a firewall accessible only from
