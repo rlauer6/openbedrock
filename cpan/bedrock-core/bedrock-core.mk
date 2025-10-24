@@ -32,7 +32,7 @@ $(TARBALL): buildspec.yml
 	project_root="$(tmpdir)/usr"; \
 	install_files=$$(mktemp); \
 	include_files=$$(mktemp); \
-	cp $$project_root/share/perl5/Bedrock.pm $$project_root/share/perl5/Bedrock/Core.pm; \
+	cat <(echo -e "package Bedrock::Core\n\nour $$VERSION='$(PACKAGE_VERSION)';\n\n") $$project_root/share/perl5/Bedrock.pm > $$project_root/share/perl5/Bedrock/Core.pm; \
 	cp $$project_root/bin/bedrock.pl $$project_root/bin/bedrock; \
 	chmod +x $$project_root/bin/bedrock; \
 	find "$$project_root" -type f | sort > $$install_files; \
