@@ -10,7 +10,7 @@ Docker images based on several distributions described below.
 
 | Distribution | Dockerfile | Description |
 | ------------ | ---------- | ----------- |
-| Debian | Dockerfile.-debian-base | Debian distribution (`trixie`) - base image |
+| Debian | Dockerfile.debian-base | Debian distribution (`trixie`) - base image |
 | Debian | Dockerfile.debian | Debian distribution (`trixie`) |
 | Fedora | Dockerfile.fedora-base | Fedora distribution (42) - base image |
 | Fedora | Dockerfile.fedora | Fedora distribution (42) |
