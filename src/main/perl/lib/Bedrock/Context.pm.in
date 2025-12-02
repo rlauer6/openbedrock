@@ -34,6 +34,7 @@ use Crypt::CBC;
 use Crypt::Cipher::AES;
 use Cwd qw(getcwd abs_path);
 use Data::Dumper;
+use Digest::MD5;
 use English qw(-no_match_vars);
 use File::Basename;
 use File::Temp qw(tempdir);
@@ -103,12 +104,7 @@ sub new {
   # calling Bedrock::Context with anything but Bedrock's configuration
   # object.
 
-  $config = eval {
-    return $config
-      if $config;
-
-    return Bedrock::Config->new($config_file);
-  };
+  $config //= eval { return Bedrock::Config->new($config_file); };
 
   croak "ERROR: could not create a configuration object\n$EVAL_ERROR"
     if !$config || $EVAL_ERROR;
@@ -241,50 +237,6 @@ sub init_log4perl_logger {
 # rewrite this to use hooks or mod_perl, if rewritten for mod_perl we
 # need keep this in mind:
 
-=pod
-
-Re: Uploading Files bigger the 64M
-Ryan Gies Tue, 25 Jan 2011 10:41:17 -0800
-
-1) You may lower the limit, not raise it. If you are trying to raise
-it, you will get "Conflicting information".
-
-2) Your server config trumps your virtual-host config. If you have not
-set APREQ2_ReadLimit outside of your VirtualHost, then it is set for
-you (64M).
-
-Personally, I do this:
-
-A) Set APREQ2_ReadLimit in /etc/httpd/conf.d/apreq.conf to the largest
-value I would allow for any virtual host.
-
-B) Set APREQ2_ReadLimit to the largest upload value appropriate for
-the client inside their VirtualHost container.
-
-C) Set $req->read_limit inside a PerlResponseHandler depending on the
-logical type of request:
-
-# The Apache request library only allows lowering the read limit
-# (POST_MAX). # The default is 64M (64 * 1024 * 1024) so if larger
-# uploads are desired, one # must raise the limit by setting
-# APREQ2_ReadLimit in the Apache configuration. # When using
-# VirtualHosts, the larger limit *must* be specified in server
-# configuration, and then optionally reduced in the vhost config.
-# http://marc.info/?l=apreq-dev&m=115829354028472&w=2
-
-  my $limit = $req->read_limit();
-  my $max = $rr->max_post_size; # the max post size allowed for the current request
-  if ($max > $limit) {
-    $Log->warn(sprintf('Cannot raise read_limit from %d to %d', $limit, $max));
-  }
-   else {
-    $req->read_limit($max) or die $!;
-    $limit = $req->read_limit();
-    $Log->error('Error setting read_limit') unless $limit == $max;
-  }
-
-=cut
-
 #
 ########################################################################
 sub upload_file {
@@ -292,6 +244,9 @@ sub upload_file {
   my ( $self, $form_var, @args ) = @_;
 
   my $fh = $self->cgi->param($form_var);
+
+  my $md5_digest = Digest::MD5->new->addfile($fh)->hexdigest;
+  $fh->seek( 0, 0 );
 
   my $platform = $self->cgi->param('platform');
 
@@ -374,11 +329,12 @@ sub upload_file {
   my $cipher;
 
   if ( $options->{passkey} ) {
-    $options->{cipher} = $options->{cipher} || 'DES';
+    $options->{cipher} = $options->{cipher} || 'Cipher::DES';
 
     $cipher = Crypt::CBC->new(
-      -cipher => $options->{cipher},
-      -key    => $options->{passkey}
+      -cipher      => $options->{cipher},
+      -key         => $options->{passkey},
+      -nodeprecate => 1,
     );
 
     $cipher->start('encrypting');
@@ -422,11 +378,12 @@ sub upload_file {
 
   %stats = (
     %stats,
-    ( file           => $uploaded_file,
-      $form_var      => "$name$ext",
-      'content-type' => $upload_content_type,
-      cipher         => $options->{cipher} // $EMPTY,
-    )
+    md5_digest     => $md5_digest,
+    file           => $uploaded_file,
+    $form_var      => "$name$ext",
+    'content-type' => $upload_content_type,
+    cipher         => $options->{cipher} // $EMPTY,
+
   );
 
   return Bedrock::Hash->new(%stats);
@@ -842,6 +799,48 @@ Encryption passkey.
 Encryption cipher (defaults to DES)
 
 =back
+
+=head2 A Note About mod_perl and File Uploads
+
+Re: Uploading Files bigger the 64M
+Ryan Gies Tue, 25 Jan 2011 10:41:17 -0800
+
+1) You may lower the limit, not raise it. If you are trying to raise
+it, you will get "Conflicting information".
+
+2) Your server config trumps your virtual-host config. If you have not
+set APREQ2_ReadLimit outside of your VirtualHost, then it is set for
+you (64M).
+
+Personally, I do this:
+
+A) Set APREQ2_ReadLimit in /etc/httpd/conf.d/apreq.conf to the largest
+value I would allow for any virtual host.
+
+B) Set APREQ2_ReadLimit to the largest upload value appropriate for
+the client inside their VirtualHost container.
+
+C) Set $req->read_limit inside a PerlResponseHandler depending on the
+logical type of request:
+
+# The Apache request library only allows lowering the read limit
+# (POST_MAX). # The default is 64M (64 * 1024 * 1024) so if larger
+# uploads are desired, one # must raise the limit by setting
+# APREQ2_ReadLimit in the Apache configuration. # When using
+# VirtualHosts, the larger limit *must* be specified in server
+# configuration, and then optionally reduced in the vhost config.
+# http://marc.info/?l=apreq-dev&m=115829354028472&w=2
+
+  my $limit = $req->read_limit();
+  my $max = $rr->max_post_size; # the max post size allowed for the current request
+  if ($max > $limit) {
+    $Log->warn(sprintf('Cannot raise read_limit from %d to %d', $limit, $max));
+  }
+   else {
+    $req->read_limit($max) or die $!;
+    $limit = $req->read_limit();
+    $Log->error('Error setting read_limit') unless $limit == $max;
+  }
 
 =head1 SETTERS/GETTERS
 

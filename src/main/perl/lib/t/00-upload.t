@@ -80,6 +80,7 @@ my @members = qw{
   file
   gid
   ino
+  md5_digest
   mode
   mtime
   nlink
