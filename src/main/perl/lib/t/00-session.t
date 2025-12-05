@@ -7,83 +7,82 @@ use Bedrock qw(slurp_file);
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:defaults :chars :booleans);
 use Bedrock::Test::FauxContext qw(bind_module);
+use Bedrock::Test::Utils qw(connect_db create_db);
 use Cwd;
-use DBI;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use JSON;
 use Test::More;
 
 ########################################################################
-sub fetch_config {
+# setup
 ########################################################################
-  my $config_path = $ENV{BEDROCK_CONFIG_PATH} // cwd;
 
-  my $config_file = sprintf '%s/mysql-session.xml', $config_path;
+my $dbi = eval { return connect_db(); };
 
-  die "$config_file not found!"
-    if !-e $config_file;
-
-  my $config = eval { return Bedrock::Config->new($config_file); };
-
-  return
-    if !$config || $EVAL_ERROR;
-
-  my $dbi_host = $ENV{DBI_HOST} // '127.0.0.1';
-
-  my $session_config = $config->{config};
-  $session_config->{data_source} .= ":$dbi_host";
-
-  $session_config->{cookieless_sessions} = $session_config->{verbose} = $FALSE;
-
-  $config->{config} = $session_config;
-
-  return $config;
+if ( !$dbi ) {
+  plan skip_all => 'no database connection';
 }
 
-########################################################################
-sub test_connect {
-########################################################################
-  my ($config) = @_;
+eval {
 
-  my $session_config = $config->{config};
+  create_db($dbi);
 
-  my ( $dsn, $username, $password )
-    = @{$session_config}{qw{ data_source username password}};
+  my $sql = <<'END_OF_SQL';
+create table if not exists session
+ (
+  id           int(11)      not null auto_increment primary key,
+  session      varchar(50)  default null,
+  login_cookie varchar(50)  not null default '',
+  username     varchar(50)  not null default '',
+  password     varchar(64)  default null,
+  firstname    varchar(30)  default null,
+  lastname     varchar(50)  default null,
+  email        varchar(100) default null,
+  prefs        text,
+  updated      timestamp    not null default current_timestamp on update current_timestamp,
+  added        datetime     default null,
+  expires      datetime     default null
+);
+END_OF_SQL
 
-  my $db_available = eval {
-    my $dbi = DBI->connect( $dsn, $username, $password, { PrintError => 0 } );
+  $dbi->do($sql);
+};
 
-    my $ping = $dbi->ping ? 'up' : $EMPTY;
+BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n")
+  if $EVAL_ERROR;
 
-    $dbi->disconnect;
+my $fh     = *DATA;
+my $config = eval { return Bedrock::Config->new($fh); };
 
-    return $ping;
-  };
-
-  return $db_available;
-}
-
-########################################################################
-# TESTS START HERE
-########################################################################
-
-my $config = fetch_config();
-
-if ( !$config ) {
+if ( !$config || $EVAL_ERROR ) {
   diag($EVAL_ERROR);
-  BAIL_OUT('could not read config file');
+  BAIL_OUT('ERROR: could not load config');
 }
+
+my $session_config = $config->{config};
+
+my @dsn = split /:/xsm, $session_config->{data_source};
+$dsn[3] = $ENV{DBI_HOST} // '127.0.0.1';
+$dsn[2] = 'foo';
+
+$session_config->{username} = $ENV{DBI_USER};
+$session_config->{password} = $ENV{DBI_PASS};
+
+$session_config->{data_source}         = join q{:}, @dsn;
+$session_config->{cookieless_sessions} = $FALSE;
+$session_config->{verbose}             = $FALSE;
+$session_config->{mysql_ssl}           = $TRUE;
 
 my $ctx = Bedrock::Test::FauxContext->new( CONFIG => { SESSION_DIR => '/tmp' } );
 
-plan skip_all => 'no database available'
-  if !test_connect($config);
+########################################################################
+# end of setup
+########################################################################
 
 use_ok('BLM::Startup::UserSession');
 
 my $session;
-my $session_config = $config->{config};
 
 ########################################################################
 subtest 'TIEHASH' => sub {
@@ -180,31 +179,43 @@ subtest expire_session => sub {
 
   ok( -d $session_dir, "$session_dir exists" );
 
+  my $session_id = $session->{session};
+
   my $sql = <<'END_OF_SQL';
 update session
   set expires = date_sub(now(), interval 10 minute)
   where session = ?
 END_OF_SQL
 
-  $dbi->do( $sql, {}, $session->{session} );
+  $dbi->do( $sql, {}, $session_id );
 
   $config->{config}->{cleanup_session_dir} = 'yes';
 
   $session->closeBLM;
 
   ok( !-d $session_dir, "$session_dir cleaned up" );
+
+  # session should be gone so the next attempt to create a session
+  # with that id will result in creation of a new session
+  local $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
+  $session = eval { return bind_module( $ctx, $config, 'BLM::Startup::UserSession' ); };
+
+  ok( $session && $session->{session} ne $session_id, 'expired session causes new session' )
+    or diag(
+    Dumper(
+      [ error   => $EVAL_ERROR,
+        session => $session,
+      ]
+    )
+    );
+
 };
 
 ########################################################################
 subtest 'register' => sub {
 ########################################################################
-  $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
 
-  $session = eval { return bind_module( $ctx, $config, 'BLM::Startup::UserSession' ); };
-
-  my $rc = eval {
-    return $session->register( 'fflintstone', 'W1lma', 'Fred', 'Flintstone', 'fflintstone@openbedrock.net' );
-  };
+  my $rc = eval { return $session->register( 'fflintstone', 'W1lma', 'Fred', 'Flintstone', 'fflintstone@openbedrock.net' ); };
 
   if ( !$rc || $EVAL_ERROR ) {
     if ( $EVAL_ERROR =~ /username\sexists/xsm ) {
@@ -256,9 +267,40 @@ done_testing;
 
 ########################################################################
 END {
-
+  eval {
+    if ( $dbi && $dbi->ping ) {
+      $dbi->do('drop database foo');
+    }
+  };
 }
 
 1;
 
-__END__
+__DATA__
+<!-- Bedrock MySQL Sessions -->
+<object>
+  <scalar name="binding">session</scalar>
+  <scalar name="session">yes</scalar>
+  <scalar name="module">BLM::Startup::UserSession</scalar>
+
+  <object name="config">
+    <scalar name="verbose">2</scalar>
+    <scalar name="param">session</scalar>
+    <scalar name="login_cookie_name">session_login</scalar>
+    <scalar name="login_cookie_expiry_days">365</scalar>
+    <scalar name="purge_user_after">30</scalar>
+
+    <!-- MySQL connect information -->
+    <scalar name="data_source">dbi:mysql:bedrock:db</scalar>
+    <scalar name="username">fred</scalar>
+    <scalar name="password">flintstone</scalar>
+    <scalar name="table_name">session</scalar>
+    <scalar name="mysql_ssl">1</scalar>
+
+    <object name="cookie">
+      <scalar name="path">/</scalar>
+      <scalar name="expiry_secs">3600</scalar>
+      <scalar name="domain"></scalar>
+    </object>
+  </object>
+</object>

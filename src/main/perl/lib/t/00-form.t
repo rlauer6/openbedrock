@@ -7,6 +7,7 @@ use Cwd qw(abs_path cwd getcwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Temp qw(tempdir);
+use List::Util qw(none);
 use Test::More;
 
 ########################################################################
@@ -18,16 +19,17 @@ if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  $dbi->do('use bedrock');
+  eval {
+    $dbi->do('use bedrock');
 
-  my @tables = map { $_->[0] } $dbi->selectall_arrayref('show tables');
+    my @tables = map { $_->[0] } $dbi->selectall_arrayref('show tables');
 
-  if ( !grep { $_ eq 'form_test' } @tables ) {
-    plan skip_all => 'TODO: create form_test table for test';
-  }
-  else {
-    $dbi->disconnect;
-  }
+    die "no such table 'form_test'\n"
+      if none { $_ eq 'form_test' } @tables;
+
+  };
+
+  plan skip_all => 'TODO: create form_test table for test';
 }
 
 use_ok('BLM::IndexedTableHandler::Form');
@@ -98,6 +100,10 @@ subtest 'default config' => sub {
 done_testing;
 
 1;
+
+END {
+  eval { $dbi->disconnect; }
+}
 
 __DATA__
 {

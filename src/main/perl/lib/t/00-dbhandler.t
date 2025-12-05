@@ -3,10 +3,6 @@
 use strict;
 use warnings;
 
-BEGIN {
-  use lib qw(.);
-}
-
 use Bedrock::Constants qw(:booleans);
 use Data::Dumper;
 use DBI;
@@ -24,7 +20,7 @@ eval {
   my $host = $ENV{DBI_HOST} // '127.0.0.1';
 
   my $dbi = DBI->connect( 'dbi:mysql::' . $host, $ENV{DBI_USER}, $ENV{DBI_PASS} );
-  $dbi->disconnect;
+  return $dbi->disconnect;
 };
 
 plan skip_all => 'no database connection'
@@ -66,14 +62,17 @@ subtest 'easy_connect: environment variables' => sub {
 ########################################################################
 subtest 'easy_connect: file handle' => sub {
 ########################################################################
+  my $password = $ENV{DBI_PASS};
+
   local %ENV = ();
+  $ENV{DBI_PASS} = $password;
 
   my $fh = *DATA;
   seek $fh, $DATA_POSITION, 0;
 
-  ok( openhandle($fh), 'is an open file handle' );
+  ok( openhandle($fh), 'is an open file handle to a data-source file' );
 
-  my $dbi = easy_connect($fh);
+  my $dbi = easy_connect( $fh, undef, 1 );
 
   ok( is_dbi($dbi) && !$EVAL_ERROR, 'file handle, no name' );
 
@@ -95,7 +94,7 @@ subtest 'easy_connect: configuration file' => sub {
 
   close $fd;
 
-  my $dbi = easy_connect( data_source => $filename, name => 'bedrock' );
+  my $dbi = easy_connect( data_source => $filename, name => 'bedrock', env => 1 );
 
   ok( is_dbi($dbi) && !$EVAL_ERROR, 'JSON file, with name' );
 };
@@ -108,7 +107,8 @@ __DATA__
 <object>
   <object name="bedrock">
     <scalar name="username">root</scalar>
-    <scalar name="password">bedrock</scalar>
     <scalar name="database"></scalar>
+    <scalar name="host">127.0.0.1</scalar>
+    <scalar name="mysql_ssl">1</scalar>
   </object>
 </object>

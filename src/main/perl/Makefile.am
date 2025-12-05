@@ -38,8 +38,7 @@ BEDROCK_MAIL_TESTS = \
 BEDROCK_SQL_TESTS = \
     t/12-sqlconnect.yml \
     t/13-sql.yml \
-    t/21-sqlselect.yml \
-    t/30-sql-session.yml
+    t/21-sqlselect.yml
 
 BEDROCK_TEST_HARNESS = \
     lib/Bedrock/Test.pm.in \

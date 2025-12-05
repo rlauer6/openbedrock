@@ -26,6 +26,7 @@ use warnings;
 
 use BLM::IndexedTableHandler::RecordSet;
 use Bedrock::Array;
+use Bedrock qw(is_hash is_array);
 use Bedrock::Constants qw( :chars :booleans :find_flags );
 use Bedrock::HTML::Helper qw(:all);
 use Bedrock::Model::Field;
@@ -43,9 +44,9 @@ use Role::Tiny::With;
 with 'Bedrock::Logger';
 with 'Bedrock::Role::Config';
 
-use parent qw( Exporter BLM::DBHandler );
+use parent qw( BLM::DBHandler );
 
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';
 
 __PACKAGE__->create_accessors(
   qw(
@@ -79,16 +80,19 @@ sub _new {
     if !ref $args[0];
 
   return $self->_new_with_query(@args)
-    if ref( $args[0] ) !~ /DBI::db/xsm;
+    if ref( $args[0] ) !~ /DBI::db/xsm;  # new( { username => 'tjefferson' } )
 
-  my $dbi = shift @args;
-  $self->dbi($dbi);
+  $self->dbi( shift @args );             # new($dbi, ...)
 
-  return $self->_new_with_id(@args)
-    if !is_hash( $args[0] );
+  return $self->_new_with_id(@args)      # new($dbi, $id)
+    if !is_hash $args[0];
 
-  return $self->_new_with_options(@args);
+  return $self->_new_with_options(@args);  # new($dbi, { } )
 }
+
+########################################################################
+sub choose(&) { return $_[0]->(); };       ## no critic
+########################################################################
 
 # filename or open handle
 ########################################################################
@@ -104,6 +108,8 @@ sub load_config {
     return site_config($config_name);
   };
 
+  $self->get_logger->debug( Dumper( [ config => $config ] ) );
+
   croak "error loading $config_name\n$EVAL_ERROR"
     if !$config || $EVAL_ERROR;
 
@@ -118,7 +124,7 @@ sub load_config {
     return keys %tables
       if scalar keys %tables == 1;
 
-    if ( !openhandle $config_name) {
+    if ( !openhandle $config_name ) {
       return fileparse( $config_name, qr/[.][^.]+$/xsm )
         if !openhandle $config_name;
     }
@@ -131,6 +137,8 @@ sub load_config {
 
   my %db_config = %{ $config->{database} || {} };
 
+  $self->get_logger->debug( Dumper( [ db_config => \%db_config ] ) );
+
   my $dbi = eval {
     return $self->easy_connect
       if !scalar keys %db_config;
@@ -141,13 +149,14 @@ sub load_config {
       dsn        => $db_config{dsn},
       AutoCommit => $db_config{auto_commit} // $TRUE,
       host       => $db_config{hostname}    // $db_config{host} // 'localhost',
+      env        => $db_config{env},
     );
   };
 
   croak "could not connect to a database\n$EVAL_ERROR"
     if !$dbi || $EVAL_ERROR;
 
-  return __PACKAGE__->new( $dbi, $table_name, $config );
+  return __PACKAGE__->new( $dbi, 0, $config, $table_name );
 }
 
 ########################################################################
@@ -588,8 +597,9 @@ sub get_table_config {
 
   my $config = $self->get_config // {};
 
-  return $config
-    if !$config->{tables};
+  if ( !$config->{tables} ) {
+    $config->{tables} = {};
+  }
 
   return $table_name ? $config->{tables}->{$table_name} : $config->{tables};
 }
@@ -1530,11 +1540,9 @@ sub create_timestamp_field {
 
   return create_html_element(
     'input',
-    ( type      => 'text',
-      name      => $field_name,
-      value     => $value,
-      maxlength => $size,
-      size      => $size,
+    ( type  => 'time',
+      name  => $field_name,
+      value => $value,
     ),
     $disabled   ? ( disabled => undef )     : (),
     $attributes ? %{ $attributes->{input} } : ()
@@ -2498,14 +2506,6 @@ sub _find_or_count {
 sub _find { unshift @_, undef; goto &_find_or_count }  ## no critic (RequireArgUnpacking)
 
 ########################################################################
-
-{
-  ## no critic (RequireArgUnpacking)
-  sub is_array { return ref $_[0] && reftype( $_[0] ) eq 'ARRAY'; }
-  sub is_hash  { return ref $_[0] && reftype( $_[0] ) eq 'HASH'; }
-}
-
-########################################################################
 sub _insert {
 ########################################################################
   my ( $self, $some_or_all ) = @_;
@@ -2734,13 +2734,16 @@ sub _new_with_query {
 
   my %args = %{$args};
 
-  croak "no dbi handle\nusage: new({ dbi => handle, column1 => value1 ...});\n"
-    if !exists $args{dbi} || ref( $args{dbi} ) !~ /^DBI::db/xsm;
+  my $dbi = delete $args{dbi};
 
-  $self->dbi( delete $args{dbi} );
+  croak "no dbi handle\nusage: new({ dbi => handle, column1 => value1 ...});\n"
+    if !$dbi || ref($dbi) !~ /^DBI::db/xsm;
+
+  $self->dbi($dbi);
 
   my $table_name = delete $args{table_name};
   $table_name //= delete $args{table};
+
   $table_name //= $self->create_table_name;
   $self->set_table_name($table_name);
 
@@ -2755,6 +2758,7 @@ sub _new_with_query {
     if !@columns;
 
   my @or;
+
   my @conditions;
 
   foreach my $p ( pairs %args ) {
@@ -2768,23 +2772,13 @@ sub _new_with_query {
       push @conditions, sprintf '( %s )', join ' or ', @or;
     }
     else {
-      push @conditions, build_condition( $column,, $value, \@bind_vars );
+      push @conditions, build_condition( $column, $value, \@bind_vars );
     }
   }
 
   my $filter = sprintf 'select id from %s where %s', $self->get_table_name, join ' and ', @conditions;
 
   my $ref = $self->select( $filter, @bind_vars );
-
-  #  $self->set_query($filter);
-  #
-  #  $self->set_bind_vars( \@bind_vars );
-  #
-  #  my $sth = $self->dbi->prepare($filter);
-  #
-  #  $sth->execute(@bind_vars);
-  #
-  #  my $ref = $sth->fetchrow_hashref;
 
   return $ref->{id} ? $ref->{id} : 0;
 }
@@ -2794,20 +2788,26 @@ sub _new_with_options {
 ########################################################################
   my ( $self, $options ) = @_;
 
-  my ( $id, $config, $max_rows )
-    = @{$options}{qw( id config max_rows )};
+  my ( $id, $config, $max_rows, $lock ) = @{$options}{qw( id config max_rows lock )};
+
+  $id //= 0;
 
   $self->set_config($config);
 
+  # we are too lenient to these blokes!
   my ($table_name) = grep {defined} @{$options}{qw( table table_name )};
 
   $self->set_table_name($table_name);
 
-  $self->max_rows($max_rows);
+  if ( defined $max_rows ) {
+    $self->max_rows($max_rows);
+  }
 
-  $self->set_lock( $options->{lock} );
+  if ( defined $lock ) {
+    $self->set_lock($lock);
+  }
 
-  return $id ? $id : 0;
+  return $id;
 }
 
 ########################################################################
@@ -2828,27 +2828,32 @@ sub _new_with_options {
 ########################################################################
 sub _new_with_id {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $id, @args ) = @_;
 
-  my $id;
+  my ( $table_name, $config ) = choose {
+    return ( $args[1], $args[0] )  # new( dbi, id, config, table-name)
+      if ref $args[0];
 
-  if ( @args && $args[0] =~ /^\d+$/xsm ) {
-    $id = shift @args;
-  }
+    return ( $args[1], $args[0] )  # new(dbi, id, undef, table-name)
+      if $args[1] && !ref $args[1];
 
-  my ( $config, $table_name );
+    if ( $id && $id !~ /^\d+$/xsm ) {  # new(dbi, table-name, config)
+      $id = 0;
+      return ( $id, $args[0] );
+    }
 
-  if ( is_hash( $args[0] ) || ( defined $args[1] && !ref $args[1] ) ) {
-    ( $config, $table_name ) = @args;
-  }
-  else {
-    ( $table_name, $config ) = @args;
-  }
+    return @args;                      # new(dbi, id, table-name, [config])
+  };
 
-  $self->set_config( $config         // {} );
-  $self->set_table_name( $table_name // $self->create_table_name );
+  $table_name //= $self->create_table_name;
 
-  return $id ? $id : 0;
+  $config //= {};
+
+  $self->set_config($config);
+
+  $self->set_table_name($table_name);
+
+  return $id;
 }
 
 ########################################################################
@@ -2860,13 +2865,14 @@ sub _get_table_dir {
 
   my $database = $self->database;
 
-  die "no database selected\n"
+  die "ERROR: no database selected\n"
     if !$database;
 
   my @table_def = $self->get_table_definition($table_name);
 
   my $fields = {};
-  my $idx    = 0;
+
+  my $idx = 0;
 
   foreach my $column (@table_def) {
     $column->{idx} = ++$idx;
@@ -2879,7 +2885,7 @@ sub _get_table_dir {
     }
   }
 
-  die 'Table must have an indexed field named [id] and it must be auto_increment!'
+  die "ERROR: Table must have an indexed field named [id] and it must be auto_increment!\n"
     if !$self->{_id};
 
   $self->set_table_dir($fields);
@@ -2928,7 +2934,7 @@ sub _delete {
   my ( $self, $id ) = @_;
 
   die 'not an id'
-    if !is_id($id);
+    if !is_id $id;
 
   my $query = <<'END_OF_SQL';
 delete
@@ -2944,8 +2950,6 @@ END_OF_SQL
 }
 
 1;
-
-## no critic (RequirePodSections)
 
 __END__
 
@@ -2980,21 +2984,75 @@ Using L<BLM::IndexedTableHandler> as a base class:
 
 =head1 DESCRIPTION
 
-C<BLM::IndexedTableHandler> is a base class used to construct
-applications that perform basic CRUD operations on MySQL tables. The
-class provides methods for selecting, searching, and saving data. In
-other words it handles all of the mundane tasks associated with
-managing the table's data.
+C<BLM::IndexedTableHandler> is a specialized, high-velocity B<MySQL
+Data Handler> designed to serve as the base class for application
+models. It is built to achieve maximal developer control and system
+performance by B<rejecting the architectural overhead of traditional,
+complex ORMs.>
 
-The class also contains methods that will quickly construct HTML forms
-that manage the data in a single table.
+=head2 Architectural Philosophy: Governance and Control
 
-Essentially, C<BLM::IndexedTableHandler> represents a MySQL table.
-When you use it as a base class the name of that class is interpretted
-as the table name. In the synopsis above the sub-class C<BLM::Foo>
-represents the MySQL table C<foo>. If you do not explicitly set the
-table name in the constructor, the constructor will attempt to
-determine the table name from the class suffix.
+The primary value of this module is not abstraction, but
+B<governance>. It enforces an B<Application-Centric> model where all
+critical logic is explicit and transparent.
+
+=over 5
+
+=item * Elimination of Overhead
+
+It is strictly a B<single-table domain handler>, which eliminates the
+substantial CPU overhead associated with relational abstraction,
+complex object hydration, and accidental B<N+1 query patterns> during
+bulk data operations.
+
+=item * Explicit Logic Contract
+
+It forces developers to manage all complex relationships (JOINs),
+aggregations, and performance-critical operations via B<raw, optimized
+SQL> executed through its base class, L<BLM::DBHandler>. This ensures
+all performance-sensitive code is visible, auditable, and explicitly
+tuned.
+
+=item * Governance Transparency
+
+It provides mechanisms, including the B<describe_table()>
+methodology, to enforce the documentation and visibility of all custom
+business logic, serialization rules, and non-standard behaviors (such
+as B<Upsert Mode>) that are otherwise hidden.
+
+=back
+
+=head2 Key Features for Developer Velocity
+
+This Handler provides utility that minimizes boilerplate while
+adhering to its strict architectural contract.
+
+=over 5
+
+=item * Upsert Mode (Sparse Insertion)
+
+When enabled, it constructs the `INSERT` statement using B<only the
+fields explicitly set> in the handler object, allowing the developer
+to rely efficiently on MySQL's schema-defined default values.
+
+=item * Data Governance Layer
+
+It allows specialized logic (validation, JSON serialization, field
+formatting) to be applied consistently via external configurations or
+inherited field properties, ensuring data integrity.
+
+=item * UI Utility
+
+It includes helper methods (e.g., C<html_form_body>) that interpret
+the MySQL schema to generate standard HTML form elements, drastically
+accelerating the development of simple CRUD interfaces.
+
+=back
+
+You should use this module when your priority is maximizing
+B<development velocity> for single-table operations while retaining
+B<absolute control and full auditability> over data access and
+business logic.
 
 =head2 Table and Class Naming Rules
 
@@ -3057,30 +3115,21 @@ constructing the HTML form for editing your table.
 
   package BLM::Birds;
 
-  use parent BLM::IndexedTableHandler;
+  use parent qw(BLM::IndexedTableHandler);
 
   sub create_timestamp_field {
       my ($self, $field_name, $attributes, $labels, $lists) = @_;
 
-      return $self->SUPER::create_timestamp_field($field_name, $attributes, $labels, $lists) if $field_name !~/last_spotted/;
+      return $self->SUPER::create_timestamp_field($field_name, $attributes, $labels, $lists)
+        if $field_name !~/last_spotted_time/;
 
-      return &calendar("birds", "last_spotted", $self->{last_spotted});
-}
+      return $self->last_spotted_time($fields_name, $attributes, $labels, $lists);
+  }
 
-  sub calendar {
-    my ($form_name, $field_name, $value) = @_;
-
-    my $html =<< 'END_OF_HTML';
-  <table cellpadding="0" border="1" cellspacing="0">
-    <tr>
-      <td valign="center"><input name="$field_name" type="text" size="19" value="$value" maxlength="19"></td>
-      <td valign="center"><input type="image" onClick='javascript:popUpCalendar(document.$form_name.$field_name, document.$form_name.$field_name, "m/d/yyyy"); return false' src="/img/calendar.gif"></td>
-    </tr>
-  </table>
-  END_OF_HTML
-
-    return $html;
-  } 
+  sub last_spotted_time {
+    my ($self, @args) = @_;
+    ....
+ }
 
 The HTML construction methods are described in more detail later in
 this documentation.
@@ -3096,35 +3145,39 @@ actual MySQL table name is lowercase.  So, in the C<SYNOPSIS> above,
 assuming we have a MySQL table named C<foo> that looks something
 like:
 
-  create table foo (
+ create table foo (
    id int auto_increment primary key,
    lname varchar(32),
    fname varchar(32),
    email varchar(64)
-  );
+ );
 
 ...and assuming I pass a handle to an open database to the C<BLM::Foo>
 constructor, I would get a whole lot of stuff necessary for building a
 typical Bedrock application for free!
 
-HereE<039>s an example of how you might save a record to a table by
-subclassing C<BLM::IndexedTableHandler> and using some of the tags
-provided by Bedrock.
+HereE<039>s an example of how you might saving and updating a record to a table.
 
   <sqlconnect --data-source="dbi:mysql:bedrock_site" --username="fred" --password="flintstone" --db="dbi">
 
   <plugin:Foo $dbi>
   <null $Foo.set('lname', 'Lollabrickada', 'fname', 'Gina', 'email', 'gina@openbedrock.com')>
-  <null $Foo.save()>
+  <null:id $Foo.save()>
 
   <null $Foo.reset()>
   <null $Foo.set('lname', 'Lollabrickada', 'fname', 'Geena', 'email', 'geena@openbedrock.com')>
   <null $Foo.save()>
 
-The C<id> of the saved record is immediately available in the object.
-
+The C<id> of the saved record is immediately available in the object
+ 
+ <null $Foo.save()>
  <var $Foo.get('id')>
 
+...or as the return value of C<save()>.
+
+ <null --define-var="id" $Foo.save()>
+ <var $id>
+ 
 Updating a record...
 
   <null $Foo.set('email', 'geena123@openbedrock.com')>
@@ -3137,27 +3190,27 @@ you used the original object.  If you want just a hash reference of
 the fields of the record, you can use the C<asref()> method of an
 object or a record set.>
 
-  <null:foo_list $Foo.find()> 
+ <null:foo_list $Foo.find()> 
 
 Just return a hash reference containing the key/values pairs instead
 of an array of L<BLM::IndexedTableHandler> objects.
 
-  <trace --outptut $foo_list.asref()>
+ <trace --outptut $foo_list.asref()>
 
 Return a list of records in table C<foo> where the C<lname> field
 starts with 'Lolla'...
 
-   <null --define-var="lollas" $Foo.find('lname', 'Lolla')>
+  <null --define-var="lollas" $Foo.find('lname', 'Lolla')>
 
 Find a record in table C<foo> where the C<lname> field exactly matched
 'Lolla'...
 
-   <null --define-var="lolla" $Foo.find_unique('lname', 'Lolla')>
+  <null --define-var="lolla" $Foo.find_unique('lname', 'Lolla')>
 
 Return a list of records in table C<foo> where the C<lname> field
 exactly matched 'Lolla'...
 
-   <null --define-var="lollas" $Foo.find(1, 'lname', 'Lolla')>
+  <null --define-var="lollas" $Foo.find(1, 'lname', 'Lolla')>
 
 =head1 DOCUMENTATION
 
@@ -4639,7 +4692,7 @@ in the C<$input> object.
 
 =head1 AUTHOR
 
-Rob Lauer - rlauer6@comcast.net
+Rob Lauer - <rclauer@gmail.com>
 
 =head1 SEE ALSO
 

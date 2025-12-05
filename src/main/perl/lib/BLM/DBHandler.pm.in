@@ -218,8 +218,20 @@ sub easy_connect {
 
   my $logger = get_logger();
 
+  $logger->debug(
+    Dumper(
+      [ args   => \@args,
+        logger => $logger
+      ]
+    )
+  );
+
   if ( openhandle $args[0] ) {
-    @args = ( data_source => $args[0], name => $args[1] );
+    @args = (
+      data_source => $args[0],
+      name        => $args[1],
+      env         => $args[2],
+    );
   }
 
   my ( $auto_commit, $raise_error, $print_error );
@@ -229,11 +241,20 @@ sub easy_connect {
   my $dsn = eval {
     my %options = %{ force_hash(@args) };
 
-    $logger->trace( Dumper( [ options => \%options ] ) );
+    $logger->debug( Dumper( [ options => \%options ] ) );
+    my $use_env = delete $options{env};
 
     $user = delete $options{user};
     $user //= delete $options{username};
-    $password = delete $options{password};
+
+    $password = defined $options{password} ? delete $options{password} : undef;
+    $logger->debug(
+      Dumper(
+        [ user     => $user,
+          password => $password,
+        ]
+      )
+    );
 
     $auto_commit = delete $options{AutoCommit};
     $raise_error = delete $options{RaiseError};
@@ -244,14 +265,48 @@ sub easy_connect {
 
       my ( $database, $host ) = split /:/xsm, $driver_dsn;
 
-      $host     //= $options{host}     // $EMPTY;
-      $database //= $options{database} // $EMPTY;
+      $host     //= $options{host};
+      $database //= $options{database};
 
-      return sprintf 'dbi:%s:%s:%s;%s', $driver, $database, $host, $attr_string // $EMPTY;
+      if ( !$host && $use_env ) {
+        $host = $ENV{DBI_HOST};
+      }
+
+      if ( !$database && $use_env ) {
+        $database = $ENV{DBI_DB};
+      }
+
+      if ( !defined $password && $use_env ) {
+        $password = $ENV{DBI_PASS};
+      }
+
+      if ( !$user && $use_env ) {
+        $user = $ENV{DBI_USER};
+      }
+
+      my @dsn_args = map { defined $_ ? $_ : $EMPTY } ( $driver, $database, $host, $attr_string );
+
+      $logger->debug(
+        Dumper(
+          [ dsn_args => \@dsn_args,
+            user     => $user,
+            password => $password,
+            env      => \%ENV,
+          ]
+        )
+      );
+
+      return sprintf 'dbi:%s:%s:%s;%s', @dsn_args;
     }
 
     if ( $options{data_source} ) {
-      my @connect_params = load_dsn_from_config( $options{data_source}, { name => $options{name} } );
+
+      my @connect_params = load_dsn_from_config(
+        $options{data_source},
+        { name => $options{name},
+          env  => $options{env}
+        }
+      );
       ( $user, $password ) = @connect_params[ ( 1, 2 ) ];
 
       $logger->debug(
@@ -265,9 +320,14 @@ sub easy_connect {
       return $connect_params[0];
     }
 
-    my ( $host, $database, $socket ) = @options{qw(host database)};
+    my ( $host, $database, $socket ) = @options{qw(host database socket)};
 
-    return load_dsn_from_config( { default => \%options }, { name => 'default', env => $TRUE } );
+    return load_dsn_from_config(
+      { default => \%options },
+      { name => 'default',
+        env  => $TRUE
+      }
+    );
   };
 
   $auto_commit //= $TRUE;

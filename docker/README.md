@@ -141,12 +141,26 @@ curl http:://localhost/itworks.rock
 ## Docker Compose
 
 This directory also contains a `docker-compose.yml` file you can use
-to bring up a LAMB (Linux/Apache/MySQL/Bedrock) stack.
-
+to bring up a LAMB (Linux/Apache/MySQL/Bedrock) stack. The
+`docker-compose.yml` file will launch an Apache server *and* a MySQL
+server by default.
 
 ```
 OS=debian DOCKERIMAGE=bedrock-$OS DOCKERFILE=Dockerfile.bedrock-$OS \
   docker compose up
+```
+
+> Note: If you have a MySQL volume left over from a previous Bedrock
+> application running with `docker compose` you may experience issues
+> connecting to your database. Make sure you edit the
+> `docker-compose.yml` file and **change the name of the MySQL volume
+> and password** for your application. For local development it's a
+> good practice to bring the stack down properly to remove Bedrock's
+> volume.
+
+```
+OS=debian DOCKERIMAGE=bedrock-$OS DOCKERFILE=Dockerfile.bedrock-$OS \
+  docker compose down
 ```
 
 Once your stack is launched visit the Bedrock documentation at
@@ -154,6 +168,7 @@ http://localhost/bedrock to verify installation and learn more about
 Bedrock. The site is protected with Basic Authentication, username is
 `fred`, password is `flintstone`.
 
+### Bringing the Stack Down
 
 See [Bedrock Documenation](#bedrock-documentation) for more details
 regarding how to enable or disable the documentation server. 
@@ -166,14 +181,15 @@ bring up a Redis server and the
 environments.
 
 These can be enabled using the `--profile` option when you invoke
-`docker-compose`.
+`docker compose`.
 
 There are Bedrock plugins for working with AWS services. Redis can be
 used for session management, caching and other applications using
 Bedrock plugins.
 
 ```
-docker-compose --env debian.env --profile redis --profile localstack up
+OS=debian DOCKERIMAGE=bedrock-$OS DOCKERFILE=Dockerfile.bedrock-$OS \
+  docker --profile redis --profile localstack compose up
 ```
 
 # Bedrock Enabled Apache Website
@@ -417,13 +433,14 @@ ssh -i ~/.ssh/id_rsa -f -N -L $LOCAL_PORT:$REMOTE_IP:$REMOTE_PORT $USER@$BASTION
 _or use the `web-tunnel` script in this directory._
 
 ```
-./web-tunnel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 up
+./web-tunnel -u ec2-user -i 10.1.4.206 -b 18.212.108.51 -p 80 -l 8080 up
 ```
+
 
 ..to stop port forwarding
 
 ```
-./web-tunnel -O cancel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 up
+./web-tunnel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 down
 ```
 
 # Installing from RPMs

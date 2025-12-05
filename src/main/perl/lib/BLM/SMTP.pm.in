@@ -25,6 +25,7 @@ use strict;
 use warnings;
 
 use Bedrock::Constants qw(:booleans :chars);
+use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use List::Util qw(pairs any);
@@ -42,40 +43,44 @@ sub can {  ## no critic (ProhibitBuiltinHomonyms)
 }
 
 ########################################################################
+sub choose(&) { return $_[0]->(); }  ## no critic
+########################################################################
+
+########################################################################
 sub TIEHANDLE {
 ########################################################################
   my ( $class, @args ) = @_;
 
-  die "Usage: $class->new( SMTP_Server, Sender_Addr [, To_Addr1 .. ] )\n"
+  die "usage: <plugin:SMTP parameters>\n"
     if !@args;
 
   my $self = bless {}, $class;
 
-  my $host;
-
   my %options;
 
-  if ( ref $args[0] ) {
-    %options = %{ $args[0] };
+  my $host = choose {
 
-    $self->{from} = delete $options{From};
+    if ( ref $args[0] ) {
+      my $params = shift @args;
 
-    $self->{subject} = delete $options{Subject};
+      %options = ( %{$params}, @args );
 
-    if ( $options{To} ) {
-      $self->{to} = [ delete $options{To} ];
+      $self->{from} = delete $options{From};
+
+      $self->{subject} = delete $options{Subject};
+
+      if ( $options{To} ) {
+        $self->{to} = [ delete $options{To} ];
+      }
+
+      if ( $options{CC} ) {
+        $self->{cc} = [ delete $options{CC} ];
+      }
+
+      return delete $options{Host};
     }
 
-    if ( $options{CC} ) {
-      $self->{cc} = [ delete $options{CC} ];
-    }
-
-    $host //= delete $options{Host};
-  }
-  else {
-    $host = shift @args;
-
-    my ( $sender, $to, $cc, $subject ) = @args;
+    my ( $host, $sender, $to, $cc, $subject, @extra_options ) = @args;
 
     $self->{from} = $sender;
 
@@ -88,21 +93,32 @@ sub TIEHANDLE {
     if ($cc) {
       $self->{cc} = [$cc];
     }
+
+    %options = ref $extra_options[0] ? $extra_options[0] : @extra_options;
+
+    return $host;
+  };
+
+  die "no from address\n"
+    if !$self->{from};
+
+  carp "no host set...using localhost\n"
+    if !$host;
+
+  $host //= 'localhost';
+
+  if ( $host =~ /:(\d+)$/xsml ) {
+    $options{Port} = $1;
   }
 
   my $user = delete $options{AuthUser};
   my $pass = delete $options{AuthPass};
   my $sasl = delete $options{SASL};
 
-  $host //= 'localhost';
-
-  die "no host specified\n"
-    if !$host;
-
   my $smtp = Net::SMTP->new( $host, %options );
   $self->{server} = $smtp;
 
-  die "$class->new(): unable to connect to $host:$EVAL_ERROR\n"
+  die "unable to connect to $host\n$EVAL_ERROR"
     if !$self->{server};
 
   if ( $user && $pass ) {
@@ -115,6 +131,28 @@ sub TIEHANDLE {
   $smtp->mail( $self->{from} );
 
   return $self;
+}
+
+########################################################################
+sub send_message {
+########################################################################
+  my ( $fd, $msg ) = @_;
+
+  my $self = tied *{$fd};
+
+  my $server = $self->{server};
+
+  $self->{start_end} = 1;
+
+  print {*STDERR} Dumper($self);
+
+  $server->to( @{ $self->{to} || [] } );
+
+  $server->data;
+  $server->datasend($msg);
+  $server->dataend;
+
+  return;
 }
 
 ########################################################################
@@ -332,34 +370,70 @@ BLM::SMTP - Bedrock interface to an SMTP server via L<Net::SMTP>.
  <null $SMTP.subject("Bowling tonight!")>
 
  <sink $SMTP>
- Grab your ball and let's go to the alley buddy!
+ Grab your balls and let's go to the alley buddy!
  </sink>
 
 =head1 DESCRIPTION
 
 Plugin for sending mail using L<Net::SMTP>.
 
-=head1 NOTES
-
 I<NOTE>: This module differs from C<BLM::Mail> in that it implements a
 handle which can be used with the C<sink> tag.
 
-=head2 Usage
-
- <plugin:SMTP server from to cc subject.>
-
- <plugin:SMTP server options>
-
-C<options> should be a hash reference to a list of options to send to
-L<Net::SMTP> new constructor.
+=head2 Postional Parameters
 
 =over 5
 
 =item Host (required)
 
-Host name to connect to.
+Host name to connect to. You can include a port suffix on the hostname
+if you are using a port other than 25.
+
+ email-smtp.us-east-1.amazonaws.com:465
 
 default: localhost
+
+=item From (required)
+
+Send email address
+
+=item To (required)
+
+Recipient. You can later use the C<to()> method to add recipients.
+
+=item CC
+
+CC list. You can later use the C<cc()> method to add recipients.
+
+=item Subject
+
+Text to send as the subject of the email.
+
+=item key/value pairs
+
+When using positional arguments you can tack on additional key/value
+pairs that will be sent to C<Net::SMTP>. For example:
+
+ <plugin:SMTP localhost support@openbedrock.net someuser@example.com '' 'Your Inquiry' AuthUser fred AuthPass flintstone Debug 1>
+
+=head2 Parameters Sent as Hash Object
+
+You can pass the parameters to the the plugin using as hash as the
+first argument. You can also follow that with key value pairs.
+
+=head3 Example:
+
+ <hash:config Host email-smtp.us-east-1.amazonaws.com:465 SSL AuthUser $user AuthPass $pass>
+ <plugin:SMPT $config From fred@openbedrock.net To barney@openbedrock.net>
+
+The keys below can be sent in addition to the parameters listed under
+L<Positional Paramaters>.
+
+=item Debug
+
+Set B<Debug> to a true value to force debug output from L<Net::SMTP.
+
+default: false
 
 =item Port
 
@@ -372,21 +446,9 @@ default: 25
 SSL parameter (see L<Net::SMTP> for a complete explanation). 
 
 I<SSL - If the connection should be done from start with SSL, contrary
-        to later upgrade with "starttls". You can use SSL arguments as
-        documented in IO::Socket::SSL, but it will usually use the right
-        arguments already.>
-
-=item To
-
-Recipient. You can later use the C<to()> method to add recipients.
-
-=item From (required)
-
-Sender. You must supply the sender if you use the options interface.
-
-=item CC
-
-CC list. You can later use the C<cc()> method to add recipients.
+to later upgrade with "starttls". You can use SSL arguments as
+documented in L<IO::Socket::SSL>, but it will usually use the right
+arguments already.>
 
 =item AuthUser
 
@@ -403,15 +465,47 @@ specified the AuthUser and AuthPass values.
 
 =back
 
- <hash:options Host $host Port 465 SSL 1 AuthUser $user AuthPass $pass
-               From fred@openbedrock.net To barney@openbedrock.net>
+=head3 Use a Configuration File for Parameters
 
-Use the object methods B<before> using the handle for sending data.
+You might find it more convenient to create a configuration file
+that you can drop in Bedrock's configuration path. For example:
 
-If you pass an C<options> object it most include at last the C<Host>
-and C<From> parameters.
+ <object>
+   <object name="smtp">
+     <scalar name="Host">email-smtp.us-east-1.amazonaws.com:465</scalar>
+     <scalar name="SSL">1</scalar>
+     <scalar name="AuthUser">AJK**************IGB</scalar>
+     <scalar name="AuthPass">ABp**************************************Iih</scalar>
+   </object>
+ </object>
+
+...then
+
+ <plugin:SMTP $config.smtp From fflintstone@openbedrock.net To brubble@openbedrock.net>
+
+=head2 Notes
+
+=over 5
+
+=item * Set the object methods B<before> using the handle for sending data.
+
+=item * The plugin will attempt to connect to the SMTP server during initialization.
+
+Best practice is use the plugin when all of your content has been completely rendered.
+
+ <sink:email>
+   <!-- produce your content here -->
+ </sink>
+
+ <plugin:SMTP $config.smtp From fflintstone@openbedrock.net To brubble@openbedrock.net>
+ <sink $SMTP><var $email></sink>
+
+=back
 
 =head1 METHODS AND SUBROUTINES
+
+In addition to passing parameters when you initialize the plugin, you
+can use methods on the plugin to set parameters.
 
 =head2 to( address, address, ... )
 
@@ -467,7 +561,7 @@ argument, so all output is written to that handle.>
 
 =head1 AUTHOR
 
-J. Sridhar
+J. Sridhar, Rob Lauer
 
 =head1 SEE ALSO
 

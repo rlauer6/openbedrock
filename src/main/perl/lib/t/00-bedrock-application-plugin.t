@@ -26,7 +26,9 @@ my $plugin;
 ########################################################################
 subtest 'TIEHASH' => sub {
 ########################################################################
-  my $config = eval { return Bedrock::Config->new( \*DATA ); };
+  my $fh = *DATA;
+
+  my $config = eval { return Bedrock::Config->new(*DATA); };
 
   if ( !$config ) {
     diag($EVAL_ERROR);

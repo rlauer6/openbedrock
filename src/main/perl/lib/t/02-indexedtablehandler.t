@@ -1,37 +1,33 @@
 #!/usr/bin/env perl
 
-## no critic (RequireVersionVar)
 use strict;
 use warnings;
 
-use Test::More;
-
+use Bedrock::Test::Utils qw(:booleans connect_db);
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Readonly;
-
-Readonly my $TRUE  => 1;
-Readonly my $FALSE => 0;
+use JSON;
+use Test::More;
 
 ########################################################################
-use Bedrock::Test::Utils qw(connect_db create_db);
+# setup
+########################################################################
 
-my $dbi = eval { return connect_db(); };
+my $dbi = eval {
+
+  return connect_db();
+};
 
 if ( !$dbi ) {
   plan skip_all => 'no database connection';
 }
 else {
-  plan tests => 11;
-}
+  eval {
+    $dbi->do('create database foo');
 
-use_ok('BLM::IndexedTableHandler');
+    $dbi->do('use foo');
 
-eval {
-  $dbi->do('create database foo');
-  $dbi->do('use foo');
-
-  my $create_table = <<'SQL';
+    my $create_table = <<'SQL';
 create table foo (
   id  int          auto_increment primary key,
   biz varchar(10)  not null,
@@ -40,29 +36,41 @@ create table foo (
 )
 SQL
 
-  $dbi->do($create_table);
-};
+    $dbi->do($create_table);
+  };
+}
 
 if ($EVAL_ERROR) {
-  BAIL_OUT("could not create database 'foo': $EVAL_ERROR\n");
+  diag($EVAL_ERROR);
+  BAIL_OUT('could not create database or table');
 }
+
+########################################################################
+# end of setup
 ########################################################################
 
-my $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
+use_ok('BLM::IndexedTableHandler');
 
-isa_ok( $ith, 'BLM::IndexedTableHandler' )
-  or BAIL_OUT($EVAL_ERROR);
+my $ith;
+########################################################################
+subtest '_filter_array' => sub {
+########################################################################
+  $ith = eval { return BLM::IndexedTableHandler->new( $dbi, 0, undef, 'foo' ); };
 
-my @filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], [qw(c d)] );
-ok( !( grep {/[cd]/xsm} @filtered_list ), 'filter array (array)' );
+  isa_ok( $ith, 'BLM::IndexedTableHandler' )
+    or BAIL_OUT($EVAL_ERROR);
 
-@filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], 'c' );
-ok( !( grep {/[c]/xsm} @filtered_list ), 'filter array (scalar)' );
+  my @filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], [qw(c d)] );
+  ok( !( grep {/[cd]/xsm} @filtered_list ), 'filter array (array)' );
 
-my @not_id = $ith->not_id();
+  @filtered_list = BLM::IndexedTableHandler::_filter_array( [qw( a b c d )], 'c' );
+  ok( !( grep {/[c]/xsm} @filtered_list ), 'filter array (scalar)' );
 
-ok( !( grep {/id/xsm} @not_id ), 'not id' )
-  or diag( Dumper( [ not_id => \@not_id ] ) );
+  my @not_id = $ith->not_id();
+
+  ok( !( grep {/id/xsm} @not_id ), 'not id' )
+    or diag( Dumper( [ not_id => \@not_id ] ) );
+};
 
 ########################################################################
 subtest 'upsert' => sub {
@@ -96,7 +104,7 @@ subtest 'upsert' => sub {
 
   ok( !$EVAL_ERROR && defined $id, 'upsert' )
     or do {
-    diag( Dumper( [$ith] ) );
+    diag( Dumper( [ ith => $ith ] ) );
     BAIL_OUT($EVAL_ERROR);
     };
 
@@ -125,7 +133,9 @@ subtest 'upsert' => sub {
 subtest 'select' => sub {
 ########################################################################
   my $rows = $ith->select();
+
   isa_ok( $rows, 'BLM::IndexedTableHandler::RecordSet' );
+
   is( @{$rows}, 2, 'all rows read' );
 };
 
@@ -175,23 +185,26 @@ subtest 'find exact' => sub {
 subtest 'find wildcard' => sub {
 ########################################################################
   my $rows = $ith->find( 0, 'buz', 'buzzz' );
-  require JSON;
   is( @{$rows}, 2, 'found 2 records' );
 
   my @as_array;
 
   foreach my $r ( @{$rows} ) {
     my %data;
+
     foreach my $k ( @{ $r->fields } ) {
       $data{$k} = $r->get($k);
     }
 
     push @as_array, \%data;
   }
+
   eval { JSON->new->encode( \@as_array ); };
 
   ok( !$EVAL_ERROR, 'devolve recordset' );
 };
+
+done_testing;
 
 END {
   eval {
