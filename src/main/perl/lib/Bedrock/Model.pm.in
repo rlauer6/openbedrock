@@ -32,6 +32,7 @@ use Bedrock::Constants qw(:booleans);
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use Module::Load;
 use Scalar::Util qw(reftype blessed);
 
 use Role::Tiny::With;
@@ -114,11 +115,46 @@ sub new {
 ########################################################################
 sub describe_table {
 ########################################################################
-  my ( $self, $serializer, $dbi, $table ) = @_;
+  my ( $self, %args ) = @_;
 
-  $serializer = $serializer || $self->get_serializer;
-  $dbi        = $dbi        || $self->get_dbi;
-  $table      = $table      || $self->get_table;
+  croak q{ERROR: deprecated use of 'describe_table'}
+    if ref $_[1] || @_ > 1 && @_ % 2;
+
+  my ( $serializer, $dbi, $table ) = @args{qw(serializer dbi table)};
+
+  ######################################################################
+  # describe table using model only...
+  ######################################################################
+  if ( !%args ) {
+    my $class = ref $self ? ref $self : $self;
+
+    load $class;
+
+    ($table) = $class =~ /(::[^:]+$)/xsm;
+
+    croak "ERROR: could not determine table name\n"
+      if !$table;
+
+    no strict 'refs';
+
+    my $model = *{ $class . '::MODEL' }{SCALAR};
+
+    croak "ERROR: $class has no \$MODEL\n"
+      if !$model || !${$model};
+
+    return $class->_create_table(
+      table   => lc $table,
+      model   => ${$model},
+      dry_run => $TRUE,
+    );
+  }
+
+  ######################################################################
+  # describe table using serializer...
+  ######################################################################
+  $serializer //= $self->get_serializer;
+  $dbi        //= $self->get_dbi;
+  $table      //= $self->get_table;
 
   return $self->$serializer->describe_table( $dbi, $table );
 }
@@ -145,10 +181,6 @@ sub to_string {
   goto &mode_as_string;
 }
 
-# +-----------------+
-# | PRIVATE METHODS |
-# +-----------------+
-
 ########################################################################
 sub _init_serializer {
 ########################################################################
@@ -172,34 +204,34 @@ sub create_table {
   my $model = $args{model}
     || $self->check_model();
 
-  my $dbi = $args{dbi}
-    || $self->check_dbi();
+  # it's ok not to pass dbi in dryrun mode
+  my $dbi = !$args{describe} ? $args{dbi} || $self->check_dbi : $args{dbi};
 
-  my $dry_run = $args{dry_run}
-    || ref($self) ? $self->get_dry_run() : undef;
+  my $dry_run = $args{dry_run} // ref $self && $self->can('get_dry_run') ? $self->get_dry_run : 0;
 
-  my $sth = $dbi->prepare('show tables like ?');
-  $sth->execute($table);
+  if ($dbi) {
+    my $sth = $dbi->prepare('show tables like ?');
+    $sth->execute($table);
 
-  my ($result) = $sth->fetchrow_array;
-  $sth->finish();
+    my ($result) = $sth->fetchrow_array;
+    $sth->finish();
 
-  if ( $result && lc $result eq lc $table ) {
-    if ( $args{verbose} || $self->get_verbose ) {
-      print {*STDERR} "table $table already exists!\n";
+    if ( $result && lc $result eq lc $table ) {
+      if ( $args{verbose} || $self->get_verbose ) {
+        print {*STDERR} "table $table already exists!\n";
+      }
+
+      my $migration = $self->verify_model( $dbi, %args );
+
+      $self->set_migration($migration);
+
+      if ( $migration->should_migrate && ( $args{verbose} || $self->get_verbose ) ) {
+        print {*STDERR} "WARNING: Migration required\n";
+        print {*STDERR} Dumper [ $migration->get_migration ];
+      }
+
+      return $migration;
     }
-
-    my $migration = $self->verify_model( $dbi, %args );
-
-    $self->set_migration($migration);
-
-    if ( $migration->should_migrate
-      && ( $args{verbose} || $self->get_verbose ) ) {
-      print {*STDERR} "WARNING: Migration required\n";
-      print {*STDERR} Dumper [ $migration->get_migration ];
-    }
-
-    return $migration;
   }
 
   return _create_table(
@@ -215,7 +247,7 @@ sub create {
 ########################################################################
   my ( $self, $dbi, %args ) = @_;
 
-  my $class = ref($self) || $self;
+  my $class = ref $self ? ref $self : $self;
 
   my $no_warnings = delete $args{no_warnings};
 
@@ -248,8 +280,7 @@ sub create {
     }
   }
   else {
-    my $stmnt
-      = eval { return $self->create_table( dbi => $dbi, table => $table, model => $model->get_model ); };
+    my $stmnt = eval { return $self->create_table( dbi => $dbi, table => $table, model => $model->get_model ); };
 
     croak "error creating table: $table\n$EVAL_ERROR\n"
       if $EVAL_ERROR;
@@ -265,9 +296,8 @@ sub _create_table {
 
   my $model = $args{model};
 
-  if ( !ref($model) || reftype($model) ne 'HASH' ) {
-    croak "model argument must be a hash\n" . Dumper [$model];
-  }
+  croak "model argument must be a hash\n" . Dumper [$model]
+    if !ref $model || reftype($model) ne 'HASH';
 
   foreach my $k ( keys %{$model} ) {
     croak "$k is not a Bedrock::Model::Field object:\n" . Dumper( $model->{$k} )
@@ -284,7 +314,7 @@ END_OF_SQL
 
   my $create_statement = sprintf $query, $args{table}, join ",\n    ", @column_defs;
 
-  if ( !$args{dry_run} ) {
+  if ( !$args{dry_run} && $args{dbi} ) {
     eval { $args{dbi}->do($create_statement); };
 
     if ($EVAL_ERROR) {
@@ -574,6 +604,16 @@ the class subclasses C<Bedrock::Model>.
 If true will suppress warning messages when the table exists or needs migration.
 
 =back
+
+=head2 describe_table
+
+ describe_table(dbi => dbi-handle, table => table-name, serializer => serializer)
+
+Returns the model definition from the table or the create statement
+needed to build the table.
+
+Pass no arguments if you want the create statement returned or pass
+at least the C<dbi-handle> if you want the model definition.
 
 =head2 fetch_model
 

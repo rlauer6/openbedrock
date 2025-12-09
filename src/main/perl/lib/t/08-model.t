@@ -5,14 +5,6 @@ use warnings;
 
 package MyApp::Users;
 
-BEGIN {
-  use Bedrock;
-  use File::Basename qw(dirname basename);
-
-  my $path = dirname( $INC{'Bedrock.pm'} );
-  push @INC, "$path/Bedrock", "$path/Bedrock/Text";
-}
-
 use parent qw(Bedrock::Model::Handler);
 
 ########################################################################
@@ -100,8 +92,7 @@ subtest 'create_model_fields - return array' => sub {
     BAIL_OUT('wrong size');
     };
 
-  ok( !( any { ref($_) !~ /Bedrock::Model::Field/xsm } @model_fields ),
-    'returns a list of "Bedrock::Model::Field"s' );
+  ok( !( any { ref($_) !~ /Bedrock::Model::Field/xsm } @model_fields ), 'returns a list of "Bedrock::Model::Field"s' );
 };
 
 ########################################################################

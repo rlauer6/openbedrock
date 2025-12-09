@@ -25,6 +25,9 @@ use warnings;
 
 use Role::Tiny;
 
+use Bedrock::Model;
+use BLM::DBHandler qw(create_table_name);
+
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
@@ -83,43 +86,50 @@ sub _model_def {
 ########################################################################
   my ( $class, %args ) = @_;
 
-  $class = ref($class) || $class;
+  $class = ref $class ? ref $class : $class;
 
-  # if there is no $MODEL defined in the current namespace, see if
-  # there is a model (.mdl) file we can require
-  if ( $args{verbose} ) {
+  my ( $model, $verbose ) = @args{qw(model verbose)};
+
+  if ($verbose) {
     print {*STDERR} "checking if ${class}" . "::MODEL exist...\n";
   }
 
-  if ( $args{model} ) {
-    no strict 'refs';  ## no critic (ProhibitNoStrict)
+  # set model
+  if ($model) {
+    no strict 'refs';  ## no critic
 
-    ${ $class . '::MODEL' } = $args{model};
+    ${ $class . '::MODEL' } = $model;
 
-    return $args{model};
+    return $model;
   }
 
-  my $model;
-
+  # get model
   {
-    no strict 'refs';  ## no critic (ProhibitNoStrict)
+    no strict 'refs';  ## no critic
 
-    $model = ${ $class . '::MODEL' };
+    $model = *{ $class . '::MODEL' };
 
-    if ( $args{verbose} ) {
-      print {*STDERR} Dumper ${ $class . '::MODEL' }, "\n";
+    if ($verbose) {
+      print {*STDERR} Dumper(
+        [ class => $class,
+          model => $model,
+        ]
+      );
     }
 
-    if ( !$model ) {
-      $model = eval { require lc $class->__table_name . '.mdl'; };
+    return ${$model}
+      if $model && ${$model};
 
-      if ( $EVAL_ERROR && $args{verbose} ) {
-        print {*STDERR} "$EVAL_ERROR";
-      }
+    # if there is no $MODEL defined in the current namespace, see if
+    # there is a model (.mdl) file we can require
+    $model = eval { require lc table_name($class) . '.mdl'; };
 
-      if ($model) {
-        ${ $class . '::MODEL' } = $model;
-      }
+    if ( $EVAL_ERROR && $verbose ) {
+      print {*STDERR} "$EVAL_ERROR";
+    }
+
+    if ($model) {
+      ${ $class . '::MODEL' } = $model;
     }
   }
 
@@ -131,7 +141,7 @@ sub _model {
 ########################################################################
   my ( $class, $dbi, %args ) = @_;
 
-  $class = ref($class) || $class;
+  $class = ref $class ? ref $class : $class;
 
   my $model = delete $args{model};
   $model //= $class->_model_def;
@@ -141,10 +151,8 @@ sub _model {
 
   my $table = delete $args{table};
 
-  require Bedrock::Model;
-
   return Bedrock::Model->new(
-    { table => $table // $class->__table_name,
+    { table => $table // table_name($class),
       model => $model,
       dbi   => $dbi,
       %args
@@ -153,16 +161,11 @@ sub _model {
 }
 
 ########################################################################
-sub __table_name {
+sub table_name {
 ########################################################################
   my ($class) = @_;
 
-  $class = ref($class) || $class;
-
-  return
-    if $class eq 'Bedrock::Model';
-
-  return $class =~ /(::)?([^:]+)$/xsm ? lc $2 : undef;
+  return create_table_name($class);
 }
 
 1;

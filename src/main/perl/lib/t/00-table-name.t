@@ -7,7 +7,7 @@ use Test::More;
 use Data::Dumper;
 use List::Util qw(pairs);
 
-use_ok('BLM::IndexedTableHandler');
+use_ok('BLM::DBHandler');
 
 my %tests = (
   'Foo'           => 'foo',
@@ -17,7 +17,7 @@ my %tests = (
 );
 
 foreach my $p ( pairs %tests ) {
-  my $table_name = BLM::IndexedTableHandler::create_table_name( $p->[0] );
+  my $table_name = BLM::DBHandler::create_table_name( $p->[0] );
   is( $table_name, $p->[1], sprintf 'table name from %s is %s', @{$p} );
 }
 
