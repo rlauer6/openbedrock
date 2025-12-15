@@ -28,12 +28,15 @@ use Bedrock::Array;
 use Bedrock::Hash;
 use Bedrock::Constants qw(:all);
 use Bedrock::Dump;
+use Bedrock::DBI::Locator;
+use BLM::DBHandler qw(easy_connect);
 use CGI;
 use Carp;
 use Crypt::CBC;
 use Crypt::Cipher::AES;
 use Cwd qw(getcwd abs_path);
 use Data::Dumper;
+use DBI;
 use Digest::MD5;
 use English qw(-no_match_vars);
 use File::Basename;
@@ -61,7 +64,7 @@ our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger parse_cookie);
 {
   no strict 'refs';  ## no critic
 
-  foreach my $sub (qw(request response redis output_vars)) {
+  foreach my $sub (qw(request response redis output_vars _shared_dbi)) {
     *{ __PACKAGE__ . "::$sub" } = sub {
       my (@args) = @_;
       return _set( @args, "_$sub" );
@@ -110,9 +113,7 @@ sub new {
     if !$config || $EVAL_ERROR;
 
   $self->config($config);
-
   $self->request($request);
-
   $self->redis( $options->{redis} );
 
   if ( $options->{output_handler} ) {
@@ -127,6 +128,44 @@ sub new {
   init_log4perl_logger();
 
   return $self;
+}
+
+########################################################################
+sub get_shared_dbi {
+########################################################################
+  my ($self) = @_;
+
+  return $self->_shared_dbi
+    if $self->_shared_dbi && $self->_shared_dbi->ping;
+
+  my ( $dsn, $user, $pass, $host ) = Bedrock::DBI::Locator->resolve( config => $self->config );
+
+  return
+    if !$dsn;
+
+  my $dbh = eval {
+    easy_connect(
+      dsn      => $dsn,
+      user     => $user,
+      password => $pass,
+      host     => $host,
+      # Web Context Safety Defaults
+      RaiseError => $TRUE,
+      AutoCommit => $TRUE,
+      PrintError => $FALSE,
+    );
+  };
+
+  if ( $EVAL_ERROR || !$dbh ) {
+    $self->logger->warn("Context shared DBI connect failed: $EVAL_ERROR");
+    return;
+  }
+
+  $dbh->{mysql_auto_reconnect} = $TRUE;
+
+  $self->_shared_dbi($dbh);
+
+  return $dbh;
 }
 
 ########################################################################
@@ -665,6 +704,42 @@ sub _set {
   return $self->{$key};
 }
 
+########################################################################
+sub cleanup {
+########################################################################
+  my ($self) = @_;
+
+  my $dbi = $self->_shared_dbi;
+
+  return $TRUE
+    if !$dbi;
+
+  eval {
+    if ( !$dbi->{AutoCommit} ) {
+      $dbi->rollback;
+    }
+
+    $dbi->disconnect;
+  };
+
+  $self->_shared_dbi(undef);
+
+  return $TRUE;
+}
+
+########################################################################
+DESTROY {
+  my ($self) = @_;
+
+  local $@ = undef;
+
+  eval { $self->cleanup(); };
+
+  return;
+}
+
+########################################################################
+
 1;
 
 __END__
@@ -694,35 +769,16 @@ output based on the context (web, cli) of the application.
 
 Constructor for context object.  Returns the created object.
 
-Mandatory arguments are as follows:
+=head2 get_shared_dbi
 
-=over 5
+Returns a shared DBI handle for the current request.
+Respects C<DBI_DSN> environment variables for CLI/Shell overrides.
 
-=item REQUEST_HANDLER
+=head2 cleanup
 
-A reference to an object that provides a standard set of methods for
-interacting with HTTP requests.
-
-=item OUTPUT_HANDLER
-
-Output handler supporting at least a `print()' method. Defaults to
-REQUEST_HANDLER if not specified.
-
-=item CONFIG
-
-Hash containing configuration information. This is usually a
-deserialized representation of F<tagx.xml> if this module is being
-used as part of the Bedrock application. It does not necessarily have
-to contain Bedrock configuraiton information. See L</NOTES> below.
-
-=item CONFIG_FILE
-
-Name of a configuration file containing a serialized representation
-(usually Bedrock XML) of configruation values. Configuration files can
-be represented as Bedrock XML (F<.xml>), JSON (F<.json>), or YAML
-(F<.yaml>) files.
-
-=back
+Crucial lifecycle method. MUST be called at the end of every request.
+It rolls back uncommitted transactions, disconnects database handles,
+and breaks circular references to prevent memory leaks.
 
 =head2 print
 
@@ -735,223 +791,6 @@ Sends the array of output to the destination.
  upload_file(form-var-name, options ... | {})
 
 Upload a file to the web server. Returns a hash containing metadata about the file.
-
-  @stats{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @file_info;
-
-  %stats = (
-    %stats,
-    ( file           => $uploaded_file,
-      $form_var      => "$name$ext",
-      'content-type' => $upload_content_type,
-      cipher         => $options->{cipher} // $EMPTY,
-    )
-  );
-
-=over 5
-
-=item dev, ino, mode, nlink, uid, gid, rdev, size, atime, mtime, ctime, blksize, blocks
-
-Stats from C<stat>
-
-=item file
-
-Path to the uploaded file
-
-=item $form_var
-
-Name of the file
-
-=item cipher
-
-The cipher used (if any) to encrypt the file.
-
-=back
-
-C<options> is a hash reference or a hash of options described below.
-
-=over 5
-
-=item path
-
-Path where the file should be stored. Looks for C<UPLOAD_PATH> in the
-configuration object. If no UPLOAD_PATH is specified, a temporary
-directory will be created and the file will be update there. The
-return value will be the fully qualified path to the file.
-
-=item 'Content-Type'
-
-Scalar containing the allowable mime-type or an array of allowable mime-types.
-
-=item filename
-
-Name of the file.
-
-=item maxsize
-
-Maximum size to accept.  Value can be expressed as in M[B] or K[B].
-
-=item passkey
-
-Encryption passkey.
-
-=item cipher
-
-Encryption cipher (defaults to DES)
-
-=back
-
-=head2 A Note About mod_perl and File Uploads
-
-Re: Uploading Files bigger the 64M
-Ryan Gies Tue, 25 Jan 2011 10:41:17 -0800
-
-1) You may lower the limit, not raise it. If you are trying to raise
-it, you will get "Conflicting information".
-
-2) Your server config trumps your virtual-host config. If you have not
-set APREQ2_ReadLimit outside of your VirtualHost, then it is set for
-you (64M).
-
-Personally, I do this:
-
-A) Set APREQ2_ReadLimit in /etc/httpd/conf.d/apreq.conf to the largest
-value I would allow for any virtual host.
-
-B) Set APREQ2_ReadLimit to the largest upload value appropriate for
-the client inside their VirtualHost container.
-
-C) Set $req->read_limit inside a PerlResponseHandler depending on the
-logical type of request:
-
-# The Apache request library only allows lowering the read limit
-# (POST_MAX). # The default is 64M (64 * 1024 * 1024) so if larger
-# uploads are desired, one # must raise the limit by setting
-# APREQ2_ReadLimit in the Apache configuration. # When using
-# VirtualHosts, the larger limit *must* be specified in server
-# configuration, and then optionally reduced in the vhost config.
-# http://marc.info/?l=apreq-dev&m=115829354028472&w=2
-
-  my $limit = $req->read_limit();
-  my $max = $rr->max_post_size; # the max post size allowed for the current request
-  if ($max > $limit) {
-    $Log->warn(sprintf('Cannot raise read_limit from %d to %d', $limit, $max));
-  }
-   else {
-    $req->read_limit($max) or die $!;
-    $limit = $req->read_limit();
-    $Log->error('Error setting read_limit') unless $limit == $max;
-  }
-
-=head1 SETTERS/GETTERS
-
-These will set or get the value associated with the name of the
-method. e.g. C<output_handler()> returns the value of the
-OUTPUT_HANDLER key.
-
-=head2 apache_handler
-
-The Apache request handler.
-
-=head2 cgi
-
- cgi()
-
-Returns a CGI object.
-
-=head2 cgi_header_in
-
- cgi_header_in()
-
-Reads the headers.
-
-=head2 cgi_header_out
-
- cgi_header_out( headers )
-
-Sends the headers to the header cache for output.
-
-=head2 config
-
-The Bedrock configuration object.
-
-=head2 getConfigValue
-
- getConfigValue( key || key-list )
-
-Method returns a config parameter value. Used to hide the config
-object from the public.
-
-=head2 getCookieValue
-
-See L</get_cookie_value>
-
-=head2 get_cookie_value
-
- get_cookie_value( cookie-name, [ cookie-name, ...] )
-
-=head2 getInputValue
-
- getInputValue( [name, ...] )
-
-Method to get input parameter(s)/value(s). Invoked either with
-
-- A list of parameter names. Returns the value of the parameters requested
-
-- No args. Returns the names of all parameters in the input
-
-=head2 getOutputValue
-
- getOutputValue( list )
-
-Returns a list of output values or a list of keys if no list is given.
-
-=head2 header
-
-The header object (typically C<BLM::Startup::Header>).
-
-=head2 input
-
-Hash of CGI values.
-
-=head2 output_handler
-
-Output handler object.
-
-=head2 output_vars
-
-Hash of output values.
-
-=head2 parse_cookie
-
- parse_cookie(cookie-value)
-
-Returns a hash of key value pairs.
-
-=head2 session
-
-Session object if available.
-
-=head2 send_http_headers
-
-Outputs the headers.
-
-=head2 setCookieValue
-
-See L<set_cookie_value>
-
-=head2 set_cookie_value
-
- set_cookie_value( cookie-name, value )
-
-Set a cookie.
-
-=head2 setOutputValue
-
- setOutputValue(key, value)
-
-=head1 SEE ALSO
-
-L<Bedrock::BedrockConfig>, L<Bedrock::Handler>
 
 =head1 AUTHOR
 

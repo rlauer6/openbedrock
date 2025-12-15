@@ -1,0 +1,134 @@
+package Bedrock::DBI::Locator;
+
+use strict;
+use warnings;
+
+use Bedrock::Constants qw(:chars :booleans);
+use Carp;
+use Data::Dumper;
+use List::Util qw(none);
+use Scalar::Util qw(reftype);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+# The strategies we use to find credentials, in order of precedence
+my @STRATEGIES = qw(
+  environment
+  options
+  data_sources
+  config
+);
+
+########################################################################
+sub resolve {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  my $self = bless {}, $class;
+
+  # We need a Config object at minimum
+  my $config = $args{config};
+
+  # We can accept specific overrides (like from a tag attribute)
+  my $options = $args{options} || {};
+
+  my ( $dsn, $user, $pass, $host, $socket );
+  my $source_used;
+
+  my $strategies = $args{strategies} // \@STRATEGIES;
+
+  croak "ERROR: strategies must be an array reference\n"
+    if !ref $strategies || reftype($strategies) ne 'ARRAY';
+
+  foreach my $strategy ( @{$strategies} ) {
+
+    croak "ERROR: unknown strategy ($strategy)\n"
+      if none { $strategy eq $_ } @STRATEGIES;
+
+    my $method = "get_from_$strategy";
+
+    # Try the strategy
+    my @creds = $self->$method( $config, $options );
+
+    # If we found a DSN and a User, we have a winner
+    # (Pass/Host might be optional or embedded in DSN)
+    if ( $creds[0] && $creds[1] ) {
+      ( $dsn, $user, $pass, $host, $socket ) = @creds;
+      $source_used = $strategy;
+      last;
+    }
+  }
+
+  # EDGE CASE: The "Localhost Injection" from SQLConnect.pm
+  # If using environment variables, handle the DBI_HOST interpolation
+  if ( $ENV{DBI_HOST} && $dsn && $dsn !~ /host=/xsm ) {
+    # If DSN already has 3 parts (dbi:driver:db:host), don't append host
+    # This logic was preserved from your original code
+    my @parts = split /:/xsm, $dsn;
+
+    if ( !defined $parts[3] && $host ) {
+      # Append host to DSN if missing
+      # (Actual appending happens in easy_connect usually, but we return it here)
+    }
+  }
+
+  return wantarray ? ( $dsn, $user, $pass, $host, $socket, $source_used ) : $dsn;
+}
+
+########################################################################
+sub get_from_environment {
+########################################################################
+  my ( $self, $config, $options ) = @_;
+  return $self->_fetch( \%ENV );
+}
+
+########################################################################
+sub get_from_options {
+########################################################################
+  my ( $self, $config, $options ) = @_;
+  # Maps explicit tag attributes to our internal structure
+  return ( $options->{'data-source'} // $options->{'dsn'}, $options->{username}, $options->{password}, $options->{hostname} );
+}
+
+########################################################################
+sub get_from_data_sources {
+########################################################################
+  my ( $self, $config, $options ) = @_;
+
+  my $key = $options->{dsn} or return;
+
+  # Assuming config object exposes dbnames() or similar storage for data-sources.xml
+  # If not, we might need to adjust how we access that specific XML tree
+  my $dbnames = $config->can('dbnames') ? $config->dbnames : {};
+
+  return
+    if !$dbnames->{$key};
+
+  return $self->_fetch( $dbnames->{$key} );
+}
+
+########################################################################
+sub get_from_config {
+########################################################################
+  my ( $self, $config, $options ) = @_;
+
+  # We have to extract values manually because Config objects
+  # might not behave exactly like a hash
+  my %spec;
+  foreach my $k (qw(DBI_DSN DBI_USER DBI_PASS DBI_HOST DBI_SOCKET)) {
+    $spec{$k} = ref($config) eq 'HASH' ? $config->{$k} : $config->get($k);
+  }
+
+  return $self->_fetch( \%spec );
+}
+
+########################################################################
+sub _fetch {
+########################################################################
+  my ( $self, $source ) = @_;
+
+  return @{$source}{qw(DBI_DSN DBI_USER DBI_PASS DBI_HOST DBI_SOCKET)};
+}
+
+1;

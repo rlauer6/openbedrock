@@ -346,7 +346,8 @@ __DATA__
   },
   "database": {
      "dsn": "dbi:mysql:foo",
-     "user": "root",
+     "user": "fred",
+     "password": "flintstone",
      "hostname": "127.0.0.1;mysql_ssl=1",
      "env": 1
    },

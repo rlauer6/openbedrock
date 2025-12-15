@@ -106,7 +106,8 @@ done_testing;
 __DATA__
 <object>
   <object name="bedrock">
-    <scalar name="username">root</scalar>
+    <scalar name="username">fred</scalar>
+    <scalar name="password">flintstone</scalar>
     <scalar name="database"></scalar>
     <scalar name="host">127.0.0.1</scalar>
     <scalar name="mysql_ssl">1</scalar>

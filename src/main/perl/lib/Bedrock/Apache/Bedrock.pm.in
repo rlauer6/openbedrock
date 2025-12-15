@@ -50,6 +50,7 @@ use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
 use JSON;
+use HTML::Entities qw(encode_entities);
 
 use List::Util qw( any uniq );
 use Scalar::Util qw(blessed reftype);
@@ -250,88 +251,85 @@ sub handler {
   # --- benchmark
   $BENCHMARKS = report_time( $r, 'environment setup complete', @{$BENCHMARKS} );
 
-  my $ctx = Bedrock::Context->new(
-    request => $r,
-    config  => $conf,
-    redis   => $REDIS,
-  );
+  my $ctx;
+  my $tx;
+  my $final_status = $OK;
 
-  # --- benchmark
-  $BENCHMARKS = report_time( $r, 'context object created', @{$BENCHMARKS} );
+  eval {
+    $ctx = Bedrock::Context->new(
+      request => $r,
+      config  => $conf,
+      redis   => $REDIS,
+    );
 
-  # this needs to be done before load_startup_modules()
-  $conf->init_plugin_path();
+    # --- benchmark
+    $BENCHMARKS = report_time( $r, 'context object created', @{$BENCHMARKS} );
 
-  # load module config
-  my $modules = $conf->get_module_config();
+    # this needs to be done before load_startup_modules()
+    $conf->init_plugin_path();
 
-  if ( !$modules ) {
-    display_init_error( $r, 'error in config file: MODULES is not defined.' );
+    # load module config
+    my $modules = $conf->get_module_config();
 
-    return $OK;
+    if ( !$modules ) {
+      die 'error in config file: MODULES is not defined.';
+    }
+
+    $tx = init_tagx(
+      file            => $file,
+      config          => $conf,
+      request_handler => $r,
+      context         => $ctx
+    );
+
+    # --- benchmark
+    $BENCHMARKS = report_time( $r, 'TagX object creation complete', @{$BENCHMARKS} );
+
+    # load startup modules
+    my $pre_bound = load_startup_modules( $modules, $ctx, $tx );
+
+    if ( !$pre_bound->{HEADER} ) {
+      die 'error in config file: No header module';
+    }
+
+    # --- benchmark
+    $BENCHMARKS = report_time( $r, 'module binding complete', @{$BENCHMARKS} );
+
+    # this is where Bedrock starts parsing the template
+    $tx->output;
+
+    # --- benchmark
+    $BENCHMARKS = report_time( $r, 'Bedrock tag processing complete', @{$BENCHMARKS} );
+  } or do {
+    my $err = $EVAL_ERROR;
+    $r->log->error( sprintf 'file:[%s] mime-type:[%s] error: [%s]', $bedrock_handler->{file}, $r->content_type, $err );
+
+    # Distinguish between Startup Panic vs Runtime Error
+    if ( $err =~ /MODULES is not defined|No header module|binding' not defined|invalid type/ ) {
+      display_init_error( $r, $err );
+    }
+    else {
+      display_error( $r, $err, $tx );
+    }
+
+    # We return OK so Apache serves the error page content we just generated
+    $final_status = $OK;
+  };
+
+  if ($tx) {
+    $tx->close;
   }
 
-  my $tx = init_tagx(
-    file            => $file,
-    config          => $conf,
-    request_handler => $r,
-    context         => $ctx
-  );
-
-  # --- benchmark
-  $BENCHMARKS = report_time( $r, 'TagX object creation complete', @{$BENCHMARKS} );
-
-  # load startup modules
-  my $pre_bound = eval { return load_startup_modules( $modules, $ctx, $tx ) };
-
-  if ( !$pre_bound || $EVAL_ERROR ) {
-    display_init_error( $r, $EVAL_ERROR );
-
-    $tx->close();
-
-    return $OK;
+  if ( $ctx && $ctx->can('cleanup') ) {
+    $ctx->cleanup;
   }
-
-  # Croak if no header module
-  if ( !$pre_bound->{HEADER} ) {
-    display_init_error( $r, sprintf 'error in config file: No header module' );
-
-    $tx->close();
-
-    return $OK;
-  }
-
-  # --- benchmark
-  $BENCHMARKS = report_time( $r, 'module binding complete', @{$BENCHMARKS} );
-
-  # this is where Bedrock starts parsing the template
-  eval { $tx->output };
-
-  my $err = $EVAL_ERROR;
-
-  # --- benchmark
-  $BENCHMARKS = report_time( $r, 'Bedrock tag processing complete', @{$BENCHMARKS} );
 
   # --- benchmark
   $BENCHMARKS = report_time( $r, 'request complete', $BENCHMARKS->[0] );
 
   $bedrock_handler->restore_dir;
 
-  if ($err) {
-    $r->log->error( sprintf 'file:[%s] mime-type:[%s] error: [%s]', $bedrock_handler->{file}, $r->content_type, $err );
-
-    display_error( $r, $err, $tx );
-
-    $tx->close;
-
-    return $OK;
-  }
-
-  # unfortunately since Bedrock error handling is finished now, if
-  # errors occur now you will only see them in the error log
-  $tx->close;
-
-  return $OK
+  return $final_status
     if is_bedrock_shell($r) || !is_mod_perl();
 
   # Apache 2 hack for redirection...let's not send unnecessary content
@@ -353,7 +351,7 @@ sub handler {
     $r->status($1);
   }
 
-  return $OK;
+  return $final_status;
 }
 
 ########################################################################
@@ -536,6 +534,8 @@ sub display_html_init_error {
 ########################################################################
   my ( $r, $message ) = @_;
 
+  my $safe_message = encode_entities($message);
+
   $r->content_type('text/html');
   $r->send_http_header;
 
@@ -547,7 +547,7 @@ sub display_html_init_error {
   <body>
     <div style="color:red;">An error was encountered while trying to initialize Bedrock</div>
     <pre>
-      <p>$message</p>
+      <p>$safe_message</p>
     </pre>
   </body>
 </html>

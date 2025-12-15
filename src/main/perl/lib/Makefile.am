@@ -50,7 +50,8 @@ perl5blmstartupsessionlibdir             = $(perl5libdir)/BLM/Startup/Session
 perl5bedrockloglib_DATA =
 
 perl5bedrockdbilib_DATA = \
-   Bedrock/DBI/Utils.pm
+   Bedrock/DBI/Utils.pm \
+   Bedrock/DBI/Locator.pm
 
 perl5lib_DATA = \
     Bedrock.pm \

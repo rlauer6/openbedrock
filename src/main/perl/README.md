@@ -11,7 +11,7 @@ refactored or bugs are found.
 
 The intent of these particular tests is to exercise tag features and
 behavior. _A successful run of these tests does not necessarily mean
-Bedrock is working in as web framework. More tests that exercise
+Bedrock is working as web framework. More tests that exercise
 Bedrock in that context are required._
 
 Additional tests of specific Bedrock Perl modules can be found in the
@@ -29,7 +29,7 @@ $ cd src/main/perl
 $ make test
 ```
 
-This is invoke a test harness that exercises a subset of the Bedrock
+This will invoke a test harness that exercises a subset of the Bedrock
 tags. There are some additional tests that can be run if you have a
 MySQL database available.
 
@@ -43,45 +43,56 @@ See [Adding New Tests](#adding-a-new-test) for more details.
 > Note that in order to run ALL tests you need to have a MySQL
 > database running. See [SQL Tests](#sql-tests) for more details.
 
-# Docker Compose
+# Bedrock's Docker Container
 
-A Docker image can be built that will not only help with testing
-Bedrock by providing a MySQL database but serves as a documentation
-server.
+Fromt the `docker` directory in this project you can build a Bedrock
+image that can be used for exploring Bedrock documentation, developing
+applications using Bedrock or testing Bedrock.
 
 A `docker-compose` file (`docker-compose-local.yml`) is located in the
-project's `docker` directory. It will launch a:
+project's `docker` directory. It can launch a stack composed of:
 
-* ...Redis server
-* ...MySQL server (5.7)
-* ...Apache server running Bedrock
+* ...a Redis server
+* ...a MySQL server (8.4)
+* ...an Apache server running Bedrock
 * ...LocalStack
 
 ## Bringing Up the LAMB Stack
 
-To bring up the Bedrock stack use the command below
+To bring up the Bedrock stack use the command below.
 
 ```
 BEDROCK=~/git/openbedrock docker-compose up
 ```
 or `bedrock-up`
 
-...then in another shell
+By default this will bring up just the Apache server and MySQL. To add
+Redis or LocalStack:
 
 ```
-export DBI_HOST=$(docker inspect docker_web_1 | \
-  jq -r '.[]|.NetworkSettings.Networks.docker_default.IPAddress')
+bedrock-up redis localstack
+```
+
+In order to use this container for testing, set the environment
+variables shown below.
+
+```
+export DBI_HOST=127.0.0.1
 export DBI_DSN=dbi:mysql:bedrock
 export DBI_USER=root
 export DBI_PASS=bedrock
 ```
 
-If the `bedrock` database does not exist you can create it as shown
-below:
-
+Create a data source file (`t/data-sources.xml`)
 ```
-cat ../bedrock/config/create-session.sql | \
-  mysql -u root --password=bedrock -h $DBI_HOST
+<object>
+  <object name="bedrock">
+   <scalar name="DBI_DSN">dbi:mysql:bedrock:127.0.0.1</scalar>
+   <scalar name="DBI_USER">fred</scalar>
+   <scalar name="DBI_PASS">flintstone</scalar>
+   <scalar name="DBI_SOCKET">/tmp/mysqld/mysqld.sock</scalar>
+  </object>
+</object>
 ```
 
 ...then to run the tests
@@ -91,32 +102,29 @@ cd src/main/perl
 DBI_SOCKET=/tmp/mysqld/mysqld.sock TEST=all make test
 ```
 
-# MySQL Docker Images
+# MySQL Container
 
-You can launch versions of MySQL using just the Docker image. Use the
-`mysql-up` script in the `docker` directory to launch a Docker image
-of a version of MySQL. 
+You can launch MySQL using just the Docker image. Use the
+`start-mysql.sh` script in this directory to launch a MySQL 8 server
+environment suitable for testing.
 
-To start a 5.7 MySQL server:
+The `setup-mysql.sql` script in this directory will be executed when
+you start the container. It will:
+
+* set the root user's password to `flintstone`
+* create a user name `fred` with a password of `flintstone`
+* grant `fred` all privileges on all databases from anywhere
+* create a database named `bedrock`
+* create a session table named `session`
+
+Then to run tests using this container...
 
 ```
-mysql-up 5.7
+DBI_USER=fred \
+DBI_PASS=flintstone \
+DBI_HOST='127.0.0.1;mysql_ssl=1' \
+DBI_SOCKET=$(pwd)/mysqld/mysqld.sock CONFIG_PATH=config make test TEST=sql
 ```
-
-To start the latest version of a MySQL server:
-
-```
-mysql-up
-```
-
-The included `create-session.sql` script for creating a session table
-for use with `BLM::Startup::Session` will create a `bedrock`
-database. When you use the `mysql-up` script a new `bedrock` database
-will be created for you that is compatible with both versions 5.7 and
-version 8 of MySQL.
-
-Use the `mysql-down` script to cleanly stop the Docker versions of
-MySQL.
 
 # Where are the Tests?
 
@@ -434,7 +442,8 @@ your `bedrock` database if it exists!
 1. Grant user `fred` privileges. Test will be run with user=`fred`,
 password=`flintstone`.
    ```
-   grant all on *.* to 'fred'@'%' identified by 'flintstone'
+   create user 'fred'@'localhost' identified by 'flintstone'
+   grant all on *.* to 'fred'@'localhost';
    ```
 1. Run the tests.
    ```

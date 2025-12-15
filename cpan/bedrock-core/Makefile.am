@@ -48,6 +48,7 @@ PACKAGE_MODULES = \
     Bedrock/BufferStream.pm \
     Bedrock/Constants.pm \
     Bedrock/DBI/Utils.pm \
+    Bedrock/DBI/Locator.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
     Bedrock/Handle.pm \
