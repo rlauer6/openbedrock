@@ -21,6 +21,7 @@ perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
+perl5bedrockrequestlibdir      		  = $(perl5libdir)/Bedrock/Request
 
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
@@ -53,6 +54,9 @@ perl5bedrockdbilib_DATA = \
    Bedrock/DBI/Utils.pm \
    Bedrock/DBI/Locator.pm
 
+perl5bedrockrequestlib_DATA = \
+   Bedrock/Request/Upload.pm
+
 perl5lib_DATA = \
     Bedrock.pm \
     bedrock_handler_common.pm
@@ -81,6 +85,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Plugin.pm \
     Bedrock/PodWriter.pm \
     Bedrock/RegExp.pm \
+    Bedrock/Request.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
     Bedrock/Test.pm \
@@ -132,6 +137,10 @@ perl5bedrockapacherequestlib_DATA = \
 BEDROCK_APACHE_REQUEST = \
     Bedrock/Apache/Request/CGI.pm.in \
     Bedrock/Apache/Request/Shell.pm.in
+
+BEDROCK_REQUEST = \
+    Bedrock/Request.pm \
+    Bedrock/Request/Upload.pm
 
 perl5bedrockhtmllib_DATA = \
     Bedrock/HTML/Helper.pm
@@ -355,6 +364,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_POD) \
     $(BEDROCK_REDIS) \
+    $(BEDROCK_REQUEST) \
     $(BEDROCK_ROLE) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEST) \

@@ -23,45 +23,8 @@ package Bedrock::Context;
 use strict;
 use warnings;
 
-use Bedrock qw(:booleans :file);
-use Bedrock::Array;
-use Bedrock::Hash;
-use Bedrock::Constants qw(:all);
-use Bedrock::Dump;
-use Bedrock::DBI::Locator;
-use BLM::DBHandler qw(easy_connect);
-use CGI;
-use Carp;
-use Crypt::CBC;
-use Crypt::Cipher::AES;
-use Cwd qw(getcwd abs_path);
-use Data::Dumper;
-use DBI;
-use Digest::MD5;
-use English qw(-no_match_vars);
-use File::Basename;
-use File::Temp qw(tempdir);
-use IO::File;
-use List::Util qw( none pairs uniq );
-use Scalar::Util qw( reftype );
-use Text::URLEncode;
-use Log::Log4perl::Level;
+BEGIN {
 
-use Role::Tiny::With;
-with 'Bedrock::Logger';
-
-use Readonly;
-
-Readonly my $UPLOAD_BUFFER_SIZE => 4 * 1024;
-Readonly my $UPLOAD_FILE_PERMS  => oct 777;
-
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
-
-use parent qw(Exporter);
-
-our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger parse_cookie);
-
-{
   no strict 'refs';  ## no critic
 
   foreach my $sub (qw(request response redis output_vars _shared_dbi)) {
@@ -78,6 +41,41 @@ our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger parse_cookie);
     };
   }
 }
+
+use BLM::DBHandler qw(easy_connect);
+use Bedrock qw(:booleans :file);
+use Bedrock::Array;
+use Bedrock::Constants qw(:all);
+use Bedrock::DBI::Locator;
+use Bedrock::Dump;
+use Bedrock::Hash;
+use Bedrock::Request;
+use Carp;
+use Crypt::Cipher::AES;
+use Cwd qw(getcwd abs_path);
+use DBI;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use IO::File;
+use List::Util qw( none pairs uniq );
+use Log::Log4perl::Level;
+use Scalar::Util qw( reftype );
+use Text::URLEncode;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+with 'Bedrock::Request::Upload';
+
+use Readonly;
+
+Readonly my $UPLOAD_BUFFER_SIZE => 4 * 1024;
+Readonly my $UPLOAD_FILE_PERMS  => oct 777;
+
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+
+use parent qw(Exporter);
+
+our @EXPORT_OK = qw( find_log4perl_conf init_log4perl_logger parse_cookie);
 
 ########################################################################
 sub new {
@@ -129,6 +127,26 @@ sub new {
 
   return $self;
 }
+
+########################################################################
+sub request_adapter {
+########################################################################
+  my ($self) = @_;
+
+  # If we already have an adapter, return it
+  return $self->{_request_adapter} if $self->{_request_adapter};
+
+  # Instantiate Bedrock::Request.
+  # We pass the apache_handler ($r) if it exists.
+  # The Adapter uses this to decide if it should use Apache2::Request or CGI::Tiny.
+  $self->{_request_adapter} = Bedrock::Request->new( $self->apache_handler );
+
+  return $self->{_request_adapter};
+}
+
+# Backward compatibility: 'cgi' now returns the Adapter.
+# The Adapter implements 'param', so most legacy code will still work.
+sub cgi { goto &request_adapter; }
 
 ########################################################################
 sub get_shared_dbi {
@@ -273,177 +291,6 @@ sub init_log4perl_logger {
   return $initialized;
 }
 
-# rewrite this to use hooks or mod_perl, if rewritten for mod_perl we
-# need keep this in mind:
-
-#
-########################################################################
-sub upload_file {
-########################################################################
-  my ( $self, $form_var, @args ) = @_;
-
-  my $fh = $self->cgi->param($form_var);
-
-  my $md5_digest = Digest::MD5->new->addfile($fh)->hexdigest;
-  $fh->seek( 0, 0 );
-
-  my $platform = $self->cgi->param('platform');
-
-  die 'upload_file upload error: ', $self->cgi->cgi_error()
-    if !$fh;
-
-  my $options = is_hash( $args[0] ) ? $args[0] : {@args};
-
-  $options->{path} //= $self->config->{UPLOAD_PATH} // tempdir( CLEANUP => 1 );
-
-  $self->debug( 'upload_file options: ' . Bedrock::Dump::compact($options) );
-
-  my $upload_content_type = $self->cgi->uploadInfo($fh)->{'Content-Type'};
-
-  $options->{'content-type'} //= $options->{'Content-type'};
-
-  # check to see if this is a valid mime-type to be uploaded
-  if ( $options->{'content-type'} ) {
-
-    my $content_type = $options->{'content-type'};
-
-    my @content_types;
-
-    push @content_types, is_array($content_type) ? @{$content_type} : $content_type;
-
-    $self->debug(
-      sub {
-        return sprintf 'upload_file acceptable content-types: %s', join $COMMA, @content_types;
-      }
-    );
-
-    if ( none { $_ eq $upload_content_type } @content_types ) {
-      my $err = sprintf 'upload_file content_type error: uploading (%s), must be one of (%s)',
-        $upload_content_type,
-        join $COMMA, @content_types;
-      die $err;
-    }
-  }
-
-  # if the file came from a WinDoze machine...set the parsing appropriately
-  if ( $platform && $platform =~ /win/xsmi
-    || $self->cgi->param($form_var) =~ /^[[:lower:]]:.*$/ixsm ) {
-
-    fileparse_set_fstype('MSWin32');
-  }
-
-  my ( $name, $path, $ext )
-    = fileparse( scalar $self->cgi->param($form_var), qr/[.][^.]*/xsm );
-
-  my $upload_path = $options->{path};
-
-  if ( !-d $upload_path ) {
-    die "unable to create path: $upload_path\n"
-      if !mkdir $upload_path, $UPLOAD_FILE_PERMS;
-  }
-
-  if ( !-w $upload_path ) {
-    die "unable to write to path: $upload_path\n";
-  }
-
-  my $upload_filename = $options->{filename} || ( $name . $ext );
-
-  my $uploaded_file = sprintf '%s/%s', $upload_path, $upload_filename;
-
-  $self->info( sprintf "upload_file processing: file => [%s], content-type => [%s]\n", $uploaded_file, $upload_content_type );
-
-  my $maxsize = $options->{maxsize};
-
-  # allow 1k, 1m, etc.
-  if ($maxsize) {
-    if ( $maxsize =~ /^(\d+)k/xsmi ) {
-      $maxsize = $1 * 1024;
-    }
-
-    if ( $maxsize =~ /^(\d+)m/xsmi ) {
-      $maxsize = $1 * 1024 * 1024;
-    }
-  }
-
-  my $cipher;
-
-  if ( $options->{passkey} ) {
-    $options->{cipher} = $options->{cipher} || 'Cipher::DES';
-
-    $cipher = Crypt::CBC->new(
-      -cipher      => $options->{cipher},
-      -key         => $options->{passkey},
-      -nodeprecate => 1,
-    );
-
-    $cipher->start('encrypting');
-    $uploaded_file .= '.enc';
-  }
-
-  open my $tmp_fh, '>', $uploaded_file
-    or die sprintf 'could not open %s for writing', $uploaded_file;
-
-  my $size;
-
-  while ( my $bytesread = read $fh, my $buffer, $UPLOAD_BUFFER_SIZE ) {
-    $size += $bytesread;
-
-    die "File size limit reached.\n"
-      if $maxsize && $size >= $maxsize;
-
-    $self->debug( sprintf 'upload_file bytes read: %d', $bytesread );
-
-    if ($cipher) {
-      print {$tmp_fh} $cipher->crypt($buffer);
-    }
-    else {
-      print {$tmp_fh} $buffer;
-    }
-  }
-
-  if ($cipher) {
-    print {$tmp_fh} $cipher->finish;
-  }
-
-  close $tmp_fh;
-
-  return if !-s $uploaded_file;
-
-  my %stats;
-
-  my @file_info = stat $uploaded_file;
-
-  @stats{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @file_info;
-
-  %stats = (
-    %stats,
-    md5_digest     => $md5_digest,
-    file           => $uploaded_file,
-    $form_var      => "$name$ext",
-    'content-type' => $upload_content_type,
-    cipher         => $options->{cipher} // $EMPTY,
-
-  );
-
-  return Bedrock::Hash->new(%stats);
-}
-
-########################################################################
-sub cgi {
-########################################################################
-  my ( $self, @args ) = @_;
-
-  if (@args) {
-    $self->{cgi} = $args[0];
-  }
-
-  if ( !$self->{cgi} ) {
-    $self->{cgi} = CGI->new;
-  }
-
-  return $self->{cgi};
-}
-
 ########################################################################
 # Usage      : getInputValue(names)
 #            : getInputValue()
@@ -451,27 +298,21 @@ sub cgi {
 # Parameters : names : list of input variable names
 # Returns    : list of values or the list of variable names
 # Errors     : none
+
 ########################################################################
 sub getInputValue {  ## no critic (Capitalization)
 ########################################################################
   my ( $self, @args ) = @_;
 
   if ( !defined $self->input ) {
-
-    # Collect the input
-
-    # - a mod_perl 1.x -> 2.x gotcha... $r->args, $r->content in array
-    # context no longer supported, does not return parsed results.
-    # Replaced with Apache::Request::CGI args/contents although I have a
-    # feeling there is a more better faster way to do this...
-    # my @args = ($self->args, $self->content);
-
-    my @args = $self->cgi->param;
+    my $req    = $self->request_adapter;
+    my @params = $req->param;            # Adapter handles list context
 
     my $input = {};
 
-    foreach my $name (@args) {
-      my @values = $self->cgi->multi_param($name);
+    foreach my $name (@params) {
+      # Adapter guarantees multi_param works for both CGI::Tiny and mod_perl
+      my @values = $req->multi_param($name);
 
       if ( @values > 1 ) {
         $input->{$name} = Bedrock::Array->new(@values);
@@ -485,21 +326,17 @@ sub getInputValue {  ## no critic (Capitalization)
   }
 
   if ( @args > 0 ) {
-    # Have some parameters -- need the values
     return @{ $self->input }{@args};
   }
   else {
-    # No parameters -- need the names of all parameters
     return keys %{ $self->input };
   }
 }
 
-#
 # Close method is used when CGI wants to close browser connection and go off
 # to do something else and not keep the user waiting
-#
 ########################################################################
-sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+sub close {  ## no critic
 ########################################################################
   my ($self) = @_;
 
@@ -507,7 +344,7 @@ sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 }
 
 ########################################################################
-sub print {  ## no critic (ProhibitBuiltinHomonyms)
+sub print {  ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -553,7 +390,7 @@ sub send_http_header {
 }
 
 ########################################################################
-sub getOutputValue {  ## no critic (Capitalization)
+sub getOutputValue {  ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -595,7 +432,7 @@ sub setOutputValue {  ## no critic (Capitalization)
 }
 
 ########################################################################
-sub getConfigValue {  ## no critic (Capitalization)
+sub getConfigValue {  ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -731,7 +568,7 @@ sub cleanup {
 DESTROY {
   my ($self) = @_;
 
-  local $@ = undef;
+  local $EVAL_ERROR = undef;
 
   eval { $self->cleanup(); };
 

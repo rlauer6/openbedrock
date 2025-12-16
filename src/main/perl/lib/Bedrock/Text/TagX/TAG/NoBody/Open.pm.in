@@ -29,6 +29,7 @@ use English qw{-no_match_vars};
 use IO::File;
 use Symbol;
 use Text::CSV_XS;
+use Scalar::Util qw(reftype);
 
 use parent qw(Exporter TagX::TAG::NoBody);
 
@@ -65,8 +66,7 @@ sub finalize {
     $name = $tag_opts->{name};
   }
 
-  die
-    "Specify the file to open using `--file' option or as argument, not both.\n"
+  die "Specify the file to open using `--file' option or as argument, not both.\n"
     if exists $options{'file'} && @argv;
 
   my $file;
@@ -81,8 +81,118 @@ sub finalize {
   die "File not specified.\n"
     if !length $file;
 
-  die
-    "No file handle specified. Use --define-var to assign a file handle name.\n"
+  die "No file handle specified. Use --define-var to assign a file handle name.\n"
+    if !length $name;
+
+  my $mode = $options{'mode'} || 'r';
+
+  # --- SECURITY / CONFIGURATION CHECK ---
+
+  # 1. Check for Write/Append attempts
+  if ( $mode =~ /[>wa\+]/xsm ) {
+    my $config = $tx->config;
+
+    # Support both scalar config or hashref lookup
+    my $allow_write = reftype($config) eq 'HASH' ? $config->{ALLOW_FILE_WRITE} : undef;
+
+    # For CLI scripts, this can be passed via Env or Config
+    $allow_write //= $ENV{BEDROCK_ALLOW_FILE_WRITE};
+
+    if ( !$allow_write || $allow_write !~ /^(?:yes|true|1|on)$/ixsm ) {
+      die "Security Violation: Write mode '$mode' is disabled. "
+        . "Set <scalar name='ALLOW_FILE_WRITE'>yes</scalar> in configuration to enable.\n";
+    }
+  }
+
+  # 2. Pipe Protection (Paranoia check)
+  # Even though IO::File->new($file, $mode) uses safe 3-arg open semantics,
+  # explicitly creating pipes via the filename (e.g. "cmd |") is often a mistake
+  # or exploit attempt in a web context.
+  if ( $file =~ /^\s*\||\|\s*$/xsm ) {
+    my $config      = $tx->config;
+    my $allow_pipes = ref($config) eq 'HASH' ? $config->{ALLOW_FILE_PIPES} : undef;
+
+    if ( !$allow_pipes || $allow_pipes !~ /^(?:yes|true|1|on)$/ixsm ) {
+      die "Security Violation: Pipe open is disabled by default. " . "Set ALLOW_FILE_PIPES to enable.\n";
+    }
+  }
+
+  # --------------------------------------
+
+  # slurp file?
+  if ( $options{slurp} ) {
+    $tx->{'VARS'}->{$name} = slurp_file $file;
+    return;
+  }
+
+  if ( exists $options{'filter'} ) {
+    die "--filter requires a filter name\n"
+      if !$options{filter};
+
+    my $filter = sprintf 'BLM/Filter/%s.pm', $options{filter};
+    my $class  = sprintf 'BLM::Filter::%s',  $options{filter};
+
+    eval { require $filter; };
+
+    die sprintf "unknown or malformed filter: %s\n", $options{filter}
+      if $EVAL_ERROR;
+
+    my $fh = gensym;
+
+    tie *{$fh}, $class, $file, $mode, @argv;  ## no critic (ProhibitTies)
+
+    bless $fh, $class;
+
+    $tx->{'VARS'}->{$name} = $fh;
+
+    return;
+  }
+
+  my $fh = eval { return IO::File->new( $file, $mode ); };
+
+  die sprintf "Could not open file %s with mode = %s\n$OS_ERROR"
+    if !$fh || $EVAL_ERROR;
+
+  $tx->{'VARS'}->{$name} = $fh;
+
+  return;
+}
+
+########################################################################
+sub xfinalize {
+########################################################################
+  my ( $self, $tx, @context ) = @_;
+
+  my %options = $self->define_options;
+
+  my @argv = $self->parse_options( \%options, @context );
+
+  $self->dump_options( \%options, @argv );
+
+  my $name     = $options{'define-var'} || $UNDERSCORE;
+  my $tag_opts = $self->parse_tag_name( $argv[0] );
+
+  if ( $tag_opts->{name} ) {
+    shift @argv;
+    $name = $tag_opts->{name};
+  }
+
+  die "Specify the file to open using `--file' option or as argument, not both.\n"
+    if exists $options{'file'} && @argv;
+
+  my $file;
+
+  if ( exists $options{file} && $options{file} ) {
+    $file = $options{'file'};
+  }
+  else {
+    $file = shift @argv;
+  }
+
+  die "File not specified.\n"
+    if !length $file;
+
+  die "No file handle specified. Use --define-var to assign a file handle name.\n"
     if !length $name;
 
   my $mode = $options{'mode'} || 'r';

@@ -1,0 +1,163 @@
+package Bedrock::Request::Driver::CGITiny;
+
+use strict;
+use warnings;
+
+########################################################################
+sub new {
+########################################################################
+  my $class = shift;
+
+  require CGI::Tiny;
+
+  # CGI::Tiny is designed as a framework (cgi {}) and lacks a public constructor.
+  # To use it as a library inside Bedrock, we manually instantiate it.
+  # CGI::Tiny 1.x methods are instance methods that lazy-load data.
+  my $cgi_tiny_instance = bless {}, 'CGI::Tiny';
+
+  return bless { cgi => $cgi_tiny_instance }, $class;
+}
+
+########################################################################
+sub param {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $self->{cgi}->param_names() if !defined $key;
+  return $self->{cgi}->param($key);
+}
+
+########################################################################
+sub multi_param {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  my $vals = $self->{cgi}->param_array($key);
+
+  return $vals ? @{$vals} : ();
+}
+
+########################################################################
+sub upload {
+########################################################################
+  my ( $self, $key ) = @_;
+  return $self->{cgi}->upload($key);
+}
+
+########################################################################
+package Bedrock::Request;
+########################################################################
+
+use strict;
+use warnings;
+
+use Scalar::Util qw(blessed);
+use Carp qw(croak);
+use Data::Dumper;
+use English qw(-no_match_vars);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $r ) = @_;
+  my $self = {};
+
+  if ( $r && blessed($r) && $r->isa('Apache2::RequestRec') ) {
+    eval {
+      require Apache2::Request;
+      require Apache2::Upload;
+      1;
+    } or croak "mod_perl detected but libapreq2 missing: $EVAL_ERROR";
+
+    $self->{driver} = Apache2::Request->new($r);
+    $self->{type}   = 'mod_perl';
+  }
+  elsif ( eval { require CGI::Tiny; 1; } ) {
+    $self->{driver} = Bedrock::Request::Driver::CGITiny->new();
+    $self->{type}   = 'cgi_tiny';
+  }
+  else {
+    require CGI;
+    $self->{driver} = CGI->new;
+    $self->{type}   = 'cgi_legacy';
+  }
+
+  return bless $self, $class;
+}
+
+# ----------------------------------------------------------------------
+# PUBLIC API
+# ----------------------------------------------------------------------
+
+########################################################################
+sub param {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $self->{driver}->param($key)
+    if defined $key;
+
+  return $self->{driver}->param();
+}
+
+########################################################################
+sub multi_param {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $self->{driver}->multi_param($key);
+}
+
+########################################################################
+sub upload {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return
+    if !defined $key;
+
+  # Fetch the upload object/handle from the driver
+  my $u = $self->{driver}->upload($key);
+
+  return
+    if !$u;
+
+  if ( $self->{type} eq 'cgi_tiny' ) {
+    # CGI::Tiny
+
+    return {
+      fh       => $u->{file},          # Key matches Upload.pm
+      filename => $u->{filename},      # Key matches Upload.pm
+      type     => $u->{content_type},  # Key matches Upload.pm
+      size     => $u->{size}
+    };
+  }
+  elsif ( $self->{type} eq 'mod_perl' ) {
+    # Apache2::Upload
+    return {
+      fh       => $u->fh,              # Key matches Upload.pm
+      filename => $u->filename,        # Key matches Upload.pm
+      type     => $u->type,            # Key matches Upload.pm
+      size     => $u->size,
+    };
+  }
+  else {
+    # Legacy CGI.pm
+
+    # FIX: Scalar context prevents "list context" warning and hash shifting
+    my $filename = scalar $self->{driver}->param($key);
+
+    # FIX: uploadInfo returns a HashRef, not a List
+    my $info_ref = $self->{driver}->uploadInfo($u);
+    my $ctype    = $info_ref ? $info_ref->{'Content-Type'} : undef;
+
+    return {
+      fh       => $u,         # Key matches Upload.pm
+      filename => $filename,  # Key matches Upload.pm
+      type     => $ctype,     # Key matches Upload.pm
+      size     => -s $u,
+    };
+  }
+}
+
+1;

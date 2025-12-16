@@ -35,6 +35,8 @@ ALL_TESTS = \
 SHELL_MODULES = \
     Bedrock/Apache/Request/Shell.pm \
     Bedrock/Context.pm \
+    Bedrock/Request.pm \
+    Bedorck/Request/Upload.pm \
     Bedrock/Handler.pm \
     Bedrock/Apache/Bedrock.pm \
     Bedrock/Apache/Constants.pm \
@@ -71,6 +73,8 @@ PACKAGE_MODULES = \
     Bedrock/Pager.pm \
     Bedrock/Plugin.pm \
     Bedrock/RegExp.pm \
+    Bedrock/Request.pm \
+    Bedrock/Request/Upload.pm \
     Bedrock/Role/Config.pm \
     Bedrock/Serializer.pm \
     Bedrock/Serializer/BedrockXML.pm \

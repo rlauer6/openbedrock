@@ -30,63 +30,92 @@ use Carp;
 use Cwd;
 use English qw(-no_match_vars);
 use File::Basename;
+use HTML::Entities;
 use IO::Scalar;
 use List::Util qw(pairs);
+use Module::Load;
 use Scalar::Util qw(reftype blessed);
+
+use TagX::Error;
+use TagX::Output;
+use TagX::Symtab;
+use TagX::TAG::WithBody::Cache;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use TagX::Error;
-use TagX::Expr;
-use TagX::Func;
-use TagX::Output;
-use TagX::Parser;
-use TagX::Scalar;
-use TagX::Symtab;
-use TagX::TAG;
-use TagX::TAG::NoBody;
-use TagX::TAG::NoBody::Array;
-use TagX::TAG::NoBody::Exec;
-use TagX::TAG::NoBody::Flush;
-use TagX::TAG::NoBody::Comment;
-use TagX::TAG::NoBody::Pebble;
-use TagX::TAG::NoBody::Include;
-use TagX::TAG::NoBody::Hash;
-use TagX::TAG::NoBody::NULL;
-use TagX::TAG::NoBody::Raise;
-use TagX::TAG::NoBody::SQL;
-use TagX::TAG::NoBody::SQLCommit;
-use TagX::TAG::NoBody::SQLRollback;
-use TagX::TAG::NoBody::SQLConnect;
-use TagX::TAG::NoBody::SQLTable;
-use TagX::TAG::NoBody::Open;
-use TagX::TAG::NoBody::Plugin;
-use TagX::TAG::NoBody::RecordSet;
-use TagX::TAG::NoBody::Case;
-use TagX::TAG::NoBody::Trace;
-use TagX::TAG::NoBody::Var;
-use TagX::TAG::WithBody;
-use TagX::TAG::WithBody::Cache;
-use TagX::TAG::WithBody::Catch;
-use TagX::TAG::WithBody::If;
-use TagX::TAG::NoBody::Iif;
-use TagX::TAG::WithBody::Unless;
-use TagX::TAG::WithBody::If::Else;
-use TagX::TAG::WithBody::Loop;
-use TagX::TAG::WithBody::Loop::Foreach;
-use TagX::TAG::WithBody::Loop::SQLSelect;
-use TagX::TAG::WithBody::Loop::While;
-use TagX::TAG::WithBody::NoExec;
-use TagX::TAG::WithBody::PebbleDef;
-use TagX::TAG::WithBody::Sink;
-use TagX::TAG::WithBody::Snippet;
-use TagX::TAG::WithBody::Try;
-use TagX::Term;
-use TagX::Term::String;
-use TagX::Term::Var;
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic
 
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
+our %TAGS_ENABLED = (
+  q{#} => 'TagX::TAG::NoBody::Comment',
+  q{?} => 'TagX::TAG::NoBody::NULL',
+  else => [
+    'TagX::TAG::WithBody::If::Else',
+    sub {
+      my ( $class, $obj, $raw ) = @_;
+
+      die "Tag is not valid here.\n"
+        if ref($obj) !~ /::If|Unless/xsm;
+
+      return ( $obj->else_obj( $class->new ), $raw // 0 );
+    }
+  ],
+  elsif  => sub { return 'else' },
+  elseif => sub { return 'else' },
+  array  => 'TagX::TAG::NoBody::Array',
+  case   => 'TagX::TAG::NoBody::Case',
+  catch  => [
+    'TagX::TAG::WithBody::Catch',
+    sub {
+      my ( $class, $obj, $raw ) = @_;
+
+      die "Tag is not valid here.\n"
+        if ref($obj) !~ /TagX::TAG::WithBody::Try|Catch/xsm;
+
+      return ( $obj->catch( $class->new ), $raw // 0 );
+    }
+  ],
+  exec        => sub { return 'pebble' },
+  flush       => 'TagX::TAG::NoBody::Flush',
+  foreach     => 'TagX::TAG::WithBody::Loop::Foreach',
+  hash        => 'TagX::TAG::NoBody::Hash',
+  if          => 'TagX::TAG::WithBody::If',
+  iif         => 'TagX::TAG::NoBody::Iif',
+  include     => 'TagX::TAG::NoBody::Include',
+  noexec      => [ 'TagX::TAG::WithBody::NoExec', sub { return spawn( $_[0], $_[1], 1 ); } ],
+  null        => 'TagX::TAG::NoBody::NULL',
+  open        => 'TagX::TAG::NoBody::Open',
+  pebble      => 'TagX::TAG::NoBody::Pebble',
+  pebbledef   => [ 'TagX::TAG::WithBody::PebbleDef', sub { return spawn( $_[0], $_[1], 1 ); } ],
+  plugin      => 'TagX::TAG::NoBody::Plugin',
+  raise       => 'TagX::TAG::NoBody::Raise',
+  recordset   => 'TagX::TAG::NoBody::RecordSet',
+  sink        => 'TagX::TAG::WithBody::Sink',
+  snippet     => 'TagX::TAG::WithBody::Snippet',
+  sql         => 'TagX::TAG::NoBody::SQL',
+  sqlcommit   => 'TagX::TAG::NoBody::SQLCommit',
+  sqlconnect  => 'TagX::TAG::NoBody::SQLConnect',
+  sqlrollback => 'TagX::TAG::NoBody::SQLRollback',
+  sqlselect   => 'TagX::TAG::WithBody::Loop::SQLSelect',
+  sqltable    => 'TagX::TAG::NoBody::SQLTable',
+  trace       => 'TagX::TAG::NoBody::Trace',
+  try         => 'TagX::TAG::WithBody::Try',
+  unless      => 'TagX::TAG::WithBody::Unless',
+  var         => 'TagX::TAG::NoBody::Var',
+  while       => 'TagX::TAG::WithBody::Loop::While',
+);
+
+########################################################################
+sub choose(&) { return $_[0]->() };  ## no critic
+########################################################################
+
+########################################################################
+sub spawn {
+########################################################################
+  my ( $class, $obj, $raw ) = @_;
+
+  return ( $obj->new_child( $class->new ), $raw // 0 );
+}
 
 # NOTE: logging during parsing is unaffected by --verbose option
 # if you want to see some debugging output you need to set the log level
@@ -201,205 +230,40 @@ sub parse {
 
         my $tag_name = $1;
 
-        for ($1) {
-          # experimental feature - flushes output buffer to /dev/null
-          /^flush$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Flush->new );
-            last;
-          };
+        my $tag_def = $TAGS_ENABLED{$tag_name}
+          or die "unsupport tag ($tag_name)\n";
 
-          /^var$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Var->new );
-            last;
-          };
+        my ( $class, $sub ) = choose {
 
-          /^[#]$/oxsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Comment->new );
-            last;
-          };
+          # 1. RESOLVE ALIAS
+          # If it is a CODE ref, run it to get the real key (String or Array).
+          if ( ref($tag_def) eq 'CODE' ) {
+            my $target_key = $tag_def->();
+            $tag_def = $TAGS_ENABLED{$target_key}
+              or die "Alias target '$target_key' not found";
 
-          /^case$/oixsm and do {
-            $tag =~ /case:(.*?)\s+/ixsm;
-            $obj = $obj->new_child( TagX::TAG::NoBody::Case->new );
-            last;
-          };
+            # Flatten the alias so we don't run this code again
+            $TAGS_ENABLED{$tag_name} = $tag_def;
+          }
 
-          /^plugin$/oixsm and do {
-            $tag =~ /plugin:(.*?)\s+/ixsm;
-            $obj = $obj->new_child( TagX::TAG::NoBody::Plugin->new );
-            last;
-          };
+          # 2. INFLATE STRING
+          # Handles standard tags OR aliases that resolved to strings (like exec -> pebble)
+          if ( !ref $tag_def ) {
+            $tag_def = [ $tag_def, \&spawn, 0 ];
+            $TAGS_ENABLED{$tag_name} = $tag_def;
+          }
 
-          /^sqlconnect$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::SQLConnect->new );
-            last;
-          };
+          # 3. JIT LOAD
+          # Check 'Loaded' flag at index 2. If 0/undef, load and set to 1.
+          if ( !$tag_def->[2] ) {
+            load $tag_def->[0];
+            $tag_def->[2] = 1;
+          }
 
-          /^open$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Open->new );
-            last;
-          };
+          return @{$tag_def};
+        };
 
-          /^iif$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Iif->new );
-            last;
-          };
-
-          /^sql$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::SQL->new );
-            last;
-          };
-
-          /^sqlcommit$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::SQLCommit->new );
-            last;
-          };
-
-          /^sqlrollback$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::SQLRollback->new );
-            last;
-          };
-
-          /^sqltable$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::SQLTable->new );
-            last;
-          };
-
-          /^include$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Include->new );
-            last;
-          };
-
-          /^foreach$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::Foreach->new );
-            last;
-          };
-
-          /^sink$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Sink->new );
-            last;
-          };
-
-          /^snippet$/oixsm and do {
-            die
-              q{<snippet> is not enabled on your server. Set <scalar name='ALLOW_SNIPPET_TAG'>yes</scalar> in your tagx.xml file.}
-              if $self->getoption('ALLOW_SNIPPET_TAG') !~ /^yes|[y1]$/ixsm;
-
-            $obj = $obj->new_child( TagX::TAG::WithBody::Snippet->new );
-            last;
-          };
-
-          /^sqlselect$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::SQLSelect->new );
-            last;
-          };
-
-          /^while$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Loop::While->new );
-            last;
-          };
-
-          /^if$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::If->new );
-            last;
-          };
-          /^unless$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Unless->new );
-            last;
-          };
-
-          /^else?if$/oixsm and do {
-            die "Tag is not valid here.\n"
-              if ref($obj) !~ /::If|Unless/xsm;
-
-            $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-
-            last;
-          };
-
-          /^else/oixsm and do {
-            die "Tag is not valid here.\n"
-              if ref($obj) !~ /::If|Unless/xsm;
-
-            $obj = $obj->else_obj( TagX::TAG::WithBody::If::Else->new );
-
-            last;
-          };
-
-          /^trace$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Trace->new );
-            last;
-          };
-
-          /^raise$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Raise->new );
-            last;
-          };
-
-          /^try$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::Try->new );
-            last;
-          };
-
-          /^catch$/oixsm and do {
-            die "Tag is not valid here.\n"
-              if ref($obj) !~ /TagX::TAG::WithBody::Try|Catch/xsm;
-
-            $obj = $obj->catch( TagX::TAG::WithBody::Catch->new );
-
-            last;
-          };
-
-          /^null$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::NULL->new );
-            last;
-          };
-
-          # the null tag = ?
-          /^[?]$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::NULL->new );
-            last;
-          };
-
-          /^exec$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
-            last;
-          };
-
-          /^pebble$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Pebble->new );
-            last;
-          };
-
-          /^pebbledef$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::PebbleDef->new );
-            $raw = 1;
-            last;
-          };
-
-          /^noexec$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::WithBody::NoExec->new );
-            $raw = 1;
-            last;
-          };
-
-          /^hash$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Hash->new );
-            last;
-          };
-
-          /^array$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::Array->new );
-            last;
-          };
-
-          /^recordset$/oixsm and do {
-            $obj = $obj->new_child( TagX::TAG::NoBody::RecordSet->new );
-            last;
-          };
-
-          die "Tag <$_> not implemented";
-        }
+        ( $obj, $raw ) = $sub->( $class, $obj, $raw );
 
         $obj->name($tag_name);
 
@@ -606,7 +470,7 @@ sub show_error {
     }
   }
   else {
-    my $err = $self->{error}->mesg;
+    my $err = HTML::Entities::encode_entities( $self->{error}->mesg );
 
     my $html_error_message = <<"EOT";
 <html>
@@ -900,8 +764,8 @@ sub find_file {
 
   $logger->trace( Dumper( [ $file, $ext, \@search_paths ] ) );
 
-  die "invalid pebble name - absolute paths are not supported\n"
-    if $file =~ /^[\/.]/xsm;
+  die "invalid pebble name - traversal not supported\n"
+    if $file =~ /^[\/.]|\.\./xsm;  # Blocks '..' anywhere
 
   my $document_root = $ENV{DOCUMENT_ROOT} || getcwd;
 

@@ -87,7 +87,7 @@ fedora-base: bedrock-fedora-base.id
 bedrock-fedora-base.id: $(DOCKERFILE_FEDORA_BASE)
 	set -x; LOG=$$(mktemp); \
 	echo $$LOG; \
-	docker build -f $< . -t $@ 2>&1 | tee $$LOG; \
+	docker build $$NO_CACHE -f $< . -t $$(basename $@ .id) 2>&1 | tee $$LOG; \
 	perl -0ne '/writing image (sha256:[^ ]+)\s/sm && print "$$1\n"' < $$LOG > $@; \
 	rm $$LOG
 
@@ -96,7 +96,7 @@ DOCKERFILE_FEDORA_BASE = Dockerfile.fedora-base
 
 BEDROCK_FEDORA_DEPS = \
     $(DOCKERFILE_FEDORA) \
-    fedora-base\
+    fedora-base \
     $(TARBALL) \
     $(TARBALL_CORE) \
     entrypoint.sh \

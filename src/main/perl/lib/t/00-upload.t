@@ -41,35 +41,38 @@ sub create_upload_stream {
   my ( $fh, $filename ) = tempfile( 'upload-file-XXXXXX', SUFFIX => '.txt' );
 
   print {$fh} $LOREM_IPSUM;
-
   close $fh;
 
-  my $post_content = POST(
+  # Create the full HTTP::Request object
+  my $request = POST(
     undef,
     Content_Type => 'form-data',
     Content      => [ uploaded_file => [$filename] ],
-  )->content;
+  );
 
   # remove from cwd
   unlink $filename;
 
-  return ( $post_content, $filename );
+  # Return the REQUEST OBJECT, not just the content string
+  return ( $request, $filename );
 }
 
-my ( $content, $filename ) = create_upload_stream();
+my ( $request, $filename ) = create_upload_stream();
+my $content = $request->content;
 
 local $ENV{REQUEST_METHOD} = 'POST';
-local $ENV{CONTENT_TYPE}   = 'multipart/form-data; boundary=xYzZY';
+local $ENV{CONTENT_TYPE}   = $request->header('Content-Type');
+local $ENV{CONTENT_LENGTH} = length $content;
 
 my $ctx = Bedrock::Context->new(
   config => {
     UPLOAD_PATH    => '/tmp',
     LOG4PERL_LEVEL => 'error',
   },
-  request => sub { },
+  request => sub { },  # Dummy sub needed to satisfy Bedrock::Context validation
 );
 
-my @members = qw{
+my @members = qw(
   atime
   blksize
   blocks
@@ -88,47 +91,57 @@ my @members = qw{
   size
   uid
   uploaded_file
-};
+);
 
 my $file_info;
 
-{
-  my $fh = IO::Scalar->new( \$content );
+########################################################################
+subtest 'update returns a Bedrock::Hash' => sub {
+########################################################################
 
-  local *STDIN = $fh;
+  {
+    my $fh = IO::Scalar->new( \$content );
 
-  $file_info = $ctx->upload_file('uploaded_file');
+    local *STDIN = $fh;
+
+    $file_info = $ctx->upload_file('uploaded_file');
+
+    diag( Dumper( [ file_info => $file_info ] ) );
+
+    close $fh;
+  }
+
+  isa_ok( $file_info, 'Bedrock::Hash', 'return a hash of file info' );
+
+  is_deeply( [ sort keys %{$file_info} ], [@members], 'contains all members' );
+
+  is( $file_info->{uploaded_file}, $filename, 'uploaded_file  member is correct' );
+};
+
+########################################################################
+subtest 'file uploaded' => sub {
+########################################################################
+  ok( -e "/tmp/$filename", 'file uploaded' );
+
+  is( $file_info->{size}, -s "/tmp/$filename", 'size is same as file size' );
+
+  is( $file_info->{size}, length $LOREM_IPSUM, 'reported size is same as string written' );
+
+  open my $fh, '<', "/tmp/$filename"
+    or BAIL_OUT("could not open /tmp/$filename for reading");
+
+  local $RS = undef;
+
+  is( <$fh>, $LOREM_IPSUM, 'content uploaded correctly' );
 
   close $fh;
-}
-
-isa_ok( $file_info, 'Bedrock::Hash', 'return a hash of file info' );
-
-ok( -e "/tmp/$filename", 'file uploaded' );
-
-is_deeply( [ sort keys %{$file_info} ], [@members], 'contains all members' );
-
-is( $file_info->{uploaded_file}, $filename, 'uploaded_file  member is correct' );
-
-is( $file_info->{size}, -s "/tmp/$filename", 'size is same as file size' );
-
-is( $file_info->{size}, length $LOREM_IPSUM, 'reported size is same as string written' );
-
-open my $fh, '<', "/tmp/$filename"
-  or BAIL_OUT("could not open /tmp/$filename for reading");
-
-local $RS = undef;
-
-is( <$fh>, $LOREM_IPSUM, 'content uploaded correctly' );
-
-close $fh;
-
-# remove uploaded file
-unlink "/tmp/$filename";
+};
 
 done_testing;
 
 END {
+  # remove uploaded file
+  unlink "/tmp/$filename";
 }
 
 1;
