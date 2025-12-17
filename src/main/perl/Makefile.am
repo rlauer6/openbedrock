@@ -32,6 +32,11 @@ BEDROCK_TESTS = \
     t/20-benchmark.yml \
     t/22-include.yml
 
+BEDROCK_CACHE_TESTS = \
+    t/24-cache.yml \
+    t/25-sink-cache.yml \
+    t/26-var-cache.yml
+
 BEDROCK_MAIL_TESTS = \
     t/23-mail.yml
 
@@ -79,7 +84,9 @@ test-list:
 	if test -z "$$TEST"; then \
 	  TEST="$(BEDROCK_TESTS)"; \
 	elif [ "$$TEST" = "all" ]; then \
-	  TEST="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS) $(BEDROCK_MAIL_TESTS)"; \
+	  TEST="$(BEDROCK_TESTS) $(BEDROCK_SQL_TESTS) $(BEDROCK_MAIL_TESTS) $(BEDROCK_CACHE_TESTS)"; \
+	elif [ "$$TEST" = "cache" ]; then \
+	  TEST="$(BEDROCK_CACHE_TESTS)"; \
 	elif [ "$$TEST" = "mail" ]; then \
 	  TEST="$(BEDROCK_MAIL_TESTS)"; \
 	elif [ "$$TEST" = "sql" ]; then \

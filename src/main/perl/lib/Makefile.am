@@ -14,11 +14,12 @@ perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 
-perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapacherequestlibdir           = $(perl5libdir)/Bedrock/Apache/Request
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
+perl5bedrockcachelibdir    	          = $(perl5libdir)/Bedrock/Cache
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
+perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
 perl5bedrockrequestlibdir      		  = $(perl5libdir)/Bedrock/Request
@@ -59,6 +60,12 @@ BEDROCK_DBI=$(perl5bedrockdbilib_DATA:.pm=.pm.in)
 perl5bedrockrequestlib_DATA = \
    Bedrock/Request/Upload.pm
 
+perl5bedrockcachelib_DATA = \
+   Bedrock/Cache/Engine.pm \
+   Bedrock/Cache/Redis.pm
+
+BEDROCK_CACHE = $(perl5bedrockcachelib_DATA:.pm=.pm.in)
+
 perl5lib_DATA = \
     Bedrock.pm \
     bedrock_handler_common.pm
@@ -70,6 +77,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
+    Bedrock/Cache.pm \
     Bedrock/Context.pm \
     Bedrock/Constants.pm \
     Bedrock/CSRF.pm \
@@ -366,7 +374,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_POD) \
-    $(BEDROCK_REDIS) \
+    $(BEDROCK_CACHE) \
     $(BEDROCK_REQUEST) \
     $(BEDROCK_ROLE) \
     $(BEDROCK_TEMPLATE) \

@@ -45,6 +45,9 @@ SHELL_MODULES = \
 PACKAGE_MODULES = \
     Bedrock/Array.pm \
     Bedrock/Core.pm \
+    Bedrock/Cache.pm \
+    Bedrock/Cache/Redis.pm \
+    Bedrock/Cache/Engine.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
@@ -122,6 +125,7 @@ PACKAGE_MODULES = \
     Bedrock/Text/TagX/TAG/SQLHandler.pm \
     Bedrock/Text/TagX/TAG/WithBody.pm \
     Bedrock/Text/TagX/TAG/WithBody/Cache.pm \
+    Bedrock/Text/TagX/TAG/WithBody/Container.pm \
     Bedrock/Text/TagX/TAG/WithBody/Catch.pm \
     Bedrock/Text/TagX/TAG/WithBody/If.pm \
     Bedrock/Text/TagX/TAG/WithBody/If/Else.pm \

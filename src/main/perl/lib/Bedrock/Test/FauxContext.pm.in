@@ -3,14 +3,16 @@ package Bedrock::Test::FauxContext;
 use strict;
 use warnings;
 
+use Bedrock::Cache;
 use Bedrock::Context qw(parse_cookie);
 use Bedrock::Constants qw(:chars);
 use Bedrock::Test::FauxHandler;
 
-use Carp::Always;
 use Carp;
 use Data::Dumper;
+use English qw(-no_match_vars);
 use List::Util qw(pairs);
+use Module::Load;
 
 our @EXPORT_OK = qw(bind_module);
 
@@ -19,10 +21,33 @@ use parent qw(Exporter);
 ########################################################################
 sub new {
 ########################################################################
-  my ( $class, %options ) = @_;
-  $options{request} = Bedrock::Test::FauxHandler->new();
+  my ( $class, @args ) = @_;
 
-  my $self = bless \%options, $class;
+  my $options = ref $args[0] ? $args[0] : {@args};
+
+  $options->{request} //= Bedrock::Test::FauxHandler->new();
+
+  my $self = bless $options, $class;
+
+  # 1. If a cache was passed in arguments, use it (Dependency Injection)
+  if ( $self->{cache} ) {
+    Carp::carp( "cache preset to %s\n", ref( $self->{cache} ) );
+  }
+  # 2. Otherwise, if the Environment requests one, build it (Auto-Discovery)
+  elsif ( $ENV{BEDROCK_CACHE_ENGINE} ) {
+
+    my $cache = eval { return Bedrock::Cache->new(); };
+
+    print {*STDERR} Dumper( [ cache => $cache ] );
+
+    if ( !$cache || $EVAL_ERROR ) {
+      # Use carp so we see where the test failed, but don't kill the harness
+      Carp::carp("WARNING: Test Harness could not init Bedrock::Cache: $EVAL_ERROR");
+    }
+    else {
+      $self->{cache} = $cache;
+    }
+  }
 
   return $self;
 }
@@ -38,7 +63,7 @@ sub bind_module {
 
   my $obj = bless {}, $module;
 
-  tie %{$obj}, $module, $ctx, $plugin_config;  ## no critic (ProhibitTies)
+  tie %{$obj}, $module, $ctx, $plugin_config;  ## no critic
 
   return $obj;
 }

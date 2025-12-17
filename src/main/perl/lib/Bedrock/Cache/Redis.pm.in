@@ -1,0 +1,75 @@
+package Bedrock::Cache::Redis;
+
+use strict;
+use warnings;
+
+use Bedrock::XML;
+use English qw(-no_match_vars);
+use Data::Dumper;
+use Redis;
+use Role::Tiny::With;
+
+with 'Bedrock::Cache::Engine';
+
+########################################################################
+sub new {
+########################################################################
+  my ($class) = @_;
+
+  # Implementation of Step 2: Convention-based discovery
+  my $config = _load_redis_config();
+
+  my $redis = eval {
+    return Redis->new(
+      server    => $config->{server}   // 'localhost:6379',
+      password  => $config->{password} // undef,
+      reconnect => 1,
+    );
+  };
+
+  if ( $EVAL_ERROR || !$redis ) {
+    die "Could not initialize Redis connection: $EVAL_ERROR";
+  }
+
+  return bless { handle => $redis }, $class;
+}
+
+########################################################################
+sub _load_redis_config {
+########################################################################
+  my @paths = split /:/xsm, ( $ENV{CONFIG_PATH} // $ENV{BEDROCK_CONFIG_PATH} // q{} );
+
+  my $xml_file;
+
+  foreach my $path (@paths) {
+    my $candidate = "$path/redis.xml";
+    if ( -e $candidate ) {
+      $xml_file = $candidate;
+      last;
+    }
+  }
+
+  # Default to standard redis configuration if no file found
+  return { server => 'localhost:6379' } if !$xml_file;
+
+  # Load specific redis.xml using Bedrock::XML
+  my $xml = Bedrock::XML->new($xml_file);
+
+  return $xml;
+}
+
+# The Contract Methods
+sub get        { my ( $self, $key ) = @_; return $self->{handle}->get($key); }
+sub exists     { my ( $self, $key ) = @_; return $self->{handle}->exists($key); }
+sub delete     { my ( $self, $key ) = @_; return $self->{handle}->del($key); }
+sub get_handle { my ($self) = @_; return $self->{handle}; }
+
+sub set {
+  my ( $self, $key, $value, %opts ) = @_;
+  if ( my $ttl = $opts{ttl} ) {
+    return $self->{handle}->setex( $key, $ttl, $value );
+  }
+  return $self->{handle}->set( $key, $value );
+}
+
+1;
