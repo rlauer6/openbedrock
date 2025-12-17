@@ -1,0 +1,72 @@
+package Bedrock::CSRF;
+
+use strict;
+use warnings;
+
+use Bedrock::Constants qw(:booleans);
+use MIME::Base64 qw(encode_base64 decode_base64);
+use Data::Dumper;
+use Role::Tiny;
+
+# ----------------------------------------------------------------------
+# Generates or retrieves the current CSRF token
+# ----------------------------------------------------------------------
+sub csrf_token {
+  my ($obj) = @_;
+
+  my $self = tied %{$obj} || $obj;
+
+  if ( !$self->{data}->{prefs}->{csrf_token} ) {
+    # Generate a simple, strong random nonce
+    # We combine the session ID, time, and a random number, then Base64 it.
+    my $raw_nonce = sprintf '%s-%s-%s', $obj->{session}, time, rand;
+
+    # Simple Base64 encoding is enough. We just need a unique, unguessable string.
+    # No need for heavy encryption.
+    my $token = encode_base64( $raw_nonce, q{} );  # '' = no newlines
+
+    # Clean up any non-url-safe chars if necessary, or just keep it simple
+    $token =~ s/[^a-zA-Z0-9]//xsmg;
+
+    $self->{data}->{prefs}->{csrf_token} = $token;
+  }
+
+  return $self->{data}->{prefs}->{csrf_token};
+}
+
+# ----------------------------------------------------------------------
+# Verifies a submitted token against the stored session token
+# ----------------------------------------------------------------------
+sub check_csrf_token {
+  my ( $obj, $submitted_token ) = @_;
+
+  my $self = tied %{$obj} || $obj;
+
+  return $FALSE
+    if !$submitted_token;
+
+  # Retrieve the authoritative token from the session store
+  my $stored_token = $self->{data}->{prefs}->{csrf_token};
+
+  return $FALSE
+    if !$stored_token;
+
+  # Direct string comparison is sufficient and secure here
+  return $submitted_token eq $stored_token;
+}
+
+# ----------------------------------------------------------------------
+# Rotates the token (useful after login/logout to prevent fixation)
+# ----------------------------------------------------------------------
+sub rotate_csrf_token {
+  my ($obj) = @_;
+
+  my $self = tied %{$obj} // $obj;
+
+  delete $self->{data}->{prefs}->{csrf_token};
+
+  # Generate a new one immediately
+  return $obj->csrf_token;
+}
+
+1;

@@ -35,11 +35,11 @@ use IO::Scalar;
 use List::Util qw(pairs);
 use Module::Load;
 use Scalar::Util qw(reftype blessed);
-
+use Storable qw(freeze thaw);
 use TagX::Error;
 use TagX::Output;
 use TagX::Symtab;
-use TagX::TAG::WithBody::Cache;
+use TagX::TAG::WithBody::Container;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -63,6 +63,7 @@ our %TAGS_ENABLED = (
   elsif  => sub { return 'else' },
   elseif => sub { return 'else' },
   array  => 'TagX::TAG::NoBody::Array',
+  cache  => 'TagX::TAG::WithBody::Cache',
   case   => 'TagX::TAG::NoBody::Case',
   catch  => [
     'TagX::TAG::WithBody::Catch',
@@ -137,7 +138,7 @@ sub parse {
 
   my $raw = $FALSE;
 
-  my $obj = TagX::TAG::WithBody::Cache->new($self);
+  my $obj = TagX::TAG::WithBody::Container->new($self);
 
   my $newscan = $TRUE;
 
@@ -753,7 +754,7 @@ sub fetch_pebble {
   return $pebble_text;
 }
 
-# find a file using a progression locations to search
+# find a file using a progression of locations to search
 # returns the fqp or undef
 ########################################################################
 sub find_file {
@@ -765,9 +766,9 @@ sub find_file {
   $logger->trace( Dumper( [ $file, $ext, \@search_paths ] ) );
 
   die "invalid pebble name - traversal not supported\n"
-    if $file =~ /^[\/.]|\.\./xsm;  # Blocks '..' anywhere
+    if $file =~ /^[\/.]|[.]{2}/xsm;  # Blocks '..' anywhere
 
-  my $document_root = $ENV{DOCUMENT_ROOT} || getcwd;
+  my $document_root = $ENV{DOCUMENT_ROOT} // getcwd;
 
   # ~ (tilde) means DOCUMENT_ROOT
   if ( $file =~ /^\~/xsm ) {
@@ -850,11 +851,10 @@ sub new {
   }
   else {
     $self = bless {}, $proto;
+
     $self->out_handle( TagX::Output->new($output) );
-    $self->{VARS}         = TagX::Symtab->new;
-    $self->{error}        = TagX::Error->new($input);
-    $self->{DB}           = {};
-    $self->{OPENTAG_EXPR} = $OPENTAG_EXPR;
+
+    @{$self}{qw(VARS error DB OPENTAG_EXPR)} = ( TagX::Symtab->new, TagX::Error->new($input), {}, $OPENTAG_EXPR, );
   }
 
   if ( !ref $input ) {
@@ -1031,12 +1031,20 @@ sub read_cache {
 
   my $redis = $self->_get_redis_handle;
 
-  return $redis->get($key)
-    if $redis;
+  return
+    if !$redis;
 
-  warn "no cache handler available!\n";
+  my $data = $redis->get($key);
 
-  return;
+  return
+    if !defined $data;
+
+  # AUTOMATIC DESERIALIZATION
+  # Try to thaw it. If it fails (because it's just a plain string),
+  # we return the original string.
+  my $thawed = eval { thaw($data) };
+
+  return $data ? $EVAL_ERROR : $thawed;
 }
 
 ########################################################################
@@ -1047,14 +1055,18 @@ sub write_cache {
   my $redis = $self->_get_redis_handle;
 
   if ($redis) {
-    $redis->set( $key, $value );
+    # AUTOMATIC SERIALIZATION
+    # If it's a ref (Hash, Array, Object), freeze it to a binary string
+    my $store_val = ref($value) ? nfreeze($value) : $value;
+
+    $redis->set( $key, $store_val );
 
     if ( $ttl && $ttl !~ /\D/xsm ) {
       $redis->expireat( $key, time + $ttl );
     }
   }
   else {
-    warn "no cache handler available!\n";
+    $self->get_logger->warn('no cache handler available for write_cache');
   }
 
   return;
@@ -1078,7 +1090,7 @@ sub parse_range {
 }
 
 ########################################################################
-sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+sub close {  ## no critic
 ########################################################################
   my ($self) = @_;
 
@@ -1112,9 +1124,11 @@ sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 
 1;
 
-__END__
+## no critic
 
-## no critic (RequirePodSections)
+# TODO: document methods
+
+__END__
 
 =pod
 
@@ -1148,8 +1162,10 @@ text output.
 
 =head1 METHODS AND SUBROUTINES
 
-Most of these routines are *only* used internall, but documented here
+Most of these routines are *only* used internally, but documented here
 for completeness.
+
+=head2 new
 
 =head2 close
 
@@ -1190,8 +1206,6 @@ Returns the L<Bedrock::Context> object.
 
 =head2 getoption
 
-=head2 new
-
 =head2 options
 
 Set or get the hash of options. Bedrock will set at least these
@@ -1228,14 +1242,14 @@ Set or get the value of a Bedrock variable.
 =head2 parse
 
 This is Bedrock's parser method. Its job is to parse content and
-create a C<TagX::TAG::WithBody::Cache> object which represents the
+create a C<TagX::TAG::WithBody::Container> object which represents the
 parsed input.
 
 =head2 show_error
 
  show_error(error-file)
 
-Outputs error page. Called internally when an exception is raised.
+Outputs an error page. Called internally when an exception is raised.
 
 =head2 symtab
 
@@ -1255,11 +1269,10 @@ Bedrock's current frame.
 
 J. Sridhar
 
-Rob Lauer - <bigfoot@cpan.org>
+Rob Lauer - <rlauer@treasurersbriefcase.com>
 
 =head1 SEE ALSO
 
 L<Text::TAG>, L<TagX::Symtab>
 
 =cut
-

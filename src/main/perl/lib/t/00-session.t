@@ -151,7 +151,7 @@ my $session_id = $session->{session};
 ########################################################################
 subtest 'close' => sub {
 ########################################################################
-  $session->{foo} = 'bar';
+  $session->{_foo} = 'bar';
 
   eval { return $session->closeBLM; };
 
@@ -162,11 +162,12 @@ subtest 'close' => sub {
 ########################################################################
 subtest 'save' => sub {
 ########################################################################
+
   $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
 
   $session = eval { return bind_module( $ctx, $config, 'BLM::Startup::UserSession' ); };
 
-  is( $session->{foo}, 'bar', 'session saved' )
+  is( $session->{_foo}, 'bar', 'session saved' )
     or diag( Dumper( [$session] ) );
 };
 
@@ -261,6 +262,60 @@ subtest 'remove user' => sub {
   eval { $session->login( 'fflintstone', 'W1lma' ); };
 
   ok( $EVAL_ERROR, 'removed user cannot login' );
+};
+
+########################################################################
+subtest 'CSRF' => sub {
+########################################################################
+  # start a new session...
+  my $session = bind_module( $ctx, $config, 'BLM::Startup::UserSession' );
+  # 1. Verify the Role is mixed in
+  can_ok( $session, qw(csrf_token check_csrf_token rotate_csrf_token) );
+
+  # 2. Generate a token
+  my $token = $session->csrf_token;
+  ok( $token, 'generated csrf token' );
+  like( $token, qr/^[a-zA-Z0-9]+$/, 'token is base64/alphanumeric' );
+
+  # 3. Persistence / Idempotency
+  # Calling it again should return the exact same token (not regenerate it)
+  my $same_token = $session->csrf_token;
+  is( $token, $same_token, 'csrf_token() is idempotent (returns stored value)' );
+
+  # 4. Verification (Success)
+  ok( $session->check_csrf_token($token), 'validates correct token' );
+
+  # 5. Verification (Failure)
+  ok( !$session->check_csrf_token('invalid_junk'), 'rejects bad token' );
+  ok( !$session->check_csrf_token(undef),          'rejects undef token' );
+  ok( !$session->check_csrf_token(''),             'rejects empty token' );
+
+  # 6. Rotation
+  my $new_token = $session->rotate_csrf_token;
+  ok( $new_token, 'rotated to a new token' );
+  isnt( $token, $new_token, 'new token is different from old token' );
+
+  # 7. Verify Rotation Impact
+  ok( $session->check_csrf_token($new_token), 'new token validates' );
+
+  # The old token should fail now (since it was overwritten in storage)
+  ok( !$session->check_csrf_token($token), 'old token is invalidated' );
+
+  $session->{foo} = 'bar';
+
+  $ENV{PRINT_COOKIE} = 1;
+
+  $session->closeBLM;
+
+  # 8. Session Persistence Check
+  # Ensure the token actually survives a serialize/deserialize cycle
+
+  $ENV{HTTP_COOKIE} = 'session=' . $session->{session};
+
+  # Re-bind the session (simulate next request)
+  $session = bind_module( $ctx, $config, 'BLM::Startup::UserSession' );
+
+  ok( $session->check_csrf_token($new_token), 'token persisted across session save/load' );
 };
 
 done_testing;

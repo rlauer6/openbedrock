@@ -1,53 +1,265 @@
-#
-#    This file is a part of Bedrock, a server-side web scripting tool.
-#    Check out http://www.openbedrock.net
-#    Copyright (C) 2001, Charles Jones, LLC.
-#
-#    This program is free software; you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation; either version 2 of the License, or
-#    any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with this program; if not, write to the Free Software
-#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
-#
-
 package TagX::TAG::WithBody::Cache;
 
 use strict;
 use warnings;
 
-use parent qw(TagX::TAG::WithBody);
+use Bedrock qw(:booleans);
+use Bedrock::Hash;
+use Role::Tiny::With;
+use Encode qw(encode_utf8 decode_utf8);
 
-use English qw(-no_match_vars);
+# Assuming you renamed the old Cache to Container or Parent as discussed
+# If not, this might be 'TagX::TAG::WithBody' like the Sink example
+use parent qw (TagX::TAG::WithBody);
+
+with 'Bedrock::Logger';
+
+########################################################################
+sub closure {
+########################################################################
+  return '/cache';
+}
+
+########################################################################
+sub define_options {
+########################################################################
+  return (
+    'key=s'  => undef,   # The unique cache key (required)
+    'ttl=s'  => '3600',  # Time to live in seconds (default 1 hour)
+    'global' => undef,   # Optional flag for global vs session cache
+  );
+}
 
 ########################################################################
 sub finalize {
 ########################################################################
-  my ( $self, @args ) = @_;
+  my ( $self, $tx, @context ) = @_;
 
-  my $tx = @args > 0 ? shift @args : $self->{TagX};
+  my %options = $self->define_options;
+  my @argv    = $self->parse_options( \%options, @context );
 
-  my @context = @args > 0 ? @args : ( $tx->{VARS} );
+  print {*STDERR} Dumper(
+    [ options => \%options,
+      argv    => \@argv,
+    ]
+  );
 
-  my $frame = $tx->out_handle->create_frame;
+  # 1. Validate required Key
+  my $key = $options{key} || shift(@argv);
 
-  eval { $self->SUPER::finalize( $tx, @context ) };
+  die "Cache tag missing required 'key' attribute or argument.\n"
+    if !$key;
 
-  if ($EVAL_ERROR) {
-    $tx->out_handle->empty_frame;
-    die "$EVAL_ERROR";
+  # 2. Check Cache Hit
+  my $cached_bytes = $tx->read_cache($key);
+
+  if ( defined $cached_bytes ) {
+    $self->get_logger->debug("Cache HIT for key: $key");
+
+    # DECODE: Convert raw bytes from cache back into Perl internal string
+    my $cached_content = decode_utf8($cached_bytes);
+
+    $tx->out_handle->print($cached_content);
+    return;
   }
 
-  return $frame->end;
+  $self->get_logger->debug("Cache MISS for key: $key. Executing body...");
+
+  my $content;
+
+  # 3. Capture Block (Scope Guard)
+  {
+    my $frame = $tx->out_handle->create_frame;
+
+    # 4. Execute the Body
+    $self->SUPER::finalize( $tx, @context );
+
+    # 5. Retrieve Captured Data
+    $content = $tx->out_handle->frame_data;
+  }
+  # Frame destroyed, handle restored.
+
+  # 6. Store in Cache
+  if ( defined $content && length($content) > 0 ) {
+    # ENCODE: Flatten Perl string to UTF-8 bytes for storage
+    my $safe_bytes = encode_utf8($content);
+
+    $tx->write_cache( $key, $safe_bytes, $options{ttl} );
+
+    $self->get_logger->debug("Stored content for key: $key (TTL: $options{ttl})");
+  }
+
+  # 7. Output to Stream
+  $tx->out_handle->print($content);
+
+  return;
+}
+
+########################################################################
+sub xfinalize {
+########################################################################
+  my ( $self, $tx, @context ) = @_;
+
+  my %options = $self->define_options;
+  my @argv    = $self->parse_options( \%options, @context );
+
+  # 1. Validate required Key
+  my $key = $options{key} || shift(@argv);
+
+  die "Cache tag missing required 'key' attribute or argument.\n"
+    if !$key;
+
+  # 2. Check Cache Hit
+  my $cached_content = $tx->read_cache($key);
+
+  if ( defined $cached_content ) {
+    $self->get_logger->debug("Cache HIT for key: $key");
+
+    # Output the cached content directly to the current output handle
+    $tx->out_handle->print($cached_content);
+
+    # Return early so we don't process the body
+    return;
+  }
+
+  $self->get_logger->debug("Cache MISS for key: $key. Executing body...");
+
+  my $content;
+
+  # 3. Capture Block (Scope Guard)
+  # We wrap this in a block so $frame goes out of scope immediately after
+  # we retrieve the data. This forces the 'DESTROY' method on the frame,
+  # restoring $tx->out_handle to the parent stream.
+  {
+    my $frame = $tx->out_handle->create_frame;
+
+    # 4. Execute the Body
+    $self->SUPER::finalize( $tx, @context );
+
+    # 5. Retrieve Captured Data
+    $content = $tx->out_handle->frame_data;
+  }
+  # CRITICAL: $frame is dead here. Output handle is restored.
+
+  # 6. Store in Cache
+  if ( defined $content && length($content) > 0 ) {
+    $tx->write_cache( $key, $content, $options{ttl} );
+    $self->get_logger->debug("Stored content for key: $key (TTL: $options{ttl})");
+  }
+
+  # 7. Output to Stream
+  $tx->out_handle->print($content);
+
+  return;
 }
 
 1;
 
+## no critic
+
 __END__
+
+=pod
+
+=head1 TAG - C<E<lt>cacheE<gt>>
+
+=head1 PURPOSE
+
+Cache the output of a block of Bedrock parsed output for a specified duration.
+Subsequent calls with the same key will serve the content directly from the
+cache, skipping the execution of the inner tags.
+
+=head1 SYNTAX
+
+ <cache[:key] [options] [key]>
+ </cache>
+
+=head1 DESCRIPTION
+
+The C<E<lt>cacheE<gt>> tag is used to capture the result of a block of
+Bedrock parsed output and store it in the configured application cache.
+
+This tag is especially useful for expensive widgets, external API calls, or
+complex report fragments that do not need to be real-time.
+
+On the first execution (cache miss), the body is executed, the output is
+captured, stored in the cache, and then printed to the output stream.
+On subsequent executions (cache hit), the body is skipped entirely and the
+stored content is printed immediately.
+
+=head1 OPTIONS
+
+ --global
+ --key = "unique-key"
+ --ttl = "seconds"
+
+=over 5
+
+=item --global
+
+If present, the cache key is treated as global across all users.
+(Default behavior depends on your Bedrock cache configuration, but this flag
+is available for explicit global scoping).
+
+=item --key
+
+The unique identifier for this cache entry. Can be passed as a named option
+or as the first positional argument.
+
+ <cache:my_widget>...</cache>
+ <cache "my_widget">...</cache>
+ <cache --key="my_widget">...</cache>
+
+=item --ttl
+
+Time To Live in seconds. Defaults to B<3600> (1 hour).
+
+ <cache "weather_widget" --ttl=600>...</cache>
+
+=back
+
+=head1 NOTES
+
+=over 5
+
+=item *
+
+**Capture Logic:** This tag uses a capture frame similar to C<E<lt>sinkE<gt>>.
+It creates a temporary buffer to trap the output of the body.
+
+=item *
+
+**Empty Content:** If the body produces no output (or an empty string),
+nothing is written to the cache to prevent caching failures.
+
+=item *
+
+**Persistence:** The persistence of the cache depends on the backend
+configuration (e.g., Redis, File, Memory). If using local file caching on ephemeral
+containers (like AWS Fargate), the cache will be cleared when the task restarts.
+
+=back
+
+=head1 EXAMPLES
+
+=over 5
+
+=item Basic usage with positional key
+
+ <cache "sidebar_news">
+    <widget:news_feed limit="5" />
+ </cache>
+
+=item Explicit TTL and named options
+
+ <cache --key="user_dashboard_stats" --ttl=300>
+    <user:heavy_calculation id="$user_id" />
+ </cache>
+
+=back
+
+=head1 SEE ALSO
+
+C<E<lt>sinkE<gt>>
+
+=cut

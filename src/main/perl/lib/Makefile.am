@@ -54,6 +54,8 @@ perl5bedrockdbilib_DATA = \
    Bedrock/DBI/Utils.pm \
    Bedrock/DBI/Locator.pm
 
+BEDROCK_DBI=$(perl5bedrockdbilib_DATA:.pm=.pm.in)
+
 perl5bedrockrequestlib_DATA = \
    Bedrock/Request/Upload.pm
 
@@ -70,6 +72,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BufferStream.pm \
     Bedrock/Context.pm \
     Bedrock/Constants.pm \
+    Bedrock/CSRF.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
     Bedrock/Handle.pm \
@@ -93,13 +96,15 @@ perl5bedrocklib_DATA = \
     Bedrock/VERSION.pm \
     Bedrock/XML.pm
 
+BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
+
 perl5bedrocktestlib_DATA = \
     Bedrock/Test/FauxContext.pm \
     Bedrock/Test/FauxHandler.pm \
     Bedrock/Test/FauxLogger.pm \
     Bedrock/Test/Utils.pm
 
-BEDROCK=$(perl5bedrocklib_DATA:.pm=.pm.in)
+BEDROCK_TEST=$(perl5bedrocktestlib_DATA:.pm=.pm.in)
 
 perl5bedrocktemplatelib_DATA = \
     Bedrock/Template/Email.pm
@@ -108,7 +113,6 @@ BEDROCK_TEMPLATE=$(perl5bedrocktemplatelib_DATA:.pm=.pm.in)
 
 BEDROCK_LOG=$(perl5bedrockloglib_DATA:.pm=.pm.in)
 
-BEDROCK_DBI=$(perl5bedrockdbilib_DATA:.pm=.pm.in)
 
 BEDROCK_POD=$(perl5bedrockpodlib_DATA:.pm=.pm.in)
 
@@ -159,8 +163,6 @@ perl5bedrocktextlib_DATA = \
     Bedrock/Text/URLEncode.pm
 
 BEDROCK_TEXT=$(perl5bedrocktextlib_DATA:.pm=.pm.in)
-
-BEDROCK_TEST=$(perl5bedrocktestlib_DATA:.pm=.pm.in)
 
 BEDROCK_REDIS=$(perl5bedrockredisclientlib_DATA:.pm=.pm.in)
 
@@ -213,6 +215,7 @@ BEDROCK_TEXT_TAGX_TAG_NOBODY=$(perl5bedrocktexttagxtagnobodylib_DATA:.pm=.pm.in)
 
 perl5bedrocktexttagxtagwithbodylib_DATA = \
     Bedrock/Text/TagX/TAG/WithBody/Cache.pm \
+    Bedrock/Text/TagX/TAG/WithBody/Container.pm \
     Bedrock/Text/TagX/TAG/WithBody/Catch.pm \
     Bedrock/Text/TagX/TAG/WithBody/If.pm \
     Bedrock/Text/TagX/TAG/WithBody/Unless.pm \
