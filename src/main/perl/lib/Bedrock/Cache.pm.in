@@ -1,0 +1,144 @@
+package Bedrock::Cache;
+
+use strict;
+use warnings;
+
+use Storable qw(nfreeze thaw);
+use Module::Load;
+use English qw(-no_match_vars);
+
+########################################################################
+sub new {
+########################################################################
+  my ($class) = @_;
+
+  # Step 5 from the plan: Recognize caching enablement via role name
+  my $engine_name  = $ENV{BEDROCK_CACHE_ENGINE} || 'Null';
+  my $engine_class = "Bedrock::Cache::$engine_name";
+
+  load $engine_class;
+  my $engine_obj = $engine_class->new();
+
+  return bless { engine => $engine_obj }, $class;
+}
+
+# The Wrapper adds the "Smart" logic (Serialization)
+########################################################################
+sub set {
+########################################################################
+  my ( $self, $key, $value, %opts ) = @_;
+  # Automatic Serialization: freeze references before passing to engine
+  my $store_val = ref($value) ? nfreeze($value) : $value;
+  return $self->{engine}->set( $key, $store_val, %opts );
+}
+
+########################################################################
+sub get {
+########################################################################
+  my ( $self, $key ) = @_;
+  my $data = $self->{engine}->get($key);
+  return if !defined $data;
+  # Automatic Deserialization: thaw if it looks like a Storable object
+  my $thawed = eval { thaw($data) };
+  return $EVAL_ERROR ? $data : $thawed;
+}
+
+# Simple delegation for the rest
+sub exists     { shift->{engine}->exists(@_) }
+sub delete     { shift->{engine}->delete(@_) }
+sub get_handle { shift->{engine}->get_handle() }
+
+1;
+
+=pod
+
+=head1 NAME
+
+Bedrock::Cache - Opaque Cache Provider Factory
+
+=head1 SYNOPSIS
+
+  # In Apache::Bedrock (The Early Exit)
+  # Uses $ENV{BEDROCK_CACHE_ENGINE} to decide what to load
+  my $cache = Bedrock::Cache->new(); 
+
+  if ( my $etag = $r->headers_in->{'If-None-Match'} ) {
+      if ( $cache->exists($etag) ) {
+          return $NOT_MODIFIED;
+      }
+  }
+
+=head1 DESCRIPTION
+
+Bedrock::Cache is a lightweight factory designed to provide caching 
+services with minimal initialization overhead. It is intended to be 
+instantiated early in the request lifecycle, potentially before the 
+full Bedrock::Config tree is parsed.
+
+It achieves this by using environment-driven discovery to load a 
+specific implementation (e.g., Bedrock::Cache::Redis) that conforms 
+to the Bedrock caching contract via Role::Tiny.
+
+=head1 ENGINE DISCOVERY
+
+The constructor inspects the environment to determine which engine to 
+instantiate.
+
+=over 4
+
+=item 1. BEDROCK_CACHE_ENGINE
+
+The primary toggle. If set to 'Redis', the provider will attempt to 
+load C<Bedrock::Cache::Redis>.
+
+=item 2. Engine-Specific Configuration
+
+Once the engine class is loaded, it is responsible for finding its 
+own connection parameters (e.g., via a specific environment variable 
+or a targeted configuration file).
+
+=back
+
+=head1 INTERFACE CONTRACT (THE ATOMIC 5)
+
+Any class loaded by Bedrock::Cache MUST implement these methods:
+
+=head2 exists( $key )
+
+Returns a boolean indicating if the key is present in the store. 
+Used primarily for ETag validation.
+
+=head2 get( $key )
+
+Retrieves raw data or a serialized string from the store. 
+Note: The provider wrapper handles automatic deserialization 
+(thaw) for the caller.
+
+=head2 set( $key, $value, [ttl => $seconds] )
+
+Commits data to the store. 
+Note: The provider wrapper handles automatic serialization 
+(freeze) of references for the caller.
+
+=head2 delete( $key )
+
+Removes the entry associated with the key.
+
+=head2 get_handle()
+
+Returns the underlying driver handle (e.g., the Redis object). 
+Maintained for backward compatibility with Text::TagX and legacy 
+plugin code.
+
+=head1 PERFORMANCE CONSIDERATIONS
+
+This class is designed to be "Handler-Safe." It avoids loading 
+heavy dependencies or parsing large XML configuration files until 
+absolutely necessary, ensuring that cache-hit responses remain 
+near the speed of the underlying storage engine[cite: 9].
+
+=head1 SEE ALSO
+
+L<Apache::Bedrock>, L<Text::TagX>, L<Role::Tiny>
+
+=cut

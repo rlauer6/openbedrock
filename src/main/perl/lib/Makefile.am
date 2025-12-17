@@ -14,11 +14,12 @@ perl5libdir = @PERL_LIBDIR@
 
 perl5bedrocklibdir             		  = $(perl5libdir)/Bedrock
 
-perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockapachelibdir       		  = $(perl5libdir)/Bedrock/Apache
 perl5bedrockapacherequestlibdir           = $(perl5libdir)/Bedrock/Apache/Request
 perl5bedrockapplicationlibdir       	  = $(perl5libdir)/Bedrock/Application
+perl5bedrockcachelibdir    	          = $(perl5libdir)/Bedrock/Cache
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
+perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
 perl5bedrockrequestlibdir      		  = $(perl5libdir)/Bedrock/Request
@@ -59,6 +60,12 @@ BEDROCK_DBI=$(perl5bedrockdbilib_DATA:.pm=.pm.in)
 perl5bedrockrequestlib_DATA = \
    Bedrock/Request/Upload.pm
 
+perl5bedrockcachelib_DATA = \
+   Bedrock/Cache/Engine.pm \
+   Bedrock/Cache/Redis.pm
+
+BEDROCK_CACHE = $(perl5bedrockcachelib_DATA:.pm=.pm.in)
+
 perl5lib_DATA = \
     Bedrock.pm \
     bedrock_handler_common.pm
@@ -70,6 +77,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
+    Bedrock/Cache.pm \
     Bedrock/Context.pm \
     Bedrock/Constants.pm \
     Bedrock/CSRF.pm \
@@ -366,7 +374,7 @@ PERL_PM = \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \
     $(BEDROCK_POD) \
-    $(BEDROCK_REDIS) \
+    $(BEDROCK_CACHE) \
     $(BEDROCK_REQUEST) \
     $(BEDROCK_ROLE) \
     $(BEDROCK_TEMPLATE) \
@@ -427,7 +435,7 @@ FAUXMODULES = \
 test: $(FAUXMODULES)
 	echo "$$TEST"; \
 	if test -z "$$TEST"; then \
-	  TEST="t"; \
+	  TEST="$(ALL_TESTS)"; \
 	else \
 	  TEST="t/$$TEST.t"; \
 	fi; \
@@ -492,12 +500,15 @@ ALL_TESTS = \
     t/00-template.t \
     t/00-upload.t \
     t/01-config.t \
+    t/01-csrf.t \
     t/01-dbhandler.t \
     t/01-handler-utils.t \
     t/01-indexedtablehandler.t \
+    t/01-locator.t \
     t/01-logger.t \
     t/01-model-field.t \
     t/01-model.t \
+    t/01-shared-dbi.t \
     t/01-tagx-log.t \
     t/01-template.t \
     t/02-indexedtablehandler.t \
@@ -515,6 +526,7 @@ ALL_TESTS = \
     t/07-indexedtablehandler.t \
     t/07-model.t \
     t/08-indexedtablehandler.t \
-    t/08-model.t
+    t/08-model.t \
+    t/09-model.t
 
 dist_tests_DATA = $(ALL_TESTS)

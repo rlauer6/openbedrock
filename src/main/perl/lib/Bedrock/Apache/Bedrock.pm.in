@@ -38,6 +38,7 @@ BEGIN {
 
 use Bedrock qw(slurp_file);
 use Bedrock::Apache::Constants qw(:http %APACHE_LOG_LEVELS);
+use Bedrock::Cache;
 use Bedrock::Constants qw(:chars :defaults :booleans :regexp);
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
@@ -88,17 +89,15 @@ our %EXPORT_TAGS = (
   ]
 );
 
-if ( $ENV{REDIS_CONFIG} ) {
+our $CACHE;
 
-  $REDIS = eval {
-
-    require Bedrock::RedisCache;
-
-    return Bedrock::RedisCache->new( config => $ENV{REDIS_CONFIG} );
+if ( $ENV{BEDROCK_CACHE_ENGINE} ) {
+  $CACHE = eval {
+    return Bedrock::Cache->new();  # Factory handles discovery of Bedrock::Cache::Redis
   };
 
-  if ( !$REDIS || $EVAL_ERROR ) {
-    warn "WARNING: could not initialize Bedrock::RedisCache object:\n$EVAL_ERROR";
+  if ( !$CACHE || $EVAL_ERROR ) {
+    warn "WARNING: could not initialize Bedrock::Cache provider:\n$EVAL_ERROR";
   }
 }
 
@@ -108,11 +107,11 @@ sub handler {
   my ($r) = @_;
 
   # see if our page is in cache, if so send a 304
-  if ( $REDIS && $REDIS->get_cache ) {
+  if ($CACHE) {
     my $etag = $r->headers_in->{'If-None-Match'} // q{};
 
-    if ( $REDIS->get_handle->get($etag) ) {
-      $r->log->info('cache hit...serving - not modified');
+    if ( $etag && $CACHE->exists($etag) ) {
+      $r->log->info('Cache hit (ETag)...serving 304 Not Modified');
       $r->send_http_header;
       $r->status($NOT_MODIFIED);
 
@@ -259,7 +258,7 @@ sub handler {
     $ctx = Bedrock::Context->new(
       request => $r,
       config  => $conf,
-      redis   => $REDIS,
+      cache   => $CACHE,
     );
 
     # --- benchmark

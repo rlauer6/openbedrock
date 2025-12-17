@@ -986,27 +986,15 @@ sub _set_get {
 }
 
 ########################################################################
-sub _get_redis_handle {
+sub _get_cache_provider {
 ########################################################################
   my ($self) = @_;
 
-  my $handle = $self->out_handle->{Handle};
+  # Retrieve the Context object attached to the parser
+  my $ctx = $self->ctx;
 
-  return
-    if !blessed $handle || !$handle->can('redis') || !$handle->redis;
-
-  return $handle->redis->get_handle;
-}
-
-########################################################################
-sub ttl {
-########################################################################
-  my ( $self, $key ) = @_;
-
-  my $redis = $self->_get_redis_handle;
-
-  return $redis->ttl($key)
-    if $redis;
+  # Look for the new generic 'cache' method [cite: 17]
+  return $ctx->cache if $ctx && $ctx->can('cache');
 
   return;
 }
@@ -1016,12 +1004,10 @@ sub is_cached {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  my $redis = $self->_get_redis_handle;
+  my $cache = $self->_get_cache_provider;
 
-  return $redis->exists($key)
-    if $redis;
-
-  return $FALSE;
+  # Delegate existence check to the provider [cite: 16]
+  return $cache ? $cache->exists($key) : $FALSE;
 }
 
 ########################################################################
@@ -1029,22 +1015,12 @@ sub read_cache {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  my $redis = $self->_get_redis_handle;
+  my $cache = $self->_get_cache_provider;
 
-  return
-    if !$redis;
+  return if !$cache;
 
-  my $data = $redis->get($key);
-
-  return
-    if !defined $data;
-
-  # AUTOMATIC DESERIALIZATION
-  # Try to thaw it. If it fails (because it's just a plain string),
-  # we return the original string.
-  my $thawed = eval { thaw($data) };
-
-  return $data ? $EVAL_ERROR : $thawed;
+  # The provider now handles the internal 'thaw' logic [cite: 16]
+  return $cache->get($key);
 }
 
 ########################################################################
@@ -1052,21 +1028,14 @@ sub write_cache {
 ########################################################################
   my ( $self, $key, $value, $ttl ) = @_;
 
-  my $redis = $self->_get_redis_handle;
+  my $cache = $self->_get_cache_provider;
 
-  if ($redis) {
-    # AUTOMATIC SERIALIZATION
-    # If it's a ref (Hash, Array, Object), freeze it to a binary string
-    my $store_val = ref($value) ? nfreeze($value) : $value;
-
-    $redis->set( $key, $store_val );
-
-    if ( $ttl && $ttl !~ /\D/xsm ) {
-      $redis->expireat( $key, time + $ttl );
-    }
+  if ($cache) {
+    # The provider now handles the 'nfreeze' logic and TTL enforcement [cite: 16]
+    $cache->set( $key, $value, ttl => $ttl );
   }
   else {
-    $self->get_logger->warn('no cache handler available for write_cache');
+    $self->get_logger->warn('no cache provider available for write_cache');
   }
 
   return;

@@ -154,28 +154,37 @@ sub new {
 
   init_log4perl_logger();
 
+  # 1. If a cache was passed in arguments, use it (Dependency Injection)
+  if ( $self->{cache} ) {
+    Carp::carp( "cache preset to %s\n", ref( $self->{cache} ) );
+  }
+  # 2. Otherwise, if the Environment requests one, build it (Auto-Discovery)
+  elsif ( $ENV{BEDROCK_CACHE_ENGINE} ) {
+
+    my $cache = eval { return Bedrock::Cache->new(); };
+
+    if ( !$cache || $EVAL_ERROR ) {
+      # Use carp so we see where the test failed, but don't kill the harness
+      Carp::carp("WARNING: Test Harness could not init Bedrock::Cache: $EVAL_ERROR");
+    }
+    else {
+      $self->{cache} = $cache;
+    }
+  }
+
   return $self;
 }
 
 ########################################################################
-sub cgi_header_in {
+sub cache { return $_[0]->{cache}; }
 ########################################################################
-}
 
 ########################################################################
-sub send_http_header {
+sub cgi_header_in    { }
+sub send_http_header { }
+sub getCookieValue   { }
+sub cgi_header_out   { }
 ########################################################################
-}
-
-########################################################################
-sub getCookieValue {
-########################################################################
-}
-
-########################################################################
-sub cgi_header_out {
-########################################################################
-}
 
 {
   ## no critic (RequireArgUnpacking, ProhibitNoStrict)
@@ -345,13 +354,23 @@ sub run {
       $r{output} = $result;
     }
 
-    if ( $t->{chomp} ) {
+    if ( my $chomp = $t->{chomp} ) {
 
       my $result = $r{output};
 
-      $result =~ s/\n*\z//xsm;
+      if ( $chomp =~ /\d/xsm ) {
+        $chomp = {
+          1 => 'front',
+          2 => 'end',
+          3 => 'all',
+        }->{$chomp} // 'all';
+      }
 
-      if ( $t->{chomp} == 2 ) {
+      if ( $chomp =~ /(?:front|all)$/xsm ) {
+        $result =~ s/\n*\z//xsm;
+      }
+
+      if ( $chomp =~ /(?:end|all)$/xsm ) {
         $result =~ s/\A\n*//xsm;
       }
 
@@ -739,13 +758,18 @@ expression as the result to compare.  Example:
 =item chomp
 
 Flag indicating that the result should have new lines removed.
-C<chomp> value of 1 indicates chomping at end only. C<chomp> value of
-2 will remove new lines from both ends of result.
+C<chomp>
+
+  1, front  => remove leading blank lines
+  2, end    => remove trailing blank lines
+  3, all    => remove blank lines from front and end
 
 =item trim
 
 Boolean that indicates if whitespace should be removed from front and
 end of result.
+
+default: false
 
 =item op
 
