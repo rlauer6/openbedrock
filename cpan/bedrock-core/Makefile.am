@@ -48,6 +48,7 @@ PACKAGE_MODULES = \
     Bedrock/Cache.pm \
     Bedrock/Cache/Redis.pm \
     Bedrock/Cache/Engine.pm \
+    Bedrock/Cache/Null.pm \
     Bedrock/Cache/Shareable.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \

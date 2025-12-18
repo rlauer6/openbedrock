@@ -63,6 +63,7 @@ perl5bedrockrequestlib_DATA = \
 perl5bedrockcachelib_DATA = \
    Bedrock/Cache/Engine.pm \
    Bedrock/Cache/Redis.pm \
+   Bedrock/Cache/Null.pm \
    Bedrock/Cache/Shareable.pm
 
 BEDROCK_CACHE = $(perl5bedrockcachelib_DATA:.pm=.pm.in)

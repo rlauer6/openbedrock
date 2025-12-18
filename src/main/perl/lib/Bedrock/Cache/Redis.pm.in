@@ -16,20 +16,33 @@ sub new {
 ########################################################################
   my ($class) = @_;
 
-  # Implementation of Step 2: Convention-based discovery
-  my $config = _load_redis_config();
+  # 1. Cloud-Native Priority: Check Environment First
+  # This allows secrets to be injected via AWS Secrets Manager / ECS Task Defs
+  my $server   = $ENV{BEDROCK_REDIS_SERVER} || $ENV{REDIS_URL};
+  my $password = $ENV{BEDROCK_REDIS_PASSWORD};
+  my $port     = $ENV{BEDROCK_REDIS_PORT};
 
-  my $redis = eval {
-    return Redis->new(
-      server    => $config->{server}   // 'localhost:6379',
-      password  => $config->{password} // undef,
-      reconnect => 1,
-    );
-  };
-
-  if ( $EVAL_ERROR || !$redis ) {
-    die "Could not initialize Redis connection: $EVAL_ERROR";
+  # 2. Legacy Fallback: Check XML if ENV is missing
+  if ( !$server ) {
+    my $config = _load_redis_config();
+    $server = $config->{server};
+    $password //= $config->{password};
+    $port     //= $config->{port};
   }
+
+  # Default
+  $server //= 'localhost';
+  $port   //= '6379';
+
+  if ( $server =~ s/:(\d)+$//xsm ) {
+    $port = $1;
+  }
+
+  # NOTE: No encoding set; we want raw bytes for Storable compatibility.
+  my $redis = eval { return Redis->new( server => "$server:$port", password => $password, reconnect => 1, ); };
+
+  die "Could not initialize Redis connection: $EVAL_ERROR"
+    if $EVAL_ERROR || !$redis;
 
   return bless { handle => $redis }, $class;
 }
@@ -73,3 +86,117 @@ sub set {
 }
 
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Cache::Redis - Redis Backend for Bedrock Caching
+
+=head1 SYNOPSIS
+
+  # Typically instantiated via Bedrock::Cache factory
+  # export BEDROCK_CACHE_ENGINE=Redis
+  
+  my $cache = Bedrock::Cache->new();
+  $cache->set('key', 'value', ttl => 3600);
+
+=head1 DESCRIPTION
+
+This module implements the C<Bedrock::Cache::Engine> interface using a
+Redis server as the backing store. It is designed to be "Container
+Native," preferring environment variables for configuration while
+maintaining backward compatibility with legacy XML configuration
+files.
+
+=head1 CONFIGURATION
+
+The module determines connection details using the following
+precedence order (highest priority first):
+
+=head2 1. Environment Variables (Recommended)
+
+Ideal for AWS Fargate, ECS, or Docker environments.
+
+=over 4
+
+=item * B<BEDROCK_REDIS_SERVER>
+
+The hostname (and optional port) of the Redis server.
+Examples: C<redis.internal>, C<10.0.0.5:6379>.
+
+=item * B<REDIS_URL>
+
+A standard connection string often provided by cloud providers.
+Example: C<redis://user:pass@host:port>. (Note: Only the host/port is
+extracted; password should be set separately if not standard).
+
+=item * B<BEDROCK_REDIS_PASSWORD>
+
+The authentication password (if required).
+
+=item * B<BEDROCK_REDIS_PORT>
+
+The port number. Defaults to C<6379> if not specified in the
+environment or the server string.
+
+=back
+
+=head2 2. Legacy XML Configuration
+
+If environment variables are missing, the module searches for
+F<redis.xml> in the paths defined by C<BEDROCK_CONFIG_PATH>.
+
+  <object>
+    <scalar name="server">localhost</scalar>
+    <scalar name="port">6379</scalar>
+    <scalar name="password">secret</scalar>
+  </object>
+
+=head2 3. Defaults
+
+If no configuration is found, it defaults to:
+
+  Server: C<localhost>
+  Port:   C<6379>
+
+=head1 METHODS
+
+This class satisfies the B<Bedrock::Cache::Engine> role.
+
+=over 4
+
+=item * B<get( $key )>
+
+Retrieves the raw bytes from Redis. Deserialization is handled by the
+C<Bedrock::Cache> wrapper.
+
+=item * B<set( $key, $value, [ttl => $seconds] )>
+
+Stores the value. If C<ttl> is provided, it uses the Redis C<SETEX>
+command to ensure atomic expiration.
+
+=item * B<delete( $key )>
+
+Removes the key from Redis.
+
+=item * B<exists( $key )>
+
+Returns true if the key exists in Redis.
+
+=back
+
+=head1 SERIALIZATION NOTE
+
+This module does B<not> configure the underlying C<Redis> client with
+any encoding (e.g., C<utf8>). It treats all data as raw binary
+bytes. This is intentional to support C<Storable::nfreeze> data passed
+down from the C<Bedrock::Cache> wrapper.
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
+=cut
