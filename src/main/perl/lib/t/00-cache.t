@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Bedrock;
+use Bedrock::Handler;
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw(:booleans);
 use Bedrock::Test::FauxHandler;
@@ -15,6 +16,7 @@ use IPC::Shareable;
 use Test::Deep;
 use Test::More;
 use Test::Output;
+use Storable qw(thaw);
 
 ########################################################################
 BEGIN {
@@ -27,91 +29,107 @@ BEGIN {
     {
     key     => 'BCFG',
     create  => 1,
-    destroy => 1,
+    destroy => 0,
     size    => 256 * 1024
     };
 
-  local $ENV{BEDROCK_CACHE_ENABLED} = 'on';
+  # initialize caching engine (creates $Apache::Bedrock::CACHE)
+  $ENV{BEDROCK_CACHE_ENGINE} = 'Shareable';
 
-  stderr_like( sub { use_ok('Bedrock::Handler'); }, qr/successfully/xsm, 'initialize caching' );
+  require Apache::Bedrock;
+
+  ok( $Apache::Bedrock::CACHE, 'caching object created' );
 }
 
-########################################################################
-sub main {
-########################################################################
-
-  my $config;
-  my $request_handler;
+my $config;
+my $request_handler;
 
 ########################################################################
-  subtest 'read config' => sub {
-########################################################################
-    $request_handler = Bedrock::Test::FauxHandler->new( log_level => 'trace' );
-
-    my $config_path = abs_path '../../../main/bedrock/config';
-
-    local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
-
-    local $ENV{BEDROCK_CACHE_ENABLED} = 'on';
-
-    my $handler = Bedrock::Handler->new($request_handler);
-
-    $config = $handler->config();
-
-    isa_ok( $handler, 'Bedrock::Handler' );
-  };
-
-  my %CACHE;
-  my $cache_key = $PROGRAM_NAME;
-
-########################################################################
-  subtest 'read cache' => sub {
+subtest 'read config' => sub {
 ########################################################################
 
-    tie %CACHE, 'IPC::Shareable', { key => 'BCFG', create => 0 };  ## no critic (ProhibitTies)
+  $request_handler = Bedrock::Test::FauxHandler->new( log_level => 'trace' );
 
-    ok( keys %CACHE, 'caching' )
-      or diag( Dumper [ keys => keys %CACHE ] );
+  my $config_path = abs_path '../../../main/bedrock/config';
 
-    # the cache will contain _config_files_processed which preserves
-    # the original config file list that was processed to create the
-    # config object. It is removed from the config object itself when
-    # the config object is restored from the cache.
-    cmp_deeply( $CACHE{$cache_key}, superhashof($config), 'config and cached config equal' )
-      or diag( Dumper( [ CACHE => \%CACHE, config => $config ] ) );
-  };
+  $ENV{BEDROCK_CONFIG_PATH} = $config_path;
+
+  my $handler = Bedrock::Handler->new( $request_handler, cache => $Apache::Bedrock::CACHE );
+
+  $config = $handler->config();
+
+  isa_ok( $handler, 'Bedrock::Handler' );
+};
+
+my %CACHE;
+my $cache_key = $PROGRAM_NAME;
 
 ########################################################################
-  subtest 'compare object elements' => sub {
+subtest 'read cache' => sub {
 ########################################################################
-    my $cache_config = $CACHE{$cache_key};
 
-    for ( keys %{$config} ) {
-      if ( ref $config->{$_} ) {
-        is( ref $cache_config->{$_}, ref $config->{$_}, 'object types are the same' )
-          or do {
-          diag( Dumper( [ $config->{$_}, $cache_config->{$_} ] ) );
+  tie %CACHE, 'IPC::Shareable',  ## no critic
+    {
+    key    => 'BCFG',
+    create => 0
+    };
 
-          BAIL_OUT("objects $_ not equal");
-          };
-      }
-      else {
-        is( $cache_config->{$_}, $config->{$_}, "scalars [$_] are equal" )
-          or BAIL_OUT("scalars not equal");
-      }
+  ok( keys %CACHE, 'we have some keys...' )
+    or do {
+    BAIL_OUT('ERROR: nothing in cache?');
+    };
+
+  # the cache will contain _config_files_processed which preserves
+  # the original config file list that was processed to create the
+  # config object. It is removed from the config object itself when
+  # the config object is restored from the cache.
+
+  my $cached_config = $Apache::Bedrock::CACHE->get($cache_key);
+
+  ok( $cached_config, 'got something from the cache' )
+    or do {
+    BAIL_OUT('ERROR: nothing in cache?');
+    };
+
+  cmp_deeply( $cached_config, superhashof($config), 'config and cached config equal' )
+    or do {
+    diag(
+      Dumper(
+        [ CACHE  => \%CACHE,
+          config => $config
+        ]
+      )
+    );
+    BAIL_OUT('ERROR: caching not working?');
+    };
+};
+
+########################################################################
+subtest 'compare object elements' => sub {
+########################################################################
+  my $cache_config = thaw $CACHE{$cache_key}->{d};
+
+  for ( keys %{$config} ) {
+    if ( ref $config->{$_} ) {
+      is( ref $cache_config->{$_}, ref $config->{$_}, 'object types are the same' )
+        or do {
+        diag( Dumper( [ $config->{$_}, $cache_config->{$_} ] ) );
+
+        BAIL_OUT("objects $_ not equal");
+        };
     }
-  };
+    else {
+      is( $cache_config->{$_}, $config->{$_}, "scalars [$_] are equal" )
+        or BAIL_OUT("scalars not equal");
+    }
+  }
+};
 
-  $request_handler->log->close;
+$request_handler->log->close;
 
-  # diag( $request_handler->log->as_string );
+# diag( $request_handler->log->as_string );
 
-  done_testing;
-
-  return 0;
-}
-
-exit main();
+done_testing;
 
 1;
 
