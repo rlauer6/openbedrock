@@ -177,7 +177,6 @@ sub handler {
 
     if ( !-e $file ) {
       $r->log->error( sprintf 'file does not exist: [%s]', $file );
-
       return $NOT_FOUND;
     }
 
@@ -254,11 +253,37 @@ sub handler {
   my $tx;
   my $final_status = $OK;
 
+  my $route_params = {};
+
+  if ( exists $conf->{routes} && reftype( $conf->{routes} ) eq 'ARRAY' ) {
+    require Bedrock::Router;
+
+    my $router = Bedrock::Router->new($conf);
+
+    if ( my $match = $router->match( $r->uri ) ) {
+      # 1. Override the file to be processed
+      my $new_file = sprintf '%s/%s', $conf->{PEBBLE_DIR}, $match->{template};
+
+      if ( -e $new_file ) {
+        $file = $new_file;  # Override local var used by init_tagx
+
+        # Update Handler state so relative includes works
+        @{$bedrock_handler}{qw(file path filename)} = ( $file, dirname($file), basename($file) );
+
+        # 2. Capture Params
+        $route_params = $match->{params};
+
+        $r->log->info( sprintf 'Route matched: %s->%s', $r->uri, $match->{template} );
+      }
+    }
+  }
+
   eval {
     $ctx = Bedrock::Context->new(
-      request => $r,
-      config  => $conf,
-      cache   => $CACHE,
+      request      => $r,
+      config       => $conf,
+      cache        => $CACHE,
+      route_params => $route_params,
     );
 
     # --- benchmark
@@ -664,6 +689,61 @@ Handler for parsing Bedrock files.  Can be used with Apache as a
 C<mod_perl> handler or in other configurations including a shell
 interpreter.
 
+=head1 ROUTING
+
+Bedrock includes a configuration-driven router that allows you to map application
+URIs to specific Bedrock templates.
+
+=head2 Configuration
+
+Routes are defined in your Bedrock configuration (typically F<routes.xml>) using
+Bedrock's typed XML format. You must define a C<routes> object containing an
+array of route objects.
+
+ <object name="routes">
+   <array>
+     <object>
+       <scalar name="pattern">/user/:id</scalar>
+       <scalar name="template">user_profile.roc</scalar>
+     </object>
+
+     <object>
+       <scalar name="pattern">/api/search</scalar>
+       <scalar name="template">api/search.jroc</scalar>
+     </object>
+   </array>
+ </object>
+
+=head2 Template Resolution (PEBBLE_DIR vs DOCUMENT_ROOT)
+
+When a request matches a route, Bedrock resolves the target C<template> relative
+to the configured B<PEBBLE_DIR>, not the web server's B<DOCUMENT_ROOT>.
+
+This distinction is intentional:
+
+=over 4
+
+=item *
+
+B<DOCUMENT_ROOT>: Intended for public, static assets (images, CSS, JS) and
+legacy scripts that map directly to the file system.
+
+=item *
+
+B<PEBBLE_DIR>: The repository for your application's logic and templates.
+By resolving routes against C<PEBBLE_DIR>, Bedrock keeps your application code
+separate from the public web root, improving security and organization.
+
+=back
+
+=head2 Route Parameters
+
+The router supports named parameters defined by a colon prefix (e.g., C<:id>).
+When a route matches, these parameters are captured and passed to the
+L<Bedrock::Context> object.
+
+=cut
+
 =head1 METHODS AND SUBROUTINES
 
 =head2 is_bedrock_shell
@@ -678,7 +758,7 @@ Returns true if running under C<mod_perl>.
 
  load_startup_modules(modules, context, tagx)
 
-This method install plugins defined in F<tagx.xml>'s C<MODULES>
+This method installs plugins defined in F<tagx.xml>'s C<MODULES>
 section and those with configurations defined in Bedrock's plugin
 configuration directories:
 
@@ -690,7 +770,32 @@ lazy-loaded and only are instantiated if they are used on a page.
 
 When modules are instantiated they are passed these parameters:
 
+=over 4
 
+=item *
+
+B<context>: The current C<Bedrock::Context> object.
+
+=item *
+
+B<config>: The module-specific configuration hash.
+
+=item *
+
+B<tagx>: The current C<Text::TagX> parser instance.
+
+=back
+
+The module objects are bound to the TagX symbol table, making them available
+within your Bedrock templates using the configured binding name.
+
+=head2 pre_bind_module
+
+ pre_bind_module(options)
+
+Internal method used to bind special "pre-bound" modules (specifically
+C<HEADER> and C<SESSION> types) that must be available immediately, rather than
+lazy-loaded.
 
 =head1 AUTHOR
 

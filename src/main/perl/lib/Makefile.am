@@ -99,6 +99,7 @@ perl5bedrocklib_DATA = \
     Bedrock/PodWriter.pm \
     Bedrock/RegExp.pm \
     Bedrock/Request.pm \
+    Bedrock/Router.pm \
     Bedrock/Serializer.pm \
     Bedrock/Snippet.pm \
     Bedrock/Test.pm \
@@ -357,7 +358,7 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/Session.pm \
     BLM/Startup/SessionManager.pm \
     BLM/Startup/SQLSession.pm \
-    BLM/Startup/UserSession.pm 
+    BLM/Startup/UserSession.pm
 
 BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
 
@@ -425,7 +426,7 @@ clean-local:
 
 # test all :  TEST=
 # test one :  TEST=01-indexedtablehandler
-# test group: TEST=indexedtablehandler 
+# test group: TEST=indexedtablehandler
 #
 FAUXMODULES = \
     Bedrock/Test.pm \
@@ -454,7 +455,7 @@ test: $(FAUXMODULES)
 	  $(PROVE) -v -I $(srcdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/$$TEST
 
 prove.sh: Bedrock/Test.pm
-	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I $(srdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/t" > prove.sh
+	echo "BEDROCK_CONFIG_PATH=$(builddir)/../../bedrock/config $(PROVE) -v -I $(srcdir)/.. -I $(builddir) -I $(builddir)/Bedrock -I $(builddir)/Bedrock/Text $(srcdir)/t" > prove.sh
 	chmod 755 prove.sh
 
 CLEANFILES = \

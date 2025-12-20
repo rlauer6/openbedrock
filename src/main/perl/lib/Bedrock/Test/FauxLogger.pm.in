@@ -9,43 +9,46 @@ use Bedrock::Constants qw(:chars);
 use IO::Scalar;
 use Data::Dumper;
 
-our $LOG_LEVEL;
-
-our %LOG_LEVELS = (
-  error => 0,
-  warn  => 1,
-  info  => 2,
-  debug => 3,
-  trace => 4,
-);
-
-########################################################################
-sub new {
-########################################################################
-  my ( $class, $level ) = @_;
-
-  $LOG_LEVEL = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
-
-  my $log = $EMPTY;
-
-  my $fh = IO::Scalar->new( \$log );
-
-  no strict 'refs';  ## no critic (ProhibitNoStrict)
+{
+  no strict 'refs';  ## no critic
 
   foreach my $m (qw{ error debug warn fatal info trace }) {
-    *{ $class . "::$m" } = sub {
+    *{ __PACKAGE__ . "::$m" } = sub {
       my ( $self, @message ) = @_;
 
       return $self->_log( $m, @message );
     };
   }
+}
 
-  my $self = {
-    log => \$log,
-    fh  => $fh,
-  };
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $level ) = @_;
+  $level //= 'info';
 
-  return bless $self, $class;
+  my %log_levels = (
+    error => 0,
+    warn  => 1,
+    info  => 2,
+    debug => 3,
+    trace => 4,
+  );
+
+  my $log_level = $log_levels{ lc $level } // $log_levels{info};
+
+  my $log = $EMPTY;
+
+  my $fh = IO::Scalar->new( \$log );
+
+  my $self = bless {
+    log         => \$log,
+    fh          => $fh,
+    _log_levels => \%log_levels,
+    _log_level  => $log_level
+  }, $class;
+
+  return $self;
 }
 
 ########################################################################
@@ -53,10 +56,10 @@ sub _log {
 ########################################################################
   my ( $self, $level, @message ) = @_;
 
-  my $log_level = $LOG_LEVELS{$level};
+  my $log_level = $self->{_log_levels}->{$level};
 
   return
-    if $log_level > $LOG_LEVEL;
+    if $log_level > $self->{_log_level};
 
   my $depth = 0;
 
@@ -71,7 +74,9 @@ sub _log {
 
   my $log_message = sprintf '(%s):[%s] %s', $caller_package, $lineno, join $EMPTY, @message;
 
-  return print { $self->{fh} } $log_message, "\n";
+  print { $self->{fh} } $log_message, "\n";
+
+  return;
 }
 
 ########################################################################
@@ -83,11 +88,22 @@ sub as_string {
 }
 
 ########################################################################
-sub close {  ## no critic (ProhibitAmbiguousNames ProhibitBuiltIn)
+sub close {  ## no critic
 ########################################################################
   my ($self) = @_;
 
-  return $self->{fh}->close;
+  my $fh = $self->{fh};
+  return
+    if !$fh;
+
+  $fh->close;
+
+  delete $self->{fh};
+
+  return;
 }
 
+DESTROY {
+  return shift->close;
+}
 1;

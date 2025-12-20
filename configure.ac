@@ -449,7 +449,7 @@ do_subst_command='do_subst = sed \
   -e '"'"'s,[@]RCS[@],$(RCS),g'"'"' \
   -e '"'"'s,[@]RLOG[@],$(RLOG),g'"'"' \
   -e '"'"'s,[@]RM[@],$(RM),g'"'"' \
-  -e '"'"'s,[@]RMDIR[@],$(RMDIR),g'"'"' \
+  -e '"'"'s,[@]RMDIR[@],$(RMDIR),g'"'"'
 '
 ]
 AC_SUBST([do_subst_command])

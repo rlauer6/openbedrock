@@ -27,6 +27,7 @@ use Bedrock qw(:booleans);
 use Bedrock::Constants qw(:chars);
 use Data::Dumper;
 use Scalar::Util qw(reftype);
+use List::Util qw(pairs);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -40,45 +41,54 @@ sub TIEHASH {
 
   my $self = bless {}, $class;
 
-  $self->{config}  = $config;
-  $self->{verbose} = $config->{verbose};
-  $self->{vars}    = {};
-  $self->{_ctx}    = $ctx;
+  @{$self}{qw(config verbose vars _ctx)} = ( $config, $config->{verbose}, {}, $ctx );
 
   if ( $config->{scrubber} ) {
-    eval {
-      require HTML::Scrubber;
-
-      my $cfg = $config->{scrubber};
-
-      $self->{_html_scrubber} = HTML::Scrubber->new;
-
-      if ( exists $cfg->{allow} ) {
-        $self->scrubber->allow( split $SPACE, $cfg->{allow} );
-      }
-
-      if ( exists $cfg->{deny} ) {
-        $self->scrubber->deny( split $SPACE, $cfg->{deny} );
-      }
-    };
+    $self->_init_scrubber;
   }
 
-  my @params = $ctx->getInputValue;
+  my %form_data  = map { $_ => $ctx->getInputValue($_) } $ctx->getInputValue;
+  my %route_data = %{ $ctx->{_route_params} // {} };
+  my %input_data = ( %form_data, %route_data );
 
-  for my $key (@params) {
-    my $value = $ctx->getInputValue($key);
+  foreach my $p ( pairs %input_data ) {
+    my ( $k, $v ) = @{$p};
 
-    if ( $key ne 'POSTDATA' || $config->{scrub_all} ) {
-      if ( is_array($value) ) {
-        $value = [ map { $self->scrub($_) } @{$value} ];
+    if ( $k ne 'POSTDATA' || $config->{scrub_all} ) {
+      if ( is_array($v) ) {
+        $v = [ map { $self->scrub($_) } @{$v} ];
       }
       else {
-        $value = $self->scrub($value);
+        $v = $self->scrub($v);
       }
     }
 
-    $self->{vars}->{$key} = $value;
+    $self->{vars}->{$k} = $v;
   }
+
+  return $self;
+}
+
+########################################################################
+sub _init_scrubber {
+########################################################################
+  my ($self) = @_;
+
+  eval {
+    require HTML::Scrubber;
+
+    my $cfg = $config->{scrubber};
+
+    $self->{_html_scrubber} = HTML::Scrubber->new;
+
+    if ( exists $cfg->{allow} ) {
+      $self->scrubber->allow( split $SPACE, $cfg->{allow} );
+    }
+
+    if ( exists $cfg->{deny} ) {
+      $self->scrubber->deny( split $SPACE, $cfg->{deny} );
+    }
+  };
 
   return $self;
 }

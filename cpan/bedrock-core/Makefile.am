@@ -81,6 +81,7 @@ PACKAGE_MODULES = \
     Bedrock/Request.pm \
     Bedrock/Request/Upload.pm \
     Bedrock/Role/Config.pm \
+    Bedrock/Router.pm \
     Bedrock/Serializer.pm \
     Bedrock/Serializer/BedrockXML.pm \
     Bedrock/Serializer/JSON.pm \
