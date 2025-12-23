@@ -24,43 +24,73 @@ package Bedrock::Handler;
 use strict;
 use warnings;
 
-our @EXPORT_OK = qw(
-  bind_blm_module
-  bind_module
-  get_blm_config
-  mlogger
-  require_module
-);
-
-use parent qw( Exporter );
-
-our %EXPORT_TAGS = ( all => \@EXPORT_OK );
-
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic (RequireInterpolationOfMetachars)
-
+use Bedrock qw(choose);
 use Bedrock::Apache::Constants qw(:http);
-
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:chars :defaults :booleans);
 use Bedrock::Context;
-use Carp;
+use Carp qw(confess croak carp);
 use Cwd qw(realpath fastcwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename qw(fileparse);
 use File::Find;
+use Scalar::Util qw(reftype);
 use List::Util qw( any uniq);
 use Symbol;
 
-our $BEDROCK_BENCHMARK;
+our @EXPORT_OK = qw(
+  bind_blm_module
+  bind_module
+  get_blm_config
+  mlogger
+  mlogger_debug
+  mlogger_info
+  mlogger_warn
+  require_module
+);
 
-BEGIN {
-  $BEDROCK_BENCHMARK = $ENV{BEDROCK_BENCHMARK} && $ENV{BEDROCK_BENCHMARK} =~ /^(?:on|yes|true|1)$/ixms;
-  if ($BEDROCK_BENCHMARK) {
-    require Benchmark;
+__PACKAGE__->mk_accessors(
+  qw(
+    benchmark
+    benchmarking_enabled
+    cache
+    config
+    file
+    filename
+    path
+    pwd
+    request
+    uri_dir
+    uri_name
+  )
+);
 
-    Benchmark->import(qw(:all :hireswallclock));
+use parent qw( Exporter Class::Accessor);
+
+our %EXPORT_TAGS = ( all => \@EXPORT_OK );
+
+our $VERSION = '@PACKAGE_VERSION@';  ## no critic
+
+########################################################################
+sub log_benchmark {
+########################################################################
+  my ( $self, $message, $elapsed ) = @_;
+
+  return
+    if !$self->benchmarking_enabled;
+
+  my ( $t0, $t1, $t2 ) = ( @{ $self->benchmark }, Benchmark->new );
+
+  mlogger_info( $self->request, sprintf '(BENCHMARK) %s: %s', $message, timestr( timediff( $t2, $t1 ), 'all' ) );
+
+  if ($elapsed) {
+    mlogger_info( $self->request, '(BENCHMARK) Elapsed time: %s', timestr( timediff( $t2, $t0 ) ) );
   }
+
+  $self->benchmark->[1] = $t2;
+
+  return;
 }
 
 ########################################################################
@@ -68,24 +98,15 @@ sub new {
 ########################################################################
   my ( $class, $r, %options ) = @_;
 
-  $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
+  $options{bedrock_config_path} = $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
-  my $self = bless {}, $class;
+  @options{qw(pwd request)} = ( fastcwd(), $r );
 
-  # Capture the injected cache driver
-  $self->{cache} = $options{cache};
+  my $self = $class->SUPER::new( \%options );
 
-  $self->pwd( fastcwd() );
-
-  $self->request($r);
+  $self->init_benchmarking;
 
   $self->init_request;
-
-  my ( $t0, $t1 );
-
-  if ($BEDROCK_BENCHMARK) {
-    $t0 = Benchmark->new;
-  }
 
   my $config = eval { return $self->load_config };
 
@@ -94,37 +115,43 @@ sub new {
   if ( !$config || $EVAL_ERROR ) {
     my $error = $EVAL_ERROR;
 
-    mlogger(
-      $r,
-      level   => 'error',
-      message => "error loading configuration files: $error"
-    );
-
-    mlogger(
-      $r,
-      level   => 'error',
-      message => sprintf 'processed the following files: %s',
-      Dumper( [ $self->config_files_processed ] )
-    );
+    mlogger_error( $r, 'error loading configuration files: %s', $error );
+    mlogger_error( $r, 'processed the following files: %s',     Dumper( [ $self->config_files_processed ] ) );
 
     croak $error;
   }
   else {
-    mlogger(
-      $r,
-      level   => 'debug',
-      message => sprintf 'processed the following files: %s',
-      Dumper( [ $self->config_files_processed ] )
-    );
+    mlogger_debug( $r, 'processed the following files: %s', Dumper( [ $self->config_files_processed ] ) );
   }
 
-  if ($BEDROCK_BENCHMARK) {
-    $t1 = Benchmark->new;
-
-    $r->log->info( sprintf '(BENCHMARK): config load time: %s', timestr( timediff( $t1, $t0 ), 'all' ) );
-  }
+  $self->log_benchmark('config load time');
 
   return $self;
+}
+
+########################################################################
+sub init_benchmarking {
+########################################################################
+  my ($self) = @_;
+
+  my $benchmarking = $self->benchmarking_enabled;
+
+  return
+    if !$benchmarking;
+
+  my ($enabled) = $benchmarking =~ /^(enabled|on|yes|1)$/xsmi ? 1 : 0;
+  $self->benchmarking_enabled($enabled);
+
+  return
+    if !$enabled;
+
+  require Benchmark;
+
+  Benchmark->import(qw(:all timediff timestr :hireswallclock));
+  my $t0 = Benchmark->new;
+  $self->benchmark( [ $t0, $t0 ] );
+
+  return;
 }
 
 ########################################################################
@@ -132,7 +159,7 @@ sub cache_enabled {
 ########################################################################
   my ($self) = @_;
 
-  return $self->{cache} ? $TRUE : $FALSE;
+  return $self->cache ? $TRUE : $FALSE;
 }
 
 ########################################################################
@@ -150,22 +177,26 @@ sub init_request {
   #
   #     Action bedrock-cgi /cgi-bin/bedrock.cgi virtual
 
-  $self->{file} = $EMPTY;
+  $self->file($EMPTY);
 
   if ( $r->content_type && $r->content_type =~ /directory/xsm ) {
     $ENV{PATH_TRANSLATED} = $r->filename;
     $r->content_type('text/html');
   }
 
-  $self->{file} = $r->filename;
+  $self->file( $r->filename );
 
   # Parse for the URI components
   if ( $r->uri ) {
-    @{$self}{qw( uri_name uri_dir )} = fileparse( $r->uri );
+    my ( $uri_name, $uri_dir ) = fileparse( $r->uri );
+    $self->uri_name($uri_name);
+    $self->uri_dir($uri_dir);
   }
 
   if ( $r->filename ) {
-    @{$self}{qw( filename path )} = fileparse( $r->filename );
+    my ( $filename, $path ) = fileparse( $r->filename );
+    $self->filename($filename);
+    $self->path($path);
   }
 
   {
@@ -173,23 +204,23 @@ sub init_request {
 
     if ( $ENV{BEDROCK_DUMP_ENV} ) {
       foreach ( keys %ENV ) {
-        $r->log->debug( sprintf 'ENV{%s} => %s', $_, $ENV{$_} );
+        mlogger_debug( $r, 'ENV{%s} => %s', $_, $ENV{$_} );
       }
     }
 
-    $r->log->debug( sprintf 'CONTENT TYPE....[%s]',         $r->content_type // $EMPTY );
-    $r->log->debug( sprintf 'SCRIPT_NAME.....[%s]',         $ENV{SCRIPT_NAME} );
-    $r->log->debug( sprintf 'CONFIG_PATH.....[%s]',         $ENV{CONFIG_PATH} );
-    $r->log->debug( sprintf 'BEDROCK_CONFIG_PATH.....[%s]', $ENV{BEDROCK_CONFIG_PATH} );
-    $r->log->debug( sprintf 'PATH_INFO.......[%s]',         $ENV{PATH_INFO} );
-    $r->log->debug( sprintf 'PATH_TRANSLATED.[%s]',         $ENV{PATH_TRANSLATED} );
-    $r->log->debug( sprintf 'mod_perl........[%s]',         $ENV{MOD_PERL} );
-    $r->log->debug( sprintf 'request file....[%s]',         $self->{file} );
-    $r->log->debug( sprintf 'URI.............[%s]',         $r->uri || q{} );
-    $r->log->debug( sprintf 'URI_DIR.........[%s]',         $self->{uri_dir} );
-    $r->log->debug( sprintf 'URI_NAME........[%s]',         $self->{uri_name} );
-    $r->log->debug( sprintf 'filename........[%s]',         $self->{filename} );
-    $r->log->debug( sprintf 'path............[%s]',         $self->{path} );
+    mlogger_debug( $r, 'CONTENT TYPE....[%s]',         $r->content_type          // $EMPTY );
+    mlogger_debug( $r, 'SCRIPT_NAME.....[%s]',         $ENV{SCRIPT_NAME}         // $EMPTY );
+    mlogger_debug( $r, 'CONFIG_PATH.....[%s]',         $ENV{CONFIG_PATH}         // $EMPTY );
+    mlogger_debug( $r, 'BEDROCK_CONFIG_PATH.....[%s]', $ENV{BEDROCK_CONFIG_PATH} // $EMPTY );
+    mlogger_debug( $r, 'PATH_INFO.......[%s]',         $ENV{PATH_INFO}           // $EMPTY );
+    mlogger_debug( $r, 'PATH_TRANSLATED.[%s]',         $ENV{PATH_TRANSLATED}     // $EMPTY );
+    mlogger_debug( $r, 'mod_perl........[%s]',         $ENV{MOD_PERL}            // $EMPTY );
+    mlogger_debug( $r, 'request file....[%s]',         $self->file               // $EMPTY );
+    mlogger_debug( $r, 'URI.............[%s]',         $r->uri                   // $EMPTY );
+    mlogger_debug( $r, 'URI_DIR.........[%s]',         $self->uri_dir            // $EMPTY );
+    mlogger_debug( $r, 'URI_NAME........[%s]',         $self->uri_name           // $EMPTY );
+    mlogger_debug( $r, 'filename........[%s]',         $self->filename           // $EMPTY );
+    mlogger_debug( $r, 'path............[%s]',         $self->path               // $EMPTY );
   }
 
   return $self;
@@ -205,15 +236,12 @@ sub full_path {
 
   my $ext;
 
+  $name //= q{};
+  $path //= q{};
+
   ( $name, $path, $ext ) = fileparse( "$path/$name", qr/[.][^.]+$/xsm );
 
   return sprintf '%s%s%s', $path, $name, ( $ext || $default_ext );
-}
-
-########################################################################
-sub choose(&) {  ## no critic
-########################################################################
-  return $_[0]->();
 }
 
 ########################################################################
@@ -240,10 +268,9 @@ sub read_config {
 
   if ( !$config || $EVAL_ERROR ) {
 
-    mlogger(
+    mlogger_warn(
       $r,
-      level   => 'warn',
-      message => sprintf 'error reading config: %s',
+      sprintf 'error reading config: %s',
       Dumper(
         [ full_path => $full_path,
           error     => $EVAL_ERROR,
@@ -294,14 +321,6 @@ sub is_mod_perl {
 }
 
 ########################################################################
-sub request {
-########################################################################
-  my @args = @_;
-
-  return _set_get( '_apache_handler', @args );
-}
-
-########################################################################
 sub request_handler { carp "method is deprecated. use request()\n"; goto &request; }
 sub apache_handler  { carp "method is deprecated. use request()\n"; goto &request; }
 ########################################################################
@@ -332,10 +351,10 @@ sub _log {
 }
 
 ########################################################################
-sub log_info  { return _log( @_, 'info' ) }   ## no critic (RequireArgUnpacking)
-sub log_error { return _log( @_, 'error' ) }  ## no critic (RequireArgUnpacking)
-sub log_warn  { return _log( @_, 'warn' ) }   ## no critic (RequireArgUnpacking)
-sub log_debug { return _log( @_, 'debug' ) }  ## no critic (RequireArgUnpacking)
+sub log_info  { return _log( @_, 'info' ) }
+sub log_error { return _log( @_, 'error' ) }
+sub log_warn  { return _log( @_, 'warn' ) }
+sub log_debug { return _log( @_, 'debug' ) }
 ########################################################################
 
 ########################################################################
@@ -343,32 +362,26 @@ sub load_config_from_cache {
 ########################################################################
   my ($self) = @_;
 
-  # Guard: if no cache driver injected, we cannot load from cache
-  return unless $self->{cache};
-
-  # note the only time $ENV{SERVER_NAME} should be undef is if we are
-  # executing outside the web environment, in which case, caching
-  # makes little sense.
+  my $cache = $self->cache;
+  return
+    if !$cache;
 
   my $key = $ENV{SERVER_NAME} // $PROGRAM_NAME;  # for test t/00-cache.t
 
   my $r = $self->request;
 
   # Retrieve from injected cache
-  my $cached_config = $self->{cache}->get($key);
+  my $cached_config = $cache->get($key);
 
-  my $config = eval {
-    if ($cached_config) {
-      $r->log->debug('loading configuration from cache');
-      return $cached_config;
-    }
-    else {
-      return $self->get_bedrock_config;
-    }
+  my $config = choose {
+    return $cached_config
+      if $cached_config;
+
+    return $self->get_bedrock_config($r);
   };
 
   if ($config) {
-    $config->{BEDROCK_CACHE_LOADED} //= scalar localtime;
+    $config->{BEDROCK_CACHE_TIMESTAMP} //= scalar localtime;
   }
 
   my $config_files_processed = $cached_config ? $cached_config->{_config_files_processed} : $self->{_config_files_processed};
@@ -377,7 +390,7 @@ sub load_config_from_cache {
     $config->{_config_files_processed} = $config_files_processed;
 
     # Store in injected cache
-    $self->{cache}->set( $key, $config );
+    $cache->set( $key, $config );
 
     delete $config->{_config_files_processed};
   }
@@ -427,38 +440,29 @@ sub config {
   my ( $self, @args ) = @_;
 
   if ( $args[0] && ref $args[0] ) {
-    $self->{_config} = $args[0];
+    $self->set( 'config', $args[0] );
   }
   elsif ( $args[0] ) {
-    return $self->{_config}->{ $args[0] };
+    return $self->get('config')->{ $args[0] };
   }
 
-  return $self->{_config};
+  return $self->get('config');
 }
 
 ########################################################################
-sub get_uri_dir { goto &uri_dir; }
+sub get_uri_dir { return shift->uri_dir; }
 ########################################################################
-
-# set or get uri_dir
-########################################################################
-sub uri_dir {
-########################################################################
-  my (@args) = @_;
-
-  return _set_get( 'uri_dir', @args );
-}
 
 ########################################################################
 sub restore_dir {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self->pwd ) {
-    chdir $self->pwd;
+  if ( $self->pwd() ) {
+    chdir $self->pwd();
   }
 
-  return $self->pwd;
+  return $self->pwd();
 }
 
 ########################################################################
@@ -490,23 +494,22 @@ sub read_data_sources {
 ########################################################################
   my ( $self, @paths ) = @_;
 
-  # look for data-sources.xml which defines database connection strings
+  $self->request->log->debug( sprintf 'looking for data sources in: %s', join $COMMA, @paths );
+
+  # look for data-sources.(xml|yml|json) which define database connection strings
   my $data_source_config = Bedrock::Config->new;
 
-  my $r = $self->request;
+  foreach my $p ( map { sprintf '%s/data-sources', $_ } @paths ) {
+    foreach my $ext (qw(xml json yml yaml)) {
+      my $data_sources = sprintf '%s.%s', $p, $ext;
+      next if !-e $data_source_config;
 
-  $r->log->debug( sprintf 'looking for data sources in: %s', join $COMMA, @paths );
+      my $config = $data_source_config->fetch_config($data_sources);
+      next if !$config;
+      $data_source_config->merge_config($config);
 
-  foreach my $p (@paths) {
-    my $data_sources = sprintf '%s/data-sources.xml', $p;
-
-    $r->log->debug( sprintf '%s exists? (%s)', $data_sources, -e $data_sources ? 'yes' : 'no' );
-    next if !-e $data_sources;
-
-    my $config = $self->read_config( $p, 'data-sources' );
-
-    next if !$config;
-    $data_source_config->merge_config($config);
+      $self->config_files_processed($data_sources);
+    }
   }
 
   return $data_source_config;
@@ -525,16 +528,22 @@ sub get_bedrock_config_path {
     $bedrock_config_path = realpath($bedrock_config_path) // $EMPTY;
 
     if ( !$bedrock_config_path ) {
-      $r->log->error( 'invalid BEDROCK_CONFIG_PATH ' . $ENV{BEDROCK_CONFIG_PATH} );
+      mlogger_error( $r, 'invalid BEDROCK_CONFIG_PATH %s', $ENV{BEDROCK_CONFIG_PATH} );
     }
   }
   else {
-    $r->log->error('No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.');
+    mlogger( $r, 'No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.' );
   }
 
   return $bedrock_config_path;
 }
 
+########################################################################
+# Module paths are paths under config.d or if you have specfied a
+# different CONFIG_PATH like `/usr/src/app/config`, then the module
+# path would be `/usr/src/app/config.d`. There you would add your
+# application plugin configurations in the `plugins` or `startup`
+# directories.
 ########################################################################
 sub get_module_paths {
 ########################################################################
@@ -545,8 +554,11 @@ sub get_module_paths {
   # -- look for module configs
   my @module_paths;
 
-  # note the order is important here, we want local configurations
-  # to override system configurations
+  ######################################################################
+  # NOTE: The order is important here (startup, plugin) - we want
+  # local configurations (plugins) to override system configurations
+  # (startup).
+  ######################################################################
 
   foreach my $p (@paths) {
 
@@ -599,19 +611,19 @@ sub merge_module_configs {
 ########################################################################
   my ( $self, %args ) = @_;
 
-  my ( $r, $config, $module_paths ) = @args{qw(r config module_paths)};
+  my $r = $self->request;
+  my ( $config, $module_paths ) = @args{qw(config module_paths)};
 
-  $r //= $self->request;
-
-  mlogger(
-    $r,
-    level   => 'debug',
-    message => Dumper( [ module_paths => $module_paths ] )
-  );
+  mlogger_debug( $r, Dumper( [ module_paths => $module_paths ] ) );
 
   foreach my $path ( @{$module_paths} ) {
 
-    foreach my $file ( _list_xml_files($path) ) {
+    my @config_files = _list_files(
+      path => $path,
+      type => qr/[.](xml|ya?ml|json)$/xsmi,
+    );
+
+    foreach my $file (@config_files) {
       $r->log->debug( sprintf 'Found a potential module configuration file: [%s]', $file );
 
       $r->log->debug( sprintf 'Merging [%s]', $file );
@@ -619,7 +631,14 @@ sub merge_module_configs {
       $config = eval {
         my $module_config = Bedrock::Config->new($file);
 
-        $config->merge_modules( { MODULES => [$module_config] } );
+        my ( $module_name, $binding ) = @{$module_config}{qw(module binding)};
+
+        if ( !$module_name || !$binding ) {
+          mlogger_info( $r, 'skipping %s - no binding or name in configuration: %s', $file, Dumper($module_config) );
+        }
+        else {
+          $config->merge_modules( { MODULES => [$module_config] } );
+        }
 
         return $config;
       };
@@ -628,7 +647,6 @@ sub merge_module_configs {
         if !$config || $EVAL_ERROR;
 
       $self->config_files_processed($file);
-
     }
   }
 
@@ -663,7 +681,7 @@ sub bind_module {
 
   my $obj;
 
-  ## no critic (ProhibitTies)
+  ## no critic
   my %tie_subs = (
     hash => sub {
       $obj = bless {}, $module;
@@ -689,37 +707,38 @@ sub bind_module {
 }
 
 ########################################################################
-sub get_custom_configs {
+sub merge_user_configs {
 ########################################################################
   my ( $self, %args ) = @_;
 
-  my ( $paths, $module_paths, $config, $r ) = @args{qw(paths module_paths config r)};
-  $r //= $self->request;
+  my $r = $self->request;
+
+  my ( $paths, $config ) = @args{qw(paths config)};
 
   my @files_processed = $self->config_files_processed;
 
   foreach my $path ( @{$paths} ) {
-
     $r->log->debug( sprintf 'Searching [%s] for config files', $path );
 
-    my @xml_files = _list_files(
+    my @config_files = _list_files(
       path   => $path,
-      type   => 'xml',
+      type   => qr/[.](xml|ya?ml|json)$/xsmi,
       filter => [qw(tagx.xml tagx_apps.xml)]
     );
 
-    foreach my $file (@xml_files) {
+    foreach my $file (@config_files) {
       if ( any { $file =~ /$_/xsm } @files_processed ) {
-        $r->log->debug( sprintf 'skipping file %s ... already processed', $file );
+        $r->log->warn( sprintf 'skipping [%s]...already processed', $file );
         next;
       }
 
-      $r->log->debug( sprintf 'Found a configuration file: [%s]', $file );
+      $r->log->debug( sprintf 'attempting to merge...[%s]', $file );
 
       my $rv = eval { $config->merge($file); };
 
       if ( !$rv || $EVAL_ERROR ) {
-        $r->log->warn("could not merge $file");
+        $r->log->warn($EVAL_ERROR);
+        $r->log->warn( sprintf 'ERROR: could not merge: [%s]', $file );
         next;
       }
 
@@ -737,7 +756,7 @@ sub get_config_paths {
 
   my ( $bedrock_config_path, $r ) = @args{qw(bedrock_config_path r)};
 
-  $bedrock_config_path //= $self->get_bedrock_config_path;
+  $bedrock_config_path //= $self->get_bedrock_config_path($r);
 
   $r //= $self->request;
 
@@ -764,33 +783,26 @@ sub get_config_paths {
   return @config_paths;
 }
 
+# Poorly name method for creating the global config
 ########################################################################
 sub get_bedrock_config {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $r ) = @_;
 
-  my $r = $self->request;
+  $r //= $self->request;
 
-  my $bedrock_config_path = $self->get_bedrock_config_path($r) // $EMPTY;
+  my $bedrock_config_path = $self->get_bedrock_config_path // $EMPTY;
 
-  my @config_paths = $self->get_config_paths(
-    bedrock_config_path => $bedrock_config_path,
-    r                   => $r
-  );
+  my @config_paths = $self->get_config_paths( bedrock_config_path => $bedrock_config_path );
 
   # this potentially adds .d sub-directories
   my @paths = Bedrock::Config::validate_config_paths( @config_paths, $bedrock_config_path );
 
-  $r->log->debug( sprintf 'paths: %s', join $COMMA, @paths );
+  mlogger_debug( $r, 'paths: %s', join $COMMA, @paths );
 
-  my $config = $self->get_tagx_config(
-    bedrock_config_path => $bedrock_config_path,
-    config_paths        => \@config_paths,
-    r                   => $r,
-  );
+  my $config = $self->get_tagx_config( bedrock_config_path => $bedrock_config_path, config_paths => \@config_paths, );
 
   if ( !$config || !keys %{$config} ) {
-
     my $error = <<'END_OF_MESSAGE';
 ERROR: No or empty 'tagx.xml'
   BEDROCK_CONFIG_PATH => [%s]
@@ -802,13 +814,12 @@ END_OF_MESSAGE
   }
 
   my $dbnames = $self->read_data_sources(@paths);
-  $config->dbnames($dbnames);
+  $config->dbnames($dbnames);  # yet another poorly name method!
 
   # -- look for module configs
-  mlogger(
+  mlogger_debug(
     $r,
-    level   => 'debug',
-    message => Dumper(
+    Dumper(
       [ paths        => \@paths,
         config_paths => \@config_paths
       ]
@@ -817,21 +828,15 @@ END_OF_MESSAGE
 
   my @module_paths = $self->get_module_paths( paths => \@paths );
 
-  mlogger( $r, level => 'debug', message => Dumper( [ \@module_paths ] ) );
+  mlogger_debug( $r, Dumper( [ \@module_paths ] ) );
 
   $self->merge_module_configs(
     config       => $config,
     module_paths => \@module_paths,
-    r            => $r,
   );
 
   # -- extra configs
-  $self->get_custom_configs(
-    config       => $config,
-    paths        => \@paths,
-    module_paths => \@module_paths,
-    r            => $r,
-  );
+  $self->merge_user_configs( config => $config, paths => \@paths );
 
   # -- not sure why we ever needed this line
   $config->{CONFIG_PATH} = join $SEMICOLON, grep {defined} @config_paths;
@@ -850,23 +855,25 @@ sub get_tagx_config {
 ########################################################################
   my ( $self, %args ) = @_;
 
+  my $r = $self->request;
+
   ######################################################################
   # $bedrock_config_path  => Bedrock's default configuration
   # $config_paths         => array of paths where we might find `tagx.xml`
   ######################################################################
 
-  my ( $bedrock_config_path, $config_paths, $r ) = @args{qw(bedrock_config_path config_paths r)};
-  $r //= $self->request;
+  my ( $bedrock_config_path, $config_paths ) = @args{qw(bedrock_config_path config_paths)};
+  $config_paths //= [];
 
-  $r->log->debug( sprintf 'config paths to search: %s', join q{,}, $bedrock_config_path, @{ $config_paths // [] } );
+  mlogger_debug( $r, 'config paths to search: %s', join q{,}, $bedrock_config_path, @{$config_paths} );
 
-  my @files = map { -e "$_/tagx.xml" ? "$_/tagx.xml" : () } uniq( $bedrock_config_path, @{ $config_paths || [] } );
+  my @files = grep { -e $_ } map {"$_/tagx.xml"} uniq( $bedrock_config_path, @{$config_paths} );
 
   die "ERROR: no tagx.xml found. Check BEDROCK_CONFIG_PATH ($bedrock_config_path)\n"
     if !@files;
 
   if ( @files == 1 ) {
-    $r->log->info( sprintf 'found 1 tagx.xml file (%s)', $files[0] );
+    mlogger_info( $r, 'found 1 tagx.xml file (%s)', $files[0] );
     return $self->read_config(@files);
   }
 
@@ -877,18 +884,18 @@ sub get_tagx_config {
   # - If multiple paths are found all `tagx.xml` files found are merged
   ######################################################################
 
-  $r->log->info( sprintf q{found multiple tagx.xml files...reading Bedrock's default (%s)}, $files[0] );
+  mlogger_info( $r, q{found multiple tagx.xml files...reading Bedrock's default (%s)}, $files[0] );
 
   my $config = $self->read_config( shift @files );  # this should be Bedrock's default tagx.xml
 
   if ( $config->{REPLACE_CONFIG} && $config->{REPLACE_CONFIG} =~ /^y/ixsm ) {
-    $r->log->info( sprintf q{REPLACE_CONFIG=%s...replacing Bedrock's `tagx.xml`}, $config->{REPLACE_CONFIG} );
+    mlogger_info( $r, q{REPLACE_CONFIG=%s...replacing Bedrock's `tagx.xml`}, $config->{REPLACE_CONFIG} );
     # overwrite Bedrock's default `tagx.xml`
     $config = $self->read_config( shift @files );
   }
 
   foreach (@files) {
-    $r->log->warn( sprintf q{Merging %s with Bedrock's default `tagx.xml`!}, $_ );
+    mlogger_warn( $r, q{Merging %s with Bedrock's default `tagx.xml`!}, $_ );
     $config->merge_config( $self->read_config($_) );
   }
 
@@ -900,10 +907,12 @@ sub merge_tagx_apps_configs {
 ########################################################################
   my ( $self, %args ) = @_;
 
-  my ( $config, $bedrock_config_path, $config_paths, $r ) = @args{qw(config bedrock_config_path config_paths r)};
+  my ( $r, $config, $request ) = @args{qw(r config)};
+  $r //= $self->request;
+
+  my ( $bedrock_config_path, $config_paths ) = @args{qw(bedrock_config_path config_paths)};
 
   $bedrock_config_path //= $self->get_bedrock_config_path;
-  $r                   //= $self->request;
   $config_paths        //= [ $self->get_config_paths ];
 
   # -- directory configs
@@ -914,7 +923,7 @@ sub merge_tagx_apps_configs {
   #  </object>
   # </object>
 
-  my $tagx_apps = $config->{'APP_CONFIG'} // 'tagx_apps.xml';
+  my $tagx_apps = $config->{APP_CONFIG} // 'tagx_apps.xml';
   $r->log->debug( sprintf 'APP_CONFIG: %s', $tagx_apps // $EMPTY );
 
   if ( !$tagx_apps ) {
@@ -925,11 +934,7 @@ sub merge_tagx_apps_configs {
   if ($tagx_apps) {
     my $app_config = $self->read_config( $bedrock_config_path, $tagx_apps );
 
-    mlogger(
-      $r,
-      level   => 'debug',
-      message => 'found a root tagx_apps.xml ' . Dumper($app_config)
-    );
+    mlogger_debug( $r, 'found a root tagx_apps.xml ' . Dumper($app_config) );
 
     my $document_root = $ENV{DOCUMENT_ROOT};
 
@@ -938,11 +943,7 @@ sub merge_tagx_apps_configs {
     if ($app_config) {
       foreach my $path ( @{$config_paths} ) {
         my $custom_app_config = $self->read_config( $path, $tagx_apps );
-        mlogger(
-          $r,
-          level   => 'debug',
-          message => 'custom config: ' . Dumper($custom_app_config)
-        );
+        mlogger_debug( $r, 'custom config: ' . Dumper($custom_app_config) );
 
         $app_config->merge_config($custom_app_config);
       }
@@ -977,37 +978,31 @@ sub merge_tagx_apps_configs {
 }
 
 ########################################################################
+sub mlogger_debug { return mlogger( shift, level => 'debug', message => shift, @_ > 0 ? ( args => [@_] ) : () ); }
+sub mlogger_info  { return mlogger( shift, level => 'info',  message => shift, @_ > 0 ? ( args => [@_] ) : () ); }
+sub mlogger_warn  { return mlogger( shift, level => 'warn',  message => shift, @_ > 0 ? ( args => [@_] ) : () ); }
+sub mlogger_trace { return mlogger( shift, level => 'debug', message => shift, @_ > 0 ? ( args => [@_] ) : () ); }
+sub mlogger_error { return mlogger( shift, level => 'error', message => shift, @_ > 0 ? ( args => [@_] ) : () ); }
+########################################################################
+
+########################################################################
 sub mlogger {
 ########################################################################
   my ( $r, %args ) = @_;
 
-  my ( $level, $message ) = @args{qw(level message)};
+  my ( $level, $message, $params ) = @args{qw(level message args)};
+
+  chomp $message;
+
+  if ( exists $args{args} && @{$params} ) {
+    $message = sprintf $message, @{$params};
+  }
 
   foreach ( split /\n/xsm, $message ) {
     $r->log->$level($_);
   }
 
   return;
-}
-
-########################################################################
-sub _set_get {
-########################################################################
-  my ( $key, $self, @args ) = @_;
-
-  if (@args) {
-    $self->{$key} = $args[0];
-  }
-
-  return $self->{$key};
-}
-
-########################################################################
-sub pwd {
-########################################################################
-  my (@args) = @_;
-
-  return _set_get( '_pwd', @args );
 }
 
 ########################################################################
@@ -1025,19 +1020,26 @@ sub config_files_processed {
 }
 
 ########################################################################
-sub _find_files {
+sub _list_files {
 ########################################################################
-  my ( $path, $type, @filter ) = @_;
+  my (%args) = @_;
 
-  my @files;
+  my ( $path, $type, $filter ) = @args{qw(path type filter)};
+
+  croak 'ERROR: filter must be an array ref'
+    if $filter && !ref $filter;
+
+  $type = ref($type) && reftype($type) eq 'REGEXP' ? $type : qr/[.]$type$/xsmi;
 
   no warnings 'File::Find';  ## no critic
+
+  my @files;
 
   find(
     sub {
       my $name = $_;
 
-      if ( /[.]$type$/xsm && !any { $_ eq $name } @filter ) {
+      if ( /$type/xsm && !any { $_ eq $name } @{$filter} ) {
         push @files, $File::Find::name;
       }
     },
@@ -1045,24 +1047,6 @@ sub _find_files {
   );
 
   return @files;
-}
-
-########################################################################
-sub _list_files {
-########################################################################
-  my (%args) = @_;
-
-  my ( $path, $type, $filter ) = @args{qw(path type filter)};
-
-  return _find_files( $path, 'xml', @{$filter} );
-}
-
-########################################################################
-sub _list_xml_files {
-########################################################################
-  my ( $path, @filter ) = @_;
-
-  return _list_files( path => $path, type => 'xml', filter => \@filter );
 }
 
 1;
@@ -1249,6 +1233,13 @@ A utility method to handle multi-line logging. Apache's standard
 logger escapes newlines, making stack traces or C<Data::Dumper> output
 unreadable. C<mlogger> splits the message by newline and logs each
 line individually to the Apache error log.
+
+Use the convenience `mlogger_{level}` methods like this:
+
+ mlogger_debug(request, message, [args]);
+
+If you supply and C<args> parameter then the message is assumed to be
+a `sprintf` template with C<args> as the parameters to print.
 
 =head2 pwd
 

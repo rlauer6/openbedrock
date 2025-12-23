@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 
@@ -34,7 +36,7 @@ use warnings;
 BEGIN {
 
   # Note we do not use Bedrock::Logger here since Bedrock::Config is
-  # used load configuration information for Bedrock::Logger
+  # used before we load configuration information for Bedrock::Logger
   # (Log::Log4perl). Instead we use carp & croak.
 
   use Carp;
@@ -42,10 +44,10 @@ BEGIN {
   local $SIG{__DIE__} = \&Carp::confess;
 }
 
-use Bedrock qw(:booleans slurp_file);
+use Bedrock qw(:booleans slurp_file choose);
 use Bedrock::Dump;
 use Bedrock::Serializer qw( evolve devolve);
-use Bedrock::XML;
+use Bedrock::XML qw(loadXML);
 use Bedrock::Constants qw(:defaults :chars :booleans);
 use Bedrock::LoadConfig qw(load_config validate_config_paths locate_file);
 
@@ -56,7 +58,7 @@ use File::Basename;
 use JSON qw( decode_json encode_json );
 use List::Util qw( pairs uniq );
 use Scalar::Util qw( reftype openhandle );
-use YAML qw( LoadFile Dump );
+use YAML qw( Load LoadFile Dump );
 
 use parent qw( Exporter Bedrock::Hash );
 
@@ -79,7 +81,7 @@ sub new {
 }
 
 ########################################################################
-sub newFromXML {  ## no critic (NamingConventions::Capitalization)
+sub newFromXML {
 ########################################################################
   my ( $self, @args ) = @_;
 
@@ -113,7 +115,7 @@ sub version { return $VERSION }
 ########################################################################
 
 ########################################################################
-sub newFromString {  ## no critic (NamingConventions::Capitalization)
+sub newFromString {  ## no critic
 ########################################################################
   my ( $class, @args ) = @_;
 
@@ -180,7 +182,10 @@ sub get_module_config {
 
   my $module = $self->get_module($module_name);
 
-  return $module ? $module->{config} : $module;
+  return
+    if !$module;
+
+  return $module->{config};
 }
 
 ########################################################################
@@ -204,6 +209,8 @@ sub merge_config {
   return $self;
 }
 
+# returns the module specification by class nanme
+# ex: ->get_module('BLM::Starup::Config');
 ########################################################################
 sub get_module {
 ########################################################################
@@ -220,26 +227,73 @@ sub get_module {
 }
 
 ########################################################################
+sub fetch_config {
+########################################################################
+  my ($file) = @_;
+
+  $file //= q{};
+
+  my $fh;
+  my $forced_type;
+
+  if ( ref $file && openhandle($file) ) {
+    $fh = $file;
+  }
+  elsif ( $file && -s $file ) {
+    open $fh, '<', $file or die "could not open $file: $!";
+
+    if ( $file =~ /[.](xml|ya?ml|json)$/i ) {
+      $forced_type = lc $1;
+    }
+  }
+  else {
+    return;
+  }
+
+  local $RS = undef;
+
+  my $content = <$fh>;
+
+  close $fh;
+
+  return
+    if !$content;
+
+  my @candidates = (
+    { type => 'json', sub => \&decode_json },
+    { type => 'yaml', sub => \&Load },
+    { type => 'yml',  sub => \&Load },
+    { type => 'xml',  sub => \&loadXML },
+  );
+
+  my @pipeline;
+
+  if ($forced_type) {
+    @pipeline = grep { $_->{type} =~ /^$forced_type/xsm } @candidates;
+  }
+  else {
+    @pipeline = @candidates;
+  }
+
+  foreach my $parser (@pipeline) {
+    my $config = eval { $parser->{sub}->($content) };
+    return $config if $config;
+  }
+
+  return;
+}
+
+########################################################################
 sub merge {
 ########################################################################
   my ( $self, $file ) = @_;
 
-  my $fh = openhandle($file);
+  my $config = fetch_config($file);
 
-  if ( !$fh ) {
-    croak "no such file ($file) or empty"
-      if !$file || !-s $file;
-
-    open $fh, '<', $file
-      or die "could not open $file\n";
-  }
-
-  my $config = eval { return Bedrock::XML->new($fh); };
-
-  croak "could not read $file\n$EVAL_ERROR"
+  croak "ERROR: no or invalid config file ($file)"
     if !$config;
 
-  croak 'invalid configuration file, root object must be hashes or arrays'
+  croak 'ERROR: invalid configuration file, root object must be hashes or arrays'
     if !ref $config;
 
   my $merge_config = $config->{MERGE_CONFIG} // 'yes';
@@ -247,6 +301,8 @@ sub merge {
   return $self
     if !to_boolean($merge_config);
 
+  # if the config file is an array we need to store this under some
+  # key...so use the uc of the filename part of the config file?
   if ( is_array($config) ) {
     my ( $key, undef, undef ) = fileparse( $file, qr/[.][^.]+$/xsm );
     $key = uc $key;
@@ -324,7 +380,7 @@ sub to_yaml {
 ########################################################################
   my ($self) = @_;
 
-  return Dump( devolve $self);
+  return Dump( devolve $self );
 }
 
 ########################################################################
@@ -340,7 +396,7 @@ sub XML {
 ########################################################################
   my ( $self, $in_out, @args ) = @_;
 
-  ## no critic (:RequireInterpolationOfMetachars)
+  ## no critic
   croak q{Usage: $config.XML('in|out', option, value, ...)}
     if $in_out !~ /^in|out$/xsm;
 

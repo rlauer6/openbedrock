@@ -76,10 +76,10 @@ sub write_config {
       Bedrock::XML::writeXML( $obj, $fh );
     }
     elsif ( $type eq 'yaml' ) {
-      print {$fh} Dump( devolve $obj);
+      print {$fh} Dump( devolve $obj );
     }
     elsif ( $type eq 'json' ) {
-      print {$fh} JSON->new->pretty->encode( devolve $obj);
+      print {$fh} JSON->new->pretty->encode( devolve $obj );
     }
   }
 
@@ -371,6 +371,26 @@ subtest 'get_module_config' => sub {
 
   ok( exists $input->{foo} && $input->{foo} eq 'bar', 'retrieved config object' )
     or diag( Dumper( [ $input, $config ] ) );
+};
+
+########################################################################
+subtest 'merge' => sub {
+########################################################################
+  my $config_path = set_config_path();
+
+  my $config = Bedrock::Config->new("$config_path/tagx.xml");
+
+  my $filename = write_config( { yaml => 'Camel' }, 'yaml' );
+  $config->merge($filename);
+  ok( $config->{yaml}, 'yaml file merged' );
+  unlink $filename;
+
+  $filename = write_config( { json => 'mason' }, 'json' );
+  $config->merge($filename);
+  ok( $config->{json}, 'json file merged' );
+  ok( $config->{yaml}, 'yaml still file merged' );
+
+  unlink $filename;
 };
 
 done_testing;

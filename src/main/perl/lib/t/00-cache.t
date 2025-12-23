@@ -39,6 +39,7 @@ my $config;
 my $request_handler;
 
 $ENV{BEDROCK_CACHE_ENGINE} = 'Shareable';
+
 my $bedrock_handler;
 
 ########################################################################
@@ -52,8 +53,11 @@ subtest 'read config' => sub {
   $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
   $bedrock_handler = Bedrock::Handler->new( $request_handler, cache => cache() );
-  isa_ok( $bedrock_handler,          'Bedrock::Handler' );
-  isa_ok( $bedrock_handler->{cache}, 'Bedrock::Cache' );
+
+  isa_ok( $bedrock_handler, 'Bedrock::Handler' );
+
+  isa_ok( $bedrock_handler->cache, 'Bedrock::Cache' );
+
   $config = $bedrock_handler->config();
 };
 
@@ -79,7 +83,7 @@ subtest 'read cache' => sub {
   # the original config file list that was processed to create the
   # config object. It is removed from the config object itself when
   # the config object is restored from the cache.
-  my $cached_config = $bedrock_handler->{cache}->get($cache_key);
+  my $cached_config = $bedrock_handler->cache->get($cache_key);
 
   ok( $cached_config, 'got something from the cache' )
     or do {
@@ -102,19 +106,19 @@ subtest 'read cache' => sub {
 ########################################################################
 subtest 'compare object elements' => sub {
 ########################################################################
-  my $cache_config = thaw $CACHE{$cache_key}->{d};
+  my $cached_config = thaw $CACHE{$cache_key}->{d};
 
   for ( keys %{$config} ) {
     if ( ref $config->{$_} ) {
-      is( ref $cache_config->{$_}, ref $config->{$_}, 'object types are the same' )
+      is( ref $cached_config->{$_}, ref $config->{$_}, 'object types are the same' )
         or do {
-        diag( Dumper( [ $config->{$_}, $cache_config->{$_} ] ) );
+        diag( Dumper( [ $config->{$_}, $cached_config->{$_} ] ) );
 
         BAIL_OUT("objects $_ not equal");
         };
     }
     else {
-      is( $cache_config->{$_}, $config->{$_}, "scalars [$_] are equal" )
+      is( $cached_config->{$_}, $config->{$_}, "scalars [$_] are equal" )
         or BAIL_OUT("scalars not equal");
     }
   }

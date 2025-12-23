@@ -5,7 +5,7 @@ use warnings;
 
 use lib qw{.};
 
-use Test::More tests => 3;
+use Test::More;
 use Test::Output;
 use Cwd;
 use Bedrock::Constants qw(:chars);
@@ -22,6 +22,7 @@ BEGIN {
 
 my $cgi = Bedrock::CGI->new;
 
+########################################################################
 stdout_like(
   sub {
     $cgi->print('<p>test</p>');
@@ -31,6 +32,8 @@ stdout_like(
   'print',
 );
 
+########################################################################
+########################################################################
 my $output = $EMPTY;
 
 my $fh = IO::Scalar->new( \$output );
@@ -48,5 +51,7 @@ $fh->close;
 ok( length $output, 'captured output' );
 
 like( $output, qr/\AContent-type:\s+text\/html\r\n\r\n<.*>\n\z/xsmi, 'content' );
+
+done_testing;
 
 1;

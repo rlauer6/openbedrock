@@ -1,37 +1,57 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
 
 use Bedrock qw(create_temp_dir);
 use Bedrock::Constants qw(:defaults);
+use Bedrock::Test::FauxHandler;
 use Bedrock::Test::Utils qw(:all);
 
 use Cwd qw(abs_path getcwd);
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Bedrock::Test::FauxHandler;
+use File::Temp qw(tempfile tempdir);
+use File::Basename qw(basename);
+use List::Util qw(pairs);
+use YAML qw(Dump);
+use Bedrock::XML qw(writeXML);
+use JSON qw(encode_json);
+use Bedrock::Handler;
 
 use Test::More;
 
 our %TESTS = fetch_test_descriptions(*DATA);
 
-########################################################################
-
-plan tests => 1 + keys %TESTS;
-
 use_ok('Bedrock::Handler');
 
 ########################################################################
-my $request_handler = Bedrock::Test::FauxHandler->new;
+my $request_handler = Bedrock::Test::FauxHandler->new( log_level => 'debug' );
 
 # we should be running tests from src/main/perl directory...
 my $cwd = abs_path(getcwd);
 
 my $repo_path = 'src/main/perl/lib';
+
 # if we are running from repo path, set source dir accordingly
 
 my $source_path = $cwd =~ /$repo_path/xsm ? '../../bedrock/config' : $cwd;
+
+my @config_files;
+
+my $tempdir = tempdir( CLEANUP => 1 );
+
+foreach my $p ( pairs( xml => \&writeXML, yml => \&Dump, json => \&encode_json ) ) {
+  my ( $ext, $sub ) = @{$p};
+
+  my ( $fh, $filename ) = tempfile( DIR => $tempdir, SUFFIX => ".$ext", UNLINK => 1 );
+
+  print {$fh} $sub->( { $ext => $filename } );
+
+  close $fh;
+
+  push @config_files, basename($filename);
+}
 
 my $config_path = create_temp_dir(
   cleanup  => $FALSE,
@@ -39,7 +59,11 @@ my $config_path = create_temp_dir(
   manifest => [
     { source   => $source_path,
       dest_dir => 'config',
-      files    => ['tagx.xml']
+      files    => ['tagx.xml'],
+    },
+    { source   => $tempdir,
+      dest_dir => 'config',
+      files    => \@config_files,
     },
     { source   => $source_path,
       dest_dir => 'config.d/startup',
@@ -63,7 +87,7 @@ subtest 'full_path' => sub {
 
   my $full_path = Bedrock::Handler::full_path( $config_path, 'tagx', '.xml' );
 
-  is( $full_path, "$config_path/tagx.xml", 'full_path()' )
+  is( $full_path, "$config_path/tagx.xml", 'full_path(): ' . "$config_path/tagx.xml" )
     or do {
     diag( Dumper( [ full_path => $full_path ] ) );
 
@@ -85,7 +109,13 @@ subtest 'new' => sub {
 
   isa_ok( $handler, 'Bedrock::Handler' )
     or do {
-    diag( Dumper( [ EVAL_ERROR => $EVAL_ERROR, log => $request_handler->log->as_string ] ) );
+    diag(
+      Dumper(
+        [ EVAL_ERROR => $EVAL_ERROR,
+          log        => $request_handler->log->as_string
+        ]
+      )
+    );
     BAIL_OUT('could not instantiate a Bedrock::Handler');
     };
 };
@@ -100,6 +130,11 @@ subtest 'config' => sub {
     diag( Dumper( [ handler => $handler, $request_handler->log->as_string ] ) );
     BAIL_OUT('could not instantiate a Bedrock::Handler');
     };
+
+  ok( $config->{yml},  'yaml file merged' );
+  ok( $config->{json}, 'json file merged' );
+  ok( $config->{xml},  'xml file merged' );
+
 };
 
 ########################################################################
@@ -150,6 +185,8 @@ subtest 'config - no module found' => sub {
   ok( !$session_config, 'no BLM::Startup::UserSession module' )
     or diag( Dumper( [ session_config => $session_config ] ) );
 };
+
+done_testing;
 
 1;
 
