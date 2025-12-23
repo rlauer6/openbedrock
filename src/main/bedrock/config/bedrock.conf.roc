@@ -3,6 +3,34 @@
 # -- Apache configuration for Bedrock enabled sites
 <sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 
+ <if $site.APACHE_MOD_PERL --eq yes >
+  PerlSetEnv APACHE_SITE_ROOT             <var $site_root>
+  PerlSetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
+  PerlSetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
+  PerlSetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
+  PerlSetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
+  PerlSetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
+  PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
+  PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
+  PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
+  PerlPassEnv PERL5LIB
+  PerlPassEnv BEDROCK_CACHE_ENGINE
+ </if>
+
+PassEnv PERL5LIB
+PassEnv BEDROCK_CACHE_ENGINE
+
+# we always set this in case we are using bedrock.cgi
+SetEnv APACHE_SITE_ROOT             <var $site_root>
+SetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
+SetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
+SetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
+SetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
+SetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
+SetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
+SetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
+SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
+
 <VirtualHost *:80>
 
   DocumentRoot <var $site.DOCUMENT_ROOT>
@@ -27,34 +55,6 @@
 
   </if>
 
-  <if $site.APACHE_MOD_PERL --eq yes >
-  PerlSetEnv APACHE_SITE_ROOT             <var $site_root>
-  PerlSetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
-  PerlSetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
-  PerlSetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
-  PerlSetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
-  PerlSetEnv BEDROCK_CACHE_ENABLED        <var $site.BEDROCK_CACHE_ENABLED>
-  PerlSetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
-  PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
-  PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
-  PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
-
-  PerlPassEnv PERL5LIB
-  </if>
-
-  PassEnv PERL5LIB
-
-  # we always set this in case we are using bedrock.cgi
-  SetEnv APACHE_SITE_ROOT             <var $site_root>
-  SetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
-  SetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
-  SetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
-  SetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
-  SetEnv BEDROCK_CACHE_ENABLED        <var $site.BEDROCK_CACHE_ENABLED>
-  SetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
-  SetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
-  SetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
-  SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
 
   LogLevel <var $site.ApacheLogLevel --default=$site.BedrockLogLevel>
 

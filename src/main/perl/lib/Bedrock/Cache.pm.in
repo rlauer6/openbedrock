@@ -10,11 +10,12 @@ use English qw(-no_match_vars);
 ########################################################################
 sub new {
 ########################################################################
-  my ($class) = @_;
+  my ( $class, %options ) = @_;
 
   # Step 5 from the plan: Recognize caching enablement via role name
+  my $engine_name = $options{engine_name};
 
-  my $engine_name = $ENV{BEDROCK_CACHE_ENGINE} || 'Null';
+  $engine_name //= $ENV{BEDROCK_CACHE_ENGINE} // 'Null';
 
   die "Security Violation: Invalid Cache Engine Name\n"
     if $engine_name =~ /[^[:alnum:]]/xsm;
@@ -22,16 +23,39 @@ sub new {
   my $engine_class = "Bedrock::Cache::$engine_name";
 
   load $engine_class;
-  my $engine_obj = $engine_class->new();
+  my $engine_obj = $engine_class->new(%options);
 
-  return bless { engine => $engine_obj }, $class;
+  $options{disabled} //= 0;
+
+  return bless {
+    engine       => $engine_obj,
+    engine_class => $engine_class,
+    %options,
+  }, $class;
+}
+
+########################################################################
+sub disable_caching {
+########################################################################
+  my ($self) = @_;
+  return $self->{disabled} = 1;
+}
+
+########################################################################
+sub enable_caching {
+########################################################################
+  my ($self) = @_;
+  return $self->{disabled} = 0;
 }
 
 # The Wrapper adds the "Smart" logic (Serialization)
 ########################################################################
-sub set {
+sub set {  ## no critic
 ########################################################################
   my ( $self, $key, $value, %opts ) = @_;
+
+  return if $self->{disabled};
+
   # Automatic Serialization: freeze references before passing to engine
   my $store_val = ref($value) ? nfreeze($value) : $value;
   return $self->{engine}->set( $key, $store_val, %opts );
@@ -41,17 +65,73 @@ sub set {
 sub get {
 ########################################################################
   my ( $self, $key ) = @_;
+
+  return if $self->{disabled};
+
   my $data = $self->{engine}->get($key);
   return if !defined $data;
+
   # Automatic Deserialization: thaw if it looks like a Storable object
   my $thawed = eval { thaw($data) };
+
   return $EVAL_ERROR ? $data : $thawed;
 }
 
 # Simple delegation for the rest
-sub exists     { shift->{engine}->exists(@_) }
-sub delete     { shift->{engine}->delete(@_) }
-sub get_handle { shift->{engine}->get_handle() }
+########################################################################
+sub clear {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->{engine}->can('clear') || $self->{disabled};
+
+  return $self->{engine}->clear(@args);
+}
+
+########################################################################
+sub exists {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->{engine}->can('exists') || $self->{disabled};
+
+  return $self->{engine}->exists(@args);
+}
+
+########################################################################
+sub delete {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->{engine}->can('delete') || $self->{disabled};
+
+  return $self->{engine}->delete(@args);
+}
+
+########################################################################
+sub keys {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return []
+    if !$self->{engine}->can('keys') || $self->{disabled};
+
+  return $self->{engine}->keys(@args);
+}
+
+########################################################################
+sub get_handle {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->{engine}->can('get_handle');
+
+  return $self->{engine}->get_handle();
+}
 
 1;
 
@@ -104,11 +184,71 @@ or a targeted configuration file).
 
 =back
 
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+ new(options)
+
+Instantiates a new caching object. By default caching is enable.
+
+=head3 Options
+
+=over 4
+
+=item engine_name
+
+Caching engine to use. If not provided the constructor will look for
+an environment variable named C<BEDROCK_CACHE_ENGINE>. If no engine is
+found, caching is essentially disabled, however calling the caching methods
+will succeed. Bedrock provides these "batteries-include" caching engines:
+
+=over 4
+
+=item * Redis
+
+See L<Bedrock::Cache::Redis>
+
+=item * Shareable
+
+I<Note: You must initialize the shared memory segment before you start
+your Apache process.>
+
+See L<Bedrock::Cache::Shareable>
+
+=item * Memory
+
+See L<Bedrock::Cache::Memory>
+
+=back
+
+=item disabled
+
+Boolean that indicates whether caching should be enabled.  You can
+temporarly disable caching using the C<disable_caching> method. To
+re-enabled caching use the the C<enable_caching> method.
+
+default: 0
+
+=back
+
+=head2 disable_caching
+
+Disable caching.
+
+=head2 enable_caching
+
+Enable caching.
+
 =head1 INTERFACE CONTRACT (THE ATOMIC 5)
 
-Any class loaded by Bedrock::Cache MUST implement these methods:
+Any class loaded by Bedrock::Cache should implement these methods:
 
-=head2 exists( $key )
+=head2 clear (optional)
+
+ Clears the cache.
+
+=head2 exists( $key ) 
 
 Returns a boolean indicating if the key is present in the store. 
 Used primarily for ETag validation.
@@ -138,6 +278,14 @@ near the speed of the underlying storage engine[cite: 9].
 
 =head1 SEE ALSO
 
-L<Apache::Bedrock>, L<Text::TagX>, L<Role::Tiny>
+L<Apache::Bedrock>, L<Text::TagX>, L<Role::Tiny>,
+L<Bedrock::Cache::Redis>, L<Bedrock::Cache::Memory>,
+L<Bedrock::Cache::Shareable>
+
+=head1 AUTHOR
+
+Gemini
+
+Rob Lauer - <rlauer@treasurersbriefcase.com>
 
 =cut

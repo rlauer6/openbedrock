@@ -28,6 +28,7 @@ package Apache::BedrockDocs;
 use strict;
 use warnings;
 
+use Apache::Bedrock qw(cache);
 use Bedrock qw(:booleans slurp_file);
 use Bedrock::Array;
 use Bedrock::Hash;
@@ -37,22 +38,24 @@ use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:regexp :chars :booleans :defaults);
 use Bedrock::Context qw(init_log4perl_logger);
 use Bedrock::Dump;
-use Bedrock::Handler qw(%BEDROCK_CONFIG_CACHE);
+use Bedrock::Handler;
 use Bedrock::Request;
 use Bedrock::Template;
 use Bedrock::VERSION qw(version);
 
 use Carp;
 use Data::Dumper;
+use Digest::MD5 qw(md5_hex);
 use English qw(-no_match_vars );
-use File::Basename;
-use File::Temp qw(tmpnam tempfile);
+use File::Basename qw(fileparse basename dirname);
+use File::Temp qw(tempfile);
 use File::Find;
 use JSON;
 use Markdown::Render;
 use Module::Load;
 use Scalar::Util qw(reftype blessed);
 use List::Util qw(any pairs none);
+use Log::Log4perl;
 use LWP::UserAgent;
 use LWP::Protocol::https;  # force rpmbuild to include
 use Text::URLEncode;
@@ -62,10 +65,13 @@ use Role::Tiny::With;
 with 'Bedrock::Logger';
 with 'Bedrock::Apache::HandlerUtils';
 
+########################################################################
 use Readonly;
 
 Readonly our $DEFAULT_IMAGE_URL => '/bedrock/img';
 Readonly our $POD_MIN_SIZE      => 600;
+Readonly our $POD_CACHE_TTL     => 15 * 60;        # 15m
+########################################################################
 
 our @TAG_LIST;
 
@@ -73,9 +79,6 @@ if ( $OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
   @TAG_LIST = sort split /[|]/xsm, $1;
   @TAG_LIST = grep { !/[#]|else|else[?]if|blm|[?]/xsm } @TAG_LIST;
 }
-
-our $LOGGER;
-our $SESSION;
 
 # order is important, 'docs' comes last always...
 my @routes = (
@@ -85,10 +88,11 @@ my @routes = (
   pod      => qr{pod/?(.*?)/?$}xsm,
   markdown => qr{markdown/?(.*?)/?$}xsm,
   tag      => qr{tag/?(.*?)/?$}xsm,
-  env      => qr{environment$}xsm,
-  config   => qr{configuration$}xsm,
+  env      => qr{env$}xsm,
+  config   => qr{config$}xsm,
   session  => qr{session}xsm,
   clear    => qr{clear\-cache$}xsm,
+  cache    => qr{list\-cache$}xsm,
   docs     => qr{/bedrock/docs/?(.*?)/?$}xsm,
   index    => qr{/bedrock/$}xsm,
 );
@@ -120,9 +124,15 @@ my %dispatcher = (
   env     => \&env_docs,
   session => \&session_state,
   config  => \&config_docs,
-  clear   => sub {
+  cache   => sub {
+    my $cache = cache();
+    return output( $_[0]->request, $cache->keys );
+  },
+  clear => sub {
     my ( $bedrock_handler, $arg ) = @_;
-    %BEDROCK_CONFIG_CACHE = ();
+
+    cache() && cache()->clear;
+
     return $OK;
   },
   docs  => \&generic_docs,
@@ -173,7 +183,12 @@ sub handler {
 ########################################################################
   my ($r) = @_;
 
-  my $bedrock_handler = eval { return Bedrock::Handler->new($r); };
+  # we really need caching for this to be a pleasant experience for developers
+  if ( !$ENV{BEDROCK_CACHE_ENGINE} ) {
+    $ENV{BEDROCK_CACHE_ENGINE} = 'Memory';
+  }
+
+  my $bedrock_handler = eval { return Bedrock::Handler->new( $r, cache => cache() ); };
 
   if ( $EVAL_ERROR || !$bedrock_handler ) {
     $r->log->error(qq{Could not initialize Bedrock's handler\n$EVAL_ERROR});
@@ -187,12 +202,11 @@ sub handler {
 
   my %headers = %{ $r->headers_in };
 
-  $LOGGER = get_logger(__PACKAGE__);
+  my $session = get_session($bedrock_handler);
+  $bedrock_handler->{session} = $session;
 
-  $SESSION = eval { return bind_session($bedrock_handler); };
-
-  if ($SESSION) {
-    $SESSION->set( 'Referer', $headers{Referer} );
+  if ($session) {
+    $session->set( 'Referer', $headers{Referer} );
   }
   else {
     $r->log->warn( 'unable to load session manager: ' . $EVAL_ERROR );
@@ -228,7 +242,7 @@ sub handler {
     ####################################################################
     my $uri = $r->uri;
 
-    $LOGGER->debug( 'handling: ' . $uri );
+    get_logger()->debug( 'handling: ' . $uri );
 
     my ( $route_id, $arg ) = @{ get_route( r => $r, uri => $uri, routes => \@routes ) // [] };
 
@@ -238,8 +252,8 @@ sub handler {
     return $dispatcher{$route_id}->( $bedrock_handler, $arg, $config );
   };
 
-  if ($SESSION) {
-    $SESSION->closeBLM();
+  if ($session) {
+    $session->closeBLM();
   }
 
   return $EVAL_ERROR ? internal_server_error( $r, $EVAL_ERROR ) : $status;
@@ -287,16 +301,16 @@ sub index_html {
   ####################################################################
   # user modules
   ####################################################################
-  my $pod_paths = get_pod_paths($bedrock_handler);
+  my $pod_paths = get_pod_paths( $bedrock_handler->config() );
 
-  if ($pod_paths) {
-    $parameters{user_docs} = ul_links( $config, pod => 'Module Listing' );
+  if ( $pod_paths && @{$pod_paths} ) {
+    $parameters{user_docs} = ul_links( $config, pod => 'User Module Listing' );
   }
 
   ####################################################################
   # markdown
   ####################################################################
-  my $markdown_paths = get_markdown_paths($bedrock_handler);
+  my $markdown_paths = get_markdown_paths( $bedrock_handler->config() );
 
   if ($markdown_paths) {
     $parameters{markdown_docs} = ul_links( $config, markdown => 'Documentation Listing' );
@@ -357,9 +371,9 @@ sub _render_markdown {
 ########################################################################
   my ( $bedrock_handler, $file ) = @_;
 
-  my $logger = $bedrock_handler->request->log;
+  my $r = $bedrock_handler->request;
 
-  $logger->debug( sprintf 'rendering markdown for %s', $file );
+  $r->log->debug( sprintf 'rendering markdown for %s', $file );
 
   my $html = eval {
     my $md = Markdown::Render->new(
@@ -376,7 +390,7 @@ sub _render_markdown {
   if ( !$html || $EVAL_ERROR ) {
     # log this in case we are in eval {}
     my $err_msg = sprintf "could not render markdown: $EVAL_ERROR";
-    $logger->error($err_msg);
+    $r->log->error($err_msg);
     die $err_msg;
   }
 
@@ -408,71 +422,110 @@ sub is_available_on_metacpan {
 }
 
 ########################################################################
+sub cache_key {
+########################################################################
+  my ( $r, $type, $module ) = @_;
+
+  my $call_context = is_api($r) ? 'api' : 'web';
+
+  return sprintf '%s:%s:%s:%s', __PACKAGE__, $type, $call_context, $module;
+}
+
+########################################################################
+sub choose(&) {  ## no critic
+########################################################################
+  my @result = shift->();
+
+  return wantarray ? @result : $result[0];
+}
+
+########################################################################
 sub show_pod {
 ########################################################################
-  my ( $bedrock_handler, $file, $back_url, $module ) = @_;
+  my ( $bedrock_handler, $file, $type, $module ) = @_;
 
   my $r = $bedrock_handler->request;
 
-  my $html = _show_pod(
-    $bedrock_handler,
-    file     => $file,
-    uri_root => '/bedrock',
-    module   => $module,
+  my $cache = cache();
+
+  my $cache_key = cache_key( $r, $type, $module );
+
+  get_logger()->debug(
+    Dumper(
+      [ type      => $type,
+        module    => $module,
+        cache_key => $cache_key
+      ]
+    )
   );
 
-  # most of the time the module we are looking for is in our path or
-  # inside the webserver hosting this application...occassionally
-  # we'll be following a link within the pod itself...and those
-  # modules may not be installed on our server, thus we might not be
-  # able to show pod...but wait! Let's see if we can find some pod on Metacpan!
-  my $source = 'local';
+  ######################################################################
+  # POD search sequence
+  # 1. cache if caching enabled
+  # 2. @INC paths
+  # 3. MetaCPAN
+  ######################################################################
 
-  if ( !$html ) {
-    $source = $EMPTY;
+  my ( $source, $html ) = choose {
 
-    # see if this is on metacpan
-    my $module_listing = $BEDROCK_CONFIG_CACHE{METACPAN};
+    ####################################################################
+    # 1. look in cache
+    ####################################################################
+    return ( cache => $cache->get($cache_key) )
+      if $cache && $cache->get($cache_key);
 
-    if ( !$module_listing ) {
-      $module_listing = {};
-      $BEDROCK_CONFIG_CACHE{METACPAN} = $module_listing;
+    ####################################################################
+    # 2. look in @INC
+    ####################################################################
+    get_logger()->debug('looking in @INC');
+
+    my $html = _show_pod(
+      $bedrock_handler,
+      file     => $file,
+      uri_root => '/bedrock',
+      module   => $module,
+    );
+
+    get_logger()->debug( 'length: ' . length( $html // q{} ) );
+
+    return ( local => $html )
+      if $html;
+
+    ####################################################################
+    # 3. look in metacpan
+    ####################################################################
+    my $file = is_available_on_metacpan($module);
+
+    return
+      if !$file;
+
+    $html = eval { _show_pod( $bedrock_handler, file => $file, uri_root => '/bedrock', module => $module, unlink => 1, ); };
+
+    if ( $EVAL_ERROR || -e $file ) {
+      unlink $file;
     }
 
-    # cache availability...no need checking for this more than once
-    $html = $module_listing->{$module};
+    return ( metacpan => $html )
+      if $html;
 
-    if ( !$html ) {
-      my $file = is_available_on_metacpan($module);
+    return;
+  };
 
-      if ($file) {
-        $html = _show_pod(
-          $bedrock_handler,
-          file     => $file,
-          uri_root => '/bedrock',
-          module   => $module,
-        );
+  get_logger()->debug( Dumper( [ source => $source, html => length $html ] ) );
 
-        unlink $file;
-
-        $module_listing->{$module} = $html;
-      }
-
-      $source = 'metacpan';
-    }
+  # caches should always be enabled even if we are just using Bedrock::Cache::Memory
+  if ( $cache && $html && $source ne 'cache' ) {
+    get_logger()->debug( 'updating cache for ' . $file );
+    $cache->set( $cache_key, $html, ttl => $POD_CACHE_TTL );
   }
 
-  if ( is_api($r) ) {
-    output( $r, { html => $html, source => $source } );
-  }
-  elsif ($html) {
-    output( $r, $html );
-  }
-  else {
-    return $NOT_FOUND;
-  }
+  return $NOT_FOUND
+    if !is_api($r) && !$html;
 
-  return $OK;
+  return output( $r, { html => $html, source => $source } )
+    if is_api($r);
+
+  return output( $r, $html );
 }
 
 ########################################################################
@@ -482,26 +535,27 @@ sub _show_pod {
 
   my $r = $bedrock_handler->request;
 
-  my ( $file, $back_url, $module ) = @args{qw(file back_url module)};
+  my ( $file, $back_url, $module, $unlink ) = @args{qw(file back_url module unlink)};
 
   my $config = $bedrock_handler->config();
 
   if ( !$file || !-e $file ) {
     $file = $module;
     $file =~ s/::/\//gxsm;
+
     # see if we can find the file in Perl's @INC
     ($file) = grep { -e $_ } map {"$_/$file.pm"} @INC;
-
-    if ( !$file ) {
-
-    }
-    # TODO: cache this...
   }
+
+  get_logger()->debug("file: $file\n");
 
   my $html;
 
   if ( $file && -e $file ) {
     $html = create_pod_file( $bedrock_handler, $file, $config->{BEDROCK_POD_CSS_URL} );
+    if ($unlink) {
+      unlink $file;
+    }
   }
 
   return
@@ -509,7 +563,6 @@ sub _show_pod {
 
   if ( is_api($r) ) {
     # strip body, just want pod
-
     $html =~ s/^.*<body([^>]*)>(.*?)<\/body>/$2/xsm;
 
     # fix pod links
@@ -519,7 +572,8 @@ sub _show_pod {
 
   $module =~ s/\//::/xsmg;
 
-  $back_url = sprintf '%s/%s', $bedrock_handler->get_bedrock_admin_dir, $back_url;
+  $back_url = sprintf '%s/%s', $bedrock_handler->get_bedrock_admin_dir, $back_url // q{};
+
   my $top_section = header( $config, back_url => $back_url, module => $module );
 
   $html =~ s/(<body(.*?)>)/$1\n$top_section/ixsm;
@@ -532,7 +586,7 @@ sub create_pod_file {
 ########################################################################
   my ( $bedrock_handler, $file, $css_url ) = @_;
 
-  my $pod = tmpnam;
+  my $pod = File::Temp->new( UNLINK => 1 )->filename;
 
   my %options = (
     '--infile'   => $file,
@@ -548,11 +602,7 @@ sub create_pod_file {
   };
 
   if ($EVAL_ERROR) {
-    $LOGGER->error("pod2html error: $EVAL_ERROR");
-  }
-
-  if ( -e $pod ) {
-    unlink $pod;
+    get_logger()->error("pod2html error: $EVAL_ERROR");
   }
 
   return $html;
@@ -563,11 +613,20 @@ sub get_modules {
 ########################################################################
   my ( $dir, $exclude_blms ) = @_;
 
-  return find_files(
+  my @files = find_files(
     dir          => $dir,
     exclude_blms => $exclude_blms,
-    ext          => 'pm'
+    ext          => 'pm',
   );
+
+  carp Dumper(
+    [ dir          => $dir,
+      exclude_blms => $exclude_blms,
+      files        => \@files
+    ]
+  );
+
+  return @files;
 }
 
 ########################################################################
@@ -627,77 +686,74 @@ sub find_files {
 }
 
 ########################################################################
+sub fetch_modules {
+########################################################################
+  my (%args) = @_;
+
+  my ( $paths, $public_only, $blms ) = @args{qw(paths public blms)};
+
+  $blms //= $TRUE;
+
+  $public_only //= $FALSE;
+
+  croak 'ERROR: paths must be an array'
+    if !ref $paths || reftype($paths) ne 'ARRAY';
+
+  foreach my $pathspec ( @{$paths} ) {
+    next if ref $pathspec;
+    $pathspec = { dir => $pathspec };
+  }
+
+  return get_all_modules( $paths, $public_only, !$blms );
+}
+
+########################################################################
 sub get_all_modules {
 ########################################################################
   my ( $paths, $public_only, $no_blms ) = @_;
 
-  my @module_listing;
-
   my %module_map;
 
-  foreach my $path ( @{$paths} ) {
-    my $dir;
+  foreach my $pathspec ( @{$paths} ) {
+    my ( $dir, $filter, $filter_type ) = @{$pathspec}{qw(dir filter filter_type)};
 
-    my $filter;
-    my $filter_type;
+    $filter_type = $filter && $filter_type // 'exclude';
 
-    if ( is_hash($path) ) {
-      $dir = $path->{dir};
-
-      $filter      = $path->{filter};
-      $filter_type = $path->{filter_type} // 'exclude';
-
-      $filter = qr/$filter/xsm;
-    }
-    else {
-      $dir = $path;
-    }
+    $filter = $filter && qr/$filter/xsm;
 
     my @modules = get_modules( $dir, $no_blms );
 
     foreach my $file (@modules) {
-      if ( !has_pod("$file.pm") ) {
-        $LOGGER->error( 'no pod, rejecting: ' . $file );
-        next;
-      }
+      next
+        if !has_pod("$file.pm");
 
       my $module = get_module_name( $file, $dir );
 
-      next if !$module;
+      next
+        if !$module;
 
       if ($filter) {
-        if ( $filter_type eq 'exclude' ) {
-          if ( $file =~ $filter ) {
-            $LOGGER->debug("excluding $module based on exclude filter ($filter)");
-            next;
-          }
+        if ( $filter_type eq 'exclude' && $file =~ $filter ) {
+          get_logger()->debug("excluding $module based on exclude filter ($filter)");
+          next;
         }
         elsif ( $filter_type eq 'include' ) {
           if ( $module =~ $filter ) {
-            $LOGGER->debug("including $module based on include filter ($filter)");
+            get_logger()->debug("including $module based on include filter ($filter)");
           }
           else {
-            $LOGGER->debug("excluding $module based on include filter ($filter)");
+            get_logger()->debug("excluding $module based on include filter ($filter)");
             next;
           }
         }
-        else {
-          die "unknown filter type: $filter_type\n";
+        elsif ( $filter_type !~ /^(?:include|exclude)$/xsm ) {
+          croak "ERROR: unknown filter type: $filter_type";
         }
       }
 
+      next if $public_only && !is_public_module($file);
+
       $module_map{$module} = $file;
-    }
-
-    push @module_listing, @modules;
-  }
-
-  # delete non-public modules
-  if ($public_only) {
-    foreach my $module ( keys %module_map ) {
-      next if is_public_module( $module, \%module_map );
-
-      delete $module_map{$module};
     }
   }
 
@@ -719,7 +775,7 @@ sub get_module_name {
   my @package_names;
 
   open my $fh, '<', "$file.pm"
-    or die "could not open $file.pm for reading. $OS_ERROR";
+    or croak "ERROR: Could not open $file.pm for reading. $OS_ERROR";
 
   while ( my $line = <$fh> ) {
     next if $line !~ /^\s*package\s+([^;]+);/xsm;
@@ -747,13 +803,11 @@ sub has_pod {
 ########################################################################
 sub is_public_module {
 ########################################################################
-  my ( $module, $module_map ) = @_;
+  my ($file) = @_;
 
-  my $file = $module_map->{$module} . '.pm';
+  my $source = slurp_file "$file.pm";
 
-  my $source = slurp_file $file;
-
-  return $source =~ /[=]head1\s+public/xsmi;
+  return $source =~ /^[=]head1\s+public/xsmi;
 }
 
 ########################################################################
@@ -765,7 +819,11 @@ sub get_all_blms {
   my @blm_path = grep { -d "$_/BLM" } @INC;
 
   # get public only BLMs
-  my $modules = get_all_modules( \@blm_path, $TRUE, $FALSE );
+  my $modules = fetch_modules(
+    paths  => \@blm_path,
+    public => $TRUE,
+    blms   => $TRUE
+  );
 
   return @{$modules}{ sort keys %{$modules} };
 }
@@ -872,7 +930,9 @@ sub output {
 
   $r->send_http_header;
 
-  return print $content;
+  print $content;
+
+  return $OK;
 }
 
 ########################################################################
@@ -882,9 +942,27 @@ sub plugin_docs {
 
   my $r = $bedrock_handler->request;
 
-  my @blm_listing = get_all_blms();
+  my $cache     = cache();
+  my $cache_key = sprintf '%s:blm_listing', __PACKAGE__;
 
-  $LOGGER->trace( Dumper( [ 'BLMs:', \@blm_listing ] ) );
+  my @blm_listing = choose {
+    return
+      if !$cache;
+
+    my $listing = $cache->get($cache_key);
+
+    return $listing ? @{$listing} : ();
+  };
+
+  if ( !@blm_listing ) {
+    @blm_listing = get_all_blms();
+
+    if ($cache) {
+      $cache->set( $cache_key, \@blm_listing );
+    }
+  }
+
+  get_logger()->trace( Dumper( [ 'BLMs:', \@blm_listing ] ) );
 
   if ($file) {
     my @path_list = grep {/(BLM\/$file|BLM\/Startup\/$file)|BLM\/Filter\/$file/ixsm} @blm_listing;
@@ -974,6 +1052,34 @@ sub plugin_docs {
 }
 
 ########################################################################
+sub fetch_module_list {
+########################################################################
+  my ( $bedrock_handler, $type ) = @_;
+
+  my $cache = cache();
+
+  my $cache_key = sprintf '%s:%s_modules', __PACKAGE__, $type;
+
+  my $module_list = $cache->get($cache_key);
+
+  return $module_list
+    if $module_list;
+
+  $module_list = get_all_modules(
+    [ { filter      => '([bB]edrock|TagX|::[bB]edrock|BLM)',
+        filter_type => $type eq 'system' ? 'exclude' : 'include',
+        dir         => $DEFAULT_BEDROCK_PERL5LIBDIR,
+      }
+    ],
+    $FALSE
+  );
+
+  $cache->set( $cache_key, $module_list );
+
+  return $module_list;
+}
+
+########################################################################
 sub system_docs {
 ########################################################################
   my ( $bedrock_handler, %args ) = @_;
@@ -982,67 +1088,30 @@ sub system_docs {
 
   my ( $module, $type ) = @args{qw(module type)};
 
-  my $cache_key = sprintf '%s_POD_LISTING', uc $type;
-
-  # get non-public modules
-  my $module_listing = $BEDROCK_CONFIG_CACHE{$cache_key};
-
-  my $path = [
-    { filter      => '([bB]edrock|TagX|::[bB]edrock|BLM)',
-      filter_type => $type eq 'system' ? 'exclude' : 'include',
-      dir         => $DEFAULT_BEDROCK_PERL5LIBDIR,
-    }
-  ];
-
-  if ( !$module_listing ) {
-    $LOGGER->trace('no system listing in cache');
-
-    $module_listing = get_all_modules( $path, $FALSE );
-    $BEDROCK_CONFIG_CACHE{$cache_key} = $module_listing;
-  }
-  else {
-    $LOGGER->trace('retrieving system pod listing from cache');
-  }
-
-  # [ ] TBD: we can do something a bit more graceful here
-  return $NOT_FOUND
-    if !$module_listing || !keys %{$module_listing};
+  my $module_list = fetch_module_list( $bedrock_handler, $type );
 
   if ($module) {
-
     $module =~ s/\//\:\:/xsmg;
 
-    my $path = $module_listing->{$module};
+    my $path = $module_list->{$module};
     $path = $path ? "$path.pm" : $EMPTY;
-
     return show_pod( $bedrock_handler, $path, 'system', $module );
   }
 
-  if ( is_api($r) ) {
-    output( $r, { modules => [ sort keys %{$module_listing} ] } );
-    return $OK;
-  }
+  return output( $r, { modules => [ sort keys %{$module_list} ] } )
+    if is_api($r);
 
   my $url_prefix = sprintf '/bedrock/%s', $type;
 
   my $anchor_tag = '<a href="%s/%s">%s</a>';
 
-  my @system_listing;
-
-  foreach my $module ( sort keys %{$module_listing} ) {
-    my $path = $module;
-    $path =~ s/\:\:/\//xsmg;
-
-    push @system_listing, sprintf $anchor_tag, $url_prefix, $path, $module;
-  }
+  my @system_listing = map { sprintf $anchor_tag, $url_prefix, s/::/\//rxsmg, $_ } sort keys %{$module_list};
 
   my $title = $type eq 'system' ? 'System' : 'Bedrock Internal';
 
   my $html = listing( $bedrock_handler, "$title Documentation Listing", @system_listing );
 
-  output( $bedrock_handler->request, $html );
-
-  return $OK;
+  return output( $bedrock_handler->request, $html );
 }
 
 ########################################################################
@@ -1083,7 +1152,7 @@ sub _show_markdown {
       $template,
       content  => $html,
       back_url => $back_url,
-      title    => $markdown,
+      title    => basename($markdown),
     );
 
   }
@@ -1128,60 +1197,57 @@ sub markdown_docs {
 ########################################################################
   my ( $bedrock_handler, $markdown ) = @_;
 
-  return show_markdown( $bedrock_handler, "$markdown.md", 'markdown' )
-    if $markdown;
+  my $cache     = cache();
+  my $cache_key = __PACKAGE__ . ':markdown_listing';
 
-  my $markdown_listing = $BEDROCK_CONFIG_CACHE{MARKDOWN_LISTING};
+  my $config = $bedrock_handler->config;
 
-  if ($markdown_listing) {
-    $LOGGER->trace('retrieving listing from cache');
+  my $markdown_listing = $cache->get($cache_key);
+
+  if ( $markdown_listing && $markdown ) {
+    my %listing = reverse %{$markdown_listing};
+    my $file    = $listing{$markdown};
+
+    return show_markdown( $bedrock_handler, "$file.md", 'markdown' )
+      if $markdown;
   }
 
-  my $config         = $bedrock_handler->config;
-  my $markdown_paths = get_markdown_paths($bedrock_handler);
+  my $markdown_paths = get_markdown_paths($config);
 
-  if ( !$markdown_listing ) {
-    $markdown_listing = [];
+  if ( !$markdown_listing && $markdown_paths ) {
+    my @listing;
 
-    if ($markdown_paths) {
-      for ( @{$markdown_paths} ) {
-        push @{$markdown_listing}, find_markdown_files($_);
-      }
+    for ( @{$markdown_paths} ) {
+      push @listing, map { $_ => md5_hex($_) } find_markdown_files($_);
     }
 
-    $BEDROCK_CONFIG_CACHE{MARKDOWN_LISTING} = $markdown_listing;
+    $markdown_listing = {@listing};
+    $cache->set( $cache_key, $markdown_listing );
   }
 
   my $title = 'Documentation Listing';
 
-  if ( !@{$markdown_listing} ) {
-    my $message
-      = !@{$markdown_paths}
-      ? 'No markdown paths defined in configuraion.'
-      : 'No additional documentation found';
+  if ( !keys %{$markdown_listing} ) {
+    my $message = !@{$markdown_paths} ? 'No markdown paths defined in configuration.' : 'No additional documentation found';
 
     my $html = create_error_page( $config, title => $title, error => $message );
 
-    output( $bedrock_handler->request, $html );
-
-    return $OK;
+    return output( $bedrock_handler->request, $html );
   }
 
   my $anchor_tag = '<a href="%s/markdown/%s">%s</a>';
 
   my @listing;
 
-  foreach my $file ( sort @{$markdown_listing} ) {
-    my $uri = Text::URLEncode::Encode $file;
+  foreach my $file ( sort keys %{$markdown_listing} ) {
+    my $uri = $markdown_listing->{$file};
 
     push @listing, sprintf $anchor_tag, $bedrock_handler->get_bedrock_admin_dir, $uri, $file;
   }
 
   my $html = listing( $bedrock_handler, $title, @listing );
 
-  output( $bedrock_handler->request, $html );
-
-  return $OK;
+  return output( $bedrock_handler->request, $html );
 }
 
 ########################################################################
@@ -1193,19 +1259,21 @@ sub pod_docs {
 
   my $pod_paths = get_pod_paths($bedrock_handler);
 
-  my $module_listing = $BEDROCK_CONFIG_CACHE{POD_LISTING};
+  my $module_listing = fetch_module_list( $bedrock_handler, 'pod' );
 
   if ( !$module_listing ) {
-    $LOGGER->trace('no listing in cache');
+    get_logger()->trace('no listing in cache');
 
     if ( $pod_paths && @{$pod_paths} ) {
-      $module_listing = get_all_modules( $pod_paths, 0 );
-
-      $BEDROCK_CONFIG_CACHE{POD_LISTING} = $module_listing;
+      $module_listing = fetch_modules(
+        paths  => $pod_paths,
+        public => $FALSE,
+        blms   => $FALSE
+      );
     }
   }
   else {
-    $LOGGER->trace('retrieved pod listing from cache');
+    get_logger()->trace('retrieved pod listing from cache');
   }
 
   if ( $module && $module_listing && keys %{$module_listing} ) {
@@ -1228,9 +1296,7 @@ sub pod_docs {
 
     my $html = create_error_page( $config, error => $message );
 
-    output( $bedrock_handler->request, $html );
-
-    return $OK;
+    return output( $bedrock_handler->request, $html );
   }
 
   my $anchor_tag = '<a href="%s/pod/%s">%s</a>';
@@ -1246,9 +1312,7 @@ sub pod_docs {
 
   my $html = listing( $bedrock_handler, $title, @pod_listing );
 
-  output( $bedrock_handler->request, $html );
-
-  return $OK;
+  return output( $bedrock_handler->request, $html );
 }
 
 ########################################################################
@@ -1275,10 +1339,12 @@ sub session_state {
 
   my $config = $bedrock_handler->config;
 
-  return dump_hash( $bedrock_handler, $SESSION // {} )
+  my $session = get_session($bedrock_handler) // {};
+
+  return dump_hash( $bedrock_handler, $session )
     if is_api($bedrock_handler);
 
-  return hash_docs( $bedrock_handler, 'Environment', $SESSION // {} );
+  return hash_docs( $bedrock_handler, 'Environment', $session );
 }
 
 ########################################################################
@@ -1360,9 +1426,7 @@ sub hash_docs {
 
   my $html = template( $config, $template, head => $head, hash => $hash );
 
-  output( $bedrock_handler->request, $html );
-
-  return $OK;
+  return output( $bedrock_handler->request, $html );
 }
 
 ########################################################################
@@ -1471,14 +1535,12 @@ sub generic_docs {
     return $NOT_FOUND;
   }
 
-  output(
+  return output(
     $r,
     { uri_root => $bedrock_handler->get_bedrock_admin_dir,
       html     => $html,
     }
   );
-
-  return $OK;
 }
 
 ########################################################################
@@ -1501,21 +1563,16 @@ sub tag_docs {
 
   my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;
 
-  if ( is_api($r) ) {
-    output( $r, { uri_root => $bedrock_admin_dir, tags => \@TAG_LIST } );
-  }
-  else {
+  return output( $r, { uri_root => $bedrock_admin_dir, tags => \@TAG_LIST } )
+    if is_api($r);
 
-    my $tag_link = q{<a href="%s/tag/%s">%s</a>};
+  my $tag_link = q{<a href="%s/tag/%s">%s</a>};
 
-    my @tag_listing = map { sprintf $tag_link, $bedrock_admin_dir, $_, $_ } @TAG_LIST;
+  my @tag_listing = map { sprintf $tag_link, $bedrock_admin_dir, $_, $_ } @TAG_LIST;
 
-    my $html = listing( $bedrock_handler, 'Bedrock Tag Listing', @tag_listing );
+  my $html = listing( $bedrock_handler, 'Bedrock Tag Listing', @tag_listing );
 
-    output( $r, $html );
-  }
-
-  return $OK;
+  return output( $r, $html );
 }
 
 ########################################################################
@@ -1556,56 +1613,49 @@ sub validate_paths {
   my %valid_paths = map { $_ => -d $_ && -r $_ } @paths;
 
   if ( any { !$_ } values %valid_paths ) {
-    $LOGGER->warn( 'found invalid valid paths: ', Dumper( [ grep { !$valid_paths{$_} } keys %valid_paths ] ) );
+    get_logger()->warn( 'found invalid valid paths: ', Dumper( [ grep { !$valid_paths{$_} } keys %valid_paths ] ) );
   }
 
-  return [ grep { $valid_paths{$_} } keys %valid_paths ];
+  return grep { $valid_paths{$_} } keys %valid_paths;
 }
 
 ########################################################################
 sub get_doc_paths {
 ########################################################################
-  my ( $bedrock_handler, $type ) = @_;
-
-  my $config = $bedrock_handler->config();
+  my ( $config, $type ) = @_;
 
   $type = uc "${type}_PATHS";
 
-  if ( exists $BEDROCK_CONFIG_CACHE{$type} ) {
-    $LOGGER->trace('reading from cache!');
+  my @doc_paths;
 
-    return $BEDROCK_CONFIG_CACHE{$type};
+  foreach my $path_list ( grep {defined} ( $ENV{$type}, $config->{$type} ) ) {
+
+    next
+      if !$path_list;
+
+    if ( !is_array($path_list) ) {
+      $path_list = [ split /:/xsm, $path_list // $EMPTY ];
+    }
+
+    push @doc_paths, validate_paths( @{$path_list} );
   }
-  else {
-    $LOGGER->trace( Dumper \%BEDROCK_CONFIG_CACHE );
-  }
 
-  $LOGGER->trace('nothing in cache!');
-
-  my $path_list = $config->{$type} // $EMPTY;
-
-  $LOGGER->trace(
+  get_logger()->debug(
     sub {
-      return 'documentation paths: ' . Dumper( [ 'type:', $type, 'paths: ', $path_list ] );
+      return Dumper(
+        [ type  => $type,
+          paths => \@doc_paths
+        ]
+      );
     }
   );
 
-  if ( !is_array($path_list) ) {
-    $path_list = [ split /:/xsm, $path_list // $EMPTY ];
-  }
-
-  my $valid_paths = validate_paths( @{$path_list} );
-  $BEDROCK_CONFIG_CACHE{$type} = $valid_paths;
-
-  return $valid_paths;
+  return \@doc_paths;
 }
 
 ########################################################################
-{
-  ## no critic (RequireArgUnpacking)
-  sub get_markdown_paths { push @_, 'markdown'; goto &get_doc_paths; }
-  sub get_pod_paths      { push @_, 'pod';      goto &get_doc_paths; }
-}
+sub get_markdown_paths { push @_, 'markdown'; goto &get_doc_paths; }
+sub get_pod_paths      { push @_, 'pod';      goto &get_doc_paths; }
 ########################################################################
 
 ########################################################################
@@ -1614,6 +1664,7 @@ sub internal_server_error {
   my ( $r, $error ) = @_;
 
   $error = Text::URLEncode::Htmlencode $error;
+
   if ( is_api($r) ) {
     output( $r, { error => $error } );
     return $OK;
@@ -1649,24 +1700,29 @@ sub get_session {
 ########################################################################
   my ($bedrock_handler) = @_;
 
-  my $r = $bedrock_handler->request;
+  return $bedrock_handler->{session}
+    if $bedrock_handler->{session};
 
-  my $config = $bedrock_handler->get_config;
+  my $session = eval { return bind_session($bedrock_handler); };
+  $bedrock_handler->{session} = $session;
 
-  my $ctx = Bedrock::Context->new(
-    REQUEST_HANDLER => $r,
-    CONFIG          => $config,
-  );
+  return $session;
+}
 
-  my $session_manager = $config->{BEDROCK_SESSION_MANAGER} ? $config->{BEDROCK_SESSION_MANAGER} : 'UserSession';
+########################################################################
+# get_logger
+########################################################################
+{
+  my $logger;
 
-  my $module_config = $config->get_module_config($session_manager);
+  sub get_logger {
+    return $logger
+      if $logger;
 
-  my $class = 'BLM::Startup::' . $session_manager;
+    $logger = Log::Log4perl->get_logger(__PACKAGE__);
 
-  load $class;
-
-  return $class->new( $ctx, $module_config );
+    return $logger;
+  }
 }
 
 1;
@@ -1781,10 +1837,10 @@ paths and drop that in Bedrock's config directory.>
 
 =head2 Markdown
 
-Set the scalar configuration variable C<MARKDOWN_PATHS> to either a colon
-separated string of absolute paths to your Perl modules or an array of
-paths. You can also set the C<MARKDOWN_PATHS> environment variable in your
-Apache configuration.
+Set the scalar configuration variable C<MARKDOWN_PATHS> to either a
+colon separated string of absolute paths to your paths or an array of
+paths that may include C<.md> files. You can also set the
+C<MARKDOWN_PATHS> environment variable in your Apache configuration.
 
  <array name="MARKDOWN_PATHS">
    <scalar>/usr/local/share/my-app/docs</scalar>
@@ -1796,6 +1852,6 @@ L<perlpod|https://perldoc.perl.org/perlpod>
 
 =head1 AUTHOR
 
-BIGFOOT  - <bigfoot@cpan.org>
+Rob Lauer - <rlauer@treasurersbriefcase.com>
 
 =cut

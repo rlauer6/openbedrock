@@ -17,7 +17,7 @@
    BEDROCK_AUTOCOMPLETE_ENABLED ($env.BEDROCK_AUTOCOMPLETE_ENABLED --or 'no')
    BEDROCK_AUTOCOMPLETE_DIR     ($env.BEDROCK_AUTOCOMPLETE_DIR --or ($site_root + '/bedrock/autocomplete'))
    BEDROCK_BENCHMARK            ($env.BEDROCK_BENCHMARK --or 'Off')
-   BEDROCK_CACHE_ENABLED        ($env.BEDROCK_CACHE_ENABLED --or 'Off')
+   BEDROCK_CACHE_ENGINE         ($env.BEDROCK_CACHE_ENGINE --or 'Shareable')
    BEDROCK_CONF_DIR             ($env.BEDROCK_CONF_DIR --or ( $site_root + '/bedrock/config'))
    BEDROCK_DOCS_ENABLED         ($env.BEDROCK_DOCS_ENABLED --or 'Off')
    BEDROCK_FORMS_AUTHENTICATE   ($env.BEDROCK_FORMS_ENABLED --or 'On')

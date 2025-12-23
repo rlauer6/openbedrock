@@ -7,22 +7,24 @@ use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use IPC::Shareable;
+use Time::HiRes qw(time);
 
 use Role::Tiny::With;
 with 'Bedrock::Cache::Engine';
 
-use constant {
-  CACHE_KEY            => 'BCFG',
-  CACHE_BLOCK_SIZE     => 1024,
-  DEFAULT_CACHE_BLOCKS => 256,
-};
+use Readonly;
+
+Readonly::Scalar our $CACHE_KEY            => 'BCFG';
+Readonly::Scalar our $CACHE_BLOCK_SIZE     => 1024;
+Readonly::Scalar our $DEFAULT_CACHE_BLOCKS => 256;
+Readonly::Scalar our $CACHE_MODE           => oct '666';
 
 ########################################################################
 sub new {
 ########################################################################
-  my ($class) = @_;
+  my ( $class, %options ) = @_;
 
-  my $self = bless {}, $class;
+  my $self = bless \%options, $class;
 
   $self->_init_memory();
 
@@ -35,21 +37,26 @@ sub _init_memory {
   my ($self) = @_;
 
   # Respect the legacy environment variable for size
-  my $cache_blocks = $ENV{BEDROCK_CACHE_CONFIG_SIZE} || DEFAULT_CACHE_BLOCKS;
+  my $cache_blocks = $self->{cache_block};
+  $cache_blocks //= $ENV{BEDROCK_CACHE_CONFIG_SIZE} // $DEFAULT_CACHE_BLOCKS;
 
   my %cache_hash;
+
+  my $create = $self->{create} // ( $ENV{MOD_PERL} ? 0 : 1 );
+
   my %options = (
-    key    => CACHE_KEY,
-    create => 1,
-    mode   => 0666,
-    size   => CACHE_BLOCK_SIZE * $cache_blocks,
+    key    => $CACHE_KEY,
+    create => $create,
+    mode   => $CACHE_MODE,
+    size   => $CACHE_BLOCK_SIZE * $cache_blocks,
   );
 
   # The tie itself
   eval { tie %cache_hash, 'IPC::Shareable', \%options; };  ## no critic
 
-  confess "Bedrock::Cache::Shareable failed to tie memory segment: $EVAL_ERROR"
-    if $EVAL_ERROR || !tied %cache_hash;
+  if ( $EVAL_ERROR || !tied %cache_hash ) {
+    confess "Bedrock::Cache::Shareable failed to tie memory segment: $EVAL_ERROR";
+  }
 
   $self->{_cache} = \%cache_hash;
 
@@ -57,12 +64,13 @@ sub _init_memory {
 }
 
 ########################################################################
-sub set {
+sub set {  ## no critic
 ########################################################################
   my ( $self, $key, $value, %opts ) = @_;
 
-  my $ttl    = $opts{ttl};
-  my $expiry = $ttl ? ( time + $ttl ) : 0;
+  my $ttl = $opts{ttl};
+
+  my $expiry = $ttl ? ( time() + $ttl ) : 0;
 
   # THE ENVELOPE: Wrap the data with its death date
   my $envelope = {
@@ -89,7 +97,7 @@ sub get {
     if !$envelope;
 
   # Check for Expiration
-  if ( $envelope->{e} && time > $envelope->{e} ) {
+  if ( $envelope->{e} && time() > $envelope->{e} ) {
     # Lazy Expiration: It's dead, delete it now.
     delete $self->{_cache}->{$key};
     return;
@@ -99,7 +107,7 @@ sub get {
 }
 
 ########################################################################
-sub exists {
+sub exists {  ## no critic
 ########################################################################
   my ( $self, $key ) = @_;
 
@@ -121,11 +129,35 @@ sub exists {
 }
 
 ########################################################################
-sub delete {
+sub delete {  ## no critic
 ########################################################################
   my ( $self, $key ) = @_;
   delete $self->{_cache}->{$key};
   return 1;
+}
+
+########################################################################
+sub clear {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->{_cache};
+
+  foreach ( keys %{$cache} ) {
+    delete $cache->{$_};
+  }
+
+  return $cache;
+}
+
+########################################################################
+sub keys {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $cache = $self->{_cache};
+
+  return [ grep { $self->exists($_); } CORE::keys %{$cache} ];
 }
 
 1;

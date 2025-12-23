@@ -38,7 +38,6 @@ BEGIN {
 
 use Bedrock qw(slurp_file);
 use Bedrock::Apache::Constants qw(:http %APACHE_LOG_LEVELS);
-use Bedrock::Cache;
 use Bedrock::Constants qw(:chars :defaults :booleans :regexp);
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
@@ -78,6 +77,7 @@ use parent qw(Exporter);
 our @EXPORT_OK = qw(
   load_startup_modules
   pre_bind_module
+  cache
 );
 
 our %EXPORT_TAGS = (
@@ -89,15 +89,29 @@ our %EXPORT_TAGS = (
   ]
 );
 
-our $CACHE;
+{
+  my $cache;
 
-if ( $ENV{BEDROCK_CACHE_ENGINE} ) {
-  $CACHE = eval {
-    return Bedrock::Cache->new();  # Factory handles discovery of Bedrock::Cache::Redis
-  };
+########################################################################
+  sub cache {
+########################################################################
+    return $cache
+      if $cache;
 
-  if ( !$CACHE || $EVAL_ERROR ) {
-    warn "WARNING: could not initialize Bedrock::Cache provider:\n$EVAL_ERROR";
+    return
+      if !$ENV{BEDROCK_CACHE_ENGINE};
+
+    require Bedrock::Cache;
+
+    $cache = eval {
+      return Bedrock::Cache->new();  # Factory handles discovery of Bedrock::Cache::Redis
+    };
+
+    if ( !$cache || $EVAL_ERROR ) {
+      warn "WARNING: could not initialize Bedrock::Cache provider:\n$EVAL_ERROR";
+    }
+
+    return $cache;
   }
 }
 
@@ -107,10 +121,12 @@ sub handler {
   my ($r) = @_;
 
   # see if our page is in cache, if so send a 304
-  if ($CACHE) {
+  my $cache = cache();
+
+  if ($cache) {
     my $etag = $r->headers_in->{'If-None-Match'} // q{};
 
-    if ( $etag && $CACHE->exists($etag) ) {
+    if ( $etag && $cache->exists($etag) ) {
       $r->log->info('Cache hit (ETag)...serving 304 Not Modified');
       $r->send_http_header;
       $r->status($NOT_MODIFIED);
@@ -131,7 +147,7 @@ sub handler {
 
   $BENCHMARKS = $Bedrock::Handler::BEDROCK_BENCHMARK ? [ Benchmark->new ] : [];
 
-  my $bedrock_handler = eval { return Bedrock::Handler->new( $r, cache => $CACHE ); };
+  my $bedrock_handler = eval { return Bedrock::Handler->new( $r, cache => $cache ); };
 
   if ( !$bedrock_handler ) {
     display_init_error( $r, "could not initialize handler\n$EVAL_ERROR" );
@@ -282,7 +298,7 @@ sub handler {
     $ctx = Bedrock::Context->new(
       request      => $r,
       config       => $conf,
-      cache        => $CACHE,
+      cache        => $cache,
       route_params => $route_params,
     );
 

@@ -65,4 +65,8 @@ else
     sed -i -e 's|^ErrorLog.*$|ErrorLog /dev/stderr|' /etc/httpd/conf/httpd.conf
 fi
 
+if [ -z "$BEDROCK_CACHE_ENGINE" ]; then
+   export BEDROCK_CACHE_ENGINE=Shareable
+fi
+
 exec "$@"

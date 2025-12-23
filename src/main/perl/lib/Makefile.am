@@ -63,6 +63,7 @@ perl5bedrockrequestlib_DATA = \
 perl5bedrockcachelib_DATA = \
    Bedrock/Cache/Engine.pm \
    Bedrock/Cache/Redis.pm \
+   Bedrock/Cache/Memory.pm \
    Bedrock/Cache/Null.pm \
    Bedrock/Cache/Shareable.pm
 

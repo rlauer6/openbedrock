@@ -1,4 +1,4 @@
-#!@PERL@
+#!/usr/bin/env perl
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -29,11 +29,13 @@ use Bedrock::Hash;
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Getopt::Long;
+use Getopt::Long qw(:config no_ignore_case);
 use IPC::Shareable;
 use JSON;
+use Scalar::Util qw(reftype);
+use Storable qw(freeze thaw);
 
-our %BEDROCK_CONFIG_CACHE;
+our %CACHE;
 our $VERSION = '@PACKAGE_VERSION@';
 
 ########################################################################
@@ -49,6 +51,7 @@ usage: bedrock-cache.pl options
   --delete, -d   delete the cache
   --file, -f     filename of a file to cache (experimental)
   --list, -l     list the contents of the cache
+  --keys, -k     list just the keys of the cache
   --help, -h     this
   --reset, -r    clear the cache
   --size, -s     size of the cache in MB (default: 256)
@@ -84,7 +87,7 @@ sub create_cache {
     local $SIG{__WARN__} = sub { };
 
     ## no critic (ProhibitTies)
-    tie %BEDROCK_CONFIG_CACHE, 'IPC::Shareable',
+    tie %CACHE, 'IPC::Shareable',
       {
       key     => 'BCFG',
       create  => $create,
@@ -102,13 +105,15 @@ sub main {
   my %options;
 
   my @option_specs = qw(
-    list
     create
     delete
-    size=s
-    help|?
-    reset
     file=s
+    help|?
+    keys|K
+    key|k=s
+    list
+    reset
+    size=s
     version|v
   );
 
@@ -122,7 +127,7 @@ sub main {
 
   my %commands = (
     list => sub {
-      my $str = eval { JSON->new->pretty->allow_blessed->convert_blessed->encode( \%BEDROCK_CONFIG_CACHE ); };
+      my $str = eval { JSON->new->pretty->allow_blessed->convert_blessed->encode( \%CACHE ); };
 
       return print {*STDOUT} $str // $EVAL_ERROR;
     },
@@ -134,19 +139,39 @@ sub main {
 
       return 0;
     },
+    key => sub {
+      my $obj = $CACHE{ $options{key} };
+
+      if ( ref $obj && reftype($obj) eq 'HASH' ) {
+        if ( exists $obj->{d} && exists $obj->{e} ) {
+          $obj = thaw $obj->{d};
+        }
+      }
+
+      print {*STDOUT} JSON->new->pretty->encode($obj);
+
+      return 0;
+    },
+    keys => sub {
+      if ($cache) {
+        print {*STDOUT} JSON->new->pretty->encode( { keys => [ keys %CACHE ] } );
+      }
+      return 0;
+    },
     version => sub {
       version();
       return 0;
     },
     reset => sub {
-      %BEDROCK_CONFIG_CACHE = ();
+      %CACHE = ();
+      return 0;
     },
 
     file => sub {
       croak sprintf 'file (%s) not found or empty', $options{file}
         if !-e $options{file} || !-s $options{file};
 
-      $BEDROCK_CONFIG_CACHE{ $options{file} } = slurp_file( $options{file} );
+      $CACHE{ $options{file} } = slurp_file( $options{file} );
 
       return 0;
     },
@@ -177,7 +202,7 @@ sub main {
 
   $command //= 'default';
 
-  foreach (qw( list delete reset file help create version )) {
+  foreach (qw( list key keys delete reset file help create version )) {
     next if !$options{$_};
 
     $command = $_;
@@ -267,6 +292,10 @@ future usage.
 
 Dumps the contents of the cache in JSON format. Note that the cache
 may include sensitive information.  You have been warned.
+
+=item keys
+
+Show the list of keys in the cache.
 
 =item reset
 

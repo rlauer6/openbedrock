@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 
+use Apache::Bedrock qw(cache);
 use Bedrock;
 use Bedrock::Handler;
 use Bedrock::BedrockJSON;
@@ -25,24 +26,20 @@ BEGIN {
 
   my %CACHE;
 
-  tie %CACHE, 'IPC::Shareable',  ## no critic (ProhibitTies)
+  tie %CACHE, 'IPC::Shareable',  ## no critic
     {
     key     => 'BCFG',
     create  => 1,
-    destroy => 0,
+    destroy => 1,
     size    => 256 * 1024
     };
-
-  # initialize caching engine (creates $Apache::Bedrock::CACHE)
-  $ENV{BEDROCK_CACHE_ENGINE} = 'Shareable';
-
-  require Apache::Bedrock;
-
-  ok( $Apache::Bedrock::CACHE, 'caching object created' );
 }
 
 my $config;
 my $request_handler;
+
+$ENV{BEDROCK_CACHE_ENGINE} = 'Shareable';
+my $bedrock_handler;
 
 ########################################################################
 subtest 'read config' => sub {
@@ -54,11 +51,10 @@ subtest 'read config' => sub {
 
   $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
-  my $handler = Bedrock::Handler->new( $request_handler, cache => $Apache::Bedrock::CACHE );
-
-  $config = $handler->config();
-
-  isa_ok( $handler, 'Bedrock::Handler' );
+  $bedrock_handler = Bedrock::Handler->new( $request_handler, cache => cache() );
+  isa_ok( $bedrock_handler,          'Bedrock::Handler' );
+  isa_ok( $bedrock_handler->{cache}, 'Bedrock::Cache' );
+  $config = $bedrock_handler->config();
 };
 
 my %CACHE;
@@ -83,8 +79,7 @@ subtest 'read cache' => sub {
   # the original config file list that was processed to create the
   # config object. It is removed from the config object itself when
   # the config object is restored from the cache.
-
-  my $cached_config = $Apache::Bedrock::CACHE->get($cache_key);
+  my $cached_config = $bedrock_handler->{cache}->get($cache_key);
 
   ok( $cached_config, 'got something from the cache' )
     or do {
