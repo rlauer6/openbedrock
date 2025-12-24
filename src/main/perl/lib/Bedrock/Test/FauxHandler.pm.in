@@ -3,12 +3,36 @@ package Bedrock::Test::FauxHandler;
 use strict;
 use warnings;
 
+use Bedrock qw(choose);
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Test::FauxLogger;
+
+use Carp;
 use Cwd qw(getcwd);
+use Data::Dumper;
 use English qw(_no_match_vars);
-use List::Util qw(pairs);
 use File::Basename;
+use IO::Scalar;
+use List::Util qw(pairs);
+use Scalar::Util qw(reftype);
+
+__PACKAGE__->mk_accessors(
+  qw(
+    buffer
+    content_type
+    document_root
+    filename
+    headers_in
+    headers_out
+    log
+    log_level
+    method
+    output_handle
+    uri
+  )
+);
+
+use parent qw(Class::Accessor);
 
 caller or __PACKAGE__->main();
 
@@ -17,87 +41,147 @@ sub new {
 ########################################################################
   my ( $class, @args ) = @_;
 
-  my $options = ref $args[0] ? $args[0] : {@args};
+  my %options = ref $args[0] ? %{ $args[0] } : @args;
 
-  my $buffer = delete $options->{buffer};
+  $options{content_type} //= 'text/html';
+  $options{headers_out}  //= [];
+  push @{ $options{headers_out} }, 'Content-type' => $options{content_type};
 
-  for (qw(content_type uri filename log_level headers_in headers_out method )) {
-    $options->{ $UNDERSCORE . $_ } = delete $options->{$_};
-  }
+  $options{log_level}     //= 'error';
+  $options{document_root} //= $ENV{DOCUMENT_ROOT} // getcwd;
 
-  $options->{_headers_out} //= [];
+  $options{method} //= $ENV{REQUEST_METHOD} // 'GET';
+  $options{log} = Bedrock::Test::FauxLogger->new( $options{log_level} );
+  $options{output_handle} //= *STDOUT;
+  $options{headers_in} = _init_headers( $options{headers_in} );
 
-  $options->{_content_type} //= 'text/html';
+  _init_output_handle( \%options );
 
-  $options->{_logger} = Bedrock::Test::FauxLogger->new( $options->{_log_level} // 'error' );
+  # order important here, we create a filename from the URI if we have
+  # no filename and a URI
+  _init_filename( \%options );
 
-  $options->{_document_root} //= $ENV{DOCUMENT_ROOT} // getcwd;
+  # ...likewise we create a URI if we have no URI but we have a
+  # filename and document root
+  _init_uri( \%options );
 
-  if ($buffer) {
-    my $buffer = $EMPTY;
-
-    $options->{_output_handle} = IO::Scalar->new( \$buffer );
-    $options->{_buffer}        = \$buffer;
-  }
-  else {
-    $options->{_output_handle} = *STDOUT;
-  }
-
-  my $self = bless $options, $class;
-
-  $self->{_headers_in} //= {};
-
-  foreach my $header ( grep {/^HTTP_/xsm} keys %ENV ) {
-    next
-      if $header !~ /^HTTP_/xsm;
-
-    my $value = $ENV{$header};
-
-    $header =~ s/^HTTP_//xsm;
-
-    $self->headers_in( $header, $value );
-  }
-
-  my $filename = $self->filename;
-
-  if ( !$self->filename ) {
-    $self->filename( $ENV{PATH_TRANSLATED} // $PROGRAM_NAME );
-  }
-
-  if ( $ENV{REQUEST_METHOD} && !$self->method ) {
-    $self->method( $ENV{REQUEST_METHOD} );
-  }
-  elsif ( !$self->method ) {
-    $self->method('GET');
-  }
+  my $self = $class->SUPER::new( \%options );
 
   return $self;
 }
 
 ########################################################################
-sub method {  ## no critic
+sub _init_filename {
 ########################################################################
-  my ( $self, $method ) = @_;
+  my ($options) = @_;
 
-  if ($method) {
-    $self->{_method} = $method;
+  # If we already have a filename, don't touch it
+  return if $options->{filename};
+
+  # If we don't have a URI, set a default?
+  if ( !$options->{uri} ) {
+    $options->{filename} = $ENV{PATH_TRANSLATED} // $PROGRAM_NAME;
+    return;
   }
 
-  return $self->{_method};
+  # Logic: Filename = DocRoot + URI
+  # e.g. /var/www/html + /foo.roc = /var/www/html/foo.roc
+
+  my $uri  = $options->{uri};
+  my $root = $options->{document_root};
+
+  # Clean up trailing slash on root to avoid //foo.roc
+  $root =~ s{/$}{}xsm;
+
+  # Clean up leading slash on URI to ensure join works
+  $uri =~ s{^/}{}xsm;
+
+  $options->{filename} = sprintf '%s/%s', $root, $uri;
+
+  return;
 }
 
 ########################################################################
-sub choose(&) { $_[0]->(); }  ## no critic
+# NOTE: buffer sent as an option is a flag that simply means 'buffer' the
+# output for me, it is not an input parameter!
 ########################################################################
+sub _init_output_handle {
+########################################################################
+  my ($options) = @_;
+
+  if ( !$options->{buffer} ) {
+    $options->{output_handle} = *STDOUT;
+    return;
+  }
+
+  my $empty  = $EMPTY;
+  my $buffer = \$empty;
+
+  @{$options}{qw(buffer output_handle)} = ( $buffer, IO::Scalar->new($buffer) );
+
+  return;
+}
+
+########################################################################
+sub _init_uri {
+########################################################################
+  my ($options) = @_;
+
+  return if $options->{uri};
+
+  my ( $filename, $document_root ) = @{$options}{qw(filename document_root)};
+
+  # Logic: URI = Filename - DocRoot
+
+  # If the filename starts with the docroot, stripping it gives us the URI
+  if ( index( $filename, $document_root ) == 0 ) {
+    my $uri = substr $filename, length $document_root;
+    $options->{uri} = $uri;
+    return;
+  }
+
+  # Fallback: If filename is NOT inside docroot (e.g. /tmp/test.t),
+  # we behave like the old logic or just default to basename
+  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+  $options->{uri} = sprintf '/%s%s', $name, $ext;
+
+  return;
+}
+
+########################################################################
+sub _init_headers {
+########################################################################
+  my ($headers_in) = @_;
+
+  $headers_in //= [];
+
+  # allow caller to send headers as hashref or array, but make it an array
+  croak "headers_in must be an array or hash reference\n"
+    if $headers_in && !ref $headers_in;
+
+  if ( reftype($headers_in) eq 'HASH' ) {
+    $headers_in = [ %{$headers_in} ];
+  }
+
+  my @headers = grep {/^HTTP_/xsm} keys %ENV;
+
+  foreach my $h (@headers) {
+    my ($k) = $h =~ /^HTTP_(.*)$/xsm;
+
+    push @{$headers_in}, $k => $ENV{$h};
+  }
+
+  return $headers_in;
+}
 
 ########################################################################
 sub headers_in {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my $headers = $self->{_headers_in};
+  my $headers_in = $self->get('headers_in');  # array ref
 
-  return $headers
+  return $headers_in
     if !@args;
 
   @args = choose {
@@ -108,71 +192,27 @@ sub headers_in {
       if ref $args[0] && reftype( $args[0] ) eq 'ARRAY';
   };
 
-  foreach my $h ( pairs @args ) {
-    my ( $header, $value ) = @{$h};
-    $headers->{ uc $header } = $value;
+  foreach my $p ( pairs @args ) {
+    my ( $header, $value ) = @{$p};
+    push @{$headers_in}, uc($header) => $value;
   }
 
-  return $headers;
-}
-
-########################################################################
-sub log {  ## no critic (ProhibitBuiltIn)
-########################################################################
-  my ($self) = @_;
-
-  return $self->{_logger};
-}
-
-########################################################################
-sub filename {
-########################################################################
-  my ( $self, $filename ) = @_;
-
-  if ($filename) {
-    $self->{_filename} = $filename;
-  }
-
-  return $self->{_filename};
-}
-
-########################################################################
-sub _document_root {
-########################################################################
-  my ( $self, $document_root ) = @_;
-
-  return $self->{_document_root}
-    if !$document_root;
-
-  $self->{_document_root} = $document_root;
-
-  return $self->{_document_root};
-}
-
-########################################################################
-sub uri {
-########################################################################
-  my ($self) = @_;
-
-  # FIX: Return the explicitly set URI if we have one
-  return $self->{_uri} if $self->{_uri};
-
-  # Fallback to calculating it from the filename
-  my ( $name, $path, $ext ) = fileparse( $self->filename, qr/[.][^.]+$/xsm );
-  my $document_root = $ENV{DOCUMENT_ROOT} // $EMPTY;
-
-  return sprintf '%s/%s%s', $document_root, $name, $ext;
+  return $headers_in;
 }
 
 ########################################################################
 sub content_type {
 ########################################################################
-  my ( $self, $content_type ) = @_;
+  my ( $self, @args ) = @_;
 
-  return $self->{_content_type}
-    if !$content_type;
+  my $content_type = $self->get('content_type');
 
-  $self->cgi_header_out( 'Content-type' => $content_type );
+  return $content_type
+    if !@args;
+
+  $self->set( content_type => $args[0] );
+
+  $self->cgi_header_out( 'Content-type' => $args[0] );
 
   return $content_type;
 }
@@ -185,18 +225,18 @@ sub headers_out {
 ########################################################################
   my ( $self, @headers ) = @_;
 
-  my $headers_out = $self->{_headers_out} // [];
+  my $headers_out = $self->get('headers_out') // [];
 
-  foreach my $h ( pairs @headers ) {
-    my ( $header, $value ) = @{$h};
+  foreach my $p ( pairs @headers ) {
+    my ( $header, $value ) = @{$p};
 
     die "no value for $header\n"
-      if !$value;
+      if !defined $value;
 
-    push @{$headers_out}, $header, $value;
+    push @{$headers_out}, $header => $value;
   }
 
-  return;
+  return $headers_out;
 }
 
 ########################################################################
@@ -204,9 +244,8 @@ sub print {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, $content ) = @_;
 
-  my $fh = $self->{_output_handle};
-
-  return print {$fh} $content;
+  my $fh = $self->output_handle;
+  return CORE::print {$fh} $content;
 }
 
 ########################################################################
@@ -214,12 +253,23 @@ sub send_http_header {
 ########################################################################
   my ($self) = @_;
 
-  my $headers_out = $self->{_headers_out};
+  my @headers_out = @{ $self->headers_out || [] };
 
   return
-    if !$headers_out || !@{$headers_out};
+    if !@headers_out;
 
-  my @headers = map { sprintf '%s: %s', @{$_} } pairs @{ $headers_out || [] };
+  my %uniq_headers;
+  my @headers;
+
+  # headers were 'pushed' so first one wins
+  foreach my $p ( pairs reverse @headers_out ) {
+    my ( $v, $h ) = @{$p};
+
+    next if $uniq_headers{$h};
+    $uniq_headers{$h} = 1;
+
+    unshift @headers, sprintf '%s: %s', $h, $v;
+  }
 
   return $self->print( sprintf "%s\n\n", join "\n", @headers );
 }
@@ -239,7 +289,9 @@ sub get_output_buffer {
 ########################################################################
   my ($self) = @_;
 
-  return $self->{_buffer} ? ${ $self->{_buffer} } : $EMPTY;
+  my $buffer = $self->buffer;
+
+  return $buffer ? ${$buffer} : $EMPTY;
 }
 
 ########################################################################
@@ -247,12 +299,16 @@ sub flush_output {
 ########################################################################
   my ($self) = @_;
 
-  my $output = $self->{_buffer} ? ${ $self->{_buffer} } : $EMPTY;
+  my $buffer = $self->buffer;
 
-  if ($output) {
-    print $output;
-    ${ $self->{_buffer} } = $EMPTY;
-  }
+  my $output = $buffer ? ${$buffer} : $EMPTY;
+
+  return
+    if !$output;
+
+  $self->print($output);
+
+  ${$buffer} = $EMPTY;
 
   return;
 }
@@ -275,87 +331,202 @@ sub main {
 
 1;
 
+## no critic
+
 __END__
 
 =pod
 
 =head1 NAME
 
-Bedrock::Test::FauxHandler - a mock request handler for testing
+Bedrock::Test::FauxHandler - A mock Apache request handler for testing Bedrock
 
 =head1 SYNOPSIS
 
- my $r = Bedrock::Test::FauxHandler->new(filename => 'foo.roc');
+  use Bedrock::Test::FauxHandler;
+
+  # Basic usage mimics a GET request to a file
+  my $r = Bedrock::Test::FauxHandler->new(
+      filename => '/var/www/html/foo.roc',
+      method   => 'GET'
+  );
+
+  # Capture output in a buffer instead of printing to STDOUT
+my $r_buffered = Bedrock::Test::FauxHandler->new(
+      filename => 'test.roc',
+      buffer   => 1
+  );
+  
+  # ... run your tests ...
+  
+  my $output = $r_buffered->get_output_buffer;
 
 =head1 DESCRIPTION
 
-This is a mocked request handler for testing other parts of Bedrock
-that require a request handler.  It attempts to behave like the Apache
-request handler, providing only the necessary methods to simulate an
-HTTP request.
+C<Bedrock::Test::FauxHandler> provides a mocked interface compatible with
+L<Apache2::RequestRec>. It is designed to allow testing of Bedrock modules
+and handlers without requiring a running Apache server or C<mod_perl> environment.
 
-=head1 METHODS AND SUBROUTINES
+It simulates the request lifecycle, including header management, content type
+negotiation, and output buffering.
 
-=head2 new
+=head1 CONSTRUCTOR
 
- new(options)
+=head2 new( %options )
 
-=over 5
+Creates a new FauxHandler object. The following options are supported:
 
-=item buffer
+=over 4
 
-Boolean value that indicates that the handler should buffer output. To
-examine the state of the buffer use the C<get_output_buffer> method.
+=item B<buffer>
 
-When the handler is destroyed the buffer is output to the selected
-file handle (typically STDOUT) and cleared. To manually flush the
-buffer call the C<flush_output()> method
+Boolean. If set to true, output sent via C<print()> is captured internally
+rather than sent to STDOUT.
+I<Default: false (output goes to STDOUT)>
 
-=item content_type
+=item B<content_type>
 
-Response content type.
+The initial response content type.
+I<Default:> C<text/html>
 
-=item filename
+=item B<document_root>
 
-Absolute path to file.
+The root directory of the web server.
+I<Default:> C<$ENV{DOCUMENT_ROOT}> or current working directory (C<getcwd>).
 
-=item headers_in
+=item B<filename>
 
-Hash, array or list of key/value pairs that represent the request headers.
+The absolute path to the file being requested.
 
-=item headers_out
+If not provided, it is determined via the following logic:
+1. If C<uri> is provided, it is constructed from C<document_root> + C<uri>.
+2. Otherwise, it defaults to C<$ENV{PATH_TRANSLATED}> or C<$PROGRAM_NAME>.
 
-Set or get the output headers.
+=item B<headers_in>
 
-=item log_level
+A reference to a Hash or Array containing initial request headers.
+Existing C<HTTP_*> environment variables are automatically merged into this list.
 
-Logging level:
+=item B<headers_out>
 
- error
- warn
- info
- debug
+An array reference for storing response headers.
+I<Default:> C<[]>
 
-=item method
+=item B<log_level>
 
-Request method. Defaults to GET.
+The logging verbosity. Accepted values: C<debug>, C<info>, C<warn>, C<error>.
+I<Default:> C<error>
 
-=item uri
+=item B<method>
 
-URI portion of the filename.
+The HTTP request method (e.g., GET, POST, PUT).
+I<Default:> C<$ENV{REQUEST_METHOD}> or C<GET>.
+
+=item B<uri>
+
+The requested URI.
+
+If not provided, it is auto-calculated by removing the C<document_root>
+from the C<filename>.
 
 =back
 
+=head1 METHODS
+
+=head2 buffer
+
+Returns the reference to the internal output buffer (if buffering is enabled).
+
+=head2 cgi_header_out( $key, $value )
+
+Alias for L</headers_out>.
+
+=head2 content_type( [$type] )
+
+Get or set the response Content-Type.
+If C<$type> is provided, it updates the C<Content-type> header in C<headers_out>.
+
+=head2 flush_output
+
+Manually flushes the internal output buffer to the output handle (usually STDOUT)
+and clears the buffer. This is called automatically during C<DESTROY>.
+
 =head2 get_output_buffer
 
-Retrieve the output buffer contents.
+Returns the current contents of the output buffer as a string. Returns empty string
+if buffering is disabled or empty.
 
-=head2 flush_buffer
+=head2 header_out( $key, $value )
 
-Output the buffer to the selected file handle and clear buffer.
+Alias for L</headers_out>.
+
+=head2 headers_in
+
+Returns an array reference containing the request headers as key-value pairs.
+e.g., C<[ 'Host' => 'localhost', 'Accept' => '*/*' ]>
+
+=head2 headers_out( [$key, $value] )
+
+Get or set response headers.
+
+=over 4
+
+=item * B<No arguments:> Returns the array reference of current response headers.
+
+=item * B<Arguments:> Pushes a new header key-value pair onto the stack.
+
+=back
+
+I<Note: This method supports multi-value headers. It does not overwrite existing
+headers with the same key; it appends them.>
+
+=head2 log
+
+Returns the L<Bedrock::Test::FauxLogger> instance.
+
+=head2 print( @content )
+
+Simulates printing content to the client. If B<buffer> was enabled in the
+constructor, content is appended to the internal buffer. Otherwise, it is
+printed to the configured C<output_handle> (STDOUT).
+
+=head2 send_http_header
+
+Formats and prints the accumulated C<headers_out> to the output stream,
+followed by a blank line.
+
+B<Behavior:>
+This method implements "Last Wins" logic. If multiple headers with the same
+name exist (e.g., multiple C<Status> headers), only the I<last> one added
+is output. The original order of distinct headers is preserved.
+
+=head1 INTERNAL ACCESSORS
+
+The following accessors are generated via L<Class::Accessor> and are primarily
+for internal use, though available if needed:
+
+=over 4
+
+=item * document_root
+
+=item * filename
+
+=item * logger
+
+=item * method
+
+=item * output_handle
+
+=item * uri
+
+=back
 
 =head1 AUTHOR
 
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
 =head1 SEE ALSO
+
+L<Bedrock::Test>, L<Bedrock::Test::FauxLogger>, L<Apache2::RequestRec>
 
 =cut

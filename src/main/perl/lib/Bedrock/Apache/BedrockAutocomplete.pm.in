@@ -9,7 +9,7 @@
 #    any later version.
 #
 #    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of\
 #    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 #    GNU General Public License for more details.
 #
@@ -27,6 +27,7 @@ use Role::Tiny::With;
 with 'Bedrock::Apache::HandlerUtils';
 
 use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:booleans);
 use Bedrock::Handler;
 use Bedrock::Apache::Constants qw(:all);
 use Data::Dumper;
@@ -42,16 +43,41 @@ sub handler {
 ########################################################################
   my ($r) = @_;
 
-  # TBD S3: get_session_file_info($r, 0)
+  # SECURE BY DEFAULT:
+  # Unless explicitly disabled via environment variable, we verify the user session.
+  my $verify_session = !$ENV{BEDROCK_AUTOCOMPLETE_INSECURE};
 
-  my $file_info = eval { return get_session_file_info($r); };
+  # Attempt to retrieve file info from the user's session
+  my $file_info = eval { return get_session_file_info( $r, $TRUE, $verify_session ); };
+  my $err       = $EVAL_ERROR;
 
-  if ( !$file_info || $EVAL_ERROR ) {
-    $r->log->error( "file not found in session\n" . $EVAL_ERROR );
+  # If we failed to get session info...
+  if ( !$file_info || $err ) {
 
-    return set_error_status( $r, "file not found\n" )
-      if !-e $r->filename;
+    # SECURITY CHECK:
+    # If we are in Secure Mode and the failure was due to a missing/expired session,
+    # we MUST DENY access. We cannot fall back to the public filesystem.
+    if ( $verify_session && $err && $err =~ /no\sor\sexpired\ssession/xsm ) {
+      $r->log->error('Access denied: Secure mode enabled and no valid session found.');
+      return set_error_status( $r, $err );
+    }
 
+    # FALLBACK LOGIC:
+    # We proceed here only if:
+    # 1. We are in Insecure Mode (public access allowed), OR
+    # 2. Session was valid, but the file was not found in the session directory.
+    #
+    # In these cases, we fall back to looking for the file in the public request path ($r->filename).
+
+    if ( !-e $r->filename ) {
+      # If it's not in the public path either, return the original error (likely "file not found")
+      # unless it was a session error (in insecure mode), in which case we default to Not Found.
+      my $status_msg = ( $err && $err =~ /found/xsm ) ? $err : "file not found\n";
+      $r->log->error( "File not found: " . $r->filename );
+      return set_error_status( $r, $status_msg );
+    }
+
+    # Use the public file
     $file_info = {
       filename => $r->filename,
       mtime    => ( stat $r->filename )[9],
@@ -59,8 +85,7 @@ sub handler {
     };
   }
 
-  my ( $filename, $config, $mtime )
-    = @{$file_info}{qw(filename config mtime)};
+  my ( $filename, $config, $mtime ) = @{$file_info}{qw(filename config mtime)};
 
   # TBD S3: check if file exist, if not check S3 (head) and get etag
   # to see if file has changed (instead of mtime)
@@ -76,27 +101,21 @@ sub handler {
     $cache_off = $ENV{REQUEST_URI} && $ENV{REQUEST_URI} =~ /no_cache/xsm;
   }
 
-  my ( $list, $modified_time, $etag )
-    = @{ $FILES{$filename} }{qw(list mtime etag)};
+  my ( $list, $modified_time, $etag ) = @{ $FILES{$filename} }{qw(list mtime etag)};
 
-  # TBD: replace with method that returns a decoded JSON object
-  # ... maybe we should cache this?
+  # Cache Management
   if ( $cache_off || !$list || $modified_time ne $mtime ) {
+
+    # Combined read/decode block to avoid nested evals
     $list = eval {
-
-      my $content = eval { return slurp_file $filename; };
-
-      if ( !$content || $EVAL_ERROR ) {
-        $r->log->error( sprintf 'could not open file [%s] for reading', $filename );
-
-        return set_error_status( $r, 'not found' );
-      }
-
+      my $content = slurp_file($filename);
+      die "could not open file [$filename] for reading\n" unless $content;
       return decode_json($content);
     };
 
-    if ($EVAL_ERROR) {
-      my $error = Encode($EVAL_ERROR);
+    if ( !$list || $EVAL_ERROR ) {
+      my $error_msg = $EVAL_ERROR || "Unknown error decoding JSON";
+      $r->log->error("Error loading autocomplete file [$filename]: $error_msg");
 
       if ( defined $ENV{MOD_PERL} ) {
         $r->status($SERVER_ERROR);
@@ -105,11 +124,11 @@ sub handler {
         $r->headers_out( Status => '500' );
       }
 
-      print {*STDOUT} <<"END_OF_HTML";
-{ "error" : "$error" }
-END_OF_HTML
-
+      $r->content_type('application/json');
       $r->send_http_header;
+
+      my $safe_error = Encode($error_msg);
+      print {*STDOUT} qq({ "error" : "$safe_error" });
 
       return $OK;
     }
@@ -120,7 +139,7 @@ END_OF_HTML
       etag  => $etag,
     };
 
-    $r->log->debug('cache refreshed');
+    $r->log->debug("cache refreshed for [$filename]");
   }
   else {
     $r->log->debug( sprintf 'read %s from cache', $filename );
@@ -129,10 +148,9 @@ END_OF_HTML
   my $result = get_result_set($list);
 
   $r->content_type('application/json');
-
   $r->send_http_header;
 
-  print {*STDOUT} JSON->new->pretty->encode($result);
+  print JSON->new->pretty->encode($result);
 
   return $OK;
 }
@@ -191,6 +209,22 @@ searched for when a query is sent with a term fragment.
 
 The autocomplete API accepts two query parameters: C<term>, C<type>.
 
+=head2 SECURITY
+
+By default, this handler is B<SECURE>. It attempts to validate a user
+session cookie before serving any content.
+
+1. It checks the user's session directory for the requested file.
+2. If the user has no valid session, it returns HTTP 401/403 and DENIES access.
+
+To enable B<INSECURE> mode (public access without session checks), you must set
+the environment variable C<BEDROCK_AUTOCOMPLETE_INSECURE> to a true value in your
+Apache configuration.
+
+ Insecure Mode Behavior:
+ 1. Checks user session (if available).
+ 2. If no session, or file not found in session, FALLS BACK to the public file path.
+
 =over 5
 
 =item term
@@ -247,6 +281,8 @@ Apache server.
     <IfModule perl_module>
       SetHandler perl-script
       PerlHandler Apache::BedrockAutocomplete
+      # Optional: Disable Security for public autocomplete
+      # PerlSetEnv BEDROCK_AUTOCOMPLETE_INSECURE 1
     </IfModule>
   
     <IfModule !perl_module>
@@ -292,8 +328,8 @@ directory.
 
  <sink:list>
  [ 
-   { "label" : "Bedrock", "value" : "1" },
-   { "label" : "Perl",    "value" : "2"}
+{ "label" : "Bedrock", "value" : "1" },
+{ "label" : "Perl",    "value" : "2"}
  ]
  </sink>
 
@@ -318,8 +354,8 @@ Typically, an autocomplete file looks some like this if you are using
 jQuery's autocomplete facility:
 
  [
-   { "label" : "Bedrock", "value" : "1" },
-   { "label" : "Perl",    "value" : "2"}
+{ "label" : "Bedrock", "value" : "1" },
+{ "label" : "Perl",    "value" : "2"}
  ]
 
 I<From jQuery's documentation:>
@@ -341,24 +377,24 @@ B<Multiple types supported:>
 =head1 jQuery AUTOCOMPLETE EXAMPLE
 
   $('#search').autocomplete({
-      source: function(request, response) {
+source: function(request, response) {
           $.ajax({
-              url: 'http://localhost:8080/autocomplete/birds',
+url: 'http://localhost:8080/autocomplete/birds',
               dataType: 'json',
               data: {
-                  term: request.term,
+term: request.term,
                   type: getMatchType()
               },
-              success: function(data) {
+success: function(data) {
                   console.log(dat);
               },
-              error: function(xhr, status, error) {
+error: function(xhr, status, error) {
                   console.error('Autocomplete error:', error);
                   response([]);
               }
           });
       },
-      minLength: 1
+minLength: 1
   });
 
 =head1 SEE ALSO

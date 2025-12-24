@@ -29,6 +29,7 @@ package main;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
+use File::Basename qw(basename);
 use Bedrock::Test::FauxHandler;
 use File::Temp qw(tempdir tempfile);
 use JSON;
@@ -42,12 +43,18 @@ sub create_temp_file {
 
   my $tmpdir = tempdir( CLEANUP => 1 );
 
-  my ( $fh, $filename ) = tempfile( dir => $tmpdir, CLEANUP => 1 );
+  my ( $fh, $filename ) = tempfile( dir => $tmpdir, UNLINK => 1 );
 
   my $autocomplete = [
-    { label => 'Bedrock',             value => 1 },
-    { label => 'Perl',                value => 2 },
-    { label => 'Perl Best Practices', value => 3 },
+    { label => 'Bedrock',
+      value => 1
+    },
+    { label => 'Perl',
+      value => 2
+    },
+    { label => 'Perl Best Practices',
+      value => 3
+    },
   ];
 
   print {$fh} JSON->new->pretty->encode($autocomplete);
@@ -56,7 +63,7 @@ sub create_temp_file {
 
   my ( $dir, $session_id ) = $tmpdir =~ /^(.*)[\/]([^\/]+)$/xsm;
 
-  return ( $dir, $session_id, basename($filename) );
+  return ( $tmpdir, $session_id, $filename );
 }
 
 ########################################################################
@@ -88,10 +95,11 @@ sub main {
   my ( $dir, $session_id, $filename ) = create_temp_file;
 
   my $handler = Bedrock::Test::FauxHandler->new(
-    content_type => 'application/json',
-    uri          => '/session/' . $filename,
-    filename     => $filename,
-    log_level    => 'trace',
+    content_type  => 'application/json',
+    uri           => '/session/' . basename($filename),
+    filename      => $filename,
+    log_level     => 'trace',
+    document_root => $dir,
   );
 
   create_tagx_xml( $dir, $session_id );
@@ -116,11 +124,14 @@ sub main {
 ########################################################################
     local $ENV{QUERY_STRING} = 'term=be';
 
-    my $stdout
-      = stdout_from( sub { Apache::BedrockAutocomplete::handler($handler) } );
+    my $stdout = stdout_from( sub { Apache::BedrockAutocomplete::handler($handler) } );
 
     like( $stdout, qr/\AContent-type:\sapplication\/json\n\n/xsm, 'content header' )
-      or print $handler->log->as_string;
+      or do {
+      diag($stdout);
+      diag( $handler->log->as_string );
+      BAIL_OUT('ERROR: first order broke! no headers!');
+      };
   };
 
 ########################################################################
