@@ -3,22 +3,24 @@
 # -- Apache configuration for Bedrock enabled sites
 <sink><include --file=site-config --dir-prefix=($config.DIST_DIR + "/config")></sink>
 
- <if $site.APACHE_MOD_PERL --eq yes >
-  PerlSetEnv APACHE_SITE_ROOT             <var $site_root>
-  PerlSetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
-  PerlSetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
-  PerlSetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
-  PerlSetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
-  PerlSetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
-  PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
-  PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
-  PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
-  PerlPassEnv PERL5LIB
-  PerlPassEnv BEDROCK_CACHE_ENGINE
- </if>
+<if $site.APACHE_MOD_PERL --eq yes >
+PerlSetEnv APACHE_SITE_ROOT             <var $site_root>
+PerlSetEnv BEDROCK_INCLUDE_DIR          <var $site_root>/bedrock/include
+PerlSetEnv BEDROCK_PEBBLE_DIR           <var $site_root>/bedrock/pebbles
+PerlSetEnv BEDROCK_IMAGE_DIR            <var $config.DIST_DIR>/img
+PerlSetEnv BEDROCK_CONFIG_PATH          <var $config.BEDROCK_CONFIG_PATH>
+PerlSetEnv BEDROCK_BENCHMARK            <var $site.BEDROCK_BENCHMARK>
+PerlSetEnv BedrockLogLevel              <var $site.BedrockLogLevel>
+PerlSetEnv APACHE_CONF_DIR              <var $site.CONF_DIR>
+PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
+PerlPassEnv PERL5LIB
+PerlPassEnv BEDROCK_CACHE_ENGINE
+PerlPassEnv BEDROCK_SESSION_MANAGER
+</if>
 
 PassEnv PERL5LIB
 PassEnv BEDROCK_CACHE_ENGINE
+PassEnv BEDROCK_SESSION_MANAGER
 
 # we always set this in case we are using bedrock.cgi
 SetEnv APACHE_SITE_ROOT             <var $site_root>
@@ -274,10 +276,12 @@ SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
     <IfModule mod_perl.c>
       SetHandler perl-script
       PerlHandler Apache::BedrockAutocomplete
+      PerlSetEnv BEDROCK_AUTOCOMPLETE_ENABLED yes
     </IfModule>
 
     <IfModule !mod_perl.c>
       SetHandler bedrock-autocomplete
+      SetEnv BEDROCK_AUTOCOMPLETE_ENABLED yes
     </IfModule>
 
   </Directory>

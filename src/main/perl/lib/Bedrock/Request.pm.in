@@ -9,10 +9,7 @@ sub new {
   my $class = shift;
 
   require CGI::Tiny;
-
-  # CGI::Tiny is designed as a framework (cgi {}) and lacks a public constructor.
-  # To use it as a library inside Bedrock, we manually instantiate it.
-  # CGI::Tiny 1.x methods are instance methods that lazy-load data.
+  # Manual instantiation of the framework-less CGI::Tiny object
   my $cgi_tiny_instance = bless {}, 'CGI::Tiny';
 
   return bless { cgi => $cgi_tiny_instance }, $class;
@@ -23,7 +20,14 @@ sub param {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  return $self->{cgi}->param_names() if !defined $key;
+  # FORCE LIST CONTEXT:
+  # Explicitly capture names into an array to ensure we return a list,
+  # preventing reference leakage from the underlying driver.
+  if ( !defined $key ) {
+    my @names = $self->{cgi}->param_names();
+    return @names;
+  }
+
   return $self->{cgi}->param($key);
 }
 
@@ -32,8 +36,8 @@ sub multi_param {
 ########################################################################
   my ( $self, $key ) = @_;
 
+  # CGI::Tiny uses param_array for multi-value fields
   my $vals = $self->{cgi}->param_array($key);
-
   return $vals ? @{$vals} : ();
 }
 
@@ -94,16 +98,34 @@ sub param {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  return $self->{driver}->param($key)
-    if defined $key;
+  if ( defined $key ) {
+    return $self->{driver}->param($key);
+  }
 
-  return $self->{driver}->param();
+  # CONTRACT ENFORCEMENT:
+  # The driver MUST return a list of keys. If it returns an array reference
+  # (as CGI::Tiny seems to be doing in this environment), we must unwrap it
+  # to prevent downstream code (Context.pm/Input.pm) from breaking.
+
+  my @results = $self->{driver}->param();
+
+  # Check if we got a single result that is an ARRAY reference
+  if ( @results == 1 && ref( $results[0] ) eq 'ARRAY' ) {
+    return @{ $results[0] };
+  }
+
+  return @results;
 }
 
 ########################################################################
 sub multi_param {
 ########################################################################
   my ( $self, $key ) = @_;
+
+  # Polyfill for Apache2::Request which lacks multi_param
+  if ( $self->{type} eq 'mod_perl' ) {
+    return $self->{driver}->param($key);
+  }
 
   return $self->{driver}->multi_param($key);
 }
@@ -113,48 +135,38 @@ sub upload {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  return
-    if !defined $key;
+  return if !defined $key;
 
-  # Fetch the upload object/handle from the driver
   my $u = $self->{driver}->upload($key);
 
-  return
-    if !$u;
+  return if !$u;
 
   if ( $self->{type} eq 'cgi_tiny' ) {
-    # CGI::Tiny
-
     return {
-      fh       => $u->{file},          # Key matches Upload.pm
-      filename => $u->{filename},      # Key matches Upload.pm
-      type     => $u->{content_type},  # Key matches Upload.pm
+      fh       => $u->{file},
+      filename => $u->{filename},
+      type     => $u->{content_type},
       size     => $u->{size}
     };
   }
   elsif ( $self->{type} eq 'mod_perl' ) {
-    # Apache2::Upload
     return {
-      fh       => $u->fh,              # Key matches Upload.pm
-      filename => $u->filename,        # Key matches Upload.pm
-      type     => $u->type,            # Key matches Upload.pm
+      fh       => $u->fh,
+      filename => $u->filename,
+      type     => $u->type,
       size     => $u->size,
     };
   }
   else {
     # Legacy CGI.pm
-
-    # FIX: Scalar context prevents "list context" warning and hash shifting
     my $filename = scalar $self->{driver}->param($key);
-
-    # FIX: uploadInfo returns a HashRef, not a List
     my $info_ref = $self->{driver}->uploadInfo($u);
     my $ctype    = $info_ref ? $info_ref->{'Content-Type'} : undef;
 
     return {
-      fh       => $u,         # Key matches Upload.pm
-      filename => $filename,  # Key matches Upload.pm
-      type     => $ctype,     # Key matches Upload.pm
+      fh       => $u,
+      filename => $filename,
+      type     => $ctype,
       size     => -s $u,
     };
   }

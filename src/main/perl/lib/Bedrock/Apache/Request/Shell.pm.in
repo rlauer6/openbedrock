@@ -45,6 +45,65 @@ use Readonly;
 
 Readonly::Scalar our $DEFAULT_LOG_FILE  => '/tmp/bedrock.log';
 Readonly::Scalar our $DEFAULT_LOG_LEVEL => 'warn';
+########################################################################
+sub read_input {
+########################################################################
+  my ($self) = @_;
+
+  my $input   = $self->{input};
+  my $options = $self->{options};
+
+  if ($input) {
+
+    if ( $input !~ /^\//xsm ) {
+      $input = sprintf '%s/%s', getcwd, $input;
+      $ENV{PATH_TRANSLATED} = $input;
+    }
+
+    # FIX: Use <STDIN> explicitly to read pipe, not <>
+    # cat foo | bedrock joe.roc
+    if ( !-t STDIN ) {
+      local $RS = undef;
+      my $content = <STDIN>;
+
+      if ( defined $content ) {
+        push @{ $self->{argv} }, 'POSTDATA=' . $content;
+      }
+    }
+    else {
+      # warn "[DEBUG] read_input: STDIN is a TTY (interactive).\n";
+    }
+  }
+  else {
+    # ... (logic for temp file creation omitted for brevity, logic unchanged) ...
+    # Copy the temp file block from your original file if needed,
+    # but the issue is likely in the block above.
+
+    # Handling input
+    my $fh = File::Temp->new(
+      TEMPLATE => 'bedrock-shell-XXXXX',
+      SUFFIX   => '.roc',
+      DIR      => $options->{tempdir},
+      UNLINK   => $options->{cleanup}
+    );
+
+    $self->{_tempfile} = $fh->filename;
+    $input = $fh->filename;
+
+    $self->{input} = $input;
+
+    my $script;
+    {
+      local $RS = undef;
+      $script = <>;
+    }
+    exit 0 if !$script;
+    $fh->print($script);
+    $fh->close();
+  }
+
+  return $self;
+}
 
 ########################################################################
 sub new {
@@ -56,37 +115,98 @@ sub new {
   $self->{argv} = [];
 
   $self->get_options;
-
   $self->init_options;
-
   $self->init_logger;
-
   $self->init_database_config;
 
+  # 1. Read Input (Consumes STDIN)
   $self->read_input;
 
-  die "Input file not specified.\n"
-    if !$self->{input};
+  die "Input file not specified.\n" if !$self->{input};
 
-  die "Unable to open input file `$self->{input}'\n"
-    if !-f $self->{input};
+  die "Unable to open input file `$self->{input}'\n" if !-f $self->{input};
 
   my $options = $self->{options};
 
-  ## no critic (RequireLocalizedPunctuationVars)
+  ## no critic
   $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
   $ENV{CONFIG_PATH}         //= $options->{config};
-
   $ENV{DOCUMENT_ROOT} = abs_path( $ENV{DOCUMENT_ROOT} // getcwd );
 
   @ARGV = @{ $self->{argv} };
 
-  # redirect STDOUT
+  # ====================================================================
+  # FIX: CGI::Tiny Compatibility Bridge (DEBUG MODE)
+  # ====================================================================
+  my $url_encode = sub {
+    my $str = shift;
+    return '' unless defined $str;
+    $str =~ s/([^A-Za-z0-9_\-.])/sprintf("%%%02X", ord($1))/seg;
+    return $str;
+  };
+
+  my @query_parts;
+  my $postdata_content = undef;
+
+  foreach my $arg (@ARGV) {
+    my ( $k, $v ) = split /=/, $arg, 2;
+    $k //= '';
+    $v //= '';
+
+    if ( $k eq 'POSTDATA' ) {
+      $postdata_content = $v;
+    }
+    else {
+      push @query_parts, $url_encode->($k) . '=' . $url_encode->($v);
+    }
+  }
+
+  # 2. Setup Query String
+  $ENV{QUERY_STRING}   = join( '&', @query_parts );
+  $ENV{REQUEST_METHOD} = 'GET';                     # Default
+
+  # 3. Setup Mock STDIN
+  if ( defined $postdata_content ) {
+    $ENV{REQUEST_METHOD} = 'POST';
+    $ENV{CONTENT_TYPE}   = 'application/x-www-form-urlencoded';
+
+    my $body = 'POSTDATA=' . $url_encode->($postdata_content);
+
+    use bytes;
+    $ENV{CONTENT_LENGTH} = length($body);
+
+    # Open memory handle
+    open my $mem_fh, '<', \$body
+      or die "[DEBUG] FATAL: Could not create memory handle: $!";
+
+    # Alias STDIN
+    no warnings 'redefine', 'once';
+    *STDIN = $mem_fh;
+
+    # VERIFICATION READ
+    my $check = getc(STDIN);
+    if ( defined $check ) {
+      seek( STDIN, 0, 0 );  # Rewind for CGI::Tiny
+    }
+    else {
+      warn "[DEBUG] Bridge: WARNING! STDIN alias exists but read returned undef.\n";
+    }
+  }
+  else {
+    # Clear env for GET
+    delete $ENV{CONTENT_LENGTH};
+    delete $ENV{CONTENT_TYPE};
+
+    # Safe empty handle
+    open my $empty_fh, '<', \my $empty;
+    no warnings 'redefine', 'once';
+    *STDIN = $empty_fh;
+  }
+  # ====================================================================
+
   if ( defined $options->{outfile} ) {
     my $file = $options->{outfile};
-
-    open STDOUT, '>', $file
-      or die "could not open [$file] for output";
+    open STDOUT, '>', $file or die "could not open [$file] for output";
   }
 
   STDOUT->autoflush($TRUE);
@@ -196,65 +316,6 @@ sub add_env_vars {
   }
 
   return;
-}
-
-########################################################################
-sub read_input {
-########################################################################
-  my ($self) = @_;
-
-  my $input   = $self->{input};
-  my $options = $self->{options};
-
-  if ($input) {
-
-    if ( $input !~ /^\//xsm ) {
-      $input = sprintf '%s/%s', getcwd, $input;
-      $ENV{PATH_TRANSLATED} = $input;
-    }
-
-    # cat foo | bedrock joe.roc
-    # collect STDIN as POSTDATA
-    if ( !-t STDIN ) {  ## no critic (ProhibitInteractiveTest)
-      local $RS = undef;
-
-      push @{ $self->{argv} }, 'POSTDATA=' . <>;
-    }
-  }
-  else {
-
-    # Handling input
-    my $fh = File::Temp->new(
-      TEMPLATE => 'bedrock-shell-XXXXX',
-      SUFFIX   => '.roc',
-      DIR      => $options->{tempdir},
-      UNLINK   => $options->{cleanup}
-    );
-
-    $self->{_tempfile} = $fh->filename;
-    $input = $fh->filename;
-
-    $self->{input} = $input;
-
-    $self->get_logger->debug( Dumper( [$self] ) );
-
-    my $script;
-
-    {
-      local $RS = undef;
-
-      $script = <>;
-    }
-
-    exit 0
-      if !$script;
-
-    $fh->print($script);
-
-    $fh->close();
-  }
-
-  return $self;
 }
 
 ########################################################################
@@ -539,7 +600,7 @@ sub uri {
 }
 
 ########################################################################
-sub filename { my ($self) = @_; return $self->{input}; }
+sub filename { my ($self) = @_; return abs_path $self->{input}; }
 sub finfo    { my ($self) = @_; return $self->{input}; }
 ########################################################################
 

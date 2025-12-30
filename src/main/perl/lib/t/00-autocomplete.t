@@ -190,6 +190,46 @@ sub main {
     is( @{$obj}, 2, '2 terms found' );
   };
 
+########################################################################
+  subtest 'global directory fallback' => sub {
+########################################################################
+    # 1. Create a separate "Global" directory and file
+    my $global_dir  = tempdir( CLEANUP => 1 );
+    my $global_file = "$global_dir/global_items.json";
+
+    my $data = [ { label => 'Global Item', value => 99 } ];
+
+    open my $fh, '>', $global_file or die "Cannot write global file: $!";
+    print {$fh} JSON->new->encode($data);
+    close $fh;
+
+    # 2. Setup a handler requesting this file
+    # Note: We use a filename that DOES NOT exist in the session dir,
+    # forcing the handler to look elsewhere.
+    my $r_global = Bedrock::Test::FauxHandler->new(
+      content_type => 'application/json',
+      filename     => '/var/www/dummy/global_items.json',  # Physical path (missing)
+      uri          => '/autocomplete/global_items.json',   # Logical path
+      log_level    => 'error',
+    );
+
+    # 3. Set the Environment Variable
+    local $ENV{BEDROCK_AUTOCOMPLETE_ROOT} = $global_dir;
+    local $ENV{QUERY_STRING}              = 'term=global';
+
+    # 4. Run the Handler
+    # The mock check_session (defined in main) will pass, but the file won't be
+    # found in the session dir. It should fall back to $global_dir.
+    my $stdout = stdout_from( sub { Apache::BedrockAutocomplete::handler($r_global) } );
+
+    # 5. Verify Results
+    my ($json) = $stdout =~ /\n\n(.*)\z/xsm;
+    my $obj = eval { JSON->new->decode($json) };
+
+    ok( $obj, 'Got JSON response from global directory fallback' );
+    is( $obj->[0]->{label}, 'Global Item', 'Correctly served content from BEDROCK_AUTOCOMPLETE_ROOT' );
+  };
+
   done_testing;
 
   unlink "$dir/tagx.xml";

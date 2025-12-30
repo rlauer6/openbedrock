@@ -1,23 +1,3 @@
-#
-#    This file is a part of Bedrock, a server-side web scripting tool.
-#    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2023, TBC Development Group, LLC.
-#
-#    This program is free software; you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation; either version 2 of the License, or
-#    any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of\
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with this program; if not, write to the Free Software
-#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
-#
-
 package Apache::BedrockAutocomplete;
 
 use strict;
@@ -26,95 +6,136 @@ use warnings;
 use Role::Tiny::With;
 with 'Bedrock::Apache::HandlerUtils';
 
+use Apache::Bedrock qw(cache);
 use Bedrock qw(slurp_file);
-use Bedrock::Constants qw(:booleans);
+use Bedrock::Constants qw(:booleans :chars);
 use Bedrock::Handler;
 use Bedrock::Apache::Constants qw(:all);
 use Data::Dumper;
 use English qw(-no_match_vars);
+use File::Basename qw(basename);
 use JSON qw(decode_json);
 use Text::URLEncode qw(Encode);
 
-# cache the autocomplete files
-our %FILES;
+########################################################################
+sub init_autocomplete {
+########################################################################
+  my ($bedrock_handler) = @_;
+
+  # Load config from bedrock.xml / .bedrock_rc
+  my $config = $bedrock_handler->config->{autocomplete} // {};
+
+  # Environment overrides configuration file
+  my $enabled = $config->{enabled} // $ENV{BEDROCK_AUTOCOMPLETE_ENABLED};
+  $config->{enabled} = $ENV{BEDROCK_AUTOCOMPLETE_ENABLED} ? 'yes' : 'no';
+
+  $config->{cache} //= 'yes';
+  $config->{cache} = $config->{cache} =~ /^(:?yes|[y1]|true|on|enabled)$/xsmi;
+
+  $config->{root} = $ENV{BEDROCK_AUTOCOMPLETE_ROOT} // $EMPTY;
+
+  my $r = $bedrock_handler->request;
+  $r->log->info('autocomplete configuration');
+  $r->log->info('--------------------------');
+  $r->log->info( sprintf '     enabled: %s', $config->{enabled} );
+  $r->log->info( sprintf '        root: %s', $config->{root} );
+  $r->log->info( sprintf 'cache enable: %s', $config->{cache} );
+
+  return $config;
+}
 
 ########################################################################
 sub handler {
 ########################################################################
   my ($r) = @_;
 
-  # SECURE BY DEFAULT:
-  # Unless explicitly disabled via environment variable, we verify the user session.
-  my $verify_session = !$ENV{BEDROCK_AUTOCOMPLETE_INSECURE};
+  # Initialize Caching
+  my $cache     = cache();
+  my $cache_key = __PACKAGE__ . ':file_list';
 
-  # Attempt to retrieve file info from the user's session
-  my $file_info = eval { return get_session_file_info( $r, $TRUE, $verify_session ); };
-  my $err       = $EVAL_ERROR;
+  my $bedrock_handler = Bedrock::Handler->new( $r, cache => $cache );
 
-  # If we failed to get session info...
-  if ( !$file_info || $err ) {
+  my $config              = $bedrock_handler->config;
+  my $autocomplete_config = init_autocomplete($bedrock_handler);
+  my $caching_enabled     = $autocomplete_config->{cache} && $cache;
 
-    # SECURITY CHECK:
-    # If we are in Secure Mode and the failure was due to a missing/expired session,
-    # we MUST DENY access. We cannot fall back to the public filesystem.
-    if ( $verify_session && $err && $err =~ /no\sor\sexpired\ssession/xsm ) {
-      $r->log->error('Access denied: Secure mode enabled and no valid session found.');
-      return set_error_status( $r, $err );
-    }
+  my $file_info;
 
-    # FALLBACK LOGIC:
-    # We proceed here only if:
-    # 1. We are in Insecure Mode (public access allowed), OR
-    # 2. Session was valid, but the file was not found in the session directory.
-    #
-    # In these cases, we fall back to looking for the file in the public request path ($r->filename).
+  # ====================================================================
+  # LOOKUP ORDER:
+  # 1. Public (Alias/Document Root)
+  # 2. Global (System-wide list)
+  # 3. Session (User-specific private list)
+  # ====================================================================
 
-    if ( !-e $r->filename ) {
-      # If it's not in the public path either, return the original error (likely "file not found")
-      # unless it was a session error (in insecure mode), in which case we default to Not Found.
-      my $status_msg = ( $err && $err =~ /found/xsm ) ? $err : "file not found\n";
-      $r->log->error( "File not found: " . $r->filename );
-      return set_error_status( $r, $status_msg );
-    }
-
-    # Use the public file
+  # 1. Check Public Document Root
+  # This serves files physically located in the directory mapped by the Alias.
+  if ( -e $r->filename && !-d $r->filename ) {
     $file_info = {
       filename => $r->filename,
       mtime    => ( stat $r->filename )[9],
-      config   => Bedrock::Handler->new($r),
     };
+    $r->log->debug( sprintf 'serving public file [%s]', $r->filename );
   }
 
-  my ( $filename, $config, $mtime ) = @{$file_info}{qw(filename config mtime)};
+  # 2. Check Global Directory
+  if ( !$file_info ) {
+    my $global_root = $ENV{BEDROCK_AUTOCOMPLETE_ROOT} // $autocomplete_config->{root};
 
-  # TBD S3: check if file exist, if not check S3 (head) and get etag
-  # to see if file has changed (instead of mtime)
+    if ($global_root) {
+      # Security: Use basename to prevent directory traversal
+      my $clean_name  = basename( $r->filename );
+      my $global_file = sprintf '%s/%s', $global_root, $clean_name;
 
-  my $ac_config = $config->{autocomplete} || {};
-
-  my $cache_off;
-
-  if ( defined $ac_config->{cache} ) {
-    $cache_off = $ac_config->{cache} !~ /on/ixsm;
+      if ( -e $global_file ) {
+        $file_info = {
+          filename => $global_file,
+          mtime    => ( stat $global_file )[9],
+        };
+        $r->log->debug( sprintf 'serving global file [%s]', $global_file );
+      }
+    }
   }
-  else {
-    $cache_off = $ENV{REQUEST_URI} && $ENV{REQUEST_URI} =~ /no_cache/xsm;
+
+  # 3. Check Session (Private)
+  if ( !$file_info ) {
+    # We attempt to resolve the file using the session logic.
+    # If the user has no session (or an invalid one), this simply fails
+    # to return a file path, resulting in a natural 404.
+
+    $file_info = eval { return get_session_file_info( $r, $TRUE ); };
+
+    if ($file_info) {
+      $r->log->debug( sprintf 'serving session file [%s]', $file_info->{filename} );
+    }
   }
 
-  my ( $list, $modified_time, $etag ) = @{ $FILES{$filename} }{qw(list mtime etag)};
+  # If we still don't have a file, it's a 404.
+  if ( !$file_info ) {
+    $r->log->error( 'File not found: ' . $r->filename );
+    return set_error_status( $r, "file not found\n" );
+  }
 
-  # Cache Management
-  if ( $cache_off || !$list || $modified_time ne $mtime ) {
+  # ====================================================================
+  # PROCESSING & CACHING
+  # ====================================================================
 
-    # Combined read/decode block to avoid nested evals
+  my ( $filename, $mtime ) = @{$file_info}{qw(filename mtime)};
+
+  my $cache_list = $caching_enabled ? $cache->get($cache_key) : {};
+
+  my ( $list, $modified_time, $etag ) = @{ $cache_list->{$filename} }{qw(list mtime etag)};
+
+  if ( !$list || $modified_time ne $mtime ) {
+
     $list = eval {
       my $content = slurp_file($filename);
-      die "could not open file [$filename] for reading\n" unless $content;
+      die "could not open file [$filename] for reading\n" if !$content;
       return decode_json($content);
     };
 
     if ( !$list || $EVAL_ERROR ) {
-      my $error_msg = $EVAL_ERROR || "Unknown error decoding JSON";
+      my $error_msg = $EVAL_ERROR || 'Unknown error decoding JSON';
       $r->log->error("Error loading autocomplete file [$filename]: $error_msg");
 
       if ( defined $ENV{MOD_PERL} ) {
@@ -133,19 +154,22 @@ sub handler {
       return $OK;
     }
 
-    $FILES{$filename} = {
-      list  => $list,
-      mtime => $mtime,
-      etag  => $etag,
-    };
+    if ($caching_enabled) {
+      $cache_list->{$filename} = {
+        list  => $list,
+        mtime => $mtime,
+        etag  => $etag,
+      };
 
-    $r->log->debug("cache refreshed for [$filename]");
+      $cache->set( $cache_key, $cache_list );
+      $r->log->debug("cache refreshed for [$filename]");
+    }
   }
   else {
     $r->log->debug( sprintf 'read %s from cache', $filename );
   }
 
-  my $result = get_result_set($list);
+  my $result = get_result_set( $list, $autocomplete_config->{search_key} );
 
   $r->content_type('application/json');
   $r->send_http_header;
@@ -158,7 +182,7 @@ sub handler {
 ########################################################################
 sub get_result_set {
 ########################################################################
-  my ($list) = @_;
+  my ( $list, $search_key ) = @_;
 
   my $query  = $ENV{QUERY_STRING} // q{};
   my ($term) = $query =~ /(?:^|&)term=([^&]*)/xsmi;
@@ -168,9 +192,10 @@ sub get_result_set {
   return $list if !defined $term || $term eq q{};
 
   $term = lc $term;
+  $search_key //= 'label';
 
   my @matches = grep {
-    my $label = lc $_->{label};
+    my $label = lc $_->{$search_key};
 
         $type eq 'exact'    ? $label eq $term
       : $type eq 'prefix'   ? $label =~ /^\Q$term\E/xsm
@@ -209,21 +234,50 @@ searched for when a query is sent with a term fragment.
 
 The autocomplete API accepts two query parameters: C<term>, C<type>.
 
-=head2 SECURITY
+=head2 SECURITY AND LOOKUP ORDER
 
-By default, this handler is B<SECURE>. It attempts to validate a user
-session cookie before serving any content.
+This handler uses a tiered lookup strategy that implicitly handles security.
+It looks for the requested autocomplete file in the following order:
 
-1. It checks the user's session directory for the requested file.
-2. If the user has no valid session, it returns HTTP 401/403 and DENIES access.
+1.  B<Public Path:> Checks the physical path mapped to the request URL (Document Root).
+2.  B<Global Directory:> If defined via C<BEDROCK_AUTOCOMPLETE_ROOT>, checks this system-wide path.
+3.  B<User Session Directory:> Checks if the file exists in the authenticated user's session.
 
-To enable B<INSECURE> mode (public access without session checks), you must set
-the environment variable C<BEDROCK_AUTOCOMPLETE_INSECURE> to a true value in your
-Apache configuration.
+B<Security Note:> Access to session files is inherently secured by the session mechanism.
+If a user does not have a valid session cookie, the handler cannot resolve the
+path to their private session directory, and the file will simply be "Not Found."
 
- Insecure Mode Behavior:
- 1. Checks user session (if available).
- 2. If no session, or file not found in session, FALLS BACK to the public file path.
+=head2 CONFIGURATION FILE
+
+You can use an optional configuration file to control certain aspects
+of the handler. Create a Bedrock XML file that contains an
+`autocomplete` key in Bedrock's configuration directory. See below for
+allowed values.
+
+I<NOTE: Environment variables will override values in your
+configuration file.>
+
+=over 4
+
+=item search_key
+
+The default search key used in your array of hashes.
+
+default: label
+
+=item enabled
+
+Enable or disable the handler. Same as the environment variable
+C<BEDROCK_AUTOCOMPLETE_ENABLED>.
+
+=item cache
+
+Set this to a true value to enable caching of the Autocomplete
+files. When this is set to a true value, files will be cached using
+the selected caching engine. See L<Bedrock::Cache> for more details on
+caching.
+
+=back
 
 =over 5
 
@@ -281,8 +335,9 @@ Apache server.
     <IfModule perl_module>
       SetHandler perl-script
       PerlHandler Apache::BedrockAutocomplete
-      # Optional: Disable Security for public autocomplete
-      # PerlSetEnv BEDROCK_AUTOCOMPLETE_INSECURE 1
+      
+      # Optional: Define a global autocomplete directory
+      # PerlSetEnv BEDROCK_AUTOCOMPLETE_ROOT /opt/bedrock/global_lists
     </IfModule>
   
     <IfModule !perl_module>
@@ -328,8 +383,8 @@ directory.
 
  <sink:list>
  [ 
-{ "label" : "Bedrock", "value" : "1" },
-{ "label" : "Perl",    "value" : "2"}
+  { "label" : "Bedrock", "value" : "1" },
+  { "label" : "Perl",    "value" : "2"}
  ]
  </sink>
 
@@ -348,14 +403,14 @@ the handler.
 The format of file is really up to you based on how you expect to
 process the file on the client side. If you use the F<.jroc>
 extension, the handler will return the result set with an
-I<application/json> Content-Type header.
+I<application/json> content type header.
 
 Typically, an autocomplete file looks some like this if you are using
 jQuery's autocomplete facility:
 
  [
-{ "label" : "Bedrock", "value" : "1" },
-{ "label" : "Perl",    "value" : "2"}
+  { "label" : "Bedrock", "value" : "1" },
+  { "label" : "Perl",    "value" : "2"}
  ]
 
 I<From jQuery's documentation:>
@@ -376,26 +431,26 @@ B<Multiple types supported:>
 
 =head1 jQuery AUTOCOMPLETE EXAMPLE
 
-  $('#search').autocomplete({
-source: function(request, response) {
-          $.ajax({
-url: 'http://localhost:8080/autocomplete/birds',
-              dataType: 'json',
-              data: {
-term: request.term,
-                  type: getMatchType()
-              },
-success: function(data) {
-                  console.log(dat);
-              },
-error: function(xhr, status, error) {
-                  console.error('Autocomplete error:', error);
-                  response([]);
-              }
-          });
-      },
-minLength: 1
-  });
+   $('#search').autocomplete({
+       source: function(request, response) {
+           $.ajax({
+               url: 'http://localhost:8080/autocomplete/birds',
+               dataType: 'json',
+               data: {
+                   term: request.term,
+                   type: getMatchType()
+               },
+               success: function(data) {
+                   console.log(dat);
+               },
+               error: function(xhr, status, error) {
+                   console.error('Autocomplete error:', error);
+                   response([]);
+               }
+           });
+       },
+       minLength: 1
+   });
 
 =head1 SEE ALSO
 

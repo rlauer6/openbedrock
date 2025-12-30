@@ -29,7 +29,7 @@ use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Context qw(parse_cookie);
 use Bedrock::Handler qw(bind_module);
 use BLM::DBHandler qw(easy_connect);
-
+use Carp;
 use Data::Dumper;
 use DBI;
 use English qw(-no_match_vars);
@@ -85,11 +85,15 @@ sub check_session {
   die "no or expired session\n"
     if !$session_id;
 
-  return validate_session( $bedrock_handler, $verify_user );
+  my $session = validate_session( $bedrock_handler, $verify_user );
+
+  dump_session_info( $bedrock_handler, $session );
+
+  return $session;
 }
 
 ########################################################################
-sub bind_session {
+sub bind_session {  ## no critic
 ########################################################################
   my ( $bedrock_handler, $validate ) = @_;
 
@@ -97,9 +101,11 @@ sub bind_session {
 
   my $config = $bedrock_handler->get_config;
 
-  my $session_manager = $config->{BEDROCK_SESSION_MANAGER} ? $config->{BEDROCK_SESSION_MANAGER} : 'UserSession';
+  my $session_manager = $ENV{BEDROCK_SESSION_MANAGER} || $config->{BEDROCK_SESSION_MANAGER};
 
-  $r->log->warn("no BEDROCK_SESSION_MANAGER defined in configuration, using BLM::Startup::UserSession\n");
+  if ( !$session_manager ) {
+    $r->log->warn("no BEDROCK_SESSION_MANAGER defined in configuration, using BLM::Startup::UserSession\n");
+  }
 
   my $module_config = $config->get_module_config($session_manager);
 
@@ -148,68 +154,64 @@ sub dump_session_info {
   my $r = $bedrock_handler->request;
 
   $r->log->debug( sprintf 'SESSION_DIR......[%s]', $bedrock_handler->get_config->{SESSION_DIR} );
-  $r->log->debug( sprintf 'session..........[%s]', $session );
-  $r->log->debug( sprintf 'filename.........[%s]', $r->filename );
+  $r->log->debug( sprintf 'session..........[%s]', Dumper( [ session => $session ] ) );
 
   return;
 }
 
 ########################################################################
-sub dump_request_info {
+sub session_filename {
 ########################################################################
-  my ($r) = @_;
+  my ( $bedrock_handler, %args ) = @_;
 
-  $r->log->debug( __PACKAGE__ . ' started.' );
+  my ( $session_dir, $default_ext, $session, $verify_user ) = @args{q(session_dir default_ext session verify_user)};
 
-  $r->log->debug( sprintf 'filename.........[%s]', $r->filename );
-  $r->log->debug( sprintf 'URI..............[%s]', $r->uri );
-  $r->log->debug( sprintf 'Cookie...........[%s]', $r->headers_in->{Cookie} // $EMPTY );
-  $r->log->debug( sprintf 'PATH_INFO........[%s]', $ENV{PATH_INFO}          // $EMPTY );
-  $r->log->debug( sprintf 'PATH_TRANSLATED..[%s]', $ENV{PATH_TRANSLATED}    // $EMPTY );
-  $r->log->debug( sprintf 'HTTP_COOKIE......[%s]', $ENV{HTTP_COOKIE}        // $EMPTY );
-
-  return;
-}
-
-########################################################################
-sub get_session_file_info { goto &get_file_info; }
-########################################################################
-sub get_file_info {
-########################################################################
-  my ( $r, @args ) = @_;
-
-  my $options;
-
-  if ( !ref $args[0] ) {
-    $options = { verify => $args[0], verify_user => $args[1] };
-  }
-  else {
-    $options = $args[0];
-  }
-
-  my ( $verify_file, $verify_user, $default_ext ) = @{$options}{qw(verify verify_user ext)};
-
-  $r->log->warn('invoking get_file_info without verifying user!');
-
-  if ( $default_ext && $default_ext !~ /^[.]/xsm ) {
-    $default_ext = ".$default_ext";
-  }
-
-  dump_request_info($r);
+  my $r = $bedrock_handler->request;
 
   # filename (however actual file will exist under user's session directory)
   my ( $name, $path, $ext ) = fileparse( $r->filename, qr/[.]([^.]*)$/xsm );
   $ext //= $default_ext;
 
-  my $bedrock_handler = Bedrock::Handler->new($r);
+  $session //= check_session( $bedrock_handler, $verify_user );
+
+  $session_dir //= $session->get_session_dir;
+
+  my $filename = sprintf '%s/%s%s', $session_dir, $name, $ext;
+
+  return $filename;
+}
+
+########################################################################
+sub get_session_file_info {
+########################################################################
+  my ( $bedrock_handler, $options ) = @_;
+
+  my $r = $bedrock_handler->request;
+
+  my ( $verify_file, $verify_user, $default_ext ) = @{$options}{qw(verify verify_user ext)};
+
+  if ( $default_ext && $default_ext !~ /^[.]/xsm ) {
+    $default_ext = ".$default_ext";
+  }
+
+  # filename, however if looking for a session file the actual file
+  # will exist under the user's session directory
+  my ( $name, $path, $ext ) = fileparse( $r->filename, qr/[.]([^.]*)$/xsm );
+  $ext //= $default_ext;
 
   my $session = check_session( $bedrock_handler, $verify_user );
 
   my $session_dir = $session->get_session_dir;
 
-  my $filename = sprintf '%s/%s%s', $session_dir, $name, $ext;
+  my $filename = session_filename(
+    $bedrock_handler,
+    session     => $session,
+    session_dir => $session_dir,
+    verify_user => $verify_user
+  );
 
-  dump_session_info( $bedrock_handler, $session );
+  return { filename => $filename }
+    if !$verify_file;
 
   my @finfo = stat $filename;
 
@@ -221,8 +223,7 @@ sub get_file_info {
     mtime       => $finfo[9],
   };
 
-  return
-    if $verify_file && !verify_file( $r, $filename );
+  verify_file( $r, $filename );  # throws an exception if file does not exist
 
   return $file_info;
 }
@@ -304,7 +305,7 @@ __END__
 
 =head1 NAME
 
-Bedorck::Apache::HandlerUtils - role for providing some useful methods used by multiple handlers
+Bedrock::Apache::HandlerUtils - role for providing some useful methods used by multiple handlers
 
 =head1 SYNOPSIS
 
@@ -338,12 +339,6 @@ I<NOTE: The default is always to verify that user's session is valid.>
 
 Dumps the session information to the Apache log in debug mode.
 
-=head2 dump_request_info
-
- dump_request_info($handler)
-
-Dumps the request information to the Apache log in debug mode.
-
 =head2 get_cookie
 
  get_cookie(handler, cookie-name)
@@ -352,10 +347,20 @@ Retrieves the value of a single cookie.
 
 =head2 get_file_info
 
- get_file_info(request, verify, verify-user)
+ get_file_info(bedrock-handler, options)
 
-Retrieve a hash of metadata associated with the filename in the
+Returns  a hash of metadata associated with the filename in the
 request object.
+
+=head3
+
+=over 4
+
+=item verify
+
+=item verify_user
+
+=back
 
 =over 5
 
@@ -427,7 +432,7 @@ Returns SERVER_ERROR if the none of the above are found.
 
 =head2 validate_session
 
- validate_session(handler, verify-user)
+ validate_session(bedrock-handler, verify-user)
 
 Returns the session object (C<BLM::Startup::Session).
 
