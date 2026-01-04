@@ -50,7 +50,7 @@ use Bedrock::DBI::Locator;
 use Bedrock::Dump;
 use Bedrock::Hash;
 use Bedrock::Request;
-use Carp;
+use Carp qw(carp cluck croak confess);
 use Crypt::Cipher::AES;
 use Cwd qw(getcwd abs_path);
 use DBI;
@@ -84,6 +84,7 @@ sub new {
 
   my $options = ref $args[0] ? $args[0] : {@args};
 
+  # note this does not remove the uc versions (yet)
   foreach ( keys %{$options} ) {
     $options->{ lc $_ } = $options->{$_};  # just lc everything please
   }
@@ -94,7 +95,7 @@ sub new {
 
   my $request = $options->{ $request_name // $EMPTY };
 
-  die "usage: Bedrock::Context->new( config => config, request => request )\n"
+  carp "usage: Bedrock::Context->new( config => config, request => request )\n"
     if !$request || !$config;
 
   my $self = bless {}, $class;
@@ -127,6 +128,39 @@ sub new {
   init_log4perl_logger();
 
   return $self;
+}
+
+########################################################################
+sub param {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  # 1. If looking for a specific key
+  if ( defined $key ) {
+
+    # Priority A: Check Route Params (e.g. /customer/:id)
+    # We check exists() because the value might be 0 or empty string
+    if ( my $rp = $self->route_params ) {
+      return $rp->{$key} if exists $rp->{$key};
+    }
+
+    # Priority B: Check Standard Input (Query/Post)
+    # getInputValue handles the lazy loading of the request parameters
+    return $self->getInputValue($key);
+  }
+
+  # 2. If looking for the list of all keys
+  my %keys;
+
+  # Gather Route Keys
+  if ( my $rp = $self->route_params ) {
+    map { $keys{$_} = 1 } keys %$rp;
+  }
+
+  # Gather Input Keys
+  map { $keys{$_} = 1 } $self->getInputValue();
+
+  return keys %keys;
 }
 
 ########################################################################
@@ -365,19 +399,19 @@ sub cgi_header_in {
   return %{$headers};
 }
 
-sub headers_out { goto &cgi_header_out; }
-
 ########################################################################
-sub cgi_header_out {
+sub cgi_header_out { cluck 'deprecated! user headers_out()'; goto &headers_out; }
+########################################################################
+sub headers_out {
 ########################################################################
   my ( $self, @headers ) = @_;
 
-  my $r = $self->apache_handler;
+  my $r = $self->request;
 
-  # mod_perl 1/2
-  return ref($r) =~ /Apache2/xsm
-    ? $r->headers_out->add(@headers)
-    : $r->header_out(@headers);
+  return $r->headers_out(@headers)
+    if ref($r) !~ /Apache2/xsm;
+
+  return @headers ? $r->headers_out->add(@headers) : $r->headers_out;
 }
 
 ########################################################################
@@ -402,14 +436,14 @@ sub getOutputValue {  ## no critic
   }
   elsif (@args) {
     if ( !wantarray ) {
-      confess 'Scalar context is not valid here: should be array context only';
+      cluck 'Scalar context is not valid here: should be array context only';
     }
 
     return @{ $self->output_vars }{@args};
   }
   else {
     if ( !wantarray ) {
-      confess 'Scalar context is not valid here: should be array context only';
+      cluck 'Scalar context is not valid here: should be array context only';
     }
     return keys %{ $self->output_vars };
   }
@@ -611,6 +645,29 @@ Constructor for context object.  Returns the created object.
 
 Returns a shared DBI handle for the current request.
 Respects C<DBI_DSN> environment variables for CLI/Shell overrides.
+
+=head2 param
+
+ param( name )
+ param()
+
+Unified access to request parameters. This method searches for the parameter 
+C<name> in the following order:
+
+=over 4
+
+=item 1. Route Parameters
+
+Parameters extracted by the Bedrock Router (e.g. C</user/:id>).
+
+=item 2. CGI Parameters
+
+Standard Query String and POST parameters.
+
+=back
+
+If no argument is provided, returns a list of all unique parameter names
+from both sources.
 
 =head2 cleanup
 

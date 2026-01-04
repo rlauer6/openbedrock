@@ -24,8 +24,10 @@ package Apache::Request::CGI;
 use strict;
 use warnings;
 
+use Bedrock qw(choose);
 use Bedrock::Constants qw(:booleans :chars :log_levels :mime-types);
 use Bedrock::Context qw(init_log4perl_logger);
+use Carp qw(cluck);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
@@ -34,75 +36,64 @@ use List::Util qw(pairs none pairkeys uniq);
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-use Readonly;
+use parent qw(Class::Accessor);
+
+__PACKAGE__->mk_accessors(
+  qw(
+    content_type
+    finfo
+    headers
+    headers_in
+    log_level
+    output_handle
+  )
+);
 
 ########################################################################
 sub new {
 ########################################################################
   my ( $class, %options ) = @_;
 
-  my $self = bless \%options, $class;
+  $options{log_level} //= $options{LogLevel} //= $ENV{BedrockLogLevel} // $ENV{LogLevel};
 
-  my $fh = $self->{output_handle};
+  my $self = $class->SUPER::new( \%options );
 
-  if ( !$fh ) {
-    $fh = select;
-
-    if ( !ref $fh && ref \$fh ne 'GLOB' ) {
-      no strict 'refs';  ## no critic (ProhibitNoStrict)
-
-      $fh = \*{$fh};
-
-      $self->{output_handle} = $fh;
-    }
-  }
-
-  $self->{LogLevel} //= $ENV{BedrockLogLevel} // $ENV{LogLevel};
+  $self->init_output_handle;
 
   $self->init_logger;
 
-  $ENV{PATH_TRANSLATED} //= $PROGRAM_NAME;
+  $self->init_content_type;
 
-  $self->_add_types_from_config();
-
-  $self->_set_default_mime_type();
-
-  $self->headers_in;
+  $self->init_headers_in;
 
   return $self;
 }
 
 ########################################################################
-sub _add_types_from_config {
+sub init_output_handle {
 ########################################################################
   my ($self) = @_;
 
-  my $config = eval {
-    require Apache::ConfigParser;
-
-    my $config_file = $ENV{APACHE_CONF_DIR} ? sprintf( '%s/httpd.conf', $ENV{APACHE_CONF_DIR} ) : q{};
-
-    return
-      if !$config_file || !-e $config_file;
-
-    return Apache::ConfigParser->new->parsefile($config_file);
-  };
-
   return
-    if !$config || $EVAL_ERROR;
+    if $self->output_handle;
 
-  my @types = $config->find_down_directive_names('AddType');
+  my $fh = select;
 
-  foreach my $t (@types) {
-    my ( $mime_type, @extensions ) = $t->get_value_array;
-    @DEFAULT_MIME_TYPES{@extensions} = $mime_type;
+  if ( !ref $fh && ref \$fh ne 'GLOB' ) {
+    no strict 'refs';  ## no critic
+
+    $fh = \*{$fh};
+
+    $self->output_handle($fh);
   }
 
-  return $self;
+  return;
 }
 
 ########################################################################
-sub _set_default_mime_type {
+sub init_headers_in { goto &headers_in; }
+########################################################################
+sub init_content_type {
 ########################################################################
   my ($self) = @_;
 
@@ -123,8 +114,6 @@ sub _set_default_mime_type {
       skip_extensions => $TRUE
     );
 
-    $ext =~ s/[.]//xsm;
-
     return $mt->mimeTypeOf($ext);
   };
 
@@ -141,11 +130,13 @@ sub init_logger {
 ########################################################################
   my ($self) = @_;
 
-  my $level = $self->{LogLevel} // $EMPTY;
+  my $level = $self->log_level // $EMPTY;
 
   if ( none { $level eq $_ } qw( error fatal warn info debug trace ) ) {
-    $level = 'error';
+    $level = 'warn';
   }
+
+  $self->set( log_level => $level );
 
   init_log4perl_logger();
 
@@ -159,7 +150,7 @@ sub get_loglevel {
 ########################################################################
   my ($self) = @_;
 
-  return $LOG4PERL_LOG_LEVELS{ $self->get_loglevel_str };
+  return $LOG4PERL_LOG_LEVELS{ $self->log_level };
 }
 
 ########################################################################
@@ -167,7 +158,7 @@ sub get_loglevel_str {
 ########################################################################
   my ($self) = @_;
 
-  return $self->{log_level} || 'error';
+  return $self->log_level;
 }
 
 ########################################################################
@@ -189,12 +180,7 @@ sub _log {
 ########################################################################
   my ( $level, $self, @args ) = @_;
 
-  my $logger = $self->get_logger;
-
-  # set the level for the handler
-  $logger->level( $LOG4PERL_LOG_LEVELS{ $self->{log_level} } );
-
-  return $logger->$level(@args);
+  return $self->get_logger->$level(@args);
 }
 
 ########################################################################
@@ -217,11 +203,7 @@ sub log {  ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ($self) = @_;
 
-  my $logger = $self->get_logger;
-  my $level  = $self->{log_level} || 'error';
-  $logger->level( $LOG4PERL_LOG_LEVELS{$level} );
-
-  return $logger;
+  return $self->get_logger;
 }
 
 ########################################################################
@@ -229,10 +211,12 @@ sub content_type {
 ########################################################################
   my ( $self, $type ) = @_;
 
-  return $self->{_content_type}
+  my $content_type = $self->get('content_type');
+
+  return $content_type
     if !$type;
 
-  $self->{_content_type} = $type;
+  $self->set( content_type => $type );
 
   $self->headers_out( 'Content-type' => $type );
 
@@ -252,44 +236,53 @@ sub finfo {
 ########################################################################
   my ( $self, $file ) = @_;
 
-  my $path_xlated = $file || $ENV{PATH_TRANSLATED};
+  my $finfo = $self->get('finfo');
 
-  # roc[k] file?
-  if ( $path_xlated && $path_xlated =~ /[.]j?rock?$/xsm ) {
-    return $path_xlated;
-  }
+  return $finfo
+    if $finfo;
 
-  # roc[k] file with path info?
-  elsif ( $path_xlated && $path_xlated =~ /^(.*[.]j?rock?)(\/.*?)$/xsm ) {
-    my $filename = $1;
+  $ENV{PATH_TRANSLATED} //= $PROGRAM_NAME;
 
-    if ($2) {
-      $ENV{BEDROCK_PATH_INFO} = $2;
+  my $path_xlated = $file // $ENV{PATH_TRANSLATED};
+
+  my $filename = choose {
+
+    # roc[k] file?
+    return $path_xlated
+      if $path_xlated && $path_xlated =~ /[.]j?rock?$/xsm;
+
+    # roc[k] file with path info?
+    if ( $path_xlated && $path_xlated =~ /^(.*[.]j?rock?)(\/.*?)$/xsm ) {
+      my $filename = $1;
+
+      if ($2) {
+        $ENV{BEDROCK_PATH_INFO} = $2;
+      }
+
+      if ( $ENV{BEDROCK_PATH_INFO} ) {
+        $ENV{BEDROCK_PATH_TRANSLATED} = sprintf '%s%s', $ENV{DOCUMENT_ROOT}, $ENV{BEDROCK_PATH_INFO};
+      }
+
+      return $filename;
     }
 
-    if ( $ENV{BEDROCK_PATH_INFO} ) {
-      $ENV{BEDROCK_PATH_TRANSLATED} = sprintf '%s%s', $ENV{DOCUMENT_ROOT}, $ENV{BEDROCK_PATH_INFO};
-    }
+    # html or other file?
+    return $path_xlated
+      if $ENV{PATH_INFO} && $ENV{PATH_INFO} =~ /^(.*)([.][^.]+)$/xsm;
 
-    return $filename;
-  }
-
-  # html or other file?
-  elsif ( $ENV{PATH_INFO} && $ENV{PATH_INFO} =~ /^(.*)([.][^.]+)$/xsm ) {
-    return $path_xlated;
-  }
-
-  # Bedrock controller? directory?
-  else {
-    # takin' a stab here, might be a handler
+    # Bedrock controller? directory?...takin' a stab here, might be a handler
     if ( $ENV{PATH_INFO} ) {
       my ( $file, $dir ) = fileparse( $ENV{PATH_INFO} );
 
       return $file;
     }
-  }
 
-  return $ENV{PATH_TRANSLATED};
+    return $ENV{PATH_TRANSLATED};
+  };
+
+  $self->set( finfo => $filename );
+
+  return $filename;
 }
 
 ########################################################################
@@ -303,8 +296,9 @@ sub headers_in {
 ########################################################################
   my ( $self, $header, $value ) = @_;
 
-  if ( !$self->{_headers_in} ) {
+  my $headers_in = $self->get('headers_in');
 
+  if ( !$headers_in ) {
     my @http_vars = map { $_ => $ENV{$_} } grep {/^HTTP_/xsm} keys %ENV;
 
     my %headers;
@@ -316,36 +310,61 @@ sub headers_in {
       $headers{ uc $key } = $value;
     }
 
-    $self->{_headers_in} = \%headers;
+    $headers_in = \%headers;
+
+    $self->set( headers_in => \%headers );
   }
 
-  if ( $header && $value ) {
-    $self->{_headers_in}->{$header} = $value;
-  }
-  elsif ($header) {
-    return $self->{_headers_in}->{ uc $header };
-  }
+  return $headers_in
+    if !defined $header && !defined $value;
 
-  return $self->{_headers_in};
+  return $headers_in->{$header}
+    if !defined $value;
+
+  $headers_in->{$header} = $value;
+
+  return $headers_in;
 }
 
 ########################################################################
 sub is_cgi          { return $TRUE }
 sub header_in       { goto &headers_in; }
 sub header_out      { goto &cgi_header_out; }
-sub headers_out     { goto &cgi_header_out; }
 sub err_headers_out { goto &cgi_header_out; }
-sub method          { return $ENV{REQUEST_METHOD}; }
+sub method          { return $ENV{REQUEST_METHOD} // 'GET'; }  ## no critic
 ########################################################################
+
+########################################################################
+sub headers_out {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $headers = $self->headers;
+
+  if ( !$headers ) {
+    $headers = [];
+
+    $self->headers($headers);
+  }
+
+  return $headers
+    if !@args;
+
+  push @{$headers}, @args;
+
+  return $headers;
+}
 
 ########################################################################
 sub cgi_header_out {
 ########################################################################
   my ( $self, @headers ) = @_;
 
-  $self->{headers} //= [];
+  cluck "WARNING: cgi_header_out() is deprecated and should be refactored!\n";
+  cluck "...if you meant to actually send the header, use 'send_http_headers()'\n";
+  cluck "...if you just want to set headers, use 'headers_out()'\n";
 
-  push @{ $self->{headers} }, @headers;
+  my $headers = $self->headers_out(@headers);
 
   return $self->_print_headers;
 }
@@ -357,12 +376,13 @@ sub _print_headers {
 
   my $headers_out = $EMPTY;
 
-  # get uniq headers (preserve order)
-  my @headers = uniq pairkeys @{ $self->{headers} };
+  my $headers = $self->headers;
 
-  # last header wins...this ensures that if we replace a header it
-  # wins
-  my %final_headers_out = @{ $self->{headers} };
+  # get uniq headers (preserve order)
+  my @headers = uniq pairkeys @{$headers};
+
+  # last header wins: this ensures that if we replace a header it wins
+  my %final_headers_out = @{$headers};
 
   foreach my $header (@headers) {
     my $value = $final_headers_out{$header};
@@ -377,29 +397,30 @@ sub send_http_header {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self->{headers} ) {
-    $self->print( $self->_print_headers, "\r\n" );
-  }
+  return
+    if !$self->headers || !@{ $self->headers };
 
-  $self->{headers} = undef;
+  $self->print( $self->_print_headers, "\r\n" );
+
+  $self->headers(undef);
 
   return;
 }
 
 ########################################################################
-sub close {  ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
+sub close {  ## no critic
 ########################################################################
   my ($self) = @_;
 
-  return close $self->{output_handle};
+  return close $self->output_handle;
 }
 
 ########################################################################
-sub print {  ## no critic (ProhibitBuiltinHomonyms)
+sub print {  ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my $fh = $self->{output_handle};
+  my $fh = $self->output_handle;
 
   return print {$fh} @args;
 }
@@ -412,8 +433,8 @@ __END__
 
 =head1 NAME
 
-Apache::Bedrock::Request::CGI - A request object suitable for use by
-Bedrock when running under mod_cgi
+Apache::Request::CGI - A request object suitable for use by
+Bedrock when running under mod_cgi or Bedrock::CGI
 
 =head1 SYNOPSIS
 
@@ -436,32 +457,36 @@ Bedrock when running under mod_cgi
 =head1 DESCRIPTION
 
 Provides a request object suitable for use by
-L<Bedrock::Apache::Bedrock> when running under C<mod_cgi>. Implements
-enough of the the methods found in L<Apache2::RequestRec> to support
+L<Apache::Bedrock> when running under C<mod_cgi>. Implements
+enough of the methods found in L<Apache2::RequestRec> to support
 Bedrock running under Apache as a CGI script (C<bedrock.cgi>).
 
-=head2 Why Run Bedrock as under C<mod_cgi>?
+=head2 Why Run Bedrock Using C<mod_cgi>?
 
 Bedrock, like other web applications written in Perl can suffer
-unacceptable latency during startup due to the interpretted nature of
-Perl. Before Perl can run your script it needs to load modules used by
-your script and compile the code into its internal representation for
-execution.  This compilation stage, along with the loading of Perl
-modules, may make startup performance unacceptable. To mitigate the
-startup times associated with Perl code C<mod_perl> was introduced
-many years ago. By using C<mod_perl>, code is loaded once into the
-Apache child and remains there until that child is killed and
-replaced.  So why use C<mod_cgi>?
+unacceptable latency during startup due to the interpretive nature of
+Perl. Before Perl can run your script it must load modules used by
+your script and then compile the code into its internal representation
+before execution.
+
+This compilation stage, along with the loading of Perl modules, may
+make startup performance unacceptable for some applications. To
+mitigate the startup times associated with Perl code C<mod_perl> was
+introduced many years ago. By using C<mod_perl>, code is loaded once
+into the Apache child and remains there until that child is killed and
+replaced. So why use C<mod_cgi>?
 
 While C<mod_perl> does mitigate performance issues associated with
 startup times, C<mod_perl> has some downsides.  Along with introducing
 some additional requirements and complexity to your Apache
 configuration, more seriously, memory consumption of Apache children
-can increase subtantially over the lifetime of an individual Apache
-process.  To combat that, when running under C<mod_perl> web
-administrators often set the "MaxRequestPerChild" value for Apache
-processes to a relatively low value to ensure that bloated processes get
-killed off and respawned periodically.
+can increase substantially over the lifetime of an individual Apache
+process.  
+
+To combat that, when running under C<mod_perl> web administrators
+often set the "MaxRequestsPerChild" value for Apache processes to a
+relatively low value to ensure that bloated processes get killed off
+and respawned periodically.
 
 Running under C<mod_cgi> ensures that all of the memory associated
 with a request is returned to the operating system immediately after
@@ -496,7 +521,11 @@ Apache although there are several ways to do this.
 
  httpd -k graceful
 
-If Apache is running started a the root user, this may work for you.
+ kill -USR1 1 (when running Apache in a container as process 1)
+
+I<Note: apachectl should be used for more recent versions of
+Apache. If Apache was started as the root user, this may also work for
+you in a pinch.>
 
  kill -USR1 $(ps -ef | grep httpd | grep root | awk '{print $2}' | head -1)
 
@@ -515,19 +544,19 @@ You can monitor the usage of memory by the children using C<top>.
 =item * Your application needs to fork
 
 I<While it is possible to run and communicate with a process spawned
-from C<mod_perl> handlers use C<Apache2::SubProcess> it is not the
+from C<mod_perl> handlers using C<Apache2::SubProcess> it is not the
 same as forking from a CGI script running under C<mod_cgi>.>
 
 A typical use of forking with a Perl script involves a scenario where
-you may have a long running process and want to process the request
+you may have a long running process and wish to process the request
 asynchronously. Apache web servers typically are configured with a
-Timeout parameter that prevent long running processeses from
+Timeout parameter that prevents long running processes from
 potentially creating resource depletion on the server that may result
-in blocked connections.  This may can happen for example when the
+in blocked connections.  This can happen for example when the
 C<MaxRequestWorkers> limit is hit because processes have not completed
 and released the connection.
 
-This is the the strategy of many DDOS attacks if they can identify a
+This is the strategy of many DDOS attacks when they identify a
 long running process.  Sending multiple requests rapidly would
 overwhelm your server and prevent any new connections from being
 established.
@@ -537,9 +566,9 @@ immediately return a response to the client, freeing the
 connection.
 
 I<Of course, this does nothing from preventing multiple
-requests of this type that still may consume all of your server's
-resource, so a different strategy should be used for preventing too
-many simulataneous requests from the same client.>
+requests of this type from consuming all of your server's
+resource. A different strategy should be used for preventing too
+many simultaneous requests from the same client.>
 
 =back
 
@@ -549,19 +578,23 @@ many simulataneous requests from the same client.>
 
  new(options)
 
-Instantatiates a new request object.
+Instantiates a new request object.
 
 =over 5
 
 =item LogLevel
 
-Should be one of the log levels correspending to Apache's log levels:
+Should be one of the log levels corresponding to Apache's log levels:
 
  error
  warn
  info
  debug
  trace
+
+=item log_level
+
+See L</LogLevel>
 
 =item output_handle
 
@@ -579,9 +612,9 @@ Closes the output handle.
 
  filename([filename])
 
-Sets and/or returns the absolute filename of the request.
+Returns the absolute filename of the request.
 
-defautl: $ENV{PATH_TRANSLATED}
+default: $ENV{PATH_TRANSLATED}
 
 =head2  finfo
 
@@ -589,7 +622,7 @@ defautl: $ENV{PATH_TRANSLATED}
 
 =head2  is_cgi
 
-Returns a 1 indicating you running under C<mod_cgi>.
+Returns a 1 indicating you are running under C<mod_cgi>.
 
 =head2 method
 
@@ -599,8 +632,7 @@ Returns the HTTP method of the request ($ENV{REQUEST_METHOD}).
 
  print(content)
 
-Outputs to content to the current file handle defined by
-C<output_handle>.
+Outputs content to the current file handle defined by C<output_handle>.
 
 =head2  uri
 
@@ -616,23 +648,25 @@ Set or return the Content-type header.
 
 See L</headers_out>
 
-=head2  headers_out
+=head2 headers_out
 
  headers_out( header, value, ...)
 
  my $headers = $r->headers_out();
 
- $headers_out->('Accept-Ranges' => 'bytes');
+ headers_out->('Accept-Ranges' => 'bytes');
 
-Sets or returns the HTTP headers.
+Sets a header value.
 
-=head2  header_out (deprecated)
+Returns an array reference to the list of headers.
+
+=head2 header_out (deprecated)
 
 See L</headers_out>
 
 =head2  err_headers_out
 
-See C</headers_out>
+See L</headers_out>
 
 =head2  headers_in
 
@@ -645,11 +679,11 @@ Outputs the HTTP headers.
 =head1 LOGGING
 
 The request object implements a set of methods suitable for use by
-L<Bedrock::Apache::Bedrock> including the C<log()> method found in
+L<Apache::Bedrock> including the C<log()> method found in
 L<Apache2::RequestRec>.
 
 C<log()> method returns a logger with the methods below that are
-used by L<Bedrock::Apache::Bedrock> during its initialization phase.
+used by L<Apache::Bedrock> during its initialization phase.
 
  debug()
  info()
@@ -668,8 +702,8 @@ directive would first require knowing the context of the request
 (which virtual host if any is handling the request) and then parsing
 the configuration for that context to find the C<LogLevel>
 directive. Since that seems a bit overkill to provide a temporary
-logging capability while Bedrock intializes itself (and sets up its
-own loggging), the request object will look for an environment
+logging capability while Bedrock initializes itself (and sets up its
+own logging), the request object will look for an environment
 variable of the same name (C<LogLevel>). If there is no C<LogLevel>
 set in the environment, the logging level will be set to Apache's
 default (C<warn>).
@@ -706,7 +740,7 @@ directive.
 
 =head2  get_loglevel
 
-Returns a <Log::Log4perl> log level based on the current logging level
+Returns a L<Log::Log4perl> log level based on the current logging level
 defined by the environment variable C<LogLevel>.
 
 =head2  get_loglevel_str

@@ -28,6 +28,8 @@ EXTRA_FILES = \
 
 ROC_FILES= \
     bedrock.conf.roc \
+    bedrock-session-files.conf.roc \
+    bedrock-autocomplete.conf.roc \
     bedrock-manifest.roc \
     data-sources.xml.roc \
     dbi.conf.roc \

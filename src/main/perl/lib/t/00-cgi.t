@@ -3,8 +3,6 @@
 use strict;
 use warnings;
 
-use lib qw{.};
-
 use Test::More;
 use Test::Output;
 use Cwd;
@@ -12,45 +10,57 @@ use Bedrock::Constants qw(:chars);
 use Data::Dumper;
 use English qw(-no_match_vars);
 
-use IO::Scalar;
-
 BEGIN {
+  $ENV{GATEWAY_INTERFACE} = 'CGI/1.1';
+
   use Bedrock::BedrockCGI;
 
   Bedrock::CGI->import(qw(:all));
 }
 
-my $cgi = Bedrock::CGI->new;
+########################################################################
+# print
+########################################################################
+subtest 'print' => sub {
+  my $cgi = Bedrock::CGI->new;
+
+  stdout_like(
+    sub {
+      $cgi->print('<p>test</p>');
+      $cgi->flush_output;
+    },
+    qr/\AContent-type:\s+text\/html\r\n\r\n<p>test<\/p>\z/xsmi,
+    'print',
+  );
+};
 
 ########################################################################
-stdout_like(
-  sub {
-    $cgi->print('<p>test</p>');
-    $cgi->flush_output;
-  },
-  qr/\AContent-type:\s+text\/html\r\n\r\n<p>test<\/p>\z/xsmi,
-  'print',
-);
-
+# output
 ########################################################################
-########################################################################
-my $output = $EMPTY;
+subtest 'output' => sub {
+  my $output = $EMPTY;
 
-my $fh = IO::Scalar->new( \$output );
+  open my $fh, '>', \$output
+    or BAIL_OUT('ERROR: could not open scalar ref for reading.');
 
-$cgi = Bedrock::CGI->new( output_handle => $fh );
+  $fh->autoflush;
 
-$cgi->print( sprintf "%s\n",
-  element( $cgi->element_start( 'div', $cgi->style( $main::FONT_SIZE, $PURPLE, $BOLD, $MARGIN ) ), 'foo' ) );
+  my $cgi = Bedrock::CGI->new( output_handle => $fh, autoflush => 1 );
 
-$cgi->print( sprintf "%s\n", $cgi->element( 'pre', 'foo' ) );
-$cgi->flush_output;
+  my $html = element( element_start( div => style( $main::FONT_SIZE, $PURPLE, $BOLD, $MARGIN ) ), 'foo' );
+  $cgi->print("$html\n");
 
-$fh->close;
+  my $pre = element( pre => 'foo' );
+  $html = "$html\n$pre\n";
 
-ok( length $output, 'captured output' );
+  $cgi->print( sprintf "%s\n", $pre );
 
-like( $output, qr/\AContent-type:\s+text\/html\r\n\r\n<.*>\n\z/xsmi, 'content' );
+  $cgi->flush_output;
+
+  $fh->close;
+
+  like( $output, qr/\AContent.*<div.*<\/pre>\n\z/xsm, 'content' );
+};
 
 done_testing;
 

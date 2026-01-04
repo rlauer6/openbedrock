@@ -158,7 +158,8 @@
         {
           "source": "<var $source.config>",
           "name" : [
-              "dbi.conf"
+              "dbi.conf",
+              "bedrock-session-files.conf"
           ]
         }
       ]

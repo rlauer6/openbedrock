@@ -59,6 +59,7 @@ BEGIN {
 }
 
 use Bedrock::Constants qw(:booleans :chars %LOG4PERL_LOG_LEVELS);
+use Carp;
 use Config qw(config_sh);
 use Cwd qw(getcwd abs_path);
 use Data::Dumper;
@@ -68,7 +69,7 @@ use File::Find;
 use File::Path qw(make_path);
 use File::Temp qw(tempdir);
 use JSON;
-use List::Util qw(uniq min max any);
+use List::Util qw(uniq min max any mesh);
 use Scalar::Util qw(reftype blessed openhandle);
 
 use parent qw(Exporter);
@@ -79,6 +80,7 @@ our @EXPORT_OK = qw(
   choose
   create_temp_dir
   find_in_path
+  grab_bag
   force_array
   force_hash
   is_array
@@ -91,6 +93,7 @@ our @EXPORT_OK = qw(
   is_scalar
   muddle
   perl_config
+  resolve_stream
   slurp_file
   slurp_json
   to_boolean
@@ -105,6 +108,7 @@ our %EXPORT_TAGS = (
       slurp_file
       find_in_path
       create_temp_dir
+      resolve_stream
     ),
   ],
   booleans => [
@@ -123,11 +127,73 @@ our %EXPORT_TAGS = (
 );
 
 ########################################################################
+sub resolve_stream {
+########################################################################
+  my ($thing) = @_;
+
+  if ( !defined $thing ) {
+    my $text = q{};
+    $thing = \$text;
+  }
+
+  if ( !ref $thing && index( $thing, "\n" ) >= 0 ) {
+    carp 'Argument looks like content (has newlines) but is not a reference. Assuming you meant \$scalar.';
+    my $content = $thing;
+    $thing = \$content;
+    print {*STDERR} Dumper( [ reftype => reftype($thing) ] );
+  }
+
+  if ( ref $thing && reftype($thing) eq 'SCALAR' ) {
+    open my $fh, '<', $thing
+      or die "Could not open scalar ref: $OS_ERROR";
+
+    return $fh;
+  }
+
+  return $thing
+    if openhandle($thing);
+
+  die "Invalid argument: must be filename, scalar ref, or open handle.\n"
+    if ref $thing;
+
+  die "File not found: $thing\n"
+    if !-e $thing;
+
+  open my $fh, '<', $thing
+    or die "Cannot open $thing: $OS_ERROR\n";
+
+  return $fh;
+}
+
+########################################################################
 sub choose(&) {  ## no critic
 ########################################################################
   my @result = shift->();
 
   return wantarray ? @result : $result[0];
+}
+
+########################################################################
+sub grab_bag {
+########################################################################
+  my ( $source_bag, @keys_to_grab ) = @_;
+
+  return
+    if !@keys_to_grab;
+
+  die "usage: grab_bag(hash-ref, list-o-things)\n"
+    if !$source_bag || reftype($source_bag) ne 'ARRAY';
+
+  my @little_bag_o_refs;
+
+  # Using $_ to avoid shadowing $source_bag
+  foreach ( @{$source_bag} ) {
+    my @bag_o_items = @{$_}{@keys_to_grab};
+
+    push @little_bag_o_refs, { mesh \@keys_to_grab, \@bag_o_items };
+  }
+
+  return @little_bag_o_refs;
 }
 
 ########################################################################
@@ -530,7 +596,7 @@ __END__
 
 =head1 PUBLIC
 
-Bedrock - Used to add Bedrock, Bedrock/Text to @INC and/or import utility functions
+Bedrock - Set of useful utilities used throughout Bedrock
 
 =head1 SYNOPSIS
 
@@ -540,10 +606,17 @@ Bedrock - Used to add Bedrock, Bedrock/Text to @INC and/or import utility functi
 
 =head1 DESCRIPTION
 
-This module is used to add the F<Bedrock> and F<Bedrock/Text>
-sub-directories of the path to Bedrock's Perl modules to
-C<@INC>. Because the module hierarchy is so deep it (apparently)
-became easier to and clearer in modules to use:
+This module contains a group of useful utilities used throughout
+Bedrock. They are documented here so that you can use them too!
+
+Including this module in your script will also add the necessary paths
+to C<@INC> that will allow you to use other documented modules inside
+of Bedrock.
+
+=head2 Why Does Bedrock Hack @INC?
+
+In short, the module hierarchy is deep. Modifying C<@INC> allows for
+cleaner, more readable C<use> statements within the application logic:
 
  use TagX::TAG;
 
@@ -558,9 +631,6 @@ rather than...
 rather than...
 
  use Bedrock::Text::TagX::TAG::WithBody::If;
-
-The module also provides a set of utilities that can be imported by
-Bedrock modules.
 
 =head1 EXPORT TAGS
 
@@ -582,12 +652,13 @@ C<:booleans>, C<:file>, C<force_array>
 =head2 :file
 
  create_temp_file
- slurp_file
  find_in_path
+ resolve_stream
+ slurp_file
 
 =head1 METHODS AND SUBROUTINES
 
-=head2 OBJECT METHODS
+=head2 Methods on Objects
 
 =head3 is_array
 
@@ -631,87 +702,14 @@ Equivalent to:
 
  ref $x
 
-=head2 FILE UTILITIES
-
-=head3 find_in_path
-
- find_in_path(options)
-
-In list context, returns a list of files found in a list of paths,
-filtered by a pattern or file name.  In scalar context, returns the
-number of files found.
-
-Either C<file> or C<pattern> is required. Options are described below:
-
-=over 5
-
-=item max_items
-
-Maximum number of items to return.
-
-=item find_one
-
-Equivalent to max_items => 1.
-
-=item path_list
-
-An array reference to a list of paths to search. If no C<path_list> is
-passed or the list is empty, the current working directory (and it's
-sub-directories) will be traversed.
-
-=item file
-
-The name of the file to search for.
-
-=item pattern
-
-A regular expression that will be used as a filter.
-
-=back
-
-Examples:
-
-Find the first occurrence of file F<foo> in current working directory
-( and sub-directories ).
-
- my ($file) = find_in_path(file => 'foo', max_items => 1);
-
-More less equivalent to:
-
- $ find . -name foo
-
-Find all files named F<foo> in a list of directories.
-
- my @files = find_in_path( file => 'foo', path_list => [ $ENV{PATH} ] );
-
-Find all F<.xml> files in list of directories.
-
- my @xml_files = find_in_path(pattern => qr/[.]xml$/, path_list => [$ENV{CONFIG_PATH}]);
-
-=head3 slurp_file
-
- slurp_file(filename|handle)
-
-In scalar context returns entire contents of a file.  In list context
-returns a list of the lines in the file. Throws an exception if the
-file cannot be opened.
-
-B<WARNING: If use this method and it returns an integer you likely
-called the method in list context and assigned the result to a
-scalar!>
-
-=head3 slurp_json
-
- slurp_json(filename|handle)
-
-Returns a Perl object from a JSON file.
+=head2 Methods on Files
 
 =head3 create_temp_dir
 
  create_temp_dir(options)
 
-Creates a temporary directory (or sub-directories) and optionally
-populates those directories copies with files from a manifest. Returns
+Creates a temporary directory (and optional sub-directories),
+populating them with files specified in a manifest. Returns
 the name of the temporary directory created.
 
 =over 5
@@ -723,9 +721,9 @@ should be removed when the program terminates.
 
 =item manifest
 
-Reference to a hash where each element of the hash represent a set of
-files to be copied from a soruce to a sub-directory of the temporary
-directory.
+Reference to an array of hash reference where each element of the hash
+represent a set of files to be copied from a soruce to a sub-directory
+of the temporary directory.
 
 =over 10
 
@@ -748,11 +746,128 @@ List of file names to copy.
 
 =back
 
+=head3 find_in_path
+
+ find_in_path(options)
+
+In list context, returns a list of absolute paths to files found in a
+list of paths, filtered by a pattern or file name.  In scalar context,
+returns the number of files found.
+
+Either C<file> or C<pattern> is required. Options are described below:
+
+=over 5
+
+=item max_items
+
+Maximum number of items to return.
+
+=item find_one
+
+Equivalent to max_items => 1.
+
+=item path_list
+
+An array reference to a list of paths to search. If no C<path_list> is
+passed or the list is empty, the current working directory (and its
+sub-directories) will be traversed.
+
+=item file
+
+The name of the file to search for.
+
+=item pattern
+
+A regular expression that will be used as a filter.
+
+=back
+
+Examples:
+
+Find the first occurrence of file F<foo> in current working directory
+( and sub-directories ).
+
+ my ($file) = find_in_path(file => 'foo', max_items => 1);
+
+Roughly equivalent to:
+
+ $ find . -name foo
+
+Find all files named F<foo> in a list of directories.
+
+ my @files = find_in_path( file => 'foo', path_list => [ $ENV{PATH} ] );
+
+Find all F<.xml> files in list of directories.
+
+ my @xml_files = find_in_path(pattern => qr/[.]xml$/, path_list => [$ENV{CONFIG_PATH}]);
+
+=head3 resolve_stream
+
+ resolve_stream(filename|filehandle|text)
+
+Returns a filehandle by examining the passed argument and determining
+an action to take based on its type. Throws an exception if the file
+or text reference cannot be opened for reading.
+
+I<NOTE: This is a handy tool when you want to create a method or class
+that requires a stream and you want to support multiple input types.>
+
+=over 4
+
+=item * filename => open the file and return a filehandle
+
+=item * filehandle => return the passed argument
+
+=item * text => open a handle to the text reference
+
+I<NOTE: You should pass a reference to a scalar object (text), not a
+text string. As a convenience, if you happen to forget and do not pass
+a text reference AND it contains new lines, the method will store the
+text in a scalar and return a handle to it. However, it will
+emit a warning, as you should strictly pass scalar references for
+content.>
+
+=back
+
+=head3 slurp_file
+
+ slurp_file(filename|handle)
+
+In scalar context returns entire contents of a file.  In list context
+returns a list of the lines in the file. Throws an exception if the
+file cannot be opened.
+
+B<WARNING: If use this method and it returns an integer you likely
+called the method in list context and assigned the result to a
+scalar!>
+
+=head3 slurp_json
+
+ slurp_json(filename|handle)
+
+Returns a Perl object from a JSON file.
+
 =head2 MISCELLANEOUS
+
+=head3 choose
+
+ choose { ... }
+
+Executes a block of code and returns the result. This utility is
+particularly useful for creating a localized scope where a C<return>
+statement will exit the block (returning a value to the caller of
+C<choose>) rather than exiting the enclosing subroutine. It preserves
+the calling context (scalar vs list).
+
+  # $val gets the result of the logic block
+  my $val = choose {
+      return 'A' if $condition;
+      return 'B';
+  };
 
 =head3 force_array
 
- forcearray(@_)
+ force_array(@_)
 
 Returns a reference to an array that contains the passed
 parameter(s). If the passed value is already an array reference it is
@@ -760,6 +875,34 @@ simply returned. This method is useful for ensuring a value is a
 reference or creating a new array reference from a list.
 
  my $array = force_array(@_);
+
+=head3 grab_bag
+
+ grab_bag( \@array_of_hashes, @keys )
+
+Extracts specific keys from a list of hash references. Returns a new
+list of anonymous hash references containing only the requested keys
+and their values.
+
+  my $users = [
+    { id => 1, user => 'fred', password => '123' },
+    { id => 2, user => 'wilma', password => '456' }
+  ];
+
+  # Returns: [ { user => 'fred' }, { user => 'wilma' } ]
+  my $safe_list = grab_bag( $users, 'user' );
+
+=head3 muddle
+
+ muddle( $string )
+
+Obfuscates a string by masking all characters except the first and the
+last with asterisks. Useful for logging sensitive data like tokens or
+passwords without revealing the full value. If the string is 2
+characters or less, it is returned unchanged.
+
+  # Returns 's****t'
+  muddle('secret');
 
 =head3 to_boolean
 
@@ -777,7 +920,7 @@ Converts a string (case insensitive) that represents a boolean into a
   '0'   => 0
   '1'   => 1
 
-=head2 to_loglevel
+=head3 to_loglevel
 
  to_loglevel(level)
 
@@ -792,7 +935,7 @@ Verbosity levels supported are:
  3 = debug
  4 = trace
 
-Anything above 4 will be converted to the 'trace' level.
+Any numeric level higher than 4 is treated as 'trace'.
 
 String log levels (case insensitive):
 

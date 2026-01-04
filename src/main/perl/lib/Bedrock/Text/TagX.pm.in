@@ -24,7 +24,7 @@ package Text::TagX;
 use strict;
 use warnings;
 
-use Bedrock qw(slurp_file :booleans);
+use Bedrock qw(slurp_file :booleans choose);
 use Bedrock::Constants qw(:booleans :chars :regexp);
 use Carp;
 use Cwd;
@@ -105,10 +105,6 @@ our %TAGS_ENABLED = (
   var         => 'TagX::TAG::NoBody::Var',
   while       => 'TagX::TAG::WithBody::Loop::While',
 );
-
-########################################################################
-sub choose(&) { return $_[0]->() };  ## no critic
-########################################################################
 
 ########################################################################
 sub spawn {
@@ -698,8 +694,12 @@ sub config {
 
   my $ctx = $self->ctx // {};
 
-  return @args ? $ctx->{CONFIG}->{ $args[0] } : $ctx->{CONFIG}
-    if exists $ctx->{CONFIG} && is_hash( $ctx->{CONFIG} );
+  my $config = $ctx->config();
+
+  return
+    if !$config || !ref $config;
+
+  return @args ? $config->{ $args[0] } : $config;
 
   return;
 }
@@ -764,9 +764,10 @@ sub find_file {
   my $logger = $self->get_logger;
 
   $logger->trace( Dumper( [ $file, $ext, \@search_paths ] ) );
+  my $abs_paths = to_boolean( $self->config('ABSOLUTE_PATHS') );
 
-  die "invalid pebble name - traversal not supported\n"
-    if $file =~ /^[\/.]|[.]{2}/xsm;  # Blocks '..' anywhere
+  die "Absolute and relative paths not supported (set ABSOLUTE_PATHS=yes)\n"
+    if !$abs_paths && $file =~ /^[\/.]|[.]{2}/xsm;  # Blocks '..' anywhere
 
   my $document_root = $ENV{DOCUMENT_ROOT} // getcwd;
 
@@ -782,6 +783,10 @@ sub find_file {
   if ( defined $ext && $file !~ /[.][^.]+$/xsm ) {
     $file .= $ext;
   }
+
+  # we check for allowance of absolute paths above...so we're good
+  return $file
+    if $file =~ /^\//xsm && -e $file;
 
   @search_paths = map { split /:/xsm } grep {defined} @search_paths;
 
@@ -931,26 +936,34 @@ sub check_disabled_tags {
   my $options = $self->{options} // {};
 
   # disabled tags?
+  my $ctx = $self->ctx;
 
-  my $config = $options->{CONFIG};
+  my $config = choose {
+    return $options->{CONFIG}
+      if $options->{CONFIG};
 
-  if ( !$config ) {
-    if ( $self->ctx && reftype( $self->ctx ) eq 'HASH' ) {
-      $config = $self->ctx->{CONFIG};
-    }
+    return $ctx->config
+      if blessed($ctx) && $ctx->can('config');
+
+    return $ctx->{CONFIG}
+      if is_hash($ctx);
+  };
+
+  return
+    if !$config;
+
+  my @disabled_tags = @{ $config->{DISABLED_TAGS} || [] };
+
+  #  return
+  #    if !@disabled_tags;
+
+  my $tags = $self->{OPENTAG_EXPR};
+
+  foreach my $t (@disabled_tags) {
+    $tags =~ s/$t\|?//xsm;
   }
 
-  if ($config) {
-    my @disabled_tags = @{ $config->{DISABLED_TAGS} || [] };
-
-    my $tags = $self->{OPENTAG_EXPR};
-
-    foreach my $t (@disabled_tags) {
-      $tags =~ s/$t\|?//xsm;
-    }
-
-    $self->{OPENTAG_EXPR} = $tags;
-  }
+  $self->{OPENTAG_EXPR} = $tags;
 
   return;
 }
