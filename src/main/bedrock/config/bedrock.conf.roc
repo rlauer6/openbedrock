@@ -89,7 +89,6 @@ SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
 
   # CGI handlers
   Action        bedrock-cgi  /cgi-bin/bedrock.cgi virtual
-  Action        bedrock-docs /cgi-bin/bedrock-docs.cgi virtual
   Action        bedrock-session-files /cgi-bin/bedrock-session-files.cgi virtual
 
   AddHandler    bedrock-cgi .rock .jrock
@@ -201,39 +200,6 @@ SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
         PerlHandler Apache::Form
     </IfModule>
     </if>
-
-  </Directory>
-  </if>
-
-  <if $site.BEDROCK_DOCS_ENABLED --eq 'On'>
-  # Bedrock system directory, access to which is controlled
-  #  by authentication: default username=admin, password=bedrock
-  #  and by setting in tagx.xml ALLOW_BEDROCK_INFO (default=yes)
-  Alias /bedrock <var $site.DOCUMENT_ROOT>/bedrock
-
-  <Directory <var $site.DOCUMENT_ROOT>/bedrock/>
-     AcceptPathInfo On
-     Options -Indexes
-     AllowOverride None
-
-    <if $site.APACHE_MOD_PERL --eq 'yes'>
-    <IfModule mod_perl.c>
-        SetHandler perl-script 
-        PerlHandler Apache::BedrockDocs 
-    </IfModule>
-
-    <IfModule !mod_perl.c>
-      SetHandler bedrock-docs
-    </IfModule>
-    <else>
-      SetHandler bedrock-docs
-    </if>
-
-    AuthType Basic
-    AuthName Bedrock
-    AuthBasicProvider file
-    AuthUserFile <var $config.BEDROCK_CONFIG_PATH>/bedrock.users
-    require valid-user
 
   </Directory>
   </if>

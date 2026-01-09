@@ -108,6 +108,9 @@
       <object name="bugs">
         <scalar name="path"><var ($config.DIST_DIR + '/include/bugs.md')></scalar>
       </object>
+      <object name="bsg">
+        <scalar name="path"><var ($config.DIST_DIR + '/include/BedrockStyleGuide.md')></scalar>
+      </object>
     </object>
   </object>
   

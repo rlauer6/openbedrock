@@ -80,6 +80,7 @@
             <a href="#bedrock-shell" class="list-group-item list-group-item-action" bedrock-data="bedrock-shell">Bedrock Shell</a>
             <a href="#contributing" class="list-group-item list-group-item-action" bedrock-data="contributing">Contributing</a>
             <a href="#bugs" class="list-group-item list-group-item-action" bedrock-data="bugs">Reporting Bugs</a>
+            <a href="#bsg" class="list-group-item list-group-item-action" bedrock-data="BedrockStyleGuide">Bedrock Style Guide</a>
           </div>
         </div>
 

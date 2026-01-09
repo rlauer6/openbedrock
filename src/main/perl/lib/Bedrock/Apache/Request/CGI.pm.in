@@ -19,7 +19,7 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package Apache::Request::CGI;
+package Apache::Request::CGI;  ## no critic
 
 use strict;
 use warnings;
@@ -46,6 +46,8 @@ __PACKAGE__->mk_accessors(
     headers_in
     log_level
     output_handle
+    bytes_sent
+    status
   )
 );
 
@@ -59,12 +61,13 @@ sub new {
   my $self = $class->SUPER::new( \%options );
 
   $self->init_output_handle;
-
   $self->init_logger;
-
   $self->init_content_type;
-
   $self->init_headers_in;
+
+  # Default status and state
+  $self->status(200);
+  $self->bytes_sent(0);
 
   return $self;
 }
@@ -93,13 +96,15 @@ sub init_output_handle {
 ########################################################################
 sub init_headers_in { goto &headers_in; }
 ########################################################################
+
+########################################################################
 sub init_content_type {
 ########################################################################
   my ($self) = @_;
 
-  my $filename = $self->filename();
+  my $filename = $self->filename;
 
-  my ( $name, $path, $ext ) = fileparse( $filename, qr/[.][^.]+$/xsm );
+  my ( $name, $path, $ext ) = fileparse $filename, qr{ [.] [^.]+ \z }xms;
   $ext //= '.html';
 
   my $mime_type = eval {
@@ -184,12 +189,12 @@ sub _log {
 }
 
 ########################################################################
-sub log_trace { my (@args) = @_; return _log( 'trace', @args ) }
-sub log_debug { my (@args) = @_; return _log( 'debug', @args ) }
-sub log_info  { my (@args) = @_; return _log( 'info',  @args ) }
-sub log_warn  { my (@args) = @_; return _log( 'warn',  @args ) }
-sub log_error { my (@args) = @_; return _log( 'error', @args ) }
-sub log_fatal { my (@args) = @_; return _log( 'fatal', @args ) }
+sub log_trace { my (@args) = @_; return _log( 'trace', @args ); }
+sub log_debug { my (@args) = @_; return _log( 'debug', @args ); }
+sub log_info  { my (@args) = @_; return _log( 'info',  @args ); }
+sub log_warn  { my (@args) = @_; return _log( 'warn',  @args ); }
+sub log_error { my (@args) = @_; return _log( 'error', @args ); }
+sub log_fatal { my (@args) = @_; return _log( 'fatal', @args ); }
 
 sub debug { goto &log_debug; }
 sub error { goto &log_error; }
@@ -218,7 +223,7 @@ sub content_type {
 
   $self->set( content_type => $type );
 
-  $self->headers_out( 'Content-type' => $type );
+  $self->headers_out->set( 'Content-type' => $type );
 
   return $type;
 }
@@ -249,10 +254,10 @@ sub finfo {
 
     # roc[k] file?
     return $path_xlated
-      if $path_xlated && $path_xlated =~ /[.]j?rock?$/xsm;
+      if $path_xlated && $path_xlated =~ m{ [.] j?rock? \z }xms;
 
     # roc[k] file with path info?
-    if ( $path_xlated && $path_xlated =~ /^(.*[.]j?rock?)(\/.*?)$/xsm ) {
+    if ( $path_xlated && $path_xlated =~ m{ \A (.* [.] j?rock?) (/.*?) \z }xms ) {
       my $filename = $1;
 
       if ($2) {
@@ -268,11 +273,11 @@ sub finfo {
 
     # html or other file?
     return $path_xlated
-      if $ENV{PATH_INFO} && $ENV{PATH_INFO} =~ /^(.*)([.][^.]+)$/xsm;
+      if $ENV{PATH_INFO} && $ENV{PATH_INFO} =~ m{ \A (.*) ([.] [^.]+) \z }xms;
 
     # Bedrock controller? directory?...takin' a stab here, might be a handler
     if ( $ENV{PATH_INFO} ) {
-      my ( $file, $dir ) = fileparse( $ENV{PATH_INFO} );
+      my ( $file, $dir ) = fileparse $ENV{PATH_INFO};
 
       return $file;
     }
@@ -283,6 +288,14 @@ sub finfo {
   $self->set( finfo => $filename );
 
   return $filename;
+}
+
+########################################################################
+sub path_info {
+########################################################################
+  my ($self) = @_;
+
+  return $ENV{PATH_INFO} // $EMPTY;
 }
 
 ########################################################################
@@ -299,13 +312,13 @@ sub headers_in {
   my $headers_in = $self->get('headers_in');
 
   if ( !$headers_in ) {
-    my @http_vars = map { $_ => $ENV{$_} } grep {/^HTTP_/xsm} keys %ENV;
+    my @http_vars = map { $_ => $ENV{$_} } grep {m{ \A HTTP_ }xms} keys %ENV;
 
     my %headers;
 
     foreach my $p ( pairs @http_vars ) {
       my ( $key, $value ) = @{$p};
-      $key =~ s/^HTTP_//xsm;
+      $key =~ s{ \A HTTP_ }{}xms;
 
       $headers{ uc $key } = $value;
     }
@@ -327,10 +340,10 @@ sub headers_in {
 }
 
 ########################################################################
-sub is_cgi          { return $TRUE }
+sub is_cgi          { return $TRUE; }
 sub header_in       { goto &headers_in; }
-sub header_out      { goto &cgi_header_out; }
-sub err_headers_out { goto &cgi_header_out; }
+sub header_out      { goto &headers_out; }
+sub err_headers_out { goto &headers_out; }
 sub method          { return $ENV{REQUEST_METHOD} // 'GET'; }  ## no critic
 ########################################################################
 
@@ -339,20 +352,16 @@ sub headers_out {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  my $headers = $self->headers;
-
-  if ( !$headers ) {
-    $headers = [];
-
-    $self->headers($headers);
+  if ( !$self->headers ) {
+    $self->headers( [] );
   }
 
-  return $headers
+  return Apache::Request::CGI::Table->new($self)
     if !@args;
 
-  push @{$headers}, @args;
+  push @{ $self->headers }, @args;
 
-  return $headers;
+  return $self->headers;
 }
 
 ########################################################################
@@ -364,7 +373,7 @@ sub cgi_header_out {
   cluck "...if you meant to actually send the header, use 'send_http_headers()'\n";
   cluck "...if you just want to set headers, use 'headers_out()'\n";
 
-  my $headers = $self->headers_out(@headers);
+  my $headers_ref = $self->headers_out(@headers);
 
   return $self->_print_headers;
 }
@@ -375,18 +384,14 @@ sub _print_headers {
   my ($self) = @_;
 
   my $headers_out = $EMPTY;
+  my $headers     = $self->headers;
 
-  my $headers = $self->headers;
+  return $headers_out
+    if !$headers || !@{$headers};
 
-  # get uniq headers (preserve order)
-  my @headers = uniq pairkeys @{$headers};
-
-  # last header wins: this ensures that if we replace a header it wins
-  my %final_headers_out = @{$headers};
-
-  foreach my $header (@headers) {
-    my $value = $final_headers_out{$header};
-    $headers_out .= "$header: $value\r\n";
+  foreach my $p ( pairs @{$headers} ) {
+    my ( $key, $val ) = @{$p};
+    $headers_out .= "$key: $val\r\n";
   }
 
   return $headers_out;
@@ -397,11 +402,21 @@ sub send_http_header {
 ########################################################################
   my ($self) = @_;
 
+  # Avoid sending headers twice
+  return
+    if $self->bytes_sent;
+
   return
     if !$self->headers || !@{ $self->headers };
 
+  # Handle numeric status codes for CGI (e.g. "404 Not Found")
+  if ( $self->status && $self->status != 200 ) {
+    $self->headers_out->set( 'Status' => $self->status );
+  }
+
   $self->print( $self->_print_headers, "\r\n" );
 
+  $self->bytes_sent(1);
   $self->headers(undef);
 
   return;
@@ -425,9 +440,46 @@ sub print {  ## no critic
   return print {$fh} @args;
 }
 
-1;
+########################################################################
+# Inner Class: Apache::Request::CGI::Table
+# Implements APR::Table like interface for CGI environment
+########################################################################
+package Apache::Request::CGI::Table;
+use List::Util qw(pairs);
 
-__END__
+sub new { my ( $class, $r ) = @_; return bless { _r => $r }, $class; }
+
+sub set {
+  my ( $self, $key, $val ) = @_;
+  $self->_remove($key);
+  $self->add( $key, $val );
+  return;
+}
+
+sub add {
+  my ( $self, $key, $val ) = @_;
+  push @{ $self->{_r}->headers }, $key, $val;
+  return;
+}
+
+sub _remove {
+  my ( $self, $key ) = @_;
+  my $headers  = $self->{_r}->headers;
+  my $norm_key = lc $key;
+
+  my @kept;
+  foreach my $p ( pairs @{$headers} ) {
+    my ( $k, $v ) = @{$p};
+    next if lc $k eq $norm_key;
+
+    push @kept, $k, $v;
+  }
+
+  $self->{_r}->headers( \@kept );
+  return;
+}
+
+1;
 
 =pod
 

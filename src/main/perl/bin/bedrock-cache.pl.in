@@ -1,4 +1,5 @@
 #!/usr/bin/env perl
+package Bedrock::Cache::CLI;
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -6,25 +7,12 @@
 #    Copyright (C) 2001, Charles Jones, LLC.
 #    Copyright (C) 2024, TBC Development Group, LLC.
 #
-#    This program is free software; you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation; either version 2 of the License, or
-#    any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with this program; if not, write to the Free Software
-#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
-#
 
 use strict;
 use warnings;
 
 use Bedrock qw(slurp_file);
+use Bedrock::Cache;
 use Bedrock::Hash;
 use Carp;
 use Data::Dumper;
@@ -34,185 +22,365 @@ use IPC::Shareable;
 use JSON;
 use Scalar::Util qw(reftype);
 use Storable qw(freeze thaw);
+use CLI::Simple::Constants qw(:booleans);
 
-our %CACHE;
 our $VERSION = '@PACKAGE_VERSION@';
 
-########################################################################
-sub usage {
-########################################################################
-  print {*STDOUT} <<'END_OF_USAGE';
-usage: bedrock-cache.pl options
+use Readonly;
+Readonly::Scalar our $DEFAULT_CACHE_BLOCKS => 512;
+Readonly::Scalar our $CACHE_KEY            => 'BCFG';
+Readonly::Scalar our $CACHE_BLOCK_SIZE     => 1024;
+Readonly::Scalar our $CACHE_MODE           => oct '666';
 
- Options
- -------
+use parent qw(CLI::Simple);
 
-  --create, -c   create the cache
-  --delete, -d   delete the cache
-  --file, -f     filename of a file to cache (experimental)
-  --list, -l     list the contents of the cache
-  --keys, -k     list just the keys of the cache
-  --help, -h     this
-  --reset, -r    clear the cache
-  --size, -s     size of the cache in MB (default: 256)
-  --version, -v  version
-
-See man bedrock-cache.pl for more details.
-
-END_OF_USAGE
-
-  version();
-
-  return;
-}
+caller or __PACKAGE__->main();
 
 ########################################################################
-sub version {
+sub cmd_version {
 ########################################################################
   print {*STDOUT} <<"END_OF_VERSION";
-(c) Copyright 2024 - TBC Development Group, LLC
+(c) Copyright 2026 - TBC Development Group, LLC
 Version: $VERSION
 All rights reserved
 END_OF_VERSION
 
-  return;
+  return 0;
 }
 
 ########################################################################
-sub create_cache {
+sub cmd_create_cache {
 ########################################################################
-  my ( $create, $size ) = @_;
+  my ( $self, $create ) = @_;
 
-  my $cache = eval {
-    local $SIG{__WARN__} = sub { };
+  $create //= $TRUE;
 
-    ## no critic (ProhibitTies)
-    tie %CACHE, 'IPC::Shareable',
-      {
-      key     => 'BCFG',
-      create  => $create,
-      destroy => 0,
-      size    => 1024 * $size
-      };
-  };
+  my $blocks     = $self->get_blocks;
+  my $block_size = $self->get_block_size;
+  my $size       = $blocks * $block_size;
+
+  my $cache = Bedrock::Cache->new(
+    engine_name => 'Shareable',
+    create      => $create,
+    size        => $size,
+    key         => $self->get_cache_key,
+  );
+
+  $self->set_cache($cache);
+
+  return 0;
+}
+
+########################################################################
+sub cmd_dump_cache {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->get_cache;
+
+  return 1
+    if !$cache;
+
+  my $pattern = $self->get_pattern;
+  my $keys    = $cache->keys();
+  my @list    = @{$keys};
+
+  if ($pattern) {
+    @list = grep {/$pattern/xsm} @list;
+  }
+
+  foreach (@list) {
+    print {*STDOUT} Dumper( [ $_ => $cache->get($_) ] );
+  }
+
+  return 0;
+}
+
+########################################################################
+sub check_cache {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->get_cache;
+
+  croak "cache unavailable. Use 'create' to create a cache.\n"
+    if !$cache;
 
   return $cache;
 }
 
 ########################################################################
+sub cmd_delete_cache {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->check_cache;
+
+  if ( my $key = $self->get_key ) {
+    $cache->delete($key);
+    return 0;
+  }
+
+  if ( !$self->get_force ) {
+    print {*STDOUT} "'delete' without a key forces removal of the queue. Use 'reset' or --force to destroy the queue\n";
+  }
+  else {
+    $self->get_cache->destroy;
+  }
+
+  return 0;
+}
+
+########################################################################
+sub cmd_key {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->check_cache;
+
+  my ( $key, $value ) = $self->get_args;
+
+  croak "usage: key key-name [value]\n"
+    if !$key;
+
+  if ( defined $value ) {
+    $cache->set( $key => $value, $self->get_ttl );
+    return 0;
+  }
+
+  my $obj = $cache->get($key);
+
+  if ( !$obj ) {
+    carp "no such key: $key\n";
+    return 1;
+  }
+
+  my $str = eval {
+    return $obj
+      if !ref $obj;
+
+    return JSON->new->pretty->encode($obj);
+  };
+
+  if ( !defined $obj || $EVAL_ERROR ) {
+    my $err_str = Dumper(
+      [ key   => $key,
+        value => $value,
+        error => $EVAL_ERROR,
+      ]
+    );
+
+    carp "ERROR: Could not deserialize key:\n$err_str";
+    return 1;
+  }
+
+  print {*STDOUT} $str;
+
+  return 0;
+}
+
+########################################################################
+sub cmd_keys {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->check_cache;
+
+  my $pattern = $self->get_pattern;
+  my $keys    = $cache->keys();
+  my @list    = @{$keys};
+
+  if ($pattern) {
+    @list = grep {/$pattern/xsm} @list;
+  }
+
+  print {*STDOUT} JSON->new->pretty->encode( { keys => \@list } );
+
+  return 0;
+}
+
+########################################################################
+sub cmd_reset {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->check_cache;
+
+  $cache->clear;
+
+  return 0;
+}
+
+########################################################################
+sub cmd_file {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->check_cache;
+
+  my $file = $self->get_file;
+
+  croak sprintf 'file (%s) not found or empty', $file
+    if !-e $file || !-s $file;
+
+  $cache->set( $file => slurp_file($file) );
+
+  return 0;
+}
+
+########################################################################
+sub cmd_stats {
+########################################################################
+  my ($self) = @_;
+
+  my $glue = $self->get_cache_key;
+
+  # 1. Probe First
+  # We need the class method 'probe' to find the size BEFORE we attach
+  eval { require Bedrock::Cache::Shareable; };
+
+  croak 'Stats require Bedrock::Cache::Shareable. Is it installed?'
+    if $EVAL_ERROR;
+
+  my $os_stats = Bedrock::Cache::Shareable->probe($glue);
+
+  if ( !$os_stats ) {
+    print {*STDERR} "Cache segment '$glue' does not exist.\n";
+    return 1;
+  }
+
+  # 2. Attach Safely
+  # We pass 'size' so the engine knows exactly how big the segment is.
+  # We pass 'key' which Shareable.pm now correctly maps to 'glue'.
+  my $cache = Bedrock::Cache->new(
+    engine_name => 'Shareable',
+    create      => 0,
+    key         => $glue,
+    size        => $os_stats->{size},
+  );
+
+  # 3. Get Full Stats
+  # This now works because Bedrock::Cache delegates to Shareable
+  if ( $cache->can('stats') ) {
+    print {*STDOUT} JSON->new->pretty->encode( $cache->stats );
+  }
+  else {
+    # Fallback (shouldn't happen if wrapper is updated)
+    print {*STDOUT} JSON->new->pretty->encode($os_stats);
+  }
+
+  return 0;
+}
+
+########################################################################
+sub cmd_touch {
+########################################################################
+  my ($self) = @_;
+
+  my ( $key, $ttl ) = $self->get_args;
+  $key //= $self->get_key;
+  $ttl //= $self->get_ttl;
+
+  croak "usage: touch key [ttl]\n"
+    if !$key;
+
+  my $cache = $self->check_cache;
+  $cache->touch( $key, $ttl );
+
+  return 1;
+}
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  my $command = $self->command;
+
+  # Stats is a special read-only introspection mode
+  if ( $command eq 'stats' ) {
+    return;
+  }
+
+  if ( $command ne 'create' ) {
+    $self->cmd_create_cache(0);
+  }
+
+  my @legacy_commands = qw(
+    create
+    delete
+    file
+    key
+    keys
+    list
+    reset
+    version
+  );
+
+  # convert legacy options into commands
+  foreach (@legacy_commands) {
+    next if !$self->get($_);
+    $self->command($_);
+    last;
+  }
+
+  return;
+}
+
+########################################################################
 sub main {
 ########################################################################
-  my %options;
-
   my @option_specs = qw(
+    block-size|s=i
+    blocks=i
+    cache-key|g=s
     create
     delete
     file=s
+    force|F
     help|?
     keys|K
     key|k=s
     list
+    pattern|p=s
     reset
-    size=s
+    stats
+    ttl|t=i
     version|v
   );
 
-  GetOptions( \%options, @option_specs );
-
-  if ( !$options{size} ) {
-    $options{size} //= $ENV{BEDROCK_CACHE_CONFIG_SIZE} || 256;
-  }
-
-  my $cache = create_cache( 0, $options{size} );
-
   my %commands = (
-    list => sub {
-      my $str = eval { JSON->new->pretty->allow_blessed->convert_blessed->encode( \%CACHE ); };
-
-      return print {*STDOUT} $str // $EVAL_ERROR;
-    },
-
-    delete => sub {
-      if ($cache) {
-        $cache->remove;
-      }
-
-      return 0;
-    },
-    key => sub {
-      my $obj = $CACHE{ $options{key} };
-
-      if ( ref $obj && reftype($obj) eq 'HASH' ) {
-        if ( exists $obj->{d} && exists $obj->{e} ) {
-          $obj = thaw $obj->{d};
-        }
-      }
-
-      print {*STDOUT} JSON->new->pretty->encode($obj);
-
-      return 0;
-    },
-    keys => sub {
-      if ($cache) {
-        print {*STDOUT} JSON->new->pretty->encode( { keys => [ keys %CACHE ] } );
-      }
-      return 0;
-    },
-    version => sub {
-      version();
-      return 0;
-    },
-    reset => sub {
-      %CACHE = ();
-      return 0;
-    },
-
-    file => sub {
-      croak sprintf 'file (%s) not found or empty', $options{file}
-        if !-e $options{file} || !-s $options{file};
-
-      $CACHE{ $options{file} } = slurp_file( $options{file} );
-
-      return 0;
-    },
-
-    create => sub {
-      if ($cache) {
-        $cache->remove;
-      }
-
-      create_cache( 1, $options{size} );
-      return 0;
-    },
-
-    help => sub {
-      usage();
-
-      return 0;
-    },
-
-    default => sub {
-      usage();
-
-      return 0;
-    },
+    create  => \&cmd_create_cache,
+    delete  => \&cmd_delete_cache,
+    default => \&cmd_create_cache,
+    file    => \&cmd_file,
+    key     => \&cmd_key,
+    keys    => \&cmd_keys,
+    dump    => \&cmd_dump_cache,
+    list    => \&cmd_dump_cache,
+    reset   => \&cmd_reset,
+    version => \&cmd_version,
+    stats   => \&cmd_stats,
+    touch   => \&cmd_touch,
   );
 
-  my $command = shift @ARGV;
+  my $cli = __PACKAGE__->new(
+    commands        => \%commands,
+    option_specs    => \@option_specs,
+    default_options => {
+      blocks     => $DEFAULT_CACHE_BLOCKS,
+      block_size => $CACHE_BLOCK_SIZE,
+      cache_key  => 'BCFG',
+    },
+    extra_options => [qw( cache )],
+  );
 
-  $command //= 'default';
-
-  foreach (qw( list key keys delete reset file help create version )) {
-    next if !$options{$_};
-
-    $command = $_;
-    last;
-  }
-
-  return $commands{$command}->();
+  return $cli->run;
 }
 
-exit main();
+1;
+
+## no critic
 
 __END__
 
@@ -222,40 +390,114 @@ __END__
 
 bedrock-cache.pl
 
-=head1 SYNOPSIS
+=head1 USAGE
 
-Create the cache...
+Create an L<IPC:Shareable> cache segment:
 
  bedrock-cache.pl create
 
-List cache contents...
+Dump cache contents to STDOUT:
 
- bedrock-cache.pl list
+ bedrock-cache.pl dump
 
-Delete the cache...
+Delete the cache:
 
  bedrock-cache.pl delete
 
+See man bedrock-cache.pl for more details.
+
+=head2 Options
+
+  --blocks         number of blocks to allocate (default: 512)
+  --block-size, -s size of each block (default: 1024)
+  --cache-key, -g  cache "glue", default 'BCFG'
+  --create, -c     create the cache
+  --delete, -d     delete the cache
+  --file, -f       filename of a file to cache (experimental)
+  --force, -F      force the operation
+  --list, -l       list the contents of the cache
+  --keys, -k       list just the keys of the cache
+  --help, -h       this
+  --patter, -p     regex pattern to filte keys (used with list/dump/keys)
+  --reset, -r      clear the cache
+  --size, -s       size of the cache in MB (default: 512)
+  --stats          show statistics about the shared segment
+  --ttl, -t        time-to-live in seconds for key
+  --version, -v    version
+
+=head2 Commands
+
+=over 5
+
+=item delete [key]
+
+Deletes the specified key or with no key removes the cache. If you do
+not provide a key you must use the C<--force> option to confirm
+removal of the queue.
+
+=item file
+
+Caches a file.  The key is the fully qualified path name of the file.
+This is experimental and Bedrock does not currently use this in any
+way shape or form.  It has been added to this utility for potential
+future usage.
+
+=item dump
+
+Dumps the contents of the cache using C<Data::Dumper>. Note that the cache
+may include sensitive information.  B<You have been warned!>
+
+=item keys
+
+Show the list of keys in the cache.
+
+=item key [value]
+
+Display (in JSON format) or set a key. Use C<--ttl> to set a ttl for
+the key. The default ttl is 0 meaning the key will not expire.
+
+=item reset
+
+Clears the cache, but does not destroy it.
+
+=item stats
+
+Displays detailed statistics about the shared memory segment.
+Includes the OS-level size, mode, UID/GID, and the number of keys currently stored.
+Useful for debugging "chicken/egg" configuration issues.
+
+=item touch key [ttl]
+
+Refreshes the ttl of an existing key.
+
+=back
+
 =head1 DESCRIPTION
 
-The Bedrock I<cache> can be used to cache the Bedrock configuration
-objects created by Bedrock when a Bedrock page is accessed on an
-Apache virtual host.  Caching of the configuration is optionally done
-when the Bedrock Apache handler begins to process a page.
+The Bedrock I<cache> is typically used primarily to cache the Bedrock
+configuration objects created by Bedrock when a Bedrock page is
+accessed on an Apache virtual host. Other features of Bedrock
+including the C<cache> tag implement caching using Bedrock's caching
+engine.
 
-The I<cache> is implemented as shared memory using Perl's
-C<IPC::Shareable> module.
+Caching of the configuration is optionally done when the Bedrock
+Apache handler begins to process a page.
+
+The default Bedrock cache is implemented as shared memory using Perl's
+C<IPC::Shareable> module, however caching can be done using other
+caching engines (e.g. C<Bedrock::Cache::Redis>,
+C<Bedrock::Cache::Memory).
+
+=head2 Bedrock Configuration Object Caching
 
 Because the configuration object is created from potentially several
 different XML-based configuration files that are merged together to
-create the final object startup time for the page can be negatively
-impacted.  One way to mitigate startup time is to cache the
-configuration object since configuration files are unlikely to change
-very often for production applications.
+create the final object, startup time for the page can be improved
+with caching enabled.
 
 Bedrock will automatically use the cache if it has been created (with
 this utility for example) and the environment variable
-C<BEDROCK_CACHE_ENGINE> is set to C<Shareable>.
+C<BEDROCK_CACHE_ENGINE> is set to an engine type like C<Shareable>.
 
  SetEnv BEDROCK_CACHE_ENGINE Shareable
 
@@ -269,65 +511,12 @@ Prior to starting the Apache server you should initialize the cache.
 For more gory details regarding Bedrock configuration file caching,
 see the I<perldocs> for C<Bedrock::Handler>.
 
-=head1 USAGE
-
- bedrock-cache.pl [options] command
-
-=head2 Commands
-
-=over 5
-
-=item delete
-
-Deletes the shared memory object and removes the cache.
-
-=item file
-
-Caches a file.  The key is the fully qualified path name of the file.
-This is experimental and Bedrock does not currently use this in any
-way shape or form.  It has been added to this utility for potential
-future usage.
-
-=item list
-
-Dumps the contents of the cache in JSON format. Note that the cache
-may include sensitive information.  You have been warned.
-
-=item keys
-
-Show the list of keys in the cache.
-
-=item reset
-
-Clears the cache, but does not delete it.
-
-=back
-
-=head2 Options
-
-=over 5
-
-=item --help
-
-Usage notes.
-
-=item --size
-
-Sets the size of the cache.
-
-=item version
-
-Prints the program version. This will always be the same version as
-Bedrock itself.
-
-=back
-
 =head1 AUTHOR
 
-Rob Lauer - <rlauer6@comcast.net>
+Rob Lauer - <rclauer@gmail.com>
 
 =head1 SEE ALSO
 
-L<IPC::Shareable>, L<Bedrock::Handler>
+L<IPC::Shareable>, L<Bedrock::Cache::Shareable>, L<Bedrock::Handler>
 
 =cut

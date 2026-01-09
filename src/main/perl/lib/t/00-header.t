@@ -6,6 +6,9 @@ use Data::Dumper;
 use Test::More;
 use IO::Scalar;
 
+# FIX: Simulate a CGI environment so Header.pm knows to print
+$ENV{GATEWAY_INTERFACE} = 'CGI/1.1';
+
 use_ok('BLM::Startup::Header');
 
 my $output = q{};
@@ -156,5 +159,3 @@ subtest 'Authorization' => sub {
 done_testing;
 
 1;
-
-__END__

@@ -1,0 +1,214 @@
+package Bedrock::Role::DocFinder;
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file);
+use Bedrock::Constants qw(:booleans);
+use Carp;
+use English qw(-no_match_vars);
+use Data::Dumper;
+use Role::Tiny;
+use File::Find;
+use List::Util qw(none any uniq);
+
+caller or __PACKAGE__->main();
+
+########################################################################
+sub find_files_of_type {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $paths, $prefix_filters, $type, $filter_type ) = @args{qw(paths filter type filter_type)};
+
+  if ( !$paths ) {
+    my @default_path = grep { -d "$_/Bedrock" } @INC;
+    $paths = \@default_path;
+  }
+
+  $paths = ref $paths ? $paths : [$paths];
+  $paths = [ grep { -d $_ } @{$paths} ];
+
+  croak "no valid paths found to search\n"
+    if !@{$paths};
+
+  $type //= 'pm';
+
+  my @dir_filters;
+
+  if ($prefix_filters) {
+    $prefix_filters = ref $prefix_filters ? $prefix_filters : [$prefix_filters];
+    $filter_type //= 'include';
+
+    foreach my $d ( @{$paths} ) {
+      push @dir_filters, map {"$d/$_"} @{$prefix_filters};
+    }
+  }
+
+  my @file_list;
+
+  find(
+    sub {
+      # not a file
+      return if /^[.]{1,2}$/xsm;
+
+      return if !-f $_;
+
+      # not our type
+      return if !/[.]$type$/xsm;
+
+      # filter out this directory
+      return if $prefix_filters && $filter_type eq 'exclude' && any { $File::Find::dir =~ /^$_/ } @dir_filters;
+
+      # include only this directory
+      return if $prefix_filters && $filter_type eq 'include' && none { $File::Find::dir =~ /^$_/ } @dir_filters;
+
+      # matched
+      push @file_list, $File::Find::name;
+    },
+    @{$paths}
+  );
+
+  return \@file_list;
+}
+
+########################################################################
+sub module_metadata {
+########################################################################
+  my ( $self, $file_list ) = @_;
+
+  my %module_metadata;
+
+  foreach my $file ( @{$file_list} ) {
+    my $content = slurp_file($file);
+
+    my @module_names;
+    while ( $content =~ /^package\s+([[:alpha:]][[:alnum:]:]+);\s*$/xmg ) {
+      push @module_names, $1;
+    }
+
+    @module_names = uniq @module_names;
+
+    my $public = $content =~ /^[=]head1\s+public/xsmi ? 1 : 0;
+    my ($tag) = $content =~ /^[=]head1\s+tag\s*(.*)$/xsmi;
+
+    if ( $tag && $tag =~ /C<E<lt>([^E]+)E<gt>>/xsm ) {
+      $tag = $1;
+    }
+
+    my @dependencies;
+    while ( $content =~ /^(?:use|require)\s+([^\s;]+)[^;]*;$/mg ) {
+      my $module = $1;
+      next if any { $_ eq $module } qw(parent strict warnings);
+      push @dependencies, $1;
+    }
+
+    my %metadata = (
+      file               => $file,
+      description        => _parse_description( $content, @module_names ),
+      pod                => ( $content =~ /^[=]pod\s*$/xm ) ? 1 : 0,
+      public             => $public,
+      plugin             => ( any { $_ =~ /^BLM::(?!(?:Filter|Startup))/xsm } @module_names ) ? 1 : 0,
+      filter             => ( any { $_ =~ /^BLM::Filter/xsm } @module_names )                 ? 1 : 0,
+      application_plugin => ( any { $_ =~ /^BLM::Startup/xsm } @module_names )                ? 1 : 0,
+      bedrock_system     => ( $file =~ /Bedrock/xsm && !$public ),
+      tag                => $tag,
+      dependencies       => [ sort @dependencies ],
+    );
+
+    @module_metadata{@module_names} = \%metadata;
+  }
+
+  return \%module_metadata;
+}
+
+#########################################################################
+sub _parse_description {
+#########################################################################
+  my ( $content, @module_names ) = @_;
+
+  my ($description) = $content =~ /[=]head1\s+(?:NAME|PUBLIC|PURPOSE)(.*?)[=]head1/xsm;
+  return q{}
+    if !$description;
+
+  $description =~ s/\n/ /g;
+  $description =~ s/(?:C<)?$_>?// for (@module_names);  ## no critic
+  $description =~ s/^\s*\-?\s+//;
+  $description =~ s/\s+$//;
+  $description =~ s/C<E<lt>([^E]+)E<gt>>/$1/g;
+  $description =~ s/C<([^>]+)>/$1/g;
+  while ( $description =~ s/  / /g ) { }
+
+  return $description;
+}
+
+#
+#########################################################################
+#sub has_pod {
+#########################################################################
+#  my ( $self, $file ) = @_;
+#
+#  my $text = slurp_file($file);
+#
+#  return $text =~ /^[=]pod\s*$/m;
+#}
+#
+#########################################################################
+#sub is_public_module {
+#########################################################################
+#  my ( $self, $file ) = @_;
+#
+#  my $source = slurp_file("$file.pm");
+#
+#  return $source =~ /^[=]head1\s+public/mi;
+#}
+#
+
+########################################################################
+sub is_available_on_metacpan {
+########################################################################
+  my ( $self, $module ) = @_;
+
+  $module =~ s/\//::/g;
+
+  my $ua  = LWP::UserAgent->new( timeout => 5 );
+  my $url = 'https://fastapi.metacpan.org/v1/pod/' . $module . '?content-type=text/x-pod';
+  my $req = HTTP::Request->new( 'GET' => $url );
+
+  my $rsp = eval { $ua->request($req) };
+  return
+    if !$rsp || !$rsp->is_success;
+
+  my ( $fh, $filename ) = tempfile( 'metacpan-XXXXX', TMPDIR => $TRUE, UNLINK => $TRUE );
+  print {$fh} $rsp->content;
+  close $fh;
+
+  return $filename;
+}
+
+sub main {
+  my (@default_bedrock_dir) = grep { -d "$_/Bedrock" } @INC;
+
+  #  print {*STDERR} Dumper(
+  #    [ bedrock_dir => \@default_bedrock_dir,
+  #      bedrock     => find_files_of_type( undef, paths => \@default_bedrock_dir, filter => 'Bedrock' ),
+  #      blms        => find_files_of_type( undef, paths => \@default_bedrock_dir, filter => 'BLM' ),
+  #      all         => find_files_of_type( undef, paths => \@default_bedrock_dir, filter => [ 'BLM', 'Bedrock' ] ),
+  #      system      => find_files_of_type( undef, paths => \@INC, filter => [ 'BLM', 'Bedrock' ], filter_type => 'exclude' ),
+  #    ]
+  #  );
+
+  my $blms = find_files_of_type( undef, filter => 'BLM' );
+
+  my $bedrock = find_files_of_type( undef, filter => 'Bedrock' );
+
+  my $metadata = module_metadata( undef, $blms );
+
+  print {*STDERR}
+    Dumper(
+    [ descriptions => [ map { sprintf '%s - %s', $_, ucfirst( $metadata->{$_}->{description} // q{} ) } keys %{$metadata} ] ] );
+
+  return 0;
+}
+
+1;

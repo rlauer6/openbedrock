@@ -52,6 +52,7 @@ PACKAGE_MODULES = \
     Bedrock/Cache/Null.pm \
     Bedrock/Cache/Shareable.pm \
     Bedrock/BedrockConfig.pm \
+    Bedrock/BedrockCGI.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Constants.pm \
@@ -82,8 +83,11 @@ PACKAGE_MODULES = \
     Bedrock/Request.pm \
     Bedrock/Request/Upload.pm \
     Bedrock/Role/Config.pm \
+    Bedrock/Role/DocFinder.pm \
     Bedrock/Router.pm \
     Bedrock/Serializer.pm \
+    Bedrock/Service.pm \
+    Bedrock/Service/Docs.pm \
     Bedrock/Serializer/BedrockXML.pm \
     Bedrock/Serializer/JSON.pm \
     Bedrock/Serializer/YAML.pm \

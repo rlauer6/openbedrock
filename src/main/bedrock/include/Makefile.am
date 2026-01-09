@@ -12,6 +12,7 @@ dist_bedrock_include_DATA = \
     bedrock-docs-listing-index.inc \
     bedrock-docs-plugins.inc \
     bedrock-docs-ul.inc \
+    BedrockStyleGuide.md \
     bugs.md \
     contributing.md \
     examples.md \

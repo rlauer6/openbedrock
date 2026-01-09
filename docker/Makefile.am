@@ -25,6 +25,9 @@ $(TARBALL): $(top_builddir)/cpan/$(TARBALL)
 $(TARBALL_CORE): $(top_builddir)/cpan/bedrock-core/$(TARBALL_CORE)
 	cp $< $@
 
+.bedrock_rc: $(BEDROCK_SOURCE_FILES)
+	cp $(top_srcdir)/src/main/bedrock/config/root.bedrock_rc $@
+
 MYSQL_HOST          = @mysql_host@
 MYSQL_PASSWORD      = @mysql_password@
 MYSQL_ROOT_PASSWORD = @mysql_root_password@

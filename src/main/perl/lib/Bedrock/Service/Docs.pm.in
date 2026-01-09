@@ -1,0 +1,1185 @@
+package Bedrock::Service::Docs;
+
+use strict;
+use warnings;
+
+# Inherit directly from the Application Platform
+use Apache::Bedrock;
+use Bedrock qw(:booleans slurp_file choose);
+use Bedrock::Constants qw(:regexp :chars :booleans :defaults :http);
+use Bedrock::PodWriter qw(pod2html);
+use Bedrock::Hash;
+use Bedrock::Template;
+use Carp;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(fileparse basename dirname);
+use File::Temp qw(tempfile);
+use File::Find;
+use JSON;
+use Markdown::Render;
+use List::Util qw(any pairs none);
+use LWP::UserAgent;
+use Digest::MD5 qw(md5_hex);
+use Scalar::Util qw(reftype blessed);
+
+use Role::Tiny::With;
+with 'Bedrock::Role::DocFinder';
+
+# --- Configuration Constants ---
+use Readonly;
+Readonly our $DEFAULT_IMAGE_URL => '/bedrock/img';
+Readonly our $POD_MIN_SIZE      => 600;
+Readonly our $POD_CACHE_TTL     => 5 * 60;
+
+use parent qw(Bedrock::Service);
+
+# "Modulino" Hook: Allows running as a script or loading as a class
+caller or __PACKAGE__->new->handler;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  my $self = $class->SUPER::new(
+    %args,
+    dispatch_map => {
+      '/'                 => 'index',
+      '/cache-stats'      => 'cache_stats',
+      '/clear-cache'      => 'clear_cache',
+      '/config'           => 'config',
+      '/docs/:doc'        => 'generic_docs',
+      '/env'              => 'env',
+      '/internal/:module' => 'internal',
+      '/list-cache'       => 'list_cache',
+      '/markdown/:file'   => 'markdown',
+      '/plugins/:file'    => 'plugins',
+      '/pod/:module'      => 'pod',
+      '/session'          => 'session',
+      '/system/:module'   => 'system',
+      '/tag/:tag'         => 'tag',
+    }
+  );
+
+  $self->init_cache();
+
+  return $self;
+}
+
+########################################################################
+sub init_cache {
+########################################################################
+  my ($self) = @_;
+
+  eval {
+    my $cache = $self->cache;
+
+    my $blms = $cache->get( cache_key('plugin_list') );
+    $blms //= $self->find_files_of_type( filter => 'BLM' );
+    $cache->set( cache_key('plugin_list') => $blms );
+
+    my $bedrock = $cache->get( cache_key('bedrock_list') );
+    $bedrock //= $self->find_files_of_type( filter => 'Bedrock' );
+    $cache->set( cache_key('bedrock_list') => $bedrock );
+
+    my $system = $cache->get( cache_key('system_list') );
+    $system //= $self->find_files_of_type( filter => [ 'BLM', 'Bedrock' ], filter_type => 'exclude' );
+    $cache->set( cache_key('system_list') => $system );
+  };
+
+  carp "WARN: error trying to initialize caching\n$EVAL_ERROR"
+    if $EVAL_ERROR;
+
+  return;
+}
+
+########################################################################
+sub dispatch {
+########################################################################
+  my ($self) = @_;
+
+  # --- Security Gate ---
+  my $config = $self->config;
+
+  my $info_setting = $ENV{ALLOW_BEDROCK_INFO} // $config->{ALLOW_BEDROCK_INFO} // $EMPTY;
+
+  if ( none { lc $info_setting eq $_ } qw{ on 1 yes docs } ) {
+    $self->log->error("Bedrock docs denied (ALLOW_BEDROCK_INFO='$info_setting')");
+    return $self->display_error( 'Forbidden', $HTTP_FORBIDDEN );
+  }
+
+  # --- Config Defaults ---
+  $config->{BEDROCK_IMAGE_URL} //= $DEFAULT_IMAGE_URL;
+  $config->{BEDROCK_ADMIN_DIR} //= '/bedrock';
+  $config->{BEDROCK_INCLUDE_DIR} = $ENV{BEDROCK_INCLUDE_DIR} // $DEFAULT_BEDROCK_INCLUDE_DIR;
+
+  return $self->SUPER::dispatch();
+}
+
+########################################################################
+# ACTIONS
+########################################################################
+
+########################################################################
+sub action_index {
+########################################################################
+  my ($self) = @_;
+
+  return $HTTP_BAD_REQUEST
+    if $self->is_api;
+
+  my $config   = $self->config;
+  my $template = $self->fetch_template('bedrock-docs-index');
+
+  my %params;
+  $params{head}                  = $self->listing_head('Bedrock Reference Guide');
+  $params{tags}                  = $self->ul_links( tag      => 'Bedrock Tags', plugins => 'Bedrock Plugins' );
+  $params{system_docs}           = $self->ul_links( system   => 'System Modules' );
+  $params{bedrock_internal_docs} = $self->ul_links( internal => 'Bedrock Internal Documentation' );
+
+  if ( my $paths = $self->get_pod_paths ) {
+    if ( @{$paths} ) {
+      $params{user_docs} = $self->ul_links( pod => 'User Module Listing' );
+    }
+  }
+
+  if ( my $paths = $self->get_markdown_paths ) {
+    if ( @{$paths} ) {
+      $params{markdown_docs} = $self->ul_links( markdown => 'Documentation Listing' );
+    }
+  }
+
+  if ( $config->{ALLOW_BEDROCK_INFO} ne 'docs' ) {
+    my $allow_cfg = to_boolean( $config->{ALLOW_BEDROCK_CONFIG_INFO} );
+    my $allow_env = to_boolean( $config->{ALLOW_BEDROCK_ENV_INFO} );
+
+    $params{bedrock_env} = $self->ul_links(
+      config => $allow_cfg ? 'Bedrock Configuration' : '(disabled)',
+      env    => $allow_env ? 'Bedrock Environment'   : '(disabled)',
+    );
+  }
+
+  if ( $config->{LOG4PERL} && -e $config->{LOG4PERL} ) {
+    $params{log4perl} = slurp_file( $config->{LOG4PERL} );
+  }
+
+  return $self->render_page( $template, %params );
+}
+
+########################################################################
+sub action_cache_stats {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->cache;
+  my @keys  = $cache ? $cache->keys : ();
+
+  # The prefix defined in sub cache_key (Bedrock::Service::Docs)
+  my $prefix = __PACKAGE__;
+
+  my %stats = (
+    total_keys => scalar(@keys),
+    docs_keys  => 0,
+    categories => {
+      lists       => 0,  # _LIST
+      metadata    => 0,  # METADATA
+      pod_entries => 0,  # Cached HTML content
+    },
+    config => { pod_ttl => $POD_CACHE_TTL, }
+  );
+
+  foreach my $key (@keys) {
+    # Filter for keys belonging to this specific service
+    # Format matches sub cache_key: Package[KEY_NAME]
+    next unless $key =~ /^\Q$prefix\E\[(.*)\]$/;
+
+    $stats{docs_keys}++;
+    my $inner_key = $1;
+
+    if ( $inner_key =~ /_LIST$/ ) {
+      $stats{categories}{lists}++;
+    }
+    elsif ( $inner_key =~ /METADATA/ ) {
+      $stats{categories}{metadata}++;
+    }
+    else {
+      # Any key not explicitly a List or Metadata is a cached POD Page
+      $stats{categories}{pod_entries}++;
+    }
+  }
+
+  return $self->print_json( \%stats );
+}
+
+########################################################################
+sub action_plugins {
+########################################################################
+  my ($self) = @_;
+
+  my $r = $self->request;
+
+  $r->log->info('action: plugins starting...');
+
+  my $plugins = $self->get_module_metadata();
+
+  my $target_name = $self->context->param('file');
+
+  # FIX: Fallback Manual Parsing
+  # If the router failed to capture the parameter (e.g. because of '::'),
+  # extract it manually from path_info.
+  if ( !$target_name ) {
+    my $path = $self->request->path_info // $ENV{PATH_INFO} // q{};
+    if ( $path =~ m{/plugins/(.+)$} ) {
+      $target_name = $1;
+    }
+  }
+
+  # Handle plugin lookup (Detail View)
+  if ($target_name) {
+    # STRICT LOOKUP: Client must provide exact name (e.g., BLM::Startup::Bedrock)
+    return $self->display_error( "Plugin not found: $target_name", $HTTP_NOT_FOUND )
+      if !$plugins->{$target_name};
+
+    return $self->show_pod( $plugins->{$target_name}->{file}, 'plugins', $target_name );
+  }
+
+  my $template = $self->fetch_template('bedrock-docs-plugins');
+
+  my @plugin_list = keys %{$plugins};
+
+  my %sections = (
+    Plugins               => [ grep { $plugins->{$_}->{plugin} } @plugin_list ],
+    'Application Plugins' => [ grep { $plugins->{$_}->{application_plugin} } @plugin_list ],
+    Filters               => [ grep { $plugins->{$_}->{filter} } @plugin_list ],
+  );
+
+  if ( $self->is_api ) {
+    my %plugin_map;
+    my %links;
+    my %names;
+
+    foreach my $section ( keys %sections ) {
+      # 1. Plugin Map (ID generation)
+      my $id = lc $section;
+      $id =~ s/\s/-/g;
+      $plugin_map{$section} = $id;
+
+      # 2. Links & Names
+      my @modules = @{ $sections{$section} };
+
+      foreach my $module (@modules) {
+        # FIX: Generate authoritative link for JS to use directly
+        $links{$section}->{$module} = sprintf '%s/plugins/%s', $self->admin_dir, $module;
+
+        # Names: Simplify display name (strip BLM:: and category)
+        my $short = $module;
+        $short =~ s/^.*:://;
+        $names{$section}->{$module} = $short;
+      }
+    }
+
+    return $self->print_json(
+      { plugins    => \%sections,
+        plugin_map => \%plugin_map,
+        links      => \%links,
+        names      => \%names
+      }
+    );
+  }
+
+  my @headings = sort keys %sections;
+
+  my @plugin_listing = map { $self->blm_ul( metadata => $plugins, title => $_, modules => $sections{$_} ) } @headings;
+
+  return $self->render_page(
+    $template,
+    headings => \@headings,
+    head     => $self->listing_head('Bedrock Plugins'),
+    plugins  => \@plugin_listing,
+  );
+}
+
+########################################################################
+sub action_system { return shift->system_docs('system'); }
+########################################################################
+sub action_internal { return shift->system_docs('bedrock-internal'); }
+########################################################################
+
+########################################################################
+sub system_docs {
+########################################################################
+  my ( $self, $type ) = @_;
+
+  my $module = $self->context->param('module');
+
+  my $module_list = $self->cache->get( cache_key('metadata') );
+
+  if ($module) {
+    my $path = $module_list->{$module}->{file};
+    return $self->show_pod( $path, $type, $module );
+  }
+
+  my @modules = sort keys %{$module_list};
+
+  return $self->print_json( { modules => \@modules } )
+    if $self->is_api;
+
+  my $prefix = ( $type eq 'system' ) ? 'system' : 'internal';
+  my $title  = ( $type eq 'system' ) ? 'System' : 'Bedrock Internal';
+
+  my @links = map { sprintf '<a href="%s/%s/%s">%s</a>', $self->admin_dir, $prefix, $_, $_ } @modules;
+
+  return $self->render_listing( "$title Documentation Listing", @links );
+}
+
+########################################################################
+sub action_pod {
+########################################################################
+  my ($self) = @_;
+
+  my $user_metadata = $self->cache->get( cache_key('user_metadata') );
+
+  if ( !$user_metadata ) {
+    my $paths = $self->get_pod_paths;
+
+    return $self->display_error('No user docs found')
+      if !@{$paths};
+
+    my $list = $self->find_files_of_type( paths => $paths, type => 'pm' );
+
+    return $self->display_error('No user docs found')
+      if !$list || !@{$list};
+
+    $user_metadata = $self->module_metadata($list);
+    $self->cache->set( cache_key('user_metadata') => $user_metadata );
+  }
+
+  if ( my $module = $self->context->param('module') ) {
+    my $path = $user_metadata->{$module}->{file};
+    return $self->show_pod( $path, 'pod', $module );
+  }
+
+  if ( $self->is_api ) {
+    return $self->print_json( { modules => [ sort keys %{$user_metadata} ] } );
+  }
+
+  my @links;
+
+  foreach my $module ( sort keys %{$user_metadata} ) {
+    push @links, sprintf '<a href="%s/pod/%s">%s</a>', $self->admin_dir, $module, $module;
+  }
+
+  return $self->render_listing( 'User Documentation Listing', @links );
+}
+
+########################################################################
+sub action_markdown {
+########################################################################
+  my ($self) = @_;
+
+  my $file = $self->context->param('file');
+
+  my $listing = $self->get_markdown_listing;
+
+  if ( $self->is_api && !$file ) {
+    return $self->print_json( { markdown => $listing } );
+  }
+
+  return $self->show_markdown( $listing->{$file} )
+    if $file && $listing->{$file};
+
+  my @links;
+
+  foreach my $p ( pairs %{$listing} ) {
+    my ( $name, $path ) = @{$p};
+    push @links, sprintf '<a href="%s/markdown/%s">%s</a>', $self->admin_dir, $name, $name;
+  }
+
+  return $self->render_listing( 'Documentation Listing', sort @links );
+}
+
+########################################################################
+sub action_tag {
+########################################################################
+  my ($self) = @_;
+
+  my $tag = $self->context->param('tag');
+
+  my $admin_dir = $self->admin_dir;
+
+  if ($tag) {
+    my $file = $self->find_tag_file($tag);
+
+    return $self->display_error( 'Tag not found', $HTTP_NOT_FOUND )
+      if !$file;
+
+    return $self->show_pod( $file, 'tag', 'tag_' . $tag );
+  }
+
+  my $tags = $self->get_tag_list;
+
+  return $self->print_json( { tags => $tags } )
+    if $self->is_api;
+
+  my @links = map { sprintf '<a href="%s/tag/%s">%s</a>', $admin_dir, $_, $_ } @{$tags};
+
+  return $self->render_listing( 'Bedrock Tag Listing', @links );
+}
+
+########################################################################
+sub action_generic_docs {
+########################################################################
+  my ($self) = @_;
+
+  return $self->display_error( 'API Only', $HTTP_NOT_FOUND )
+    if !$self->is_api;
+
+  my $doc_name   = $self->context->param('doc');
+  my $conf       = $self->config->{BEDROCK_DOCUMENTATION} || {};
+  my $file_entry = $conf->{file_list}->{$doc_name};
+
+  print {*STDERR} Dumper( [ $conf->{file_list} ] );
+
+  return $self->display_error( 'Doc not configured', $HTTP_NOT_FOUND )
+    if !$file_entry;
+
+  my $path = $file_entry->{path};
+
+  return $self->display_error( 'File not found', $HTTP_NOT_FOUND )
+    if !-e $path;
+
+  my ( $name, $dir, $ext ) = fileparse( $path, qr/\.[^.]*$/xsm );
+
+  if ( $ext =~ /pl|pm|cgi/ixsm ) {
+    return $self->show_pod( $path, q{}, $path );
+  }
+  return $self->show_markdown($path);
+}
+
+########################################################################
+sub action_env {
+########################################################################
+  my ($self) = @_;
+
+  my $allow = to_boolean( $self->config->{ALLOW_BEDROCK_ENV_INFO} );
+
+  my $data = $allow ? \%ENV : { ALLOW_BEDROCK_ENV_INFO => 'denied' };
+
+  return $self->print_json($data)
+    if $self->is_api;
+
+  return $self->render_hash_dump( 'Environment', $data );
+}
+
+########################################################################
+sub action_config {
+########################################################################
+  my ($self) = @_;
+
+  my $allow = to_boolean( $self->config->{ALLOW_BEDROCK_CONFIG_INFO} );
+
+  my $data = $allow ? $self->config : { ALLOW_BEDROCK_CONFIG_INFO => 'denied' };
+
+  return $self->print_json($data)
+    if $self->is_api;
+
+  return $self->render_hash_dump( 'Configuration', $data );
+}
+
+########################################################################
+sub action_session {
+########################################################################
+  my ($self) = @_;
+
+  my $data = $self->session // {};
+
+  return $self->print_json($data)
+    if $self->is_api;
+
+  return $self->render_hash_dump( 'Session', $data );
+}
+
+########################################################################
+sub action_clear_cache {
+########################################################################
+  my ($self) = @_;
+
+  if ( my $c = $self->cache() ) {
+    $c->clear;
+  }
+
+  return $self->print_json( { status => 'cleared' } );
+}
+
+########################################################################
+sub action_list_cache {
+########################################################################
+  my ($self) = @_;
+
+  my $c = $self->cache();
+
+  my @keys = $c ? $c->keys : ();
+
+  return $self->print_json( { keys => \@keys } );
+}
+
+########################################################################
+# HELPERS
+########################################################################
+
+########################################################################
+sub cache {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->get('cache');
+
+  return $cache
+    if $cache && blessed($cache);
+
+  # 1. Try to Attach OR Create (The Pragmatic Approach)
+  $cache = Apache::Bedrock::cache( create => 1 );
+
+  # 2. Fallback to Memory (Safety Net)
+  if ( !$cache ) {
+    $self->log->warn("Shared Cache unavailable/creation failed. Falling back to Bedrock::Cache::Memory");
+
+    eval {
+      require Bedrock::Cache::Memory;
+      $cache = Bedrock::Cache->new( engine_name => 'Memory' );
+    };
+
+    if ( $EVAL_ERROR || !$cache ) {
+      confess "CRITICAL: Unable to initialize Shared Cache OR Fallback Memory Cache. Aborting.\n$EVAL_ERROR";
+    }
+  }
+
+  $self->set( cache => $cache );
+
+  return $cache;
+}
+
+########################################################################
+sub is_api {
+########################################################################
+  my ($self) = @_;
+
+  my $accept = $self->request->header_in('Accept') // q{};
+
+  return $accept =~ /json/xsmi;
+}
+
+########################################################################
+sub admin_dir { return shift->config->{BEDROCK_ADMIN_DIR} }
+########################################################################
+
+########################################################################
+sub render_page {
+########################################################################
+  my ( $self, $tpl_source, %vars ) = @_;
+
+  my $config = $self->config;
+
+  $vars{env}        = \%ENV;
+  $vars{back_url}   = $self->admin_dir;
+  $vars{config}     = $config;
+  $vars{logo}       = "$config->{BEDROCK_IMAGE_URL}/$config->{BEDROCK_LOGO}";
+  $vars{stylesheet} = $config->{BEDROCK_POD_CSS_URL};
+
+  local $ENV{DOCUMENT_ROOT} = $config->{BEDROCK_INCLUDE_DIR};
+
+  my $html = eval { Bedrock::Template->new( $tpl_source, %vars )->parse };
+
+  my $err = $EVAL_ERROR;
+
+  $html = $err ? $self->check_error( $err, $tpl_source ) : $html;
+
+  return $self->print($html);
+}
+
+########################################################################
+sub fix_pod {
+########################################################################
+  my ( $self, $html, $type, $module ) = @_;
+
+  if ( $self->is_api ) {
+    if ( $html =~ /<body[^>]*>(.*?)<\/body>/is ) {
+      return $1;
+    }
+  }
+
+  my $back = sprintf '%s/%s', $self->admin_dir, $type;
+  my $head = $self->header_inc( back_url => $back, module => $module );
+
+  $html =~ s/(<body[^>]*>)/$1\n$head/i;
+
+  return $html;
+}
+
+########################################################################
+sub show_pod {
+########################################################################
+  my ( $self, $file, $type, $module ) = @_;
+
+  my $html = $self->cache->get( cache_key($module) );
+
+  if ( !$html ) {
+    $html = $self->_pod2html( $file, $module );
+
+    if ( !$html && $module ) {
+      if ( my $remote_file = $self->is_available_on_metacpan($module) ) {
+        $html = $self->_pod2html( $remote_file, $module );
+        unlink $remote_file;
+      }
+    }
+
+    return $self->display_error( "No POD found for $module", $HTTP_NOT_FOUND )
+      if !$html;
+
+    $self->cache->set( cache_key($module), $html, ttl => $POD_CACHE_TTL );
+  }
+
+  if ( $self->is_api ) {
+    my $content = $self->fix_pod( $html, $type, $module );
+    return $self->print_json(
+      { html     => $content,
+        uri_root => $self->admin_dir,
+      }
+    );
+  }
+
+  return $self->print( $self->fix_pod( $html, $type, $module ) );
+}
+
+########################################################################
+sub _pod2html {
+########################################################################
+  my ( $self, $file, $module ) = @_;
+
+  return
+    if !$file || !-e $file;
+
+  my $tmp  = File::Temp->new( UNLINK => 1 )->filename;
+  my %opts = ( '--infile' => $file, '--outfile' => $tmp, '--cachedir' => File::Spec->tmpdir );
+
+  if ( !$self->is_api && ( my $css = $self->config->{BEDROCK_POD_CSS_URL} ) ) {
+    $opts{'--css'} = $css;
+  }
+
+  eval {
+    my @args = map { $_ . '=' . $opts{$_} } keys %opts;
+    pod2html(@args);
+  };
+
+  return slurp_file($tmp);
+}
+
+########################################################################
+sub is_available_on_metacpan {
+########################################################################
+  my ( $self, $module ) = @_;
+
+  $module =~ s/\//::/g;
+
+  my $ua  = LWP::UserAgent->new( timeout => 5 );
+  my $url = 'https://fastapi.metacpan.org/v1/pod/' . $module . '?content-type=text/x-pod';
+  my $req = HTTP::Request->new( 'GET' => $url );
+
+  my $rsp = eval { $ua->request($req) };
+  return
+    if !$rsp || !$rsp->is_success;
+
+  my ( $fh, $filename ) = tempfile( 'metacpan-XXXXX', TMPDIR => $TRUE, UNLINK => $TRUE );
+  print {$fh} $rsp->content;
+  close $fh;
+
+  return $filename;
+}
+
+########################################################################
+sub get_markdown_listing {
+########################################################################
+  my ($self) = @_;
+
+  my $list = $self->cache->get( cache_key('markdown_list') );
+
+  return $list
+    if $list;
+
+  my $paths = $self->get_markdown_paths;
+
+  my @markdown_files = $self->find_files_of_type( paths => $paths, type => 'md' );
+
+  my %markdown_list;
+
+  foreach (@markdown_files) {
+    $markdown_list{ basname($_) } = $_;
+  }
+
+  $self->cache->set( cache_key('markdown_list') => \%markdown_list );
+
+  return \%markdown_list;
+}
+
+########################################################################
+sub fetch_module_list {
+########################################################################
+  my ( $self, $type, $paths ) = @_;
+
+  my $cache_key = sprintf '%s:MODULE_LIST:%s', ref $self, $type;
+
+  my $list = $self->cache->get($cache_key);
+
+  return $list
+    if $list;
+
+  if ( !$paths ) {
+    $paths = [
+      { filter      => '([bB]edrock|TagX|::[bB]edrock|BLM)',
+        filter_type => $type eq 'system' ? 'exclude' : 'include',
+        dir         => $Bedrock::Constants::DEFAULT_BEDROCK_PERL5LIBDIR,
+      }
+    ];
+  }
+
+  $list = $self->get_all_modules( $paths, 0 );
+
+  $self->cache->set( $cache_key, $list );
+
+  return $list;
+}
+
+########################################################################
+sub get_all_modules {
+########################################################################
+  my ( $self, $paths, $public_only, $no_blms ) = @_;
+
+  my %map;
+
+  foreach my $spec ( @{$paths} ) {
+    my $dir = ref($spec) ? $spec->{dir} : $spec;
+
+    my $filter = ref($spec) ? $spec->{filter} : undef;
+
+    my $type = ref($spec) ? $spec->{filter_type} : 'exclude';
+
+    my @files = $self->get_modules( $dir, $no_blms );
+
+    foreach my $file (@files) {
+      my $pm = "$file.pm";
+      next
+        if !-e $pm || !$self->has_pod($pm);
+
+      my $name = $self->get_module_name( $file, $dir );
+
+      next
+        if !$name;
+
+      if ($filter) {
+        next
+          if $type eq 'exclude' && $file =~ /$filter/xsm;
+
+        next
+          if $type eq 'include' && $name !~ /$filter/xsm;
+      }
+
+      next
+        if $public_only && !$self->is_public_module($file);
+
+      $map{$name} = $file;
+    }
+  }
+
+  return \%map;
+}
+
+########################################################################
+sub get_modules {
+########################################################################
+  my ( $self, $dir, $exclude_blms ) = @_;
+
+  return $self->find_files(
+    dir          => $dir,
+    exclude_blms => $exclude_blms,
+    ext          => 'pm'
+  );
+}
+
+########################################################################
+sub find_files {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $dir, $no_blms, $ext ) = @args{qw(dir exclude_blms ext)};
+  $ext //= 'pm';
+
+  return ()
+    if !-d $dir;
+
+  opendir( my $fh, $dir );
+
+  my @listing;
+
+  while ( my $file = readdir $fh ) {
+    next if $file             =~ /^\./;
+    next if $no_blms && $file =~ /^BLM/;
+
+    if ( -d "$dir/$file" ) {
+      push @listing,
+        $self->find_files(
+        dir          => "$dir/$file",
+        exclude_blms => $no_blms,
+        ext          => $ext
+        );
+    }
+    elsif ( $file =~ /^([^.]+)[.]$ext$/ ) {
+      push @listing, "$dir/$1";
+    }
+  }
+
+  closedir $fh;
+
+  return @listing;
+}
+
+########################################################################
+sub get_module_name {
+########################################################################
+  my ( $self, $file, $dir ) = @_;
+
+  $dir = "$dir/";
+  my $potential = $file;
+  $potential =~ s/\Q$dir\E//;
+  $potential =~ s/\//::/g;
+
+  open my $fh, '<', "$file.pm" or return;
+  my @pkgs;
+  while (<$fh>) { push @pkgs, $1 if /^\s*package\s+([^;]+);/; }
+  close $fh;
+
+  my ($name) = grep {/$potential/} @pkgs;
+
+  return $name // $pkgs[0];
+}
+
+########################################################################
+sub has_pod {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  my $text = slurp_file($file);
+
+  return $text =~ /^[=]pod\s*$/m;
+}
+
+########################################################################
+sub is_public_module {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  my $source = slurp_file("$file.pm");
+
+  return $source =~ /^[=]head1\s+public/mi;
+}
+
+########################################################################
+sub get_all_blms {
+########################################################################
+  my ($self) = @_;
+
+  my @blm_path = grep { -d "$_/BLM" } @INC;
+
+  my $modules
+    = $self->fetch_module_list( 'blm', [ map { { dir => $_, filter_type => 'include', filter => 'BLM' } } @blm_path ] );
+
+  my @module_list = sort keys %{$modules};
+
+  return @module_list;
+}
+
+# --- Tag Helpers ---
+
+########################################################################
+sub find_tag_file {
+########################################################################
+  my ( $self, $tag ) = @_;
+
+  my $tagx_path = 'Text/TagX/TAG';
+  my ($root) = grep { -d "$_/$tagx_path" } @INC;
+  return
+    if !$root;
+
+  my @stubs  = map {"$root/$tagx_path/$_"} qw( NoBody WithBody WithBody/Loop );
+  my $uc_tag = ucfirst $tag;
+
+  foreach my $stub (@stubs) {
+    my $file = "$stub/$uc_tag.pm";
+    return $file if -e $file;
+  }
+
+  my $found;
+
+  find( sub { $found = $File::Find::name if lc($_) eq "$tag.pm"; }, @stubs );
+
+  return $found;
+}
+
+our @TAG_LIST;
+
+########################################################################
+sub get_tag_list {
+########################################################################
+  return \@TAG_LIST if @TAG_LIST;
+
+  if ( $Bedrock::Constants::OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
+    @TAG_LIST = sort split /[|]/xsm, $1;
+    @TAG_LIST = grep { !/[#]|else|else[?]if|blm|[?]/xsm } @TAG_LIST;
+  }
+  return \@TAG_LIST;
+}
+
+# --- Path Helpers ---
+
+########################################################################
+sub get_markdown_paths { shift->get_doc_paths('markdown') }
+########################################################################
+sub get_pod_paths { shift->get_doc_paths('pod') }
+########################################################################
+
+########################################################################
+sub get_doc_paths {
+########################################################################
+  my ( $self, $type ) = @_;
+  $type = uc "${type}_PATHS";
+  my $config = $self->config;
+  my @paths;
+  foreach my $source ( $ENV{$type}, $config->{$type} ) {
+    next unless defined $source;
+    my $list = ref($source) eq 'ARRAY' ? $source : [ split /:/, $source ];
+    push @paths, $self->validate_paths(@$list);
+  }
+  return \@paths;
+}
+
+########################################################################
+sub validate_paths {
+########################################################################
+  my ( $self, @paths ) = @_;
+
+  return grep { -d $_ && -r $_ } @paths;
+}
+
+# --- Presentation Helpers ---
+
+########################################################################
+sub fetch_template {
+########################################################################
+  my ( $self, $name ) = @_;
+  my $dir = $self->config->{BEDROCK_INCLUDE_DIR};
+  return slurp_file("$dir/$name.inc");
+}
+
+########################################################################
+sub render_listing {
+########################################################################
+  my ( $self, $title, @items ) = @_;
+  my $template = $self->fetch_template('bedrock-docs-listing');
+  my $head     = $self->listing_head($title);
+  return $self->render_page( $template, head => $head, listing => \@items );
+}
+
+########################################################################
+sub listing_head {
+########################################################################
+  my ( $self, $title ) = @_;
+
+  my $template = $self->fetch_template('bedrock-docs-listing-index');
+
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+
+  return Bedrock::Template->new(
+    $template,
+    title      => $title,
+    config     => $self->config,
+    back_url   => $self->admin_dir,
+    stylesheet => $self->config->{BEDROCK_POD_CSS_URL},
+  )->parse;
+}
+
+########################################################################
+sub ul_links {
+########################################################################
+  my ( $self, %links ) = @_;
+  my $template = $self->fetch_template('bedrock-docs-ul');
+
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+
+  return Bedrock::Template->new(
+    $template,
+    url    => $self->admin_dir,
+    links  => \%links,
+    config => $self->config
+  )->parse;
+}
+
+########################################################################
+sub blm_ul {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $metadata, $title, $modules ) = @args{qw(metadata title modules)};
+
+  return
+    if !@{$modules};
+
+  my $uri = '%s/plugins/%s';
+
+  my $list = Bedrock::Hash->new( map { $_ => sprintf $uri, $self->admin_dir, $_ } sort @{$modules} );
+
+  my $template = $self->fetch_template('bedrock-docs-blms');
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+
+  return Bedrock::Template->new(
+    $template,
+    heading => $title,
+    list    => $list,
+    config  => $self->config
+  )->parse;
+}
+
+########################################################################
+sub render_hash_dump {
+########################################################################
+  my ( $self, $title, $hash ) = @_;
+
+  $self->bless_all($hash);
+
+  my $template = $self->fetch_template('bedrock-docs-hash-dump');
+
+  my $head = $self->listing_head("Bedrock $title");
+
+  return $self->render_page( $template, head => $head, hash => $hash );
+}
+
+########################################################################
+sub bless_all {
+########################################################################
+  my ( $self, $hash ) = @_;
+
+  foreach my $k ( keys %{$hash} ) {
+    next if !ref $hash->{$k};
+
+    if ( reftype( $hash->{$k} ) eq 'HASH' ) {
+      $self->bless_all( $hash->{$k} );
+    }
+    elsif ( reftype( $hash->{$k} ) eq 'ARRAY' ) {
+      foreach my $e ( @{ $hash->{$k} } ) {
+        $self->bless_all($e);
+      }
+    }
+
+    bless $hash->{$k}, 'Bedrock::Dump';
+  }
+
+  return;
+}
+
+########################################################################
+sub header_inc {
+########################################################################
+  my ( $self, %params ) = @_;
+  my $template = $self->fetch_template('bedrock-docs-header');
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+  return Bedrock::Template->new( $template, config => $self->config, %params )->parse;
+}
+
+########################################################################
+sub create_error_page {
+########################################################################
+  my ( $self, %params ) = @_;
+
+  my $template = $self->fetch_template('bedrock-docs-error');
+
+  $params{error} //= 'Unknown Error';
+
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+
+  return Bedrock::Template->new( $template, config => $self->config, %params )->parse;
+}
+
+########################################################################
+sub show_markdown {
+########################################################################
+  my ( $self, $file ) = @_;
+
+  my $html = eval {
+    my $md = Markdown::Render->new( infile => $file, engine => 'text_markdown', body => 0 );
+    $md->render_markdown;
+    return $md->get_html;
+  };
+
+  return $self->print( $self->create_error_page( error => "Could not render markdown: $EVAL_ERROR", title => basename($file) ) )
+    if $EVAL_ERROR || !$html;
+
+  # FIX: API clients expect raw content wrapper in JSON, NOT a full HTML page
+  if ( $self->is_api ) {
+    return $self->print_json(
+      { html     => $html,
+        uri_root => $self->admin_dir,
+      }
+    );
+  }
+
+  my $template = $self->fetch_template('bedrock-docs-listing-index');
+
+  local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
+
+  my $page = Bedrock::Template->new(
+    $template,
+    content  => $html,
+    back_url => $self->admin_dir . '/markdown',
+    title    => basename($file),
+    config   => $self->config
+  )->parse;
+
+  return $self->print($page);
+}
+
+########################################################################
+sub cache_key {
+########################################################################
+  my ($key) = @_;
+
+  $key //= q{};
+
+  $key =~ s/[:\/.-]/_/xsmg;
+  while ( $key =~ s/__/_/g ) { }
+
+  return sprintf '%s[%s]', __PACKAGE__, uc $key;
+}
+
+########################################################################
+sub get_module_metadata {
+########################################################################
+  my ( $self, $module ) = @_;
+
+  my $cache = $self->cache;
+
+  my $metadata = $cache->get( cache_key('metadata') );
+
+  return $metadata
+    if $metadata;
+
+  # FIX: Ensure we have array refs before dereferencing
+  my $plugins         = $cache->get( cache_key('plugin_list') )  || [];
+  my $bedrock_modules = $cache->get( cache_key('bedrock_list') ) || [];
+  my $system          = $cache->get( cache_key('system_list') )  || [];
+
+  $metadata = $self->module_metadata( [ @{$plugins}, @{$bedrock_modules}, ] );
+  $cache->set( cache_key('metadata') => $metadata );
+
+  return $metadata;
+}
+
+1;

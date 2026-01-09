@@ -29,6 +29,7 @@ perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Seriali
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
 
 perl5bedrockrolelibdir    	          = $(perl5libdir)/Bedrock/Role
+perl5bedrockservicelibdir    		  = $(perl5libdir)/Bedrock/Service
 perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
@@ -102,6 +103,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Request.pm \
     Bedrock/Router.pm \
     Bedrock/Serializer.pm \
+    Bedrock/Service.pm \
     Bedrock/Snippet.pm \
     Bedrock/Test.pm \
     Bedrock/Template.pm \
@@ -265,8 +267,14 @@ BEDROCK_XML=$(perl5bedrockxmllib_DATA:.pm=.pm.in)
 
 BEDROCK_ROLE=$(perl5bedrockrolelib_DATA:.pm=.pm.in)
 
+BEDROCK_SERVICE=$(perl5bedrockservicelib_DATA:.pm=.pm.in)
+
 perl5bedrockrolelib_DATA = \
-    Bedrock/Role/Config.pm
+    Bedrock/Role/Config.pm \
+    Bedrock/Role/DocFinder.pm
+
+perl5bedrockservicelib_DATA = \
+    Bedrock/Service/Docs.pm
 
 perl5bedrockserializerlib_DATA = \
     Bedrock/Serializer/CSV.pm         \
@@ -381,6 +389,7 @@ PERL_PM = \
     $(BEDROCK_CACHE) \
     $(BEDROCK_REQUEST) \
     $(BEDROCK_ROLE) \
+    $(BEDROCK_SERVICE) \
     $(BEDROCK_TEMPLATE) \
     $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \

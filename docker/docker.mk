@@ -21,7 +21,7 @@
 ########################################################################
 
 .PHONY: images
-images:debian fedora al2023
+images:debian fedora al2023 .bedrock_rc
 
 setup-sql: setup.sql.in
 	$(do_subst) $< > $@

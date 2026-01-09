@@ -3,23 +3,25 @@
 #SUBDIRS =  \
 #          .
 
-INPUT_TEMPLATES = bedrock.cgi.in
+CGI_TEMPLATES = \
+    bedrock.cgi.in \
+    bedrock-docs.cgi.in
 
 # "static" scripts
 SSCRIPTS =
 # "generated" scripts (filtered here by do_subst)
-GSCRIPTS = bedrock.cgi
+GSCRIPTS = $(CGI_TEMPLATES:.cgi.in=.cgi)
 
 # "static" man pages
 SMANPAGES =
 # "generated" man pages
-GMANPAGES = bedrock.cgi.1
+GMANPAGES = $(GSCRIPTS:.cgi=.cgi.1)
 
 cgibin_SCRIPTS = $(SSCRIPTS) $(GSCRIPTS)
 
-dist_noinst_DATA = $(INPUT_TEMPLATES)
+dist_noinst_DATA = $(CGI_TEMPLATES)
 
-man1_MANS = bedrock.cgi.1
+man1_MANS = $(GMANPAGES)
 
 CLEANFILES = $(GSCRIPTS) $(GMANPAGES)
 
@@ -54,7 +56,16 @@ bedrock.cgi: Makefile
 	chmod a-w "$@"      ;\
 	chmod a+rx "$@"
 
-bedrock.cgi.1: bedrock.cgi.in
+bedrock-docs.cgi: bedrock-docs.cgi.in
+	set -e ;\
+	rm -f "$@" "$@.tmp" ;\
+	_t_base="$$(echo "$@" | sed -e 's/[-]$(VERSION)$$//')" ;\
+	$(do_subst) "$(srcdir)/$${_t_base}.in" > "$@.tmp"      ;\
+	mv "$@.tmp" "$@"    ;\
+	chmod a-w "$@"      ;\
+	chmod a+rx "$@"
+
+$(GMANPAGES): $(CGI_TEMPLATES)
 	"$(POD2MAN)" $< \
 	    --center='Bedrock' \
 	    --name=$$(echo $< | sed -e 's/\.in$$//' | tr '[:lower:]' '[:upper:]') \
@@ -63,10 +74,11 @@ bedrock.cgi.1: bedrock.cgi.in
 
 install-data-hook:
 	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
-	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin//bedrock-docs.cgi || true;
 	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin//bedrock-autocomplete.cgi || true;
 
 uninstall-hook:
 	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-session-files.cgi || true;
-	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-docs.cgi || true;
 	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-autocomplete.cgi || true;
+
+#	rm -f $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock-docs.cgi || true;
+#	cp $(DESTDIR)$(datadir)/bedrock/cgi-bin/bedrock.cgi $(DESTDIR)/$(datadir)/bedrock/cgi-bin//bedrock-docs.cgi || true;

@@ -9,14 +9,13 @@ use Cwd;
 use Bedrock::Constants qw(:chars);
 use Data::Dumper;
 use English qw(-no_match_vars);
+use Bedrock::Service qw(:all);
 
 BEGIN {
   $ENV{GATEWAY_INTERFACE} = 'CGI/1.1';
-
-  use Bedrock::BedrockCGI;
-
-  Bedrock::CGI->import(qw(:all));
 }
+
+use_ok('Bedrock::BedrockCGI');
 
 ########################################################################
 # print

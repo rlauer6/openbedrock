@@ -2,10 +2,11 @@ package Bedrock::Cache;
 
 use strict;
 use warnings;
-
+use Data::Dumper;
 use Storable qw(nfreeze thaw);
 use Module::Load;
 use English qw(-no_match_vars);
+use Scalar::Util qw(blessed);
 
 ########################################################################
 sub new {
@@ -25,11 +26,21 @@ sub new {
   load $engine_class;
   my $engine_obj = $engine_class->new(%options);
 
+  # SERIALIZATION LOGIC
+  # Default: The Wrapper handles serialization (Best for Redis, Files, etc)
+  # Opt-Out: Engines that handle it internally (Shareable) or don't need it (Memory)
+  #          can define 'native_serialization' to return true.
+  my $should_serialize = 1;
+  if ( $engine_obj->can('native_serialization') && $engine_obj->native_serialization ) {
+    $should_serialize = 0;
+  }
+
   $options{disabled} //= 0;
 
   return bless {
-    engine       => $engine_obj,
-    engine_class => $engine_class,
+    engine           => $engine_obj,
+    engine_class     => $engine_class,
+    should_serialize => $should_serialize,
     %options,
   }, $class;
 }
@@ -56,9 +67,12 @@ sub set {  ## no critic
 
   return if $self->{disabled};
 
-  # Automatic Serialization: freeze references before passing to engine
-  my $store_val = ref($value) ? nfreeze($value) : $value;
-  return $self->{engine}->set( $key, $store_val, %opts );
+  # SERIALIZE: If engine is "dumb" (e.g. Redis), we freeze the reference here.
+  if ( $self->{should_serialize} && ref $value ) {
+    $value = nfreeze($value);
+  }
+
+  return $self->{engine}->set( $key, $value, %opts );
 }
 
 ########################################################################
@@ -69,12 +83,18 @@ sub get {
   return if $self->{disabled};
 
   my $data = $self->{engine}->get($key);
+
   return if !defined $data;
 
-  # Automatic Deserialization: thaw if it looks like a Storable object
-  my $thawed = eval { thaw($data) };
+  # DESERIALIZE: If we froze it, we must thaw it.
+  # We use eval because we might get back plain strings that aren't frozen.
+  if ( $self->{should_serialize} && !ref $data ) {
+    my $thawed = eval { thaw($data) };
+    # If thaw works, return the ref. If not (it was a plain string), return original.
+    return $thawed if defined $thawed;
+  }
 
-  return $EVAL_ERROR ? $data : $thawed;
+  return $data;
 }
 
 # Simple delegation for the rest
@@ -133,7 +153,62 @@ sub get_handle {
   return $self->{engine}->get_handle();
 }
 
+########################################################################
+sub destroy {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->{engine}->can('destroy');
+
+  return $self->{engine}->destroy();
+}
+
+########################################################################
+sub stats {
+########################################################################
+  my ($self) = @_;
+
+  # Check if the underlying engine object handles 'stats'
+  # We assume the engine instance is stored in $self->{engine}
+  my $engine = $self->{engine};
+
+  if ( $engine && $engine->can('stats') ) {
+    return $engine->stats();
+  }
+
+  return;
+}
+
+########################################################################
+sub touch {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $engine = $self->{engine};
+
+  if ( $engine && $engine->can('touch') ) {
+    # Note: touch returns the value.
+    # If we are serializing, we must THAW the return value here too.
+    my $data = $engine->touch(@args);
+
+    return if !defined $data;
+
+    if ( $self->{should_serialize} && !ref $data ) {
+      my $thawed = eval { thaw($data) };
+      return $thawed if defined $thawed;
+    }
+    return $data;
+  }
+
+  return;
+}
+
 1;
+
+## no critic
+
+__END__
 
 =pod
 
@@ -163,6 +238,14 @@ full Bedrock::Config tree is parsed.
 It achieves this by using environment-driven discovery to load a 
 specific implementation (e.g., Bedrock::Cache::Redis) that conforms 
 to the Bedrock caching contract via Role::Tiny.
+
+=head2 Serialization Strategy
+
+Bedrock::Cache provides intelligent serialization:
+1. If the engine is "dumb" (e.g., Redis), this wrapper automatically C<nfreezes>
+   Perl data structures on C<set> and C<thaws> them on C<get>.
+2. If the engine is "smart" (e.g., IPC::Shareable or Memory), the wrapper
+   passes references directly, avoiding double-serialization overhead.
 
 =head1 ENGINE DISCOVERY
 
@@ -240,41 +323,69 @@ Disable caching.
 
 Enable caching.
 
-=head1 INTERFACE CONTRACT (THE ATOMIC 5)
+=head1 INTERFACE CONTRACT
 
-Any class loaded by Bedrock::Cache should implement these methods:
+Any class loaded by C<Bedrock::Cache> should implement these methods.
+Methods marked (optional) will be handled gracefully by the wrapper if missing.
+
+=head2 native_serialization (optional)
+
+Returns true if the engine handles serialization internally (e.g. IPC::Shareable).
+If this method returns false or is missing, Bedrock::Cache will automatically
+serialize/deserialize data using Storable.
 
 =head2 clear (optional)
 
  Clears the cache.
 
-=head2 exists( $key ) 
-
-Returns a boolean indicating if the key is present in the store. 
-Used primarily for ETag validation.
-
-=head2 get( $key )
-
-Retrieves raw data or a serialized string from the store. 
-Note: The provider wrapper handles automatic deserialization 
-(thaw) for the caller.
-
-=head2 set( $key, $value, [ttl => $seconds] )
-
-Commits data to the store. 
-Note: The provider wrapper handles automatic serialization 
-(freeze) of references for the caller.
-
 =head2 delete( $key )
 
 Removes the entry associated with the key.
 
+=head2 destroy (optional)
+
+Destroy cache. A method an engine might implement if destruction is a
+behavior of the engine (e.g. removing a shared memory segment).
+
+=head2 exists( $key )
+
+Returns a boolean indicating if the key is present in the store.
+Used primarily for ETag validation.
+
+=head2 get( $key )
+
+Retrieves raw data or a serialized string from the store.
+Note: The provider wrapper handles automatic deserialization
+(thaw) for the caller.
+
+=head2 keys (optional)
+
+Returns an array reference containing all keys currently in the cache.
+Returns an empty array if not supported or if the cache is disabled.
+
+=head2 set( $key, $value, [ttl => $seconds] )
+
+Commits data to the store.
+Note: The provider wrapper handles automatic serialization
+(freeze) of references for the caller.
+
+=head2 stats (optional)
+
+Returns a hashref containing engine-specific statistics (e.g., memory usage,
+segment details), or undef if not supported by the engine.
+
+=head2 touch( $key, $ttl ) (optional)
+
+Updates the Time-To-Live (TTL) for the specified key and returns the value.
+If C<$ttl> is 0, the key is usually persisted (expiration removed).
+Returns 0 if the key does not exist or if the engine does not support the operation.
+
 =head1 PERFORMANCE CONSIDERATIONS
 
-This class is designed to be "Handler-Safe." It avoids loading 
-heavy dependencies or parsing large XML configuration files until 
-absolutely necessary, ensuring that cache-hit responses remain 
-near the speed of the underlying storage engine[cite: 9].
+This class is designed to be "Handler-Safe." It avoids loading
+heavy dependencies or parsing large XML configuration files until
+absolutely necessary, ensuring that cache-hit responses remain
+near the speed of the underlying storage engine.
 
 =head1 SEE ALSO
 
@@ -283,8 +394,6 @@ L<Bedrock::Cache::Redis>, L<Bedrock::Cache::Memory>,
 L<Bedrock::Cache::Shareable>
 
 =head1 AUTHOR
-
-Gemini
 
 Rob Lauer - <rlauer@treasurersbriefcase.com>
 

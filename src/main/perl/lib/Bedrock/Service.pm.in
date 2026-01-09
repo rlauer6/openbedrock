@@ -1,0 +1,1329 @@
+package Bedrock::Service;
+
+use strict;
+use warnings;
+
+########################################################################
+package Bedrock::Exception;
+########################################################################
+
+use overload '""' => 'to_string', fallback => 1;
+sub new       { my ( $class, %args ) = @_; return bless \%args, $class; }
+sub message   { return shift->{message} }
+sub type      { return shift->{type} // 'generic' }
+sub payload   { return shift->{payload} }
+sub to_string { return shift->{message} }
+sub throw     { die shift; }
+
+########################################################################
+package Bedrock::Service;
+########################################################################
+
+use Apache::Bedrock qw(cache);
+use Bedrock qw(:booleans resolve_stream choose);
+use Bedrock::Constants qw(:chars :booleans);
+use Bedrock::Context;
+use Bedrock::Handler;
+use Bedrock::Hash;
+use Carp;
+use Cwd qw(abs_path);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename;
+use FindBin;
+use Getopt::Long qw(GetOptions);
+use JSON;
+use List::Util qw(uniq pairs);
+use Module::Load;
+use Scalar::Util qw(reftype blessed);
+use Text::TagX;
+use Text::URLEncode qw(Htmlencode);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+use Readonly;
+
+Readonly::Scalar our $BOLD      => 'font-weight:800';
+Readonly::Scalar our $RED       => 'color:red';
+Readonly::Scalar our $FONT_SIZE => 'font-size:125%';
+Readonly::Scalar our $MARGIN    => 'margin:10px';
+Readonly::Scalar our $PURPLE    => 'color:purple';
+
+Readonly::Scalar our $SERVER_ERROR           => 500;
+Readonly::Scalar our $METHOD_NOT_IMPLEMENTED => 501;
+Readonly::Scalar our $NOT_FOUND              => 404;
+Readonly::Scalar our $BAD_REQUEST            => 400;
+
+use parent qw(Exporter Class::Accessor);
+
+our @EXPORT_OK = qw(
+  $BOLD $FONT_SIZE $MARGIN $PURPLE $RED
+  attribute choose element element_end element_start raise style
+);
+
+our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
+
+__PACKAGE__->mk_accessors(
+  qw(
+    autoflush bedrock_handler cache cgi config content_type
+    context cookieless dispatch_action dispatch_map headers
+    output_buffer output_handle request session
+  )
+);
+
+########################################################################
+sub handler : method {
+########################################################################
+  my ( $class_or_self, $r ) = @_;
+
+  # 1. CLI / Testing Mode
+  if ( !defined $r && !is_web() ) {
+    my $cli_obj = blessed($class_or_self) ? $class_or_self : $class_or_self->new();
+    return $cli_obj->handle_cli();
+  }
+
+  # 2. Web Mode
+  my $self = choose {
+    return $class_or_self
+      if blessed($class_or_self) && $class_or_self->isa(__PACKAGE__);
+
+    return $class_or_self->new( request => $r );
+  };
+
+  # 3. SAFETY NET: Inject Request if Missing
+  if ( $r && !$self->request ) {
+    $self->request($r);
+    $self->init_request_dependent_objects();
+  }
+
+  my $status = eval { return $self->dispatch() };
+
+  if ($EVAL_ERROR) {
+    $self->handle_exception($EVAL_ERROR);
+  }
+
+  # Explicit flush ONLY.
+  $self->flush_output();
+
+  return 0;
+}
+
+########################################################################
+sub init_request_dependent_objects {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->request;
+
+  if ( !$self->bedrock_handler ) {
+    my $bedrock_handler = Bedrock::Handler->new( $self->request, $self->cache ? ( cache => cache() ) : () );
+    $self->bedrock_handler($bedrock_handler);
+    $self->config( $bedrock_handler->get_config );
+  }
+
+  return
+    if $self->context;
+
+  my $route_params = $self->dispatch_map ? $self->init_route : {};
+
+  $self->context(
+    Bedrock::Context->new(
+      REQUEST_HANDLER => $self->request,
+      CONFIG          => $self->config,
+      route_params    => $route_params,
+    )
+  );
+
+  $self->init_input;
+
+  return;
+}
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %options ) = @_;
+
+  $options{config}  = delete $options{CONFIG};
+  $options{session} = delete $options{SESSION};
+  $options{autoflush} //= $FALSE;
+  $options{cache}     //= $TRUE;
+
+  foreach ( keys %options ) { $options{ lc $_ } = $options{$_}; }
+
+  my $self = $class->SUPER::new( \%options );
+
+  if ( !$self->request && !$ENV{MOD_PERL} ) {
+    require Apache::Request::CGI;
+    local @ARGV = ();
+    $self->request( Apache::Request::CGI->new( output_handle => $self->output_handle ) );
+  }
+
+  if ( $self->request ) {
+    $self->init_request_dependent_objects();
+  }
+
+  $self->clear;
+
+  return $self
+    if !is_web();
+
+  $self->init_headers;
+
+  return $self;
+}
+
+########################################################################
+sub is_web { return $ENV{GATEWAY_INTERFACE} || $ENV{MOD_PERL}; }
+sub is_cli { return !is_web(); }
+########################################################################
+
+########################################################################
+sub dispatch {
+########################################################################
+  my ($self) = @_;
+
+  my $action = $self->dispatch_action;
+
+  if ( !$action ) {
+    if ( $self->dispatch_map ) {
+      my $uri
+        = ( $self->request && $self->request->can('uri') ? $self->request->uri : undef ) || $ENV{REQUEST_URI} || 'UNKNOWN';
+      $self->log->warn( sprintf 'No route matched for URI [%s]', $uri );
+      return $self->display_error( 'Not Found', $NOT_FOUND );
+    }
+
+    return;
+  }
+
+  return $self->$action()
+    if $self->can($action);
+
+  $self->log->error( sprintf 'Route resolved to action [%s] but method not found in %s', $action, ref $self );
+
+  return $self->display_error( 'Method Not Implemented', $METHOD_NOT_IMPLEMENTED );
+}
+
+########################################################################
+sub init_route {
+########################################################################
+  my ($self) = @_;
+
+  my $r = $self->request;
+
+  return
+    if !$r;
+
+  require Bedrock::Router;
+
+  my $uri = ( $r->can('uri') ? $r->uri : undef ) || $ENV{REQUEST_URI};
+
+  my $path = choose {
+
+    return ( $r->can('path_info') ? $r->path_info : undef ) || $ENV{PATH_INFO}
+      if !$uri;
+
+    my $path   = $uri;
+    my $script = $ENV{SCRIPT_NAME} // $EMPTY;
+
+    if ( $script && index( $path, $script ) == 0 ) {
+      $path = substr $path, length $script;
+    }
+
+    return $path;
+  };
+
+  $path //= q{/};
+
+  # FIX: Handle Base URI stripping
+  if ( my $base_uri = $ENV{BEDROCK_BASE_URI} ) {
+    if ( index( $path, $base_uri ) == 0 ) {
+      substr $path, 0, length($base_uri), $EMPTY;
+      # Ensure we still have a leading slash if we stripped everything
+      if ( $path eq $EMPTY ) {
+        $path = $SLASH;
+      }
+    }
+  }
+
+  my $map = $self->dispatch_map;
+  my @routes;
+
+  foreach my $p ( pairs %{$map} ) {
+    my ( $pattern, $method ) = @{$p};
+    push @routes, { pattern => $pattern, method => $method };
+    next if $pattern !~ m{^(.+)/:[^/]+$}xsm;
+
+    my $base = $1;
+
+    next
+      if exists $map->{$base};
+
+    push @routes, { pattern => $base, method => $method };
+
+  }
+
+  return
+    if !@routes;
+
+  my $match = Bedrock::Router->new( { routes => \@routes } )->match($path);
+
+  if ( !$match ) {
+    $self->log->warn("No route match for path: [$path]");
+    return;
+  }
+
+  my ( $pattern, $method, $params ) = @{$match}{qw(pattern method params)};
+  $self->dispatch_action("action_$method");
+
+  return $params;
+}
+
+########################################################################
+# Standard Utilities
+########################################################################
+
+########################################################################
+sub handle_cli {
+########################################################################
+  my ($self) = @_;
+
+  require Getopt::Long;
+  Getopt::Long::Configure('default');
+
+  my %args;
+  Getopt::Long::GetOptions(
+    'conf-dir=s'   => \$args{conf_dir},
+    'name=s'       => \$args{service_name},
+    'script-url=s' => \$args{script_url},
+    'base-uri=s'   => \$args{base_uri},
+    'mod-perl'     => \$args{mod_perl},
+    'mod-cgi'      => \$args{mod_cgi},
+    'env=s%'       => \$args{env_vars},
+  );
+
+  $args{mod_perl} //= $TRUE;
+
+  if ( $args{mod_cgi} ) {
+    $args{mod_perl} = $FALSE;
+  }
+
+  my $command = shift @ARGV || 'help';
+
+  return $self->install(%args)
+    if $command eq 'install';
+
+  print "Unknown command: $command\n";
+
+  return $FAILURE;
+}
+
+########################################################################
+# Configuration Hooks (Subclasses can override these)
+########################################################################
+
+sub apache_config_pre { return; }
+
+sub apache_config_body { return; }
+
+########################################################################
+sub install {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $class_name = ref($self) || $self;
+
+  # Prioritize $PROGRAM_NAME (the script executed)
+  my $script_path = abs_path($PROGRAM_NAME);
+
+  if ( !$script_path || !-f $script_path ) {
+    require FindBin;
+    $script_path = abs_path( $FindBin::Bin . q{/} . $FindBin::Script );
+  }
+
+  my $script_file  = basename($script_path);
+  my $service_name = $args{service_name} // basename( $script_path, qw(.cgi .pl .pm) );
+  my $script_url   = $args{script_url}   // "/cgi-bin/$script_file";
+  my $instance     = ref($self) ? $self : $self->new;
+
+  my $base_uri = $args{base_uri} // $EMPTY;
+  $base_uri =~ s{/\z}{}xsmg;  # Strip trailing slash
+
+  # Logic to include ROOT route in the regex
+  my $location_regex = choose {
+
+    return sprintf '^%s/%s', $base_uri, $service_name
+      if !$instance->dispatch_map;
+
+    my @prefixes   = ($service_name);
+    my $allow_root = $FALSE;
+
+    foreach my $route ( keys %{ $instance->dispatch_map } ) {
+      if ( $route eq $SLASH ) {
+        $allow_root = $TRUE;
+        next;
+      }
+      next if $route !~ m{^/([^/:]+)}xsm;
+      push @prefixes, $1;
+    }
+
+    my $union = join $PIPE, uniq(@prefixes);
+
+    # If the service handles the root ('/'), we must match:
+    # 1. The base URI itself (e.g. /bedrock or /bedrock/)
+    # 2. The base URI + a separator + a known prefix (e.g. /bedrock/docs)
+    if ($allow_root) {
+      return qq{^$base_uri/?\$}
+        if !$union;
+
+      return qq{^$base_uri/?\$|^$base_uri/($union)};
+    }
+
+    return sprintf '^%s/(%s)', $base_uri, $union;
+  };
+
+  my $timestamp = localtime;
+
+  # 1. Core Logic: Handle BEDROCK_BASE_URI and CLI Envs
+  my @core_lines;
+  my $directive = $args{mod_perl} ? 'PerlSetEnv' : 'SetEnv';
+
+  if ($base_uri) {
+    push @core_lines, qq{$directive BEDROCK_BASE_URI "$base_uri"};
+  }
+
+  if ( $args{env_vars} && ref $args{env_vars} eq 'HASH' ) {
+    foreach my $p ( pairs %{ $args{env_vars} } ) {
+      my ( $key, $val ) = @{$p};
+      push @core_lines, qq{$directive $key "$val"};
+    }
+  }
+
+  # 2. Additive Logic: Call the hooks for EXTRA config
+  my @pre_lines  = $instance->apache_config_pre( \%args );
+  my @body_lines = $instance->apache_config_body( \%args );
+
+  # 3. Assemble
+  my $pre_config  = join "\n    ", @pre_lines;
+  my $body_config = join "\n        ", ( @core_lines, @body_lines );
+
+  my $config_block = choose {
+
+    return <<"END_APACHE" if $args{mod_perl};
+# Bedrock Service: $service_name
+# Mode: mod_perl
+# Generated: $timestamp
+# Source: $script_path
+<IfModule mod_perl.c>
+    # Pre-compile
+    PerlRequire "$script_path"
+    $pre_config
+    <LocationMatch "$location_regex">
+        SetHandler modperl
+        PerlResponseHandler $class_name
+        $body_config
+    </LocationMatch>
+</IfModule>
+END_APACHE
+
+    return <<"END_APACHE";
+# Bedrock Service: $service_name
+# Mode: mod_cgi
+# Generated: $timestamp
+# Source: $script_path
+<IfModule mod_alias.c>
+    Action $service_name "$script_url" virtual
+</IfModule>
+<LocationMatch "$location_regex">
+    SetHandler $service_name
+    $body_config
+</LocationMatch>
+<Directory "$FindBin::Bin">
+    <Files "$script_file">
+        Options +ExecCGI
+        Require all granted
+    </Files>
+</Directory>
+END_APACHE
+  };
+
+  my $dir = $args{conf_dir};
+
+  if ( !$dir ) {
+    print $config_block;
+    return 0;
+  }
+
+  die "Error: Directory $dir does not exist.\n"
+    if !-d $dir;
+
+  my $file = sprintf '%s/%s.conf', $dir, $service_name;
+
+  open my $fh, '>', $file
+    or die "Could not write to $file: $OS_ERROR";
+  print {$fh} $config_block;
+  close $fh;
+
+  print "Configuration installed to $file\n";
+
+  return 0;
+}
+
+########################################################################
+sub parse {
+########################################################################
+  my ( $self, $thing, %args ) = @_;
+
+  my $on_error = delete $args{on_error};
+
+  my $fh = eval { return resolve_stream($thing); };
+
+  if ($EVAL_ERROR) {
+    if ( defined $on_error && $on_error eq 'return' ) {
+      $self->log->error("Template Setup Error: $EVAL_ERROR");
+      return;
+    }
+
+    Bedrock::Exception->new(
+      message => "Template Setup Error: $EVAL_ERROR",
+      type    => 'template_setup',
+      payload => { input => $thing }
+    )->throw;
+  }
+
+  my $output = $EMPTY;
+  open my $output_fh, '>', \$output
+    or die "could not open scalar ref for writing\n";
+
+  my $tx = Text::TagX->new( $fh, $output_fh );
+
+  my $session = choose {
+    return delete $args{session}
+      if $args{session};
+
+    return $self->get('session')
+      if $self->get('session');
+
+    return sub { return $self->session };
+  };
+
+  $tx->param( session => $session );
+
+  $args{input}   //= $self->context->input;
+  $args{config}  //= $self->context->config;
+  $args{session} //= $self->context->session;
+  $args{context} //= $self->context;
+  $args{env} = Bedrock::Hash->new(%ENV);
+
+  map { $tx->param( $_ => $args{$_} ) } keys %args;
+
+  eval { $tx->output; };
+
+  my $proc_err = $EVAL_ERROR;
+
+  $tx->close;
+  $output_fh->close;
+
+  if ( $fh && !ref $thing ) {
+    close $fh;
+  }
+
+  if ($proc_err) {
+    my $line_number;
+    my $tagx_error_obj;
+
+    if ( $tx->can('error') ) {
+      $tagx_error_obj = $tx->error;
+
+      if ( $tagx_error_obj && ref($tagx_error_obj) && @{$tagx_error_obj} ) {
+        $line_number = $tagx_error_obj->[0]->{line};
+      }
+    }
+
+    if ( $line_number && $proc_err !~ /line/xsmi ) {
+      $proc_err .= " at line $line_number";
+    }
+
+    if ( defined $on_error && $on_error eq 'return' ) {
+      $self->log->error("Template Render Error: $proc_err");
+      return;
+    }
+
+    if ( ref($on_error) eq 'CODE' ) {
+      my $ex = Bedrock::Exception->new(
+        message => $proc_err,
+        type    => 'template_render',
+        payload => { input => $thing }
+      );
+
+      return $on_error->($ex);
+    }
+
+    die Bedrock::Exception->new(
+      message => $proc_err,
+      type    => 'template_render',
+      payload => { input => $thing }
+    );
+  }
+
+  return $output;
+}
+
+########################################################################
+sub init_headers {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->request;
+
+  my $headers = $self->headers;
+
+  return $self->set_content_type
+    if !$headers || !ref $headers;
+
+  my @header_list = is_hash($headers) ? %{$headers} : @{$headers};
+
+  my $table = $self->request->headers_out;
+
+  foreach my $p ( pairs @header_list ) {
+    my ( $k, $v ) = @{$p};
+    $table->set( $k => $v );
+  }
+
+  return;
+}
+
+########################################################################
+sub set_content_type {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->request;
+
+  my $content_type = $self->content_type // 'text/html';
+  $self->content_type($content_type);
+
+  if ( $self->request->can('content_type') ) {
+    $self->request->content_type($content_type);
+  }
+  elsif ( $ENV{MOD_PERL} ) {
+    my $table = eval { $self->request->headers_out };
+    if ( $table && ref $table ) {
+      $table->set( 'Content-Type' => $content_type );
+    }
+  }
+  else {
+    $self->request->headers_out( 'Content-type', $content_type );
+  }
+  return $content_type;
+}
+
+########################################################################
+sub display_error {
+########################################################################
+  my ( $self, $message, $status ) = @_;
+
+  $status //= $SERVER_ERROR;
+
+  if ( $self->request && $self->request->can('status') ) {
+    $self->request->status($status);
+  }
+
+  return $self->print_json( { error => $message, status => $status } )
+    if $self->content_type && $self->content_type =~ /json/xsm;
+
+  $self->log->error($message);
+
+  return $self->print($message);
+}
+
+########################################################################
+sub handle_exception {
+########################################################################
+  my ( $self, $err ) = @_;
+
+  $self->request->log->error( Dumper( [ error => $err ] ) );
+
+  my $html = choose {
+    return "<h1>$SERVER_ERROR Internal Server Error</h1><p>Unhandled Crash:</p><pre>$err</pre>",
+      if !blessed $err;
+
+    return $self->check_error( $err->message, $err->payload->{input} )
+      if $err->type eq 'template_render' || $err->type eq 'template_setup';
+
+    return $err->message;
+  };
+
+  return $self->display_error( $html, $SERVER_ERROR );
+}
+
+########################################################################
+sub check_error {
+########################################################################
+  my ( $self, $eval_error, $source_input ) = @_;
+
+  return
+    if !$eval_error;
+
+  $self->clear;
+
+  my $err_msg;
+  my $offending_line_no;
+
+  # Support TagX::Error objects (or any exception object with line/text methods)
+  if ( blessed($eval_error) && $eval_error->can('line') ) {
+    $offending_line_no = $eval_error->line;
+
+    $err_msg = $eval_error->can('as_string') ? $eval_error->as_string : "$eval_error";
+  }
+  else {
+    # Fallback for string-based errors
+    $err_msg = "$eval_error";
+    if ( $err_msg =~ /line\s*(\d+)/xsm ) {
+      $offending_line_no = $1;
+    }
+  }
+
+  $err_msg = Htmlencode($err_msg);
+
+  my @lines;
+
+  if ( defined $source_input ) {
+    my $fh = eval { resolve_stream( \$source_input ) };
+    if ($fh) {
+      @lines = <$fh>;
+    }
+  }
+
+  my $output = element( element_start( 'h3', style($RED) ), 'Template Error' );
+  $output .= element( element_start( 'pre', style( $MARGIN, $BOLD ) ), $err_msg );
+
+  return $output
+    if !@lines;
+
+  for my $i ( 0 .. $#lines ) {
+    my $line_num = $i + 1;
+
+    my $code = Htmlencode( $lines[$i] );
+    $code =~ s/\R//;
+
+    my $formatted_line = sprintf '%4d: %s', $line_num, $code;
+
+    if ( defined $offending_line_no && $line_num == $offending_line_no ) {
+      my $span = element_start( 'span', style( $BOLD, $PURPLE ) );
+      $formatted_line = $span . $formatted_line . element_end('span');
+    }
+
+    $lines[$i] = $formatted_line;
+  }
+
+  my %style = (
+    'background-color' => '#fee',
+    'border'           => '1px solid red',
+    'padding'          => '10px',
+    'overflow'         => 'auto',
+  );
+
+  my $styles = style( join q{ }, map { sprintf '%s:%s;', $_, $style{$_} } keys %style );
+
+  my $div = element_start( 'div', $styles );
+  $output .= $div . element( 'pre', join "\n", @lines );
+
+  return $output;
+}
+
+########################################################################
+sub session {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args == 1 && ref( $args[0] ) !~ /ARRAY/xsm ) {
+    my $ref = $args[0];
+    $self->set( session => $ref );
+    return $ref;
+  }
+
+  my $session = $self->get('session');
+
+  if ( !$session ) {
+    $session = $self->init_session();
+
+    if ($session) {
+      $self->set( session => $session );
+      $self->context->session($session);
+    }
+  }
+
+  return
+    if !$session;
+
+  return $session
+    if !@args;
+
+  return $session->{ $args[0] } = $args[1]
+    if @args > 1;
+
+  my $ref = $args[0];
+
+  return @{$session}{ @{$ref} }
+    if reftype($ref) eq 'ARRAY';
+
+  return $session;
+}
+
+########################################################################
+sub init_session {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->config || !blessed( $self->config ) || !$self->config->can('get_module_config');
+
+  my $session_manager = $ENV{BEDROCK_SESSION_MANAGER} // $self->config('BEDROCK_SESSION_MANAGER') // 'UserSession';
+
+  my $config = $self->config->get_module_config($session_manager);
+
+  return
+    if !$config;
+
+  $config->{cookieless_sessions} = $self->cookieless;
+
+  my $class = "BLM::Startup::$session_manager";
+
+  load $class;
+
+  my $session = $class->new( $self->context, $config );
+
+  $self->context->session($session);
+
+  return $session;
+}
+
+########################################################################
+sub init_input {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->config || !blessed( $self->config ) || !$self->config->can('get_module_config');
+
+  my $class = 'BLM::Startup::Input';
+
+  eval { load $class };
+
+  if ($EVAL_ERROR) {
+    $self->get_logger->warn("Could not load $class: $EVAL_ERROR");
+    return;
+  }
+
+  my $input = eval { return $class->new( $self->context, $self->config->get_module_config('Input') ); };
+
+  if ( $EVAL_ERROR || !$input ) {
+    $self->get_logger->error("Failed to instantiate $class: $EVAL_ERROR");
+    return;
+  }
+
+  $self->context->input($input);
+
+  return $input;
+}
+
+########################################################################
+sub print {  ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( $self->autoflush ) {
+    $self->flush_output( join $EMPTY, @args );
+  }
+  else {
+    $self->output_buffer( join $EMPTY, @args );
+  }
+
+  return;
+}
+
+########################################################################
+sub print_json {
+########################################################################
+  my ( $self, $data ) = @_;
+
+  $self->content_type('application/json');
+
+  return $self->print( JSON->new->encode($data) );
+}
+
+########################################################################
+sub output_buffer {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  my $output_buffer = $self->get('output_buffer');
+
+  return $output_buffer
+    if !@args;
+
+  $output_buffer .= $args[0];
+  $self->set( output_buffer => $output_buffer );
+
+  return $output_buffer;
+}
+
+########################################################################
+sub log { return shift->get_logger; }  ## no critic
+########################################################################
+
+########################################################################
+sub redirect {
+########################################################################
+  my ( $self, @headers ) = @_;
+  $self->clear;
+  return $self->cgi->redirect(@headers);
+}
+
+########################################################################
+sub clear {
+########################################################################
+  my ($self) = @_;
+
+  delete $self->{output_buffer};
+
+  return $EMPTY;
+}
+
+########################################################################
+sub flush_output {
+########################################################################
+  my ( $self, $content ) = @_;
+
+  my $buffer = $self->output_buffer // $EMPTY;
+  if ( defined $content ) {
+    $buffer .= $content;
+  }
+
+  return
+    if !length $buffer;
+
+  if ( $self->request ) {
+    my $headers_sent = 0;
+    eval { $headers_sent = $self->request->bytes_sent; };
+
+    if ( !$headers_sent ) {
+      if ( $self->content_type ) {
+        $self->set_content_type;
+      }
+
+      if ( $self->request->can('send_http_header') ) {
+        $self->request->send_http_header;
+      }
+    }
+
+    $self->request->print($buffer);
+  }
+  else {
+    CORE::print $buffer;
+  }
+
+  return $self->clear;
+}
+
+########################################################################
+sub DESTROY {
+########################################################################
+  my ($self) = @_;
+
+  return;
+}
+
+########################################################################
+sub config {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( @args == 1 && ref $args[0] ) {
+    $self->set( 'config', shift @args );
+  }
+
+  my $config = $self->get('config');
+
+  return $config
+    if !@args;
+
+  return @{$config}{@args};
+}
+
+########################################################################
+sub cgi {
+########################################################################
+  my ($self) = @_;
+
+  my $cgi = $self->get('cgi');
+  return $cgi
+    if $cgi;
+
+  $cgi = $self->context->cgi;
+  $self->set( 'cgi', $cgi );
+
+  return $cgi;
+}
+
+########################################################################
+sub attribute {
+########################################################################
+  my (@args) = @_;
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my $attribute = shift @args;
+
+  return sprintf '%s="%s"', $attribute, join $SEMICOLON, @args;
+}
+
+########################################################################
+sub style {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  return attribute( 'style', @args );
+}
+
+########################################################################
+sub element_start {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my $element = shift @args;
+  my $attributes;
+
+  if (@args) {
+    $attributes = $SPACE . join $SPACE, @args;
+  }
+
+  return sprintf '<%s%s>', $element, $attributes // $EMPTY;
+}
+
+########################################################################
+sub element_end {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  return sprintf '</%s>', $args[0];
+}
+
+########################################################################
+sub element {
+########################################################################
+  my (@args) = @_;
+
+  if ( ref $args[0] ) {
+    shift @args;
+  }
+
+  my ( $element_start, $content ) = @args;
+  $content //= $EMPTY;
+
+  my $element;
+
+  if ( $element_start !~ /\A</xsm ) {
+    $element       = $element_start;
+    $element_start = element_start($element_start);
+  }
+  else {
+    $element = $element_start;
+    $element =~ s/\A<(\w+)\s+.*\z/$1/xsm;
+  }
+
+  return sprintf '%s%s%s', $element_start, $content, element_end($element);
+}
+
+########################################################################
+sub raise {
+########################################################################
+  my (@args) = @_;
+
+  if ( @args && blessed( $args[0] ) && $args[0]->isa(__PACKAGE__) ) {
+    shift @args;
+  }
+
+  if ( @args % 2 == 1 ) {
+    my $message = shift @args;
+    unshift @args, 'message', $message;
+  }
+
+  return Bedrock::Exception->new(@args)->throw;
+}
+
+########################################################################
+sub run { return shift->handler(@_); }
+########################################################################
+
+1;
+
+=pod
+
+=head1 NAME
+
+Bedrock::Service - Base class for creating hybrid Bedrock Web Services and CLI tools
+
+=head1 SYNOPSIS
+
+  #!/usr/bin/env perl
+  
+  package MyService;
+  use base qw(Bedrock::Service);
+  
+  # 1. Modulino Hook: Allows running as a script or loading as a class
+  caller or __PACKAGE__->new->handler();
+  
+  sub new {
+      my ($class) = @_;
+      # 2. Define Routes
+      return $class->SUPER::new(
+          autoflush    => 1,
+          dispatch_map => {
+              '/customer/:id' => 'get_customer',
+              '/status'       => 'status',
+          }
+      );
+  }
+  
+  # 3. Define Actions (prefixed with 'action_')
+  sub action_get_customer {
+      my ($self) = @_;
+      
+      # Unified Parameter Access (works for /customer/123 OR ?id=123)
+      my $id = $self->context->param('id');
+      
+      $self->print_json({ id => $id, name => "Barney" });
+  }
+
+=head1 USAGE
+
+=head2 Web Service
+
+When invoked by Apache (via C<GATEWAY_INTERFACE>), the script acts as
+a RESTful controller, dispatching requests based on the
+C<dispatch_map>.
+
+=head2 Command Line (CLI)
+
+When invoked from the shell, the script acts as a management tool.
+
+  # Generate and print Apache configuration to STDOUT
+  ./my-service.cgi install
+
+  # Install configuration to specific directory
+  ./my-service.cgi install --conf-dir /etc/apache2/conf-available
+
+=head1 DESCRIPTION
+
+C<Bedrock::Service> facilitates the creation of "Modulino" style web
+services. These scripts are hybrid: they function as high-performance
+CGI scripts when accessed via the web, but morph into powerful CLI
+tools when run from the command line.
+
+This eliminates the need for separate installation scripts,
+configuration generators, or maintenance tools. The service describes
+itself.
+
+=head2 Micro-MVC Routing
+
+Pass a C<dispatch_map> to the constructor to enable internal
+routing. The map keys are URI patterns (supported by
+L<Bedrock::Router>) and the values are method suffixes.
+
+When a route matches, C<Bedrock::Service> calls the corresponding method
+prefixed with C<action_>.
+
+=head2 Unified Parameters
+
+When using the router, captured parameters (like C<:id>) are injected
+directly into the Bedrock Context.
+
+You should use C<context-E<gt>param()> to access inputs. This method
+provides a unified view:
+
+=over 4
+
+=item 1. Route Parameters (e.g., C</user/:id>) - I<Highest Priority>
+
+=item 2. Standard CGI Parameters (e.g., C<?sort=desc> or POST body)
+
+=back
+
+=head1 METHODS
+
+=head2 new
+
+ new( %options )
+
+Constructor.
+
+=over 4
+
+=item * B<dispatch_map>: Hash reference mapping URI patterns to method suffixes.
+
+=item * B<autoflush>: Boolean (default 0). If true, prints output immediately.
+
+=item * B<cache>: Boolean (default 1). Enables Bedrock caching.
+
+=back
+
+=head2 handler
+
+ handler()
+
+The main entry point. It detects the execution environment:
+
+=over 4
+
+=item * B<Web Mode>: If C<GATEWAY_INTERFACE> is detected, it
+initializes the session, headers, and calls C<dispatch()>.
+
+=item * B<CLI Mode>: If running in a shell, it can process
+command-line arguments (like C<install>).
+
+=back
+
+=head2 install
+
+ install( %args )
+
+Generates an Apache 2.4 configuration file for this service.
+
+By default, this derives the B<Service Name> from the script filename
+(e.g., C<user-service.cgi> becomes C<user-service>) and generates a
+C<LocationMatch> directive based on your C<dispatch_map>.
+
+B<CLI Options:>
+
+=over 4
+
+=item * B<--conf-dir>: Directory to write the configuration file. If
+omitted, writes to STDOUT.
+
+=item * B<--name>: Override the service name (defaults to script basename).
+
+=item * B<--script-url>: Override the script URL path (defaults to /cgi-bin/script_name).
+
+=item * B<--base-uri>: The base URI for the service (e.g., /my-api).
+
+=item * B<--mod-cgi>: Generate configuration for mod_cgi/mod_alias instead of mod_perl.
+
+=item * B<--env>: Pass environment variables to the service configuration (can be used multiple times).
+  Example: --env FOO=bar --env BAZ=1
+
+=back
+
+=head2 apache_config_pre
+
+ apache_config_pre( \%args )
+
+Hook method for subclasses to inject Apache directives *before* the
+C<LocationMatch> block. Useful for loading modules (C<PerlModule>,
+C<PerlRequire>) or setting global behaviors.
+
+Returns a list of strings (lines of configuration).
+
+=head2 apache_config_body
+
+ apache_config_body( \%args )
+
+Hook method for subclasses to inject Apache directives *inside* the
+C<LocationMatch> block. Useful for setting environment variables
+(C<SetEnv>, C<PerlSetVar>) or access controls.
+
+Returns a list of strings (lines of configuration).
+
+=head2 dispatch
+
+ dispatch()
+
+Evaluates the current URI against the C<dispatch_map>. If a match is
+found, executes the corresponding C<action_*> method. Returns 404 if
+no route matches, or 501 if the method is missing.
+
+=head2 print_json
+
+ print_json( $data )
+
+Sets the C<Content-Type> header to C<application/json> and prints the
+data structure as a JSON string.
+
+=head2 context
+
+Returns the L<Bedrock::Context> object. Use this to access C<param()>,
+C<config()>, and database handles.
+
+=head2 cgi
+
+Returns the underlying C<Bedrock::Request> adapter.
+
+=head2 parse
+
+ parse( $template, %vars )
+
+Processes a Bedrock template snippet with the provided variables.
+
+B<Error Handling:>
+
+By default, parsing errors (syntax, missing tags) throw a L<Bedrock::Exception> object, which is caught by C<handler()> to display a formatted error page.
+
+You can alter this behavior by passing an C<on_error> argument:
+
+  # 1. Silent Mode: Log error and return undef
+  $self->parse( $tpl, on_error => 'return' );
+
+  # 2. Callback Mode: Handle the exception object manually
+  $self->parse( $tpl, on_error => sub {
+      my ($e) = @_;
+      warn "Template failed: " . $e->message;
+      return "Default Content";
+  });
+
+=head2 redirect
+
+ redirect( $url )
+
+Sends an HTTP redirect header.
+
+=head1 NAMING CONVENTIONS
+
+To ensure the auto-installation works correctly, follow these conventions:
+
+=over 4
+
+=item 1. Name your script file in kebab-case (e.g., C<customer-lookup.cgi>).
+
+=item 2. The derived Service Name will be C<customer-lookup>.
+
+=item 3. The generated config will use C<SetHandler customer-lookup>.
+
+=back
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=head1 SEE ALSO
+
+L<Bedrock::Context>, L<Bedrock::Router>
+
+=cut

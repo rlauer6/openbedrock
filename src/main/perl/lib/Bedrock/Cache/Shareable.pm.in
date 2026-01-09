@@ -7,7 +7,11 @@ use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use IPC::Shareable;
+use IPC::SharedMem;
+use String::CRC32;
 use Time::HiRes qw(time);
+use List::Util qw(pairs);
+use Storable qw(freeze);
 
 use Role::Tiny::With;
 with 'Bedrock::Cache::Engine';
@@ -16,8 +20,49 @@ use Readonly;
 
 Readonly::Scalar our $CACHE_KEY            => 'BCFG';
 Readonly::Scalar our $CACHE_BLOCK_SIZE     => 1024;
-Readonly::Scalar our $DEFAULT_CACHE_BLOCKS => 256;
+Readonly::Scalar our $DEFAULT_CACHE_BLOCKS => 512;
 Readonly::Scalar our $CACHE_MODE           => oct '666';
+
+# --- MONKEY PATCH: IPC::Shareable ---
+{
+  no warnings 'redefine';
+
+  # 1. Prevent segment explosion for references
+  sub IPC::Shareable::_need_tie {
+    return 0;
+  }
+
+  # 2. Introspection Probe (The "Fire")
+  # Calculates the key derived from Glue and asks the OS for details
+  # without attaching or modifying the segment.
+  sub IPC::Shareable::shm_probe {
+    my ( $class, $glue ) = @_;
+
+    # Replicate IPC::Shareable's internal key derivation
+    my $key = String::CRC32::crc32($glue);
+
+    # Try to peek at the segment (Size 0, Flags 0 = Read Only / No Create)
+    my $shm = eval { IPC::SharedMem->new( $key, 0, 0 ) };
+
+    return
+      if !$shm;
+
+    my $stat = $shm->stat;
+
+    return {
+      glue    => $glue,
+      key     => $key,
+      id      => $shm->id,
+      size    => $stat->segsz,
+      uid     => $stat->uid,
+      gid     => $stat->gid,
+      mode    => sprintf( '%04o', $stat->mode & oct '0777' ),
+      nattch  => $shm->stat->nattch,
+      created => 1,
+    };
+  }
+}
+# -------------------------------------
 
 ########################################################################
 sub new {
@@ -36,51 +81,67 @@ sub _init_memory {
 ########################################################################
   my ($self) = @_;
 
-  # Respect the legacy environment variable for size
-  my $cache_blocks = $self->{cache_block};
-  $cache_blocks //= $ENV{BEDROCK_CACHE_CONFIG_SIZE} // $DEFAULT_CACHE_BLOCKS;
+  # 1. Determine GLUE (Key)
+  my $glue = $ENV{BEDROCK_CACHE_KEY} // $self->{glue} // $self->{key} // $CACHE_KEY;
+
+  # 2. Determine SIZE
+  my $size;
+  if ( $self->{size} ) {
+    $size = $self->{size};
+  }
+  else {
+    my $cache_blocks     = $self->{cache_blocks}     // $DEFAULT_CACHE_BLOCKS;
+    my $cache_block_size = $self->{cache_block_size} // $CACHE_BLOCK_SIZE;
+    $size = $cache_blocks * $cache_block_size;
+  }
+
+  my $create = $self->{create} // 0;
+
+  my %options = (
+    key       => $glue,
+    create    => $create,
+    exclusive => 0,
+    destroy   => 0,
+    mode      => $CACHE_MODE,
+    size      => $size,
+  );
 
   my %cache_hash;
 
-  my $create = $self->{create} // ( $ENV{MOD_PERL} ? 0 : 1 );
-
-  my %options = (
-    key    => $CACHE_KEY,
-    create => $create,
-    mode   => $CACHE_MODE,
-    size   => $CACHE_BLOCK_SIZE * $cache_blocks,
-  );
-
-  # The tie itself
-  eval { tie %cache_hash, 'IPC::Shareable', \%options; };  ## no critic
+  my $cache = eval { tie %cache_hash, 'IPC::Shareable', $glue, \%options; };  ## no critic
 
   if ( $EVAL_ERROR || !tied %cache_hash ) {
     confess "Bedrock::Cache::Shareable failed to tie memory segment: $EVAL_ERROR";
   }
 
   $self->{_cache} = \%cache_hash;
+  $self->{glue}   = $glue;
 
   return;
 }
+
+########################################################################
+# INTERFACE CONTRACT
+########################################################################
+
+########################################################################
+sub native_serialization { return 1; }
+########################################################################
+# Signals to Bedrock::Cache that we handle serialization internally
+# via IPC::Shareable's tied hash mechanics.
 
 ########################################################################
 sub set {  ## no critic
 ########################################################################
   my ( $self, $key, $value, %opts ) = @_;
 
-  my $ttl = $opts{ttl};
-
+  my $ttl    = $opts{ttl};
   my $expiry = $ttl ? ( time() + $ttl ) : 0;
 
-  # THE ENVELOPE: Wrap the data with its death date
   my $envelope = {
     d => $value,  # Payload
     e => $expiry  # Expiry (0 means never)
   };
-
-  # We rely on the parent class (or caller) to handle serialization,
-  # but IPC::Shareable usually handles refs automatically if configured right.
-  # If using your wrapper that nfreezes first, $value is already a string.
 
   $self->{_cache}->{$key} = $envelope;
 
@@ -96,12 +157,34 @@ sub get {
   return
     if !$envelope;
 
-  # Check for Expiration
   if ( $envelope->{e} && time() > $envelope->{e} ) {
-    # Lazy Expiration: It's dead, delete it now.
     delete $self->{_cache}->{$key};
     return;
   }
+
+  return $envelope->{d};
+}
+
+########################################################################
+sub touch {
+########################################################################
+  my ( $self, $key, $ttl ) = @_;
+
+  return 0
+    if !$self->exists($key);
+
+  # Critical Section (Write Lock)
+  my $cache    = $self->{_cache};
+  my $envelope = $cache->{$key};
+
+  return 0
+    if !$envelope;
+
+  # Update the expiry time (0 = Persist/Forever)
+  $envelope->{e} = $ttl ? ( time() + $ttl ) : 0;
+
+  # FORCE STORE: Writing back to the hash triggers the IPC sync/lock
+  $cache->{$key} = $envelope;
 
   return $envelope->{d};
 }
@@ -111,16 +194,11 @@ sub exists {  ## no critic
 ########################################################################
   my ( $self, $key ) = @_;
 
-  # CRITICAL: We cannot just check exists($hash{$key})
-  # We must peek at the envelope to see if it is still alive.
-
   my $envelope = $self->{_cache}->{$key};
   return 0
     if !$envelope;
 
   if ( $envelope->{e} && time > $envelope->{e} ) {
-    # It exists physically, but logically it is dead.
-    # might as well clean it up now.
     delete $self->{_cache}->{$key};
     return 0;
   }
@@ -151,6 +229,16 @@ sub clear {
 }
 
 ########################################################################
+sub destroy {
+########################################################################
+  my ($self) = @_;
+
+  tied( %{ $self->{_cache} } )->remove;
+
+  return;
+}
+
+########################################################################
 sub keys {  ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
@@ -160,4 +248,150 @@ sub keys {  ## no critic
   return [ grep { $self->exists($_); } CORE::keys %{$cache} ];
 }
 
+########################################################################
+# STATS METHODS
+########################################################################
+
+# Class Method: Probe without attaching
+########################################################################
+sub probe {
+########################################################################
+  my ( $class, $glue ) = @_;
+  return IPC::Shareable->shm_probe($glue);
+}
+
+########################################################################
+sub stats {
+########################################################################
+  my ($self) = @_;
+
+  # 1. Get OS-level stats
+  my $info = IPC::Shareable->shm_probe( $self->{glue} );
+
+  return
+    if !$info;
+
+  # 2. Introspect the Application Cache Data
+  my $cache = $self->{_cache};
+  my $now   = time;
+
+  my $total_items       = 0;
+  my $active_keys       = 0;
+  my $total_data_bytes  = 0;
+  my $expired_keys      = 0;
+  my $reclaimable_bytes = 0;
+
+  foreach my $pair ( pairs %{$cache} ) {
+    my $key      = $pair->key;
+    my $envelope = $pair->value;
+
+    $total_items++;
+
+    # Calculate size (Key + Serialized Envelope)
+    my $size = length($key) + length freeze($envelope);
+    $total_data_bytes += $size;
+
+    # Check expiration
+    if ( $envelope->{e} && $envelope->{e} < $now ) {
+      $expired_keys++;
+      $reclaimable_bytes += $size;
+    }
+    else {
+      $active_keys++;
+    }
+  }
+
+  # 3. Calculate Derived Metrics
+  my $utilization = 0;
+
+  if ( $info->{size} > 0 ) {
+    $utilization = ( $total_data_bytes / $info->{size} ) * 100;
+  }
+
+  # 4. Merge into the info hash
+  $info->{app} = {
+    keys              => $active_keys,
+    physical_entries  => $total_items,
+    bytes_used_approx => $total_data_bytes,
+    utilization       => sprintf( '%.2f%%', $utilization ),
+    zombies           => {
+      count => $expired_keys,
+      bytes => $reclaimable_bytes,
+    },
+  };
+
+  $info->{keys} = $active_keys;
+
+  return $info;
+}
+
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Cache::Shareable - Shared Memory caching engine for Bedrock
+
+=head1 SYNOPSIS
+
+    my $cache = Bedrock::Cache::Shareable->new(
+        glue             => 'BCFG',
+        create           => 1,
+        cache_blocks     => 1024,
+        cache_block_size => 1024
+    );
+
+=head1 INTERFACE CONTRACT
+
+=head2 native_serialization
+
+Returns true. This engine uses C<IPC::Shareable>'s tied hash mechanism to
+automatically serialize complex Perl data structures.
+
+=head1 METHODS
+
+=head2 new(%options)
+
+Constructor. Initializes the Shared Memory segment.
+
+B<Options:>
+
+=over 4
+
+=item * C<glue> (Optional)
+
+The "key" used to identify the shared memory segment. All processes must use the same glue to see the same data.
+Defaults to C<$ENV{BEDROCK_CACHE_KEY}> or C<'BCFG'>.
+
+=item * C<create> (Optional)
+
+Boolean. If true, this process will attempt to create the segment if it does not exist.
+Defaults to C<0> (attach only).
+
+=item * C<cache_blocks> (Optional)
+
+The number of blocks to allocate. Used to calculate total segment size.
+Defaults to C<512>.
+
+=item * C<cache_block_size> (Optional)
+
+The size of each block in bytes. Used to calculate total segment size.
+Defaults to C<1024>.
+
+B<Note:> Total memory allocated = C<cache_blocks * cache_block_size>.
+
+=head2 probe($glue)
+
+Class method. Checks if a shared memory segment exists for the given glue
+and returns OS-level statistics (size, uid, mode, etc.) without attaching.
+Returns undef if not found.
+
+=head2 stats
+
+Instance method. Returns a hashref containing both OS-level statistics
+and application-level key counts.
+
+=cut

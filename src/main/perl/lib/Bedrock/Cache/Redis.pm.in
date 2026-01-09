@@ -77,12 +77,76 @@ sub exists     { my ( $self, $key ) = @_; return $self->{handle}->exists($key); 
 sub delete     { my ( $self, $key ) = @_; return $self->{handle}->del($key); }
 sub get_handle { my ($self) = @_; return $self->{handle}; }
 
+########################################################################
 sub set {
+########################################################################
   my ( $self, $key, $value, %opts ) = @_;
   if ( my $ttl = $opts{ttl} ) {
     return $self->{handle}->setex( $key, $ttl, $value );
   }
   return $self->{handle}->set( $key, $value );
+}
+
+########################################################################
+sub keys {  ## no critic
+########################################################################
+  my ($self) = @_;
+
+  # Redis returns list, wrapper expects array ref
+  my @keys = $self->{handle}->keys('*');
+  return \@keys;
+}
+
+########################################################################
+sub clear {
+########################################################################
+  my ($self) = @_;
+  return $self->{handle}->flushdb;
+}
+
+########################################################################
+sub stats {
+########################################################################
+  my ($self) = @_;
+
+  # Redis returns statistics as a colon-separated text block via the INFO command.
+  # We parse this into a hashref to match the structure expected by the API.
+  my $info_text = $self->{handle}->info();
+  my %stats;
+
+  foreach my $line ( split /\r\n/, $info_text ) {
+    next if $line =~ /^#/;  # Skip comments
+    next if $line !~ /:/;   # Skip malformed lines
+
+    my ( $key, $value ) = split /:/, $line, 2;
+    $stats{$key} = $value;
+  }
+
+  return \%stats;
+}
+
+########################################################################
+sub touch {
+########################################################################
+  my ( $self, $key, $ttl ) = @_;
+
+  # 1. Update the TTL
+  # If $ttl is 0 (or false), we PERSIST (remove expiry).
+  # If $ttl is > 0, we EXPIRE (set new expiry).
+  if ($ttl) {
+    # EXPIRE returns 1 if successful, 0 if key doesn't exist
+    return 0 unless $self->{handle}->expire( $key, $ttl );
+  }
+  else {
+    # PERSIST returns 1 if timeout removed, 0 if key didn't exist or had no timeout
+    # We check EXISTS first to ensure we don't return true for a missing key
+    return 0 unless $self->{handle}->exists($key);
+    $self->{handle}->persist($key);
+  }
+
+  # 2. Return the value (Parity with Shareable)
+  # This maintains the "Refresh and Retrieve" interface contract.
+  return $self->get($key);
 }
 
 1;
@@ -185,6 +249,23 @@ Removes the key from Redis.
 =item * B<exists( $key )>
 
 Returns true if the key exists in Redis.
+
+=item * B<keys>
+
+Returns an array reference of all keys in the current database (C<KEYS *>).
+
+=item * B<clear>
+
+Flushes the current database (C<FLUSHDB>).
+
+=item * B<touch( $key, $ttl )>
+
+Updates the TTL for the given key and returns the value (refresh-and-retrieve).
+If C<$ttl> is 0, the key is persisted (expiration removed).
+
+=item * B<stats>
+
+Returns a hashref containing the output of the Redis C<INFO> command.
 
 =back
 

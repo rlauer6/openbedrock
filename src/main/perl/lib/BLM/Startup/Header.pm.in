@@ -44,14 +44,10 @@ sub TIEHASH {
 
   my $self = bless Bedrock::Hash->new, $class;
 
-  # Get the headers and store them
+  # FIX: Use Context wrapper to safely dereference headers (APR::Table/HashRef)
   my %headers = $ctx->cgi_header_in;
 
-  $self->{input} = \%headers;
-
-  $self->{config} = $config;
-
-  $self->{verbose} = $config->{verbose};
+  @{$self}{qw(input config verbose)} = ( \%headers, $config, $config->{verbose} );
 
   $self->request( $ctx->request );
 
@@ -88,15 +84,20 @@ sub FIRSTKEY {
 ########################################################################
   my ($self) = @_;
 
-  my $a = scalar keys %{ $self->{input} };
+  # We capture the keys immediately to ensure the loop is stable
+  # even if the underlying hash is accessed elsewhere during iteration.
+  $self->{_iter_keys} = [ keys %{ $self->{input} } ];
 
-  return each %{ $self->{input} };
+  return shift @{ $self->{_iter_keys} };
 }
 
 ########################################################################
 sub NEXTKEY {
 ########################################################################
-  return each %{ shift->{input} };
+  my ( $self, $lastkey ) = @_;
+
+  # We ignore $lastkey and simply return the next item from our snapshot.
+  return shift @{ $self->{_iter_keys} };
 }
 
 ########################################################################
@@ -277,7 +278,6 @@ sub print_header {
   #
 
   if ( !$output->{'Content-type'} ) {
-
     my $mime_type = $self->request->content_type;
 
     if ( !$mime_type ) {
@@ -292,28 +292,31 @@ sub print_header {
     $self->request->content_type( $output->{'Content-type'} );
   }
 
-  my ( $key, $value, $str );
+  my $buffer = q{};
 
   foreach my $p ( pairs %{$output} ) {
-    ( $key, $value ) = @{$p};
+    my ( $key, $value ) = @{$p};
 
-    if ( is_array($value) ) {
-      foreach my $item ( @{$value} ) {
-        $str .= "$key: $item\r\n";
-        $fd->cgi_header_out( $key => $item );
-      }
-    }
-    else {
-      $str .= "$key: $value\r\n";
-      $fd->cgi_header_out( $key => $value );
+    my @values = ( ref($value) eq 'ARRAY' ) ? @{$value} : ($value);
+
+    foreach my $item (@values) {
+      $fd->headers_out( $key => $item );
+      $buffer .= "$key: $item\r\n";
     }
   }
 
-  $str .= "\r\n";
+  if ( $ENV{MOD_PERL} ) {
+    return $fd->send_http_header;
+  }
 
-  return $fd->send_http_header;
+  # This prevents bedrock.pl (CLI) from outputting garbage headers.
+  if ( $ENV{GATEWAY_INTERFACE} ) {
+    $buffer .= "\r\n";
+    return $fd->print($buffer);
+  }
+
+  return;
 }
-
 ########################################################################
 sub auth_passwd {
 ########################################################################
@@ -334,7 +337,7 @@ sub auth_user {
 
 1;
 
-## no critic (RequirePodSections)
+## no critic
 
 __END__
 
@@ -420,6 +423,6 @@ browsers only interpretted 302.
 
 Jay Sridhar
 
-Rob Lauer - rlauer6@comcast.net
+Rob Lauer - <bigfoot@cpan.org>
 
 =cut

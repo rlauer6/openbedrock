@@ -26,9 +26,19 @@
           "name" : [
             "bedrock.cgi", 
             "bedrock-session-files.cgi",
-            "bedrock-docs.cgi", 
-            "bedrock-autocomplete.cgi", 
-            "bedrock-briefcase.cgi"
+            "bedrock-autocomplete.cgi" 
+          ]
+        }
+      ]
+    },
+    {
+      "name" : "<var $dest.cgibin>",
+      "file_mode" : "0700",
+      "files" : [
+        {
+          "source" : "<var $source.cgibin>/bedrock-docs.cgi",
+          "name" : [
+            "bedrock-docs.cgi"
           ]
         }
       ]

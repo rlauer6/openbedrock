@@ -234,23 +234,18 @@ function api_generic_doc(contentName, func) {
 }
 
 // -------------------------------------------------
-function api_module_doc(plugin_type, plugin) {
+function api_module_doc(link) {
 // -------------------------------------------------
     show_spinner('tags');
 
-    var plugin_types = { "Application Plugins" : "/bedrock/plugins/Startup",
-                         "Filters" : "/bedrock/plugins/Filter",
-                         "Plugins" : "/bedrock/plugins"
-                       };
     var url;
 
-    if  (plugin) {
-        plugin = plugin == 'Filter' ? '' : '/' + plugin;
-        url = plugin_types[plugin_type] + plugin;
-    }
-    else {
-        url = `/bedrock/pod/${plugin_type}`;
-        plugin = plugin_type;
+    // FIX: If it starts with '/', assume it's a fully qualified URL (from backend links)
+    // Otherwise, assume it's a module name and default to the POD viewer.
+    if ( link && link.toString().startsWith('/') ) {
+        url = link;
+    } else {
+        url = '/bedrock/pod/' + link;
     }
 
     $.ajax({
@@ -275,7 +270,7 @@ function api_module_doc(plugin_type, plugin) {
             html = `<div class="bedrock-pod"><span id="_podtop_">${html}</span></div>`;
         }
         else {
-            bedrock_error(`Nothing found for "${plugin}" warning`);
+            bedrock_error(`Nothing found for "${link}" warning`);
             return;
         }
 
@@ -283,9 +278,8 @@ function api_module_doc(plugin_type, plugin) {
 
         $('.pod-link').on('click', function() {
             var bedrock_data = $(this).attr('bedrock-data');
-            var module = bedrock_data.split('?');
-            
-            api_module_doc(module[0]);
+            // var module = bedrock_data.split('?'); // ?
+            api_module_doc(bedrock_data);
         });
 
         show_container('tags');
@@ -362,7 +356,9 @@ function api_plugins() {
             var ul = '';
 
             items.forEach((item) => {
-                ul += `<li class="ul-link-item" bedrock-data="${s}">${names[item]}</li>\n`;
+                // FIX: Use the authoritative link from the backend as the data attribute
+                // This removes ambiguity and reliance on hardcoded frontend mapping.
+                ul += `<li class="ul-link-item" bedrock-data="${links[item]}">${names[item]}</li>\n`;
             });
 
             var html = `<h2>${s}</h2>\n`;
@@ -372,7 +368,8 @@ function api_plugins() {
         }
 
         $('.ul-link-item').on('click', function() {
-            api_module_doc($(this).attr('bedrock-data'), $(this).text());
+            // Pass the specific URL (bedrock-data) to the doc loader
+            api_module_doc($(this).attr('bedrock-data'));
         });
 
         show_container('plugins');

@@ -65,6 +65,15 @@ else
     sed -i -e 's|^ErrorLog.*$|ErrorLog /dev/stderr|' /etc/httpd/conf/httpd.conf
 fi
 
+TMP_FILE=$(mktemp)
+CONF_FILE="/var/www/bedrock/config/log4perl.conf"
+
+# remove BedrockShell appender from web's log4perl.conf
+grep -v '\.appender\.BedrockShell' < "$CONF_FILE"  | \
+  sed 's/ERROR, BedrockShell/ERROR, Bedrock/' > $TMP_FILE
+mv "$TMP_FILE" "$CONF_FILE"
+chmod 644 "$CONF_FILE"
+
 if [ -z "$BEDROCK_CACHE_ENGINE" ]; then
    export BEDROCK_CACHE_ENGINE=Shareable
 fi
