@@ -18,6 +18,7 @@ PERLSCRIPTS = \
     bedrock.pl.in \
     bedrock-dist.pl.in \
     bedrock-plugin.pl.in \
+    bedrock-miniserver.pl.in \
     bedrock-model.pl.in \
     bedrock-model-importer.pl.in \
     bedrock-cache.pl.in \

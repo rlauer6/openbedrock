@@ -25,7 +25,7 @@ use strict;
 use warnings;
 
 use Bedrock qw(choose);
-use Bedrock::Constants qw(:booleans :chars :log_levels :mime-types);
+use Bedrock::Constants qw(:booleans :chars :log_levels :mime-types :http);
 use Bedrock::Context qw(init_log4perl_logger);
 use Carp qw(cluck);
 use Data::Dumper;
@@ -82,13 +82,14 @@ sub init_output_handle {
 
   my $fh = select;
 
+  # If select returns a string (name), convert to GLOB ref
   if ( !ref $fh && ref \$fh ne 'GLOB' ) {
     no strict 'refs';  ## no critic
-
     $fh = \*{$fh};
-
-    $self->output_handle($fh);
   }
+
+  # Always assign, whether it was a string-turned-glob or already a ref
+  $self->output_handle($fh);
 
   return;
 }
@@ -189,17 +190,19 @@ sub _log {
 }
 
 ########################################################################
-sub log_trace { my (@args) = @_; return _log( 'trace', @args ); }
-sub log_debug { my (@args) = @_; return _log( 'debug', @args ); }
-sub log_info  { my (@args) = @_; return _log( 'info',  @args ); }
-sub log_warn  { my (@args) = @_; return _log( 'warn',  @args ); }
-sub log_error { my (@args) = @_; return _log( 'error', @args ); }
-sub log_fatal { my (@args) = @_; return _log( 'fatal', @args ); }
+sub log_trace  { my (@args) = @_; return _log( 'trace',  @args ); }
+sub log_debug  { my (@args) = @_; return _log( 'debug',  @args ); }
+sub log_info   { my (@args) = @_; return _log( 'info',   @args ); }
+sub log_warn   { my (@args) = @_; return _log( 'warn',   @args ); }
+sub log_error  { my (@args) = @_; return _log( 'error',  @args ); }
+sub log_notice { my (@args) = @_; return _log( 'notice', @args ); }
+sub log_fatal  { my (@args) = @_; return _log( 'fatal',  @args ); }
 
-sub debug { goto &log_debug; }
-sub error { goto &log_error; }
-sub info  { goto &log_info; }
-sub warn  { goto &log_warn; }  ## no critic (ProhibitBuiltinHomonyms)
+sub debug  { goto &log_debug; }
+sub notice { goto &log_notice; }
+sub error  { goto &log_error; }
+sub info   { goto &log_info; }
+sub warn   { goto &log_warn; }   ## no critic (ProhibitBuiltinHomonyms)
 
 ########################################################################
 
@@ -246,7 +249,7 @@ sub finfo {
   return $finfo
     if $finfo;
 
-  $ENV{PATH_TRANSLATED} //= $PROGRAM_NAME;
+  $ENV{PATH_TRANSLATED} //= $PROGRAM_NAME;  ## no critic
 
   my $path_xlated = $file // $ENV{PATH_TRANSLATED};
 
@@ -261,11 +264,11 @@ sub finfo {
       my $filename = $1;
 
       if ($2) {
-        $ENV{BEDROCK_PATH_INFO} = $2;
+        $ENV{BEDROCK_PATH_INFO} = $2;  ## no critic
       }
 
       if ( $ENV{BEDROCK_PATH_INFO} ) {
-        $ENV{BEDROCK_PATH_TRANSLATED} = sprintf '%s%s', $ENV{DOCUMENT_ROOT}, $ENV{BEDROCK_PATH_INFO};
+        $ENV{BEDROCK_PATH_TRANSLATED} = sprintf '%s%s', $ENV{DOCUMENT_ROOT}, $ENV{BEDROCK_PATH_INFO};  ## no critic
       }
 
       return $filename;
@@ -396,7 +399,6 @@ sub _print_headers {
 
   return $headers_out;
 }
-
 ########################################################################
 sub send_http_header {
 ########################################################################
@@ -409,8 +411,30 @@ sub send_http_header {
   return
     if !$self->headers || !@{ $self->headers };
 
+  # Emulate HTTP Server Status Line for MiniServer ONLY ---
+  # We check for 'Apache' in SERVER_SOFTWARE. If it's missing, we assume
+  # we are running in the MiniServer (HTTP::Server::Simple) and need to
+  # announce the protocol manually.
+  if ( $ENV{GATEWAY_INTERFACE}
+    && $ENV{GATEWAY_INTERFACE} =~ /CGI/xsm
+    && ( $ENV{SERVER_SOFTWARE} // q{} ) !~ /Apache/xsmi ) {
+
+    # Simple mapping or default to OK
+    my $s = $self->status || $HTTP_OK;
+
+    my $msg
+      = ( $s == $HTTP_OK )                    ? 'OK'
+      : ( $s == $HTTP_NOT_FOUND )             ? 'Not Found'
+      : ( $s == $HTTP_INTERNAL_SERVER_ERROR ) ? 'Internal Server Error'
+      :                                         'Status';
+
+    # Only print this if we are NOT in Apache.
+    $self->print("HTTP/1.0 $s $msg\r\n");
+  }
+
   # Handle numeric status codes for CGI (e.g. "404 Not Found")
-  if ( $self->status && $self->status != 200 ) {
+  # Apache mod_cgi reads this header to generate the real status line.
+  if ( $self->status && $self->status != $HTTP_OK ) {
     $self->headers_out->set( 'Status' => $self->status );
   }
 
@@ -444,7 +468,8 @@ sub print {  ## no critic
 # Inner Class: Apache::Request::CGI::Table
 # Implements APR::Table like interface for CGI environment
 ########################################################################
-package Apache::Request::CGI::Table;
+package Apache::Request::CGI::Table;  ## no critic
+
 use List::Util qw(pairs);
 
 sub new { my ( $class, $r ) = @_; return bless { _r => $r }, $class; }

@@ -25,7 +25,7 @@ Readonly::Scalar our $CACHE_MODE           => oct '666';
 
 # --- MONKEY PATCH: IPC::Shareable ---
 {
-  no warnings 'redefine';
+  no warnings 'redefine';  ## no critic
 
   # 1. Prevent segment explosion for references
   sub IPC::Shareable::_need_tie {
@@ -131,9 +131,38 @@ sub native_serialization { return 1; }
 # via IPC::Shareable's tied hash mechanics.
 
 ########################################################################
+sub _prune {
+########################################################################
+  my ($self) = @_;
+
+  my $cache = $self->{_cache};
+  my $now   = time;
+
+  # Snapshot keys first to avoid modification issues during iteration.
+  # This iterates the ENTIRE cache to find any expired items.
+  my @keys = CORE::keys %{$cache};
+
+  foreach my $key (@keys) {
+    my $envelope = $cache->{$key};
+
+    # If the item is missing or has expired, delete it.
+    if ( $envelope && $envelope->{e} && $now > $envelope->{e} ) {
+      delete $cache->{$key};
+    }
+  }
+
+  return;
+}
+
+########################################################################
 sub set {  ## no critic
 ########################################################################
   my ( $self, $key, $value, %opts ) = @_;
+
+  # AGGRESSIVE PRUNING:
+  # Clean up ALL expired keys in the segment before adding new data.
+  # This ensures we don't hit the segment size limit due to "dead" data.
+  $self->_prune();
 
   my $ttl    = $opts{ttl};
   my $expiry = $ttl ? ( time() + $ttl ) : 0;
@@ -153,10 +182,15 @@ sub get {
 ########################################################################
   my ( $self, $key ) = @_;
 
+  # AGGRESSIVE PRUNING:
+  # Clean up ALL expired keys in the segment before retrieval.
+  $self->_prune();
+
   my $envelope = $self->{_cache}->{$key};
   return
     if !$envelope;
 
+  # Double check specific key (though _prune should have caught it)
   if ( $envelope->{e} && time() > $envelope->{e} ) {
     delete $self->{_cache}->{$key};
     return;

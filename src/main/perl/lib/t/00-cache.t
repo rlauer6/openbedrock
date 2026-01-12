@@ -3,8 +3,7 @@
 use strict;
 use warnings;
 
-use Apache::Bedrock qw(cache);
-use Bedrock;
+use Bedrock qw(cache);
 use Bedrock::Handler;
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw(:booleans);
@@ -46,8 +45,9 @@ subtest 'initialize shared memory (Server Simulation)' => sub {
   # We use the raw tie here to verify the low-level connection works
   eval { tie %raw_ipc_cache, 'IPC::Shareable', $glue, \%options; };
 
-  is( $EVAL_ERROR, '', 'Shared memory segment created successfully' );
-  ok( tied %raw_ipc_cache, 'Backdoor variable tied to shared memory' );
+  is( $EVAL_ERROR, q{}, 'Shared memory segment created successfully' );
+  ok( tied %raw_ipc_cache, 'Backdoor variable tied to shared memory' )
+    or BAIL_OUT('ERROR: could not create shared memory segment');
 };
 
 my $config;

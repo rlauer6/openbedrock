@@ -1,0 +1,517 @@
+#!/usr/bin/env perl
+package main;
+
+use strict;
+use warnings;
+
+# 1. FILE-SCOPED LEXICALS (used to pass values to HTTP::Server::Simple::CGI subclass)
+my %ALIAS;
+my $MOUNT_POINT;
+my $SERVICE_INSTANCE;
+my $SERVICE_CLASS;
+
+# for static assets
+my %MIME_TYPES = (
+  css  => 'text/css',
+  js   => 'application/javascript',
+  png  => 'image/png',
+  jpg  => 'image/jpeg',
+  gif  => 'image/gif',
+  html => 'text/html',
+);
+
+exit Bedrock::MiniServer::CLI->main();
+
+########################################################################
+package Bedrock::MiniServer;  ## no critic
+########################################################################
+
+use strict;
+use warnings;
+
+use Apache::Request::CGI;
+use Benchmark;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use POSIX qw(strftime);
+
+use parent qw(HTTP::Server::Simple::CGI);
+
+########################################################################
+sub handle_request {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $t0   = Benchmark->new;
+  my $path = $cgi->path_info();
+
+  # --- A. Static Asset Handling ---
+  foreach my $alias ( keys %ALIAS ) {
+    if ( index( $path, $alias ) == 0 ) {
+      return $self->_serve_static( $cgi, $alias, $ALIAS{$alias} );
+    }
+  }
+
+  # --- B. Routing Logic ---
+  # Only strip the mount point if it's NOT root.
+  if ( $MOUNT_POINT ne q{/} && index( $path, $MOUNT_POINT ) == 0 ) {
+    $path = substr $path, length $MOUNT_POINT;
+  }
+
+  $path ||= q{/};
+
+  {
+    ## no critic
+    # --- C. Dynamic Environment Update ---
+    $ENV{PATH_INFO}      = $path;
+    $ENV{SCRIPT_NAME}    = $MOUNT_POINT eq q{/} ? q{} : $MOUNT_POINT;
+    $ENV{REQUEST_METHOD} = $cgi->request_method();
+    $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || q{};
+    $ENV{REQUEST_URI}    = $cgi->path_info();
+  }
+
+  $SERVICE_INSTANCE->request(undef);
+  $SERVICE_INSTANCE->context(undef);
+  $SERVICE_INSTANCE->bedrock_handler(undef);
+
+  my $r = Apache::Request::CGI->new();
+
+  $r->log->notice( sprintf '%s - %s', $cgi->request_method, $path );
+
+  eval { $SERVICE_INSTANCE->handler($r); };
+
+  my $err = $EVAL_ERROR;
+
+  my $t1 = Benchmark->new;
+
+  if ($err) {
+    print "HTTP/1.0 500 Internal Server Error\r\n";
+    print "Content-Type: text/plain\r\n\r\n";
+    print "Bedrock Crashed: $err";
+    print {*STDERR} "CRITICAL ERROR: $err\n";
+  }
+
+  my $td = timediff( $t1, $t0 );
+
+  $r->log->notice( sprintf 'request time: %s', timestr($td) );
+
+  return;
+}
+
+########################################################################
+sub _serve_static {
+########################################################################
+  my ( $self, $cgi, $alias_url, $local_base ) = @_;
+
+  my $path     = $cgi->path_info();
+  my $rel_file = substr $path, length $alias_url;
+
+  if ( $rel_file =~ /[.]{2}/xsm ) {
+    print "HTTP/1.0 403 Forbidden\r\n\r\n";
+    return;
+  }
+
+  my $fs_path = $local_base . $rel_file;
+
+  if ( -e $fs_path && -r $fs_path ) {
+    my ( $dev, $ino, $mode, $nlink, $uid, $gid, $rdev, $size, $atime, $mtime, $ctime, $blksize, $blocks ) = stat $fs_path;
+
+    my ($ext) = $fs_path =~ /[.]([^.]+)$/xsm;
+    my $type = $MIME_TYPES{ lc( $ext || q{} ) } || 'text/plain';
+
+    # 2. Format Date for HTTP Header (RFC 1123)
+    my $http_date = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime $mtime );
+
+    print "HTTP/1.0 200 OK\r\n";
+    print "Content-Type: $type\r\n";
+
+    # 3. Cache Headers
+    # "public" = safe for proxies/browsers
+    # "max-age=86400" = valid for 1 day
+    print "Last-Modified: $http_date\r\n";
+    print "Cache-Control: max-age=86400, public\r\n";
+    print "\r\n";
+
+    local $RS = undef;
+    if ( open my $fh, '<', $fs_path ) {
+      print <$fh>;
+      close $fh;
+    }
+  }
+  else {
+    print "HTTP/1.0 404 Not Found\r\n";
+    print "Content-Type: text/plain\r\n\r\n";
+    print "File not found: $path";
+    print {*STDERR} "404 Not Found: $fs_path\n";
+  }
+
+  return;
+}
+
+########################################################################
+package Bedrock::MiniServer::CLI;  ## no critic
+########################################################################
+
+use Bedrock qw(choose);
+use Bedrock::LoadConfig qw(load_config);
+use Bedrock::Template;
+use CLI::Simple::Constants qw(:booleans :chars);
+use Carp;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::ShareDir qw(dist_dir);
+use JSON qw(encode_json decode_json);
+use Module::Load;
+use List::Util qw(pairs);
+
+use parent qw(CLI::Simple);
+
+########################################################################
+sub main {
+########################################################################
+  my %commands = (
+    default => \&cmd_start_server,
+    start   => \&cmd_start_server,
+  );
+
+  my @option_specs = qw(
+    help|h
+    mount-point|m=s
+    port|p=s
+    service|s=s
+    config|c=s
+  );
+
+  my $cli = Bedrock::MiniServer::CLI->new(
+    commands        => \%commands,
+    option_specs    => \@option_specs,
+    default_options => { mount_point => $SLASH, },
+    extra_options   => [qw(dist_dir server_config)],
+  );
+
+  return $cli->run();
+}
+
+########################################################################
+sub cmd_start_server {
+########################################################################
+  my ($self) = @_;
+
+  # 1. Load Server Configuration (File or Defaults)
+  my $server_config = $self->get_server_config;
+
+  # 2. Environment Injection (Bootstrap Context)
+  if ( $server_config->{env} && ref $server_config->{env} eq 'HASH' ) {
+    foreach my $p ( pairs %{ $server_config->{env} } ) {
+      my ( $k, $v ) = @{$p};
+      $ENV{$k} = $v;  ## no critic
+    }
+  }
+
+  $ENV{GATEWAY_INTERFACE} = 'CGI/1.1';  ## no critic
+
+  # 3. Resolve Service Class
+  my $service_class
+    = $ENV{BEDROCK_SERVICE}
+    || $self->get_service
+    || $server_config->{service_class}
+    || $server_config->{BEDROCK_SERVICE};  # Legacy fallback
+
+  if ( $service_class !~ /\ABedrock::Service/xsm ) {
+    $service_class = "Bedrock::Service::$service_class";
+  }
+
+  croak "ERROR: no service defined! Use --service, config file, or set BEDROCK_SERVICE.\n"
+    if !$service_class;
+
+  $SERVICE_CLASS = $service_class;
+
+  # 4. Service Instantiation (Context Injection)
+  # We pass the entire 'service_config' block. The Service decides what to do with it.
+  $SERVICE_INSTANCE = eval {
+    load $service_class;
+    return $service_class->new( service_config => $server_config->{service_config} );
+  };
+
+  croak "ERROR: could not load service: $service_class\n$EVAL_ERROR"
+    if $EVAL_ERROR;
+
+  # 5. Resolve Mount Point
+  $MOUNT_POINT = $self->get_mount_point;
+
+  # Fallback logic: CLI -> Config -> Default
+  if ( $MOUNT_POINT eq q{/} ) {
+    $MOUNT_POINT
+      = $server_config->{server}->{mount_point}
+      || $server_config->{mount_point}
+      || $server_config->{service_config}->{overrides}->{BEDROCK_ADMIN_DIR}
+      || q{/};
+  }
+
+  # 6. Setup Static Aliases
+  %ALIAS = ();
+  if ( $server_config->{aliases} && ref $server_config->{aliases} eq 'HASH' ) {
+    %ALIAS = %{ $server_config->{aliases} };
+  }
+
+  # 7. Startup Banner
+  my $port = $self->get_port || $server_config->{server}->{port} || $server_config->{port} || 8080;
+
+  my $url = "http://localhost:$port$MOUNT_POINT";
+
+  print {*STDERR} q{=} x 60 . "\n";
+  print {*STDERR} "BEDROCK MINISERVER STARTUP\n";
+  print {*STDERR} q{=} x 60 . "\n";
+  print {*STDERR} sprintf "%-15s : %s\n", 'Service Class', $SERVICE_CLASS;
+  print {*STDERR} sprintf "%-15s : %s\n", 'Mount Point',   $MOUNT_POINT;
+  print {*STDERR} sprintf "%-15s : %s\n", 'Port',          $port;
+  print {*STDERR} sprintf "%-15s : %s\n", 'Config Source', $server_config->{_source} || 'Internal Defaults';
+  print {*STDERR} sprintf "%-15s : %s\n", 'Access URL',    $url;
+  print {*STDERR} q{-} x 60 . "\n";
+  print {*STDERR} "Static Asset Aliases:\n";
+
+  if ( keys %ALIAS ) {
+    foreach my $alias ( sort keys %ALIAS ) {
+      print {*STDERR} sprintf "  %-20s -> %s\n", $alias, $ALIAS{$alias};
+    }
+  }
+  else {
+    print {*STDERR} "  (None defined)\n";
+  }
+
+  print {*STDERR} q{=} x 60 . "\n";
+  print {*STDERR} "Ready for requests...\n";
+
+  Bedrock::MiniServer->new($port)->run();
+
+  return 0;
+}
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  # 3. Fallback: Generate Defaults (Original File::ShareDir behavior)
+  my $dist_dir = dist_dir('Bedrock');
+  $self->set_dist_dir($dist_dir);
+
+  my ( $template, $source ) = choose {
+    # 1. Explicit CLI option
+    if ( my $config_file = $self->get_config ) {
+
+      croak "Configuration file not found: $config_file"
+        if !-e $config_file;
+
+      return ( load_config($config_file), $config_file );
+    }
+
+    # 2. Auto-discovery (Polymorphic Config)
+    foreach my $ext (qw(json yaml yml xml)) {
+      my $candidate = "miniserver.$ext";
+      next if !-e $candidate;
+
+      return ( load_config( $candidate, $candidate ) );
+    }
+
+    # 3. default
+    return (
+      { env => { BEDROCK_CONFIG_PATH => "$dist_dir/config", },
+
+        aliases => {
+          '/bedrock/css'        => "$dist_dir/css",
+          '/bedrock/javascript' => "$dist_dir/javascript",
+          '/bedrock/img'        => "$dist_dir/img",
+        },
+
+        # Legacy structure mapping to new service_config
+        service_config => {
+          overrides => {
+            BEDROCK_CONFIG_PATH    => "$dist_dir/config",
+            LOG4PERL               => "$dist_dir/config/log4perl.conf",
+            BEDROCK_INCLUDE_DIR    => "$dist_dir/include",
+            BEDROCK_IMAGE_DIR      => "$dist_dir/img",
+            BEDROCK_PEBBLE_DIR     => "$dist_dir/pebbles",
+            BEDROCK_ERROR_LOCATION => "$dist_dir/htdocs/error.roc",
+          }
+        }
+      },
+      'default'
+    );
+  };
+
+  my $conf = decode_json( Bedrock::Template->new( encode_json($template), dist_dir => $dist_dir )->parse );
+
+  $conf->{_source} = $source;
+
+  $self->set_server_config($conf);
+
+  return;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+bedrock-miniserver.pl - Lightweight standalone development server for Bedrock applications
+
+=head1 SYNOPSIS
+
+  # Start with default settings (Port 8080, Mount Point /)
+  bedrock-miniserver.pl --service MyApp::Service
+
+  # Start on a specific port with a specific mount point
+  bedrock-miniserver.pl --port 3000 --mount-point /app --service MyApp::Service
+
+  # Get help
+  bedrock-miniserver.pl --help
+
+=head1 DESCRIPTION
+
+This script provides a standalone HTTP server for Bedrock
+applications, built on top of C<HTTP::Server::Simple::CGI>. It
+simulates a CGI environment (modifying C<PATH_INFO>, C<SCRIPT_NAME>,
+etc.) and dispatches requests to a specified Bedrock Service class.
+
+It is designed primarily for development and testing, allowing you to
+run Bedrock applications without a full Apache/mod_perl stack.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--service | -s>
+
+B<Required>. The Perl class name of the Bedrock Service to instantiate
+and run (e.g., C<MyApp::Service>). This class must implement a
+C<handler()> method.
+
+=item B<--port | -p>
+
+The port to listen on. Defaults to C<8080>.
+
+=item B<--mount-point | -m>
+
+The URL path where the application is rooted. Defaults to C</>, or the
+value of C<BEDROCK_ADMIN_DIR> in your configuration if set.
+
+=back
+
+=head1 DEVELOPER NOTES
+
+=head2 Static Asset Serving
+
+The miniserver handles static assets (CSS, JS, Images) internally to
+mimic the behavior of a production web server alias configuration.
+
+It automatically maps the following URL paths to the C<Bedrock>
+distribution directory found in C<@INC>:
+
+=over 4
+
+=item * C</bedrock/css> -> C<.../Bedrock/css>
+
+=item * C</bedrock/javascript> -> C<.../Bedrock/javascript>
+
+=item * C</bedrock/img> -> C<.../Bedrock/img>
+
+=back
+
+When serving these assets, the server applies standard MIME types
+based on file extensions and adds a C<Cache-Control: max-age=86400,
+public> header to facilitate browser caching during development.
+
+=head2 Logging and Log4perl
+
+The server initializes C<Log::Log4perl> using the configuration file
+shipped with the Bedrock distribution.
+
+To prevent developers from being overwhelmed by internal framework
+logs (the "Bedrock category trap"), a specific logging category
+B<C<Bedrock::Service>> has been defined in the default
+configuration. You should target this category when tuning log levels
+for your application logic.
+
+B<Locating the Configuration File:>
+
+If you need to modify the logging behavior (e.g., changing the level
+from INFO to DEBUG), you must edit the C<log4perl.conf> file located
+in the installed distribution directory. You can find the exact path
+by running the following command:
+
+  perl -MFile::ShareDir=dist_dir -e 'printf "%s/config/log4perl.conf\n", dist_dir("Bedrock");'
+
+=head1 CONFIGURATION
+
+The server looks for a configuration file in the current directory named 
+C<miniserver.{json|yaml|xml}>. 
+
+=head2 Example JSON Configuration
+
+  {
+    "server": {
+      "port": 8080,
+      "mount_point": "/app"
+    },
+    "env": {
+      "BEDROCK_CONFIG_PATH": "./config"
+    },
+    "aliases": {
+      "/bedrock/js": "./dist/js",
+      "/local/assets": "./src/assets"
+    },
+    "service_config": {
+      "maintenance_mode": true,
+      "overrides": {
+        "LOG4PERL": "./dev-log.conf",
+        "DB_DSN": "dbi:SQLite:dbname=dev.db"
+      }
+    },
+    "service_class": "MyApp::Service"
+  }
+
+=head1 DESCRIPTION
+
+This script provides a standalone HTTP server for Bedrock applications.
+It mimics a production Apache environment by injecting configuration
+data and environment variables before the Bedrock Service initializes.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--config | -c>
+
+Specify a path to a configuration file (JSON, YAML, or XML).
+
+=item B<--service | -s>
+
+B<Required> (unless in config). The Perl class name of the Bedrock Service.
+
+=item B<--port | -p>
+
+The port to listen on. Defaults to C<8080>.
+
+=item B<--mount-point | -m>
+
+The URL path where the application is rooted. Defaults to C</>.
+
+=back
+
+=head1 EXIT STATUS
+
+Returns 0 on successful execution (though the server runs typically
+runs until interrupted), or non-zero if the service class cannot be
+loaded.
+
+=head1 SEE ALSO
+
+L<Bedrock::Service>, L<Bedrock::LoadConfig>
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut

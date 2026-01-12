@@ -4,13 +4,15 @@ use strict;
 use warnings;
 
 # Inherit directly from the Application Platform
-use Apache::Bedrock;
 use Bedrock qw(:booleans slurp_file choose);
 use Bedrock::Constants qw(:regexp :chars :booleans :defaults :http);
 use Bedrock::PodWriter qw(pod2html);
+use Bedrock::Cache;
+use Bedrock::Cache::Memory;
 use Bedrock::Hash;
 use Bedrock::Template;
-use Carp;
+use Bedrock::VERSION;
+use Carp qw(croak confess cluck carp);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename qw(fileparse basename dirname);
@@ -30,9 +32,11 @@ with 'Bedrock::Role::DocFinder';
 use Readonly;
 Readonly our $DEFAULT_IMAGE_URL => '/bedrock/img';
 Readonly our $POD_MIN_SIZE      => 600;
-Readonly our $POD_CACHE_TTL     => 5 * 60;
+Readonly our $POD_CACHE_TTL     => 2 * 60;
 
 use parent qw(Bedrock::Service);
+
+our $VERSION = '@PACKAGE_VERSION@';
 
 # "Modulino" Hook: Allows running as a script or loading as a class
 caller or __PACKAGE__->new->handler;
@@ -75,17 +79,27 @@ sub init_cache {
   eval {
     my $cache = $self->cache;
 
-    my $blms = $cache->get( cache_key('plugin_list') );
-    $blms //= $self->find_files_of_type( filter => 'BLM' );
-    $cache->set( cache_key('plugin_list') => $blms );
-
+    my $blms    = $cache->get( cache_key('plugin_list') );
     my $bedrock = $cache->get( cache_key('bedrock_list') );
-    $bedrock //= $self->find_files_of_type( filter => 'Bedrock' );
-    $cache->set( cache_key('bedrock_list') => $bedrock );
+    my $system  = $cache->get( cache_key('system_list') );
 
-    my $system = $cache->get( cache_key('system_list') );
-    $system //= $self->find_files_of_type( filter => [ 'BLM', 'Bedrock' ], filter_type => 'exclude' );
-    $cache->set( cache_key('system_list') => $system );
+    if ( !$blms ) {
+      $self->log->info('creating plugin list...');
+      $blms = $self->find_files_of_type( filter => 'BLM' );
+      $cache->set( cache_key('plugin_list') => $blms );
+    }
+
+    if ( !$bedrock ) {
+      $self->log->info('creating bedrock module list...');
+      $bedrock = $self->find_files_of_type( filter => 'Bedrock' );
+      $cache->set( cache_key('bedrock_list') => $bedrock );
+    }
+
+    if ( !$system ) {
+      $self->log->info('creating system module list...');
+      $system = $self->find_files_of_type( filter => [ 'BLM', 'Bedrock' ], filter_type => 'exclude' );
+      $cache->set( cache_key('system_list') => $system );
+    }
   };
 
   carp "WARN: error trying to initialize caching\n$EVAL_ERROR"
@@ -101,6 +115,8 @@ sub dispatch {
 
   # --- Security Gate ---
   my $config = $self->config;
+
+  $self->log->debug( sprintf 'Bedrock documentation server request: [%s] ', $self->request->path_info );
 
   my $info_setting = $ENV{ALLOW_BEDROCK_INFO} // $config->{ALLOW_BEDROCK_INFO} // $EMPTY;
 
@@ -137,6 +153,7 @@ sub action_index {
   $params{tags}                  = $self->ul_links( tag      => 'Bedrock Tags', plugins => 'Bedrock Plugins' );
   $params{system_docs}           = $self->ul_links( system   => 'System Modules' );
   $params{bedrock_internal_docs} = $self->ul_links( internal => 'Bedrock Internal Documentation' );
+  $params{logo}                  = $self->get_logo;
 
   if ( my $paths = $self->get_pod_paths ) {
     if ( @{$paths} ) {
@@ -439,8 +456,6 @@ sub action_generic_docs {
   my $conf       = $self->config->{BEDROCK_DOCUMENTATION} || {};
   my $file_entry = $conf->{file_list}->{$doc_name};
 
-  print {*STDERR} Dumper( [ $conf->{file_list} ] );
-
   return $self->display_error( 'Doc not configured', $HTTP_NOT_FOUND )
     if !$file_entry;
 
@@ -539,7 +554,7 @@ sub cache {
     if $cache && blessed($cache);
 
   # 1. Try to Attach OR Create (The Pragmatic Approach)
-  $cache = Apache::Bedrock::cache( create => 1 );
+  $cache = Bedrock::cache( create => 1 );
 
   # 2. Fallback to Memory (Safety Net)
   if ( !$cache ) {
@@ -565,7 +580,7 @@ sub is_api {
 ########################################################################
   my ($self) = @_;
 
-  my $accept = $self->request->header_in('Accept') // q{};
+  my $accept = $self->request->headers_in('Accept') // q{};
 
   return $accept =~ /json/xsmi;
 }
@@ -575,16 +590,32 @@ sub admin_dir { return shift->config->{BEDROCK_ADMIN_DIR} }
 ########################################################################
 
 ########################################################################
+sub get_logo {
+########################################################################
+  my ($self) = @_;
+
+  return sprintf '%s/%s', @{ $self->config }{qw(BEDROCK_IMAGE_URL BEDROCK_LOGO)};
+}
+
+########################################################################
+sub get_version {
+########################################################################
+  return Bedrock::VERSION::version('full');
+}
+
+########################################################################
 sub render_page {
 ########################################################################
   my ( $self, $tpl_source, %vars ) = @_;
 
   my $config = $self->config;
 
-  $vars{env}        = \%ENV;
-  $vars{back_url}   = $self->admin_dir;
-  $vars{config}     = $config;
-  $vars{logo}       = "$config->{BEDROCK_IMAGE_URL}/$config->{BEDROCK_LOGO}";
+  $vars{env}      = \%ENV;
+  $vars{back_url} = $self->admin_dir;
+  $vars{config}   = $config;
+  $vars{logo}     = $self->get_logo;
+  $vars{version}  = $self->get_version;
+
   $vars{stylesheet} = $config->{BEDROCK_POD_CSS_URL};
 
   local $ENV{DOCUMENT_ROOT} = $config->{BEDROCK_INCLUDE_DIR};
@@ -594,6 +625,7 @@ sub render_page {
   my $err = $EVAL_ERROR;
 
   $html = $err ? $self->check_error( $err, $tpl_source ) : $html;
+  $html =~ s/<html>/<!doctype html>/xsm;
 
   return $self->print($html);
 }
@@ -855,7 +887,11 @@ sub get_module_name {
 
   open my $fh, '<', "$file.pm" or return;
   my @pkgs;
-  while (<$fh>) { push @pkgs, $1 if /^\s*package\s+([^;]+);/; }
+  while ( my $line = <$fh> ) {
+    if ( $line =~ /^\s*package\s+([^;]+);/xsm ) {
+      push @pkgs, $1;
+    }
+  }
   close $fh;
 
   my ($name) = grep {/$potential/} @pkgs;
@@ -942,9 +978,9 @@ sub get_tag_list {
 # --- Path Helpers ---
 
 ########################################################################
-sub get_markdown_paths { shift->get_doc_paths('markdown') }
+sub get_markdown_paths { return shift->get_doc_paths('markdown'); }
 ########################################################################
-sub get_pod_paths { shift->get_doc_paths('pod') }
+sub get_pod_paths { return shift->get_doc_paths('pod'); }
 ########################################################################
 
 ########################################################################
@@ -984,8 +1020,10 @@ sub fetch_template {
 sub render_listing {
 ########################################################################
   my ( $self, $title, @items ) = @_;
+
   my $template = $self->fetch_template('bedrock-docs-listing');
   my $head     = $self->listing_head($title);
+
   return $self->render_page( $template, head => $head, listing => \@items );
 }
 
@@ -998,13 +1036,16 @@ sub listing_head {
 
   local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
 
-  return Bedrock::Template->new(
-    $template,
+  my %params = (
     title      => $title,
     config     => $self->config,
     back_url   => $self->admin_dir,
     stylesheet => $self->config->{BEDROCK_POD_CSS_URL},
-  )->parse;
+    version    => $self->get_version,
+    logo       => $self->get_logo,
+  );
+
+  return Bedrock::Template->new( $template, %params )->parse;
 }
 
 ########################################################################
@@ -1040,12 +1081,15 @@ sub blm_ul {
   my $template = $self->fetch_template('bedrock-docs-blms');
   local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
 
-  return Bedrock::Template->new(
-    $template,
+  my %params = (
     heading => $title,
     list    => $list,
-    config  => $self->config
-  )->parse;
+    config  => $self->config,
+    logo    => $self->get_logo,
+    version => $self->get_version,
+  );
+
+  return Bedrock::Template->new( $template, %params )->parse;
 }
 
 ########################################################################
@@ -1067,19 +1111,26 @@ sub bless_all {
 ########################################################################
   my ( $self, $hash ) = @_;
 
-  foreach my $k ( keys %{$hash} ) {
-    next if !ref $hash->{$k};
+  return
+    if !ref $hash;
 
-    if ( reftype( $hash->{$k} ) eq 'HASH' ) {
-      $self->bless_all( $hash->{$k} );
+  foreach my $k ( keys %{$hash} ) {
+    my $value = $hash->{$k};
+    next if !ref $value;
+
+    if ( reftype($value) eq 'HASH' ) {
+      $self->bless_all($value);
     }
-    elsif ( reftype( $hash->{$k} ) eq 'ARRAY' ) {
-      foreach my $e ( @{ $hash->{$k} } ) {
+    elsif ( reftype($value) eq 'ARRAY' ) {
+      foreach my $e ( @{$value} ) {
         $self->bless_all($e);
       }
     }
+    else {
+      next;
+    }
 
-    bless $hash->{$k}, 'Bedrock::Dump';
+    bless $value, 'Bedrock::Dump';
   }
 
   return;
@@ -1089,9 +1140,20 @@ sub bless_all {
 sub header_inc {
 ########################################################################
   my ( $self, %params ) = @_;
+
+  my $config = $self->config;
+
   my $template = $self->fetch_template('bedrock-docs-header');
+
   local $ENV{DOCUMENT_ROOT} = $self->config->{BEDROCK_INCLUDE_DIR};
-  return Bedrock::Template->new( $template, config => $self->config, %params )->parse;
+
+  %params = (
+    %params,
+    logo    => $self->get_logo,
+    version => $VERSION,
+  );
+
+  return Bedrock::Template->new( $template, %params, config => $config )->parse;
 }
 
 ########################################################################
@@ -1171,8 +1233,24 @@ sub get_module_metadata {
   return $metadata
     if $metadata;
 
-  # FIX: Ensure we have array refs before dereferencing
-  my $plugins         = $cache->get( cache_key('plugin_list') )  || [];
+  # --- TRIPWIRE CHECK ---
+  # These lists are populated ONLY during server startup (in init_cache).
+  # If they are missing now, it means someone cleared the cache while the
+  # server was running. Since the Miniserver is persistent, we cannot
+  # regenerate them without a restart.
+  my $plugins = $cache->get( cache_key('plugin_list') );
+
+  if ( !$plugins ) {
+    $self->raise(
+      message => 'Runtime Cache Error: Module lists have vanished.',
+      payload => {
+        detail =>
+          'It appears the cache was cleared while the server was running. Because file scanning only happens at startup, you must restart the server to rebuild the documentation index.',
+        action => 'RESTART SERVER'
+      }
+    );
+  }
+
   my $bedrock_modules = $cache->get( cache_key('bedrock_list') ) || [];
   my $system          = $cache->get( cache_key('system_list') )  || [];
 
