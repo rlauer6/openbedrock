@@ -1,4 +1,6 @@
 #!/usr/bin/env perl
+# ...a lightweight HTTP server harness for Bedrock services.
+
 package main;
 
 use strict;
@@ -42,14 +44,15 @@ sub handle_request {
 ########################################################################
   my ( $self, $cgi ) = @_;
 
-  my $t0   = Benchmark->new;
+  my $t0 = Benchmark->new;
+
   my $path = $cgi->path_info();
 
   # --- A. Static Asset Handling ---
   foreach my $alias ( keys %ALIAS ) {
-    if ( index( $path, $alias ) == 0 ) {
-      return $self->_serve_static( $cgi, $alias, $ALIAS{$alias} );
-    }
+    next if index( $path, $alias ) != 0;
+
+    return $self->_serve_static( $cgi, $alias, $ALIAS{$alias} );
   }
 
   # --- B. Routing Logic ---
@@ -76,8 +79,6 @@ sub handle_request {
 
   my $r = Apache::Request::CGI->new();
 
-  $r->log->notice( sprintf '%s - %s', $cgi->request_method, $path );
-
   eval { $SERVICE_INSTANCE->handler($r); };
 
   my $err = $EVAL_ERROR;
@@ -88,12 +89,12 @@ sub handle_request {
     print "HTTP/1.0 500 Internal Server Error\r\n";
     print "Content-Type: text/plain\r\n\r\n";
     print "Bedrock Crashed: $err";
-    print {*STDERR} "CRITICAL ERROR: $err\n";
+    $r->log->error( 'CRITICAL ERROR: ' . $err );
   }
 
   my $td = timediff( $t1, $t0 );
 
-  $r->log->notice( sprintf 'request time: %s', timestr($td) );
+  $r->log->notice( sprintf '%s - %s (%s)', $cgi->request_method, $path, timestr($td) );
 
   return;
 }
@@ -152,9 +153,8 @@ sub _serve_static {
 package Bedrock::MiniServer::CLI;  ## no critic
 ########################################################################
 
-use Bedrock qw(choose);
+use Bedrock qw(choose slurp_file);
 use Bedrock::LoadConfig qw(load_config);
-use Bedrock::Template;
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
 use Data::Dumper;
@@ -303,7 +303,7 @@ sub init {
       croak "Configuration file not found: $config_file"
         if !-e $config_file;
 
-      return ( load_config($config_file), $config_file );
+      return ( scalar( slurp_file($config_file) ), $config_file );
     }
 
     # 2. Auto-discovery (Polymorphic Config)
@@ -311,36 +311,45 @@ sub init {
       my $candidate = "miniserver.$ext";
       next if !-e $candidate;
 
-      return ( load_config( $candidate, $candidate ) );
+      return ( scalar( slurp_file($candidate) ), $candidate );
     }
 
     # 3. default
     return (
-      { env => { BEDROCK_CONFIG_PATH => "$dist_dir/config", },
+      encode_json(
+        { env => { BEDROCK_CONFIG_PATH => "$dist_dir/config", },
 
-        aliases => {
-          '/bedrock/css'        => "$dist_dir/css",
-          '/bedrock/javascript' => "$dist_dir/javascript",
-          '/bedrock/img'        => "$dist_dir/img",
-        },
+          aliases => {
+            '/bedrock/css'        => "$dist_dir/css",
+            '/bedrock/javascript' => "$dist_dir/javascript",
+            '/bedrock/img'        => "$dist_dir/img",
+          },
 
-        # Legacy structure mapping to new service_config
-        service_config => {
-          overrides => {
-            BEDROCK_CONFIG_PATH    => "$dist_dir/config",
-            LOG4PERL               => "$dist_dir/config/log4perl.conf",
-            BEDROCK_INCLUDE_DIR    => "$dist_dir/include",
-            BEDROCK_IMAGE_DIR      => "$dist_dir/img",
-            BEDROCK_PEBBLE_DIR     => "$dist_dir/pebbles",
-            BEDROCK_ERROR_LOCATION => "$dist_dir/htdocs/error.roc",
+          # Legacy structure mapping to new service_config
+          service_config => {
+            overrides => {
+              BEDROCK_CONFIG_PATH    => "$dist_dir/config",
+              LOG4PERL               => "$dist_dir/config/log4perl.conf",
+              BEDROCK_INCLUDE_DIR    => "$dist_dir/include",
+              BEDROCK_IMAGE_DIR      => "$dist_dir/img",
+              BEDROCK_PEBBLE_DIR     => "$dist_dir/pebbles",
+              BEDROCK_ERROR_LOCATION => "$dist_dir/htdocs/error.roc",
+            }
           }
         }
-      },
+      ),
       'default'
     );
   };
 
-  my $conf = decode_json( Bedrock::Template->new( encode_json($template), dist_dir => $dist_dir )->parse );
+  while ( $template =~ s/[@]dist_dir[@]/$dist_dir/xsmg ) { }
+
+  open my $fh, '<', \$template
+    or croak "ERROR: could not open handle on scalar\n";
+
+  my $conf = load_config( $fh, 1 );
+
+  close $fh;
 
   $conf->{_source} = $source;
 

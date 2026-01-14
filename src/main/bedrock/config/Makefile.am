@@ -66,7 +66,8 @@ CONFIG = \
     tagx_apps.xml.in
 
 CONF_FILES = \
-    log4perl.conf
+    log4perl.conf \
+    bedrock-docs.yml
 
 GCONFIG = $(CONFIG:.in=)
 

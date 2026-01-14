@@ -1,4 +1,4 @@
-package Bedrock::Cache::Shareable;
+package Bedrock::Cache::Shareable;  ## no critic
 
 use strict;
 use warnings;
@@ -12,6 +12,7 @@ use String::CRC32;
 use Time::HiRes qw(time);
 use List::Util qw(pairs);
 use Storable qw(freeze);
+use Compress::Zlib qw(memGzip memGunzip);
 
 use Role::Tiny::With;
 with 'Bedrock::Cache::Engine';
@@ -154,22 +155,55 @@ sub _prune {
   return;
 }
 
+package Bedrock::Cache::Shareable;  ## no critic
+
+use strict;
+use warnings;
+
+use Carp;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use IPC::Shareable;
+use IPC::SharedMem;
+use String::CRC32;
+use Time::HiRes qw(time);
+use List::Util qw(pairs);
+use Storable qw(freeze thaw);              # [Req] Native Serialization
+use Compress::Zlib qw(memGzip memGunzip);  # [NEW] Compression
+
+use Role::Tiny::With;
+with 'Bedrock::Cache::Engine';
+
+# ... (Constants and Monkey Patch remain unchanged) ...
+
+########################################################################
+# INTERFACE CONTRACT
+########################################################################
+
 ########################################################################
 sub set {  ## no critic
 ########################################################################
   my ( $self, $key, $value, %opts ) = @_;
 
-  # AGGRESSIVE PRUNING:
-  # Clean up ALL expired keys in the segment before adding new data.
-  # This ensures we don't hit the segment size limit due to "dead" data.
   $self->_prune();
 
   my $ttl    = $opts{ttl};
   my $expiry = $ttl ? ( time() + $ttl ) : 0;
 
+  # 1. SERIALIZE (Turn Ref into String)
+  # Even if it's a scalar, freeze ensures consistency
+  my $frozen = freeze($value);
+
+  # 2. COMPRESS (Shrink the String)
+  # This massively reduces the footprint in Shared Memory
+  my $compressed = memGzip($frozen);
+
+  # Fallback if compression failed (rare)
+  my $payload = defined $compressed ? $compressed : $frozen;
+
   my $envelope = {
-    d => $value,  # Payload
-    e => $expiry  # Expiry (0 means never)
+    d => $payload,
+    e => $expiry
   };
 
   $self->{_cache}->{$key} = $envelope;
@@ -182,21 +216,35 @@ sub get {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  # AGGRESSIVE PRUNING:
-  # Clean up ALL expired keys in the segment before retrieval.
   $self->_prune();
 
   my $envelope = $self->{_cache}->{$key};
   return
     if !$envelope;
 
-  # Double check specific key (though _prune should have caught it)
   if ( $envelope->{e} && time() > $envelope->{e} ) {
     delete $self->{_cache}->{$key};
     return;
   }
 
-  return $envelope->{d};
+  my $payload = $envelope->{d};
+
+  # 1. DECOMPRESS
+  my $unzipped = memGunzip($payload);
+
+  # If gunzip returns undef, the data might be legacy (uncompressed).
+  # Use payload as-is in that case.
+  my $data_to_thaw = defined $unzipped ? $unzipped : $payload;
+
+  # 2. DESERIALIZE
+  my $thawed = eval { thaw($data_to_thaw) };
+
+  if ($EVAL_ERROR) {
+    # Fallback: Maybe it wasn't frozen? Return raw.
+    return $data_to_thaw;
+  }
+
+  return $thawed;
 }
 
 ########################################################################
@@ -204,23 +252,20 @@ sub touch {
 ########################################################################
   my ( $self, $key, $ttl ) = @_;
 
-  return 0
-    if !$self->exists($key);
+  return 0 if !$self->exists($key);
 
-  # Critical Section (Write Lock)
   my $cache    = $self->{_cache};
   my $envelope = $cache->{$key};
 
-  return 0
-    if !$envelope;
+  return 0 if !$envelope;
 
-  # Update the expiry time (0 = Persist/Forever)
   $envelope->{e} = $ttl ? ( time() + $ttl ) : 0;
-
-  # FORCE STORE: Writing back to the hash triggers the IPC sync/lock
   $cache->{$key} = $envelope;
 
-  return $envelope->{d};
+  # Return the Decompressed/Thawed data to be consistent with get()
+  my $payload  = $envelope->{d};
+  my $unzipped = memGunzip($payload) // $payload;
+  return eval { thaw($unzipped) } // $unzipped;
 }
 
 ########################################################################

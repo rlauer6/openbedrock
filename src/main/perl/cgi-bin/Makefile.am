@@ -5,7 +5,7 @@
 
 CGI_TEMPLATES = \
     bedrock.cgi.in \
-    bedrock-docs.cgi.in
+    bedrock-service.cgi.in
 
 # "static" scripts
 SSCRIPTS =
@@ -56,7 +56,7 @@ bedrock.cgi: Makefile
 	chmod a-w "$@"      ;\
 	chmod a+rx "$@"
 
-bedrock-docs.cgi: bedrock-docs.cgi.in
+bedrock-service.cgi: bedrock-service.cgi.in
 	set -e ;\
 	rm -f "$@" "$@.tmp" ;\
 	_t_base="$$(echo "$@" | sed -e 's/[-]$(VERSION)$$//')" ;\

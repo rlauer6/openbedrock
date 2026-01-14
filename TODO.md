@@ -1,43 +1,17 @@
-# The Bedrock 3 TODO List
+# TODO
 
-## Benchmark
+* [ ] re-factor mod_perl handlers as Bedrock::Services
+* [ ] deprecate Apache::BedrockDocs, Apache::Autocomplete
+* [ ] rewrite tests for autocomplete
+* [ ] update documentation server
+  * [ ] add cache clearing
+* [ ] update bedrock-cache.pl
+  * [ ] tablular format
+  * [ ] key sizes
+  * [ ] expiration times
 
-Create some benchmarks to set the state for optimizing Bedrock.
 
-## Create a test suite
-
-Create a test suite for Bedrock, preferably based on Test::More.  This
-is currently a work in progress!
-
-```
-$ cd src/main/perl
-$ make test
-```
-
-## Move some features to separate packages
-
-Try to create a lighter install by moving certain files into a
-bedrock-extras RPM. Candidates might include:
-
-* Simple BLMs
-* BLM/Filter/*
-* Startup BLMs (session handlers)
-* Utilities (bedrock-plugin, bedrock-cache)
-
-## Update the BUG
-
-Update the Bedrock User's Guide based on changes over the last 2
-years.
-
-## Create a continuous integration build script
-
-Re-write the build-bedrock-rpm script formerly used in the CVS
-distribution.  This is currently a work in progress! A basic build
-script has been created.
-
-    $ ./build -h
-
-## Re-implement the Bedrock parser
+# Re-implement the Bedrock parser
 
 The Bedrock parser is not that great, but it sortakinda works.
 Although it works, it limits what we can do with the Bedrock
@@ -54,17 +28,19 @@ around the same time (late '90s) that Bedrock was being developed
 chose to use a syntax that clearly indicates the constructs are not
 HTML tags.
 
-    Hello [% world %]!
+```
+Hello [% world %]!
+```
 
-..in TT would look like
+Bedrock 4 needs to consider <% %> or [% %] as the tag
+indicators instead of:
 
-    Hello <var $world>!
-
-..in Bedrock. Bedrock 3 needs to consider <% %> or [% %] as the tag
-indicators.
+```
+Hello <var $world>!
+```
 
 In hindsight, I think TT got it right with that syntax, however when
-we allow things like:
+TT is a bit too liberal allowing perlish constructions like:
 
      [% USE DBI( database = 'dbi:mysql:dbname',
                  username = 'guest',
@@ -76,7 +52,7 @@ we allow things like:
      [% END %]
      </ul>
    
-...I start to get nervous.  We wanted something that looks less like
+...which is too much like programming. We wanted something that looks less like
 programming.
 
      <sqlselect "select * from customers">
@@ -91,9 +67,11 @@ tag does allow one to override those mechanisms).
 
 Regardless, the parser needs work and I'd like to see the parser
 become a pre-compiler that creates Bedrock p-code that can
-subsequently be executed by a runtime p-code interpreter.  Primarily
-this would speed page parsing.  Alternately, we could parse Bedrock
-pages into Perl.  Which, achieves the same objective.
+subsequently be executed by a runtime p-code interpreter. Absolutely
+no idea how to do that...
+
+Primarily this would speed page parsing.  Alternately, we could parse
+Bedrock pages into Perl. Which, achieves the same objective.
 
 The parser also makes adding new features a bit burdensome, especially
 given the way Bedrock parses tags and options.  Take for example this
@@ -180,7 +158,7 @@ of an expression in an <if> tag.
 
     <if $foo --eq "bar">....</if>
 
-Anything more complex that that, will require parens.
+Anything more complex than that, will require parens.
 
     <if (($foo --eq "bar") --and ($baz --eq "buz"))>...</if>
 

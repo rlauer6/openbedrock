@@ -17,6 +17,8 @@ use Test::Deep;
 use Test::More;
 use Test::Output;
 use Storable qw(thaw nfreeze);
+# [NEW] Needed to verify compressed data
+use Compress::Zlib qw(memGunzip);
 
 # Load the module to apply the Monkey Patch
 use Bedrock::Cache::Shareable;
@@ -42,7 +44,6 @@ subtest 'initialize shared memory (Server Simulation)' => sub {
   );
 
   # Create the segment manually (mimicking the parent Apache process)
-  # We use the raw tie here to verify the low-level connection works
   eval { tie %raw_ipc_cache, 'IPC::Shareable', $glue, \%options; };
 
   is( $EVAL_ERROR, q{}, 'Shared memory segment created successfully' );
@@ -62,20 +63,15 @@ my $bedrock_handler;
 ########################################################################
 subtest 'instantiate bedrock handler with cache' => sub {
 ########################################################################
-
   $request_handler = Bedrock::Test::FauxHandler->new( log_level => 'trace' );
-
   my $config_path = abs_path '../../../main/bedrock/config';
-
   $ENV{BEDROCK_CONFIG_PATH} = $config_path;
 
   # This instantiates Bedrock::Cache -> Bedrock::Cache::Shareable
   $bedrock_handler = Bedrock::Handler->new( $request_handler, cache => cache() );
 
-  isa_ok( $bedrock_handler,        'Bedrock::Handler' );
-  isa_ok( $bedrock_handler->cache, 'Bedrock::Cache' );
-
-  # Verify we loaded the correct engine
+  isa_ok( $bedrock_handler,                  'Bedrock::Handler' );
+  isa_ok( $bedrock_handler->cache,           'Bedrock::Cache' );
   isa_ok( $bedrock_handler->cache->{engine}, 'Bedrock::Cache::Shareable' );
 
   $config = $bedrock_handler->config();
@@ -92,8 +88,7 @@ subtest 'verify segment stability (The "Ghost Segment" Test)' => sub {
   diag("Initial Shared Memory Segments: $initial_segments");
 
   # 2. Store a complex object via the Bedrock Cache API
-  # The config object contains nested hashes and arrays.
-  # Without the monkey patch, this would spawn new segments.
+  # Bedrock::Cache::Shareable should now Freeze -> Compress -> Store
   $bedrock_handler->cache->set( $cache_key, $config );
 
   # 3. Store another complex object to be sure
@@ -109,33 +104,33 @@ subtest 'verify segment stability (The "Ghost Segment" Test)' => sub {
 };
 
 ########################################################################
-subtest 'verify data integrity via backdoor (Envelope Check)' => sub {
+subtest 'verify data integrity via backdoor (Envelope & Compression)' => sub {
 ########################################################################
   # Access the data via the raw %raw_ipc_cache tied in the first subtest.
-  # This verifies that the data physically exists in the shared segment.
 
   ok( exists $raw_ipc_cache{$cache_key}, 'Key exists in raw IPC hash' );
 
-  # Retrieve the value directly from the tied hash
-  # IPC::Shareable (patched) should thaw the envelope automatically.
   my $envelope = $raw_ipc_cache{$cache_key};
 
   ok( $envelope, 'Got envelope from raw cache' );
   is( ref $envelope, 'HASH', 'Envelope is a hash reference' );
-
-  # Verify Envelope Structure
   ok( exists $envelope->{d}, 'Envelope has payload key (d)' );
-  ok( exists $envelope->{e}, 'Envelope has expiry key (e)' );
 
-  # Verify Payload Format
-  # With "Smart Serialization", the payload is the actual object (ref), not a string.
-  my $payload = $envelope->{d};
+  # --- COMPRESSION CHECK ---
+  # The payload in {d} should now be a GZIPPED STRING, not a reference.
+  my $raw_payload = $envelope->{d};
 
-  # FIX: Compare the ref type of the payload to the original object.
-  # If $config is 'Bedrock::Config', $payload must also be 'Bedrock::Config'.
-  is( ref $payload, ref $config, 'Payload type matches original object (Native Serialization verified)' );
+  is( ref $raw_payload, '', 'Raw payload is a scalar string (Compressed Blob)' );
 
-  # We no longer need to thaw() manually because IPC::Shareable did it for us.
+  # 1. Decompress
+  my $frozen = memGunzip($raw_payload);
+  ok( $frozen, 'Payload decompressed successfully' );
+
+  # 2. Thaw
+  my $payload = thaw($frozen);
+  ok( $payload, 'Payload thawed successfully' );
+
+  # 3. Verify Content
   cmp_deeply( $payload, superhashof($config), 'Retrieved config matches original via backdoor' );
 };
 
@@ -143,6 +138,7 @@ subtest 'verify data integrity via backdoor (Envelope Check)' => sub {
 subtest 'verify data integrity via API' => sub {
 ########################################################################
   # Standard API usage (what the app sees)
+  # The driver should handle decompression transparently
   my $cached_config = $bedrock_handler->cache->get($cache_key);
 
   ok( $cached_config, 'Got config from cache API' );

@@ -1,0 +1,143 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Bedrock qw(choose);
+use Carp qw(croak);
+use English qw(-no_match_vars);
+use File::Basename qw(fileparse);
+use Module::Load;
+
+# ==============================================================================
+# MAIN DISPATCH LOGIC
+# ==============================================================================
+
+# 1. Determine the Service Name from the script filename
+#    e.g. "/cgi-bin/autocomplete.cgi" -> "autocomplete"
+
+my $service_name = choose {
+  # (suffix only)
+  return $ENV{BEDROCK_SERVICE_NAME}
+    if $ENV{BEDROCK_SERVICE_NAME};
+
+  my ($source) = grep { !!$_ } (@ENV{qw(SCRIPT_FILENAME SCRIPT_NAME)}, $PROGRAM_NAME);
+
+  my ($name, $path, $ext) = fileparse($source, qr/\.[^.]*$/);
+
+  # 2. Normalize to Perl Class Case (Kebab/Snake -> CamelCase)
+  #    e.g. "autocomplete"      -> "Autocomplete"
+  #    e.g. "customer-lookup"   -> "CustomerLookup"
+  #    e.g. "system_status"     -> "SystemStatus"
+  $name =~ s/(?:^|[-_])(.)/uc($1)/ge;
+
+  return $name;
+};
+
+
+# 3. Construct the full Class Name
+my $service_class = "Bedrock::Service::$service_name";
+
+# 4. Load and Execute
+eval {
+    load $service_class;
+    $service_class->new->handler();
+};
+
+# Log the crash to the error log before dying
+croak "Failed to execute service [$service_class] from [$PROGRAM_NAME]:\n$EVAL_ERROR"
+  if $EVAL_ERROR;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+bedrock-service.cgi - Universal Dispatcher for Bedrock Services
+
+=head1 SYNOPSIS
+
+  # 1. Create the dispatcher (one time only)
+  cp bedrock-service.cgi /var/www/cgi-bin/
+
+  # 2. Deploy a new service via Symlink
+  cd /var/www/cgi-bin
+  ln -s bedrock-service.cgi autocomplete.cgi
+  ln -s bedrock-service.cgi customer-lookup.cgi
+
+=head1 DESCRIPTION
+
+This script acts as a "Front Controller" for Bedrock Services running
+in a CGI environment. It eliminates the need to write unique wrapper
+scripts for every new service you deploy.
+
+Instead of creating a new C<.cgi> file for every service, you simply
+create a symbolic link to this script. The dispatcher uses the name
+of the symbolic link to determine which C<Bedrock::Service> class to
+load and execute.
+
+=head1 NAMING CONVENTIONS
+
+The dispatcher uses a strict convention to map the script filename
+(the symlink) to a Perl package name. It assumes all services live
+under the C<Bedrock::Service::*> namespace.
+
+It performs the following transformations:
+
+=over 4
+
+=item 1. Strips the Extension
+
+C<autocomplete.cgi> -> C<autocomplete>
+
+=item 2. Converts Kebab-Case/Snake_Case to CamelCase
+
+=over 4
+
+=item * C<autocomplete> -> C<Autocomplete>
+
+=item * C<customer-lookup> -> C<CustomerLookup>
+
+=item * C<system_status> -> C<SystemStatus>
+
+=back
+
+=item 3. Prepends the Namespace
+
+C<CustomerLookup> -> C<Bedrock::Service::CustomerLookup>
+
+=back
+
+=head1 EXAMPLES
+
+  Symlink Name          | Loads Class
+  ----------------------|----------------------------------
+  autocomplete.cgi      | Bedrock::Service::Autocomplete
+  user-session.cgi      | Bedrock::Service::UserSession
+  api-v2-search.cgi     | Bedrock::Service::ApiV2Search
+
+=head1 TROUBLESHOOTING
+
+=head2 500 Internal Server Error
+
+If you see a 500 error, check your server's error log. The dispatcher
+traps load errors and prints them to STDERR.
+
+Common causes:
+
+=over 4
+
+=item * The symlink name does not match the Perl module name (typos).
+
+=item * The Perl module is not in C<@INC>.
+
+=item * The Perl module has syntax errors.
+
+=back
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut

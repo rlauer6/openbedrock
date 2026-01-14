@@ -25,6 +25,7 @@ use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Context;
 use Bedrock::Handler;
 use Bedrock::Hash;
+use Benchmark;
 use Carp;
 use Cwd qw(abs_path);
 use Data::Dumper;
@@ -38,6 +39,7 @@ use Module::Load;
 use Scalar::Util qw(reftype blessed);
 use Text::TagX;
 use Text::URLEncode qw(Htmlencode);
+use Time::HiRes qw(time);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -90,19 +92,31 @@ sub handler : method {
 ########################################################################
   my ( $class_or_self, $r ) = @_;
 
+  my $t0 = Benchmark->new;
+
   # 1. CLI / Testing Mode
   if ( !defined $r && !is_web() ) {
     my $cli_obj = blessed($class_or_self) ? $class_or_self : $class_or_self->new();
     return $cli_obj->handle_cli();
   }
 
+  my $t1 = Benchmark->new;
+
   # 2. Web Mode
   my $self = choose {
+
     return $class_or_self
       if blessed($class_or_self) && $class_or_self->isa(__PACKAGE__);
 
     return $class_or_self->new( request => $r );
   };
+
+  my $t2 = Benchmark->new;
+  my $td = timediff( $t2, $t1 );
+
+  $self->request->log->notice( sprintf 'handler setup complete: (%s)', timestr($td) );
+
+  $t1 = $t2;
 
   # 3. SAFETY NET: Inject Request if Missing
   if ( $r && !$self->request ) {
@@ -110,14 +124,34 @@ sub handler : method {
     $self->init_request_dependent_objects();
   }
 
-  my $status = eval { return $self->dispatch() };
+  $t2 = Benchmark->new;
+  $td = timediff( $t2, $t1 );
+  $t1 = $t2;
 
-  if ($EVAL_ERROR) {
+  $self->request->log->notice( sprintf 'request setup complete: (%s)', timestr($td) );
+
+  my $status = eval { return $self->dispatch() };
+  my $err    = $EVAL_ERROR;
+
+  $t2 = Benchmark->new;
+  $td = timediff( $t2, $t1 );
+  $self->request->log->notice( sprintf 'dispatch complete: (%s)', timestr($td) );
+  $t1 = $t2;
+
+  if ($err) {
     $self->handle_exception($EVAL_ERROR);
   }
 
   # Explicit flush ONLY.
   $self->flush_output();
+
+  if ( my $session = $self->get('session') ) {
+    $session->closeBLM;
+  }
+
+  $t2 = Benchmark->new;
+  $td = timediff( $t2, $t1 );
+  $self->request->log->notice( sprintf 'closeBLM time: (%s)', timestr($td) );
 
   return 0;
 }
@@ -131,7 +165,12 @@ sub init_request_dependent_objects {
     if !$self->request;
 
   if ( !$self->bedrock_handler ) {
-    my $bedrock_handler = Bedrock::Handler->new( $self->request, $self->cache ? ( cache => Bedrock::cache() ) : () );
+    my $bedrock_handler = Bedrock::Handler->new(
+      $self->request,
+      benchmarking_enabled => 1,
+      $self->cache ? ( cache => Bedrock::cache() ) : ()
+    );
+
     $self->bedrock_handler($bedrock_handler);
 
     my $config = $bedrock_handler->get_config;
@@ -420,15 +459,16 @@ sub install {
     push @core_lines, qq{$directive BEDROCK_BASE_URI "$base_uri"};
   }
 
-  if ( $args{env_vars} && ref $args{env_vars} eq 'HASH' ) {
-    foreach my $p ( pairs %{ $args{env_vars} } ) {
-      my ( $key, $val ) = @{$p};
-      push @core_lines, qq{$directive $key "$val"};
-    }
+  $args{env_vars} //= {};
+
+  foreach my $p ( pairs %{ $args{env_vars} } ) {
+    my ( $key, $val ) = @{$p};
+    push @core_lines, qq{$directive $key "$val"};
   }
 
   # 2. Additive Logic: Call the hooks for EXTRA config
-  my @pre_lines  = $instance->apache_config_pre( \%args );
+  my @pre_lines = $instance->apache_config_pre( \%args );
+
   my @body_lines = $instance->apache_config_body( \%args );
 
   # 3. Assemble
@@ -443,8 +483,6 @@ sub install {
 # Generated: $timestamp
 # Source: $script_path
 <IfModule mod_perl.c>
-    # Pre-compile
-    PerlRequire "$script_path"
     $pre_config
     <LocationMatch "$location_regex">
         SetHandler modperl
@@ -468,7 +506,7 @@ END_APACHE
 </LocationMatch>
 <Directory "$FindBin::Bin">
     <Files "$script_file">
-        Options +ExecCGI
+        Options +ExecCGI +FollowSymLinks
         Require all granted
     </Files>
 </Directory>

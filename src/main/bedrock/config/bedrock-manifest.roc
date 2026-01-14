@@ -36,9 +36,9 @@
       "file_mode" : "0700",
       "files" : [
         {
-          "source" : "<var $source.cgibin>/bedrock-docs.cgi",
+          "source" : "<var $source.cgibin>/bedrock-service.cgi",
           "name" : [
-            "bedrock-docs.cgi"
+            "bedrock-service.cgi"
           ]
         }
       ]
@@ -55,7 +55,8 @@
           "pod_paths.xml",
           "markdown_paths.xml",
           "log4perl.conf",
-          "bedrock.users"
+          "bedrock.users",
+          "bedrock-docs.yml"
           ]
        }
       ]
