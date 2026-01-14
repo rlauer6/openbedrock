@@ -56,7 +56,8 @@
           "markdown_paths.xml",
           "log4perl.conf",
           "bedrock.users",
-          "bedrock-docs.yml"
+          "bedrock-docs.yml",
+          "bedrock-miniserver.yml"
           ]
        }
       ]

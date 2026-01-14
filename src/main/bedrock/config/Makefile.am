@@ -67,7 +67,8 @@ CONFIG = \
 
 CONF_FILES = \
     log4perl.conf \
-    bedrock-docs.yml
+    bedrock-docs.yml \
+    bedrock-miniserver.yml
 
 GCONFIG = $(CONFIG:.in=)
 

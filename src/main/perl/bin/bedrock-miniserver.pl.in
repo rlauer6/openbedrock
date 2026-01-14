@@ -1,12 +1,13 @@
 #!/usr/bin/env perl
+#
 # ...a lightweight HTTP server harness for Bedrock services.
-
+#
 package main;
 
 use strict;
 use warnings;
 
-# 1. FILE-SCOPED LEXICALS (used to pass values to HTTP::Server::Simple::CGI subclass)
+# FILE-SCOPED LEXICALS (used to pass values to HTTP::Server::Simple::CGI subclass)
 my %ALIAS;
 my $MOUNT_POINT;
 my $SERVICE_INSTANCE;
@@ -25,7 +26,7 @@ my %MIME_TYPES = (
 exit Bedrock::MiniServer::CLI->main();
 
 ########################################################################
-package Bedrock::MiniServer;  ## no critic
+package Bedrock::MiniServer; ## no critic
 ########################################################################
 
 use strict;
@@ -35,9 +36,16 @@ use Apache::Request::CGI;
 use Benchmark;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use Log::Log4perl;
 use POSIX qw(strftime);
 
 use parent qw(HTTP::Server::Simple::CGI);
+
+# allow us to use cspec for Log::Log4perl
+{ ## no critic
+  no warnings 'once'; ## no critic
+  $Log::Log4perl::Config->allow_code(1);
+}
 
 ########################################################################
 sub handle_request {
@@ -94,7 +102,7 @@ sub handle_request {
 
   my $td = timediff( $t1, $t0 );
 
-  $r->log->notice( sprintf '%s - %s (%s)', $cgi->request_method, $path, timestr($td) );
+  $r->log->notice( sprintf '%s %s (%s)', $cgi->request_method, $path, timestr($td) );
 
   return;
 }
@@ -150,16 +158,15 @@ sub _serve_static {
 }
 
 ########################################################################
-package Bedrock::MiniServer::CLI;  ## no critic
+package Bedrock::MiniServer::CLI; ## no critic
 ########################################################################
 
-use Bedrock qw(choose slurp_file);
+use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
-use File::ShareDir qw(dist_dir);
 use JSON qw(encode_json decode_json);
 use Module::Load;
 use List::Util qw(pairs);
@@ -204,25 +211,25 @@ sub cmd_start_server {
   if ( $server_config->{env} && ref $server_config->{env} eq 'HASH' ) {
     foreach my $p ( pairs %{ $server_config->{env} } ) {
       my ( $k, $v ) = @{$p};
-      $ENV{$k} = $v;  ## no critic
+      $ENV{$k} = $v; ## no critic
     }
   }
 
-  $ENV{GATEWAY_INTERFACE} = 'CGI/1.1';  ## no critic
+  $ENV{GATEWAY_INTERFACE} = 'CGI/1.1'; ## no critic
 
-  # 3. Resolve Service Class
+  # 3. Resolve Service Class , env->cli->config
   my $service_class
     = $ENV{BEDROCK_SERVICE}
     || $self->get_service
     || $server_config->{service_class}
-    || $server_config->{BEDROCK_SERVICE};  # Legacy fallback
+    || $server_config->{BEDROCK_SERVICE};
+
+  croak "ERROR: no service!\nUse --service, BEDROCK_SERVICE or set service_class in configuration file.\n"
+    if !$service_class;
 
   if ( $service_class !~ /\ABedrock::Service/xsm ) {
     $service_class = "Bedrock::Service::$service_class";
   }
-
-  croak "ERROR: no service defined! Use --service, config file, or set BEDROCK_SERVICE.\n"
-    if !$service_class;
 
   $SERVICE_CLASS = $service_class;
 
@@ -292,66 +299,40 @@ sub init {
 ########################################################################
   my ($self) = @_;
 
-  # 3. Fallback: Generate Defaults (Original File::ShareDir behavior)
-  my $dist_dir = dist_dir('Bedrock');
-  $self->set_dist_dir($dist_dir);
+  $self->set_dist_dir($BEDROCK_DIST_DIR);
 
-  my ( $template, $source ) = choose {
-    # 1. Explicit CLI option
-    if ( my $config_file = $self->get_config ) {
+  my $config_file = $self->get_config;
 
-      croak "Configuration file not found: $config_file"
-        if !-e $config_file;
+  if ($config_file) {
+    my @paths = grep {defined} ( q{}, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, $BEDROCK_DIST_DIR );
+    foreach my $p (@paths) {
+      if ( $p !~ m{\z/}xsm ) {
+        $p = "$p/";
+      }
 
-      return ( scalar( slurp_file($config_file) ), $config_file );
+      next if !"$p$config_file";
+      $config_file = "$p$config_file";
+      last;
     }
+  }
 
-    # 2. Auto-discovery (Polymorphic Config)
-    foreach my $ext (qw(json yaml yml xml)) {
-      my $candidate = "miniserver.$ext";
-      next if !-e $candidate;
+  $config_file //= sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
 
-      return ( scalar( slurp_file($candidate) ), $candidate );
-    }
+  croak "Configuration file not found: $config_file"
+    if !-e $config_file;
 
-    # 3. default
-    return (
-      encode_json(
-        { env => { BEDROCK_CONFIG_PATH => "$dist_dir/config", },
+  my $config = slurp_file($config_file);
 
-          aliases => {
-            '/bedrock/css'        => "$dist_dir/css",
-            '/bedrock/javascript' => "$dist_dir/javascript",
-            '/bedrock/img'        => "$dist_dir/img",
-          },
+  while ( $config =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg ) { }
 
-          # Legacy structure mapping to new service_config
-          service_config => {
-            overrides => {
-              BEDROCK_CONFIG_PATH    => "$dist_dir/config",
-              LOG4PERL               => "$dist_dir/config/log4perl.conf",
-              BEDROCK_INCLUDE_DIR    => "$dist_dir/include",
-              BEDROCK_IMAGE_DIR      => "$dist_dir/img",
-              BEDROCK_PEBBLE_DIR     => "$dist_dir/pebbles",
-              BEDROCK_ERROR_LOCATION => "$dist_dir/htdocs/error.roc",
-            }
-          }
-        }
-      ),
-      'default'
-    );
-  };
-
-  while ( $template =~ s/[@]dist_dir[@]/$dist_dir/xsmg ) { }
-
-  open my $fh, '<', \$template
+  open my $fh, '<', \$config
     or croak "ERROR: could not open handle on scalar\n";
 
   my $conf = load_config( $fh, 1 );
 
   close $fh;
 
-  $conf->{_source} = $source;
+  $conf->{_source} = $config_file;
 
   $self->set_server_config($conf);
 
@@ -437,11 +418,12 @@ public> header to facilitate browser caching during development.
 The server initializes C<Log::Log4perl> using the configuration file
 shipped with the Bedrock distribution.
 
-To prevent developers from being overwhelmed by internal framework
-logs (the "Bedrock category trap"), a specific logging category
-B<C<Bedrock::Service>> has been defined in the default
-configuration. You should target this category when tuning log levels
-for your application logic.
+Since your service is a subclass of B<Bedrock::Service>, it uses the
+logging facilities provided by the framework. To prevent developers
+from being overwhelmed by internal framework logs, a specific logging
+category B<C<Bedrock::Service>> has been defined in the default
+configuration. You should target this category (or your own service's
+class name) when tuning log levels for your application logic.
 
 B<Locating the Configuration File:>
 
@@ -450,12 +432,15 @@ from INFO to DEBUG), you must edit the C<log4perl.conf> file located
 in the installed distribution directory. You can find the exact path
 by running the following command:
 
-  perl -MFile::ShareDir=dist_dir -e 'printf "%s/config/log4perl.conf\n", dist_dir("Bedrock");'
+  perl -MBedrock -e 'print "$Bedrock::BEDROCK_DIST_DIR/config/log4perl.conf\n"'
 
 =head1 CONFIGURATION
 
-The server looks for a configuration file in the current directory named 
-C<miniserver.{json|yaml|xml}>. 
+The server looks for a configuration file in the current directory,
+then in C<BEDROCK_CONFIG_PATH>, C<CONFIG_PATH> and finally Bedrock's
+distribution directory. If no configuration file is specified defaults
+to the distributions's F<bedrock-miniserver.yml>. In that case you
+must at least supply the service name using the C<--service> option.
 
 =head2 Example JSON Configuration
 
@@ -480,34 +465,6 @@ C<miniserver.{json|yaml|xml}>.
     },
     "service_class": "MyApp::Service"
   }
-
-=head1 DESCRIPTION
-
-This script provides a standalone HTTP server for Bedrock applications.
-It mimics a production Apache environment by injecting configuration
-data and environment variables before the Bedrock Service initializes.
-
-=head1 OPTIONS
-
-=over 4
-
-=item B<--config | -c>
-
-Specify a path to a configuration file (JSON, YAML, or XML).
-
-=item B<--service | -s>
-
-B<Required> (unless in config). The Perl class name of the Bedrock Service.
-
-=item B<--port | -p>
-
-The port to listen on. Defaults to C<8080>.
-
-=item B<--mount-point | -m>
-
-The URL path where the application is rooted. Defaults to C</>.
-
-=back
 
 =head1 EXIT STATUS
 
