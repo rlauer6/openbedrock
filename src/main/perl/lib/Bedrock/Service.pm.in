@@ -20,14 +20,15 @@ sub throw     { die shift; }
 package Bedrock::Service; ## no critic
 ########################################################################
 
-use Bedrock qw(:booleans resolve_stream choose);
+use Bedrock qw(:booleans resolve_stream choose to_snake_case);
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Context;
 use Bedrock::Handler;
 use Bedrock::Hash;
+use Bedrock::LoadConfig qw(load_config);
 use Benchmark;
 use Carp;
-use Cwd qw(abs_path);
+use Cwd qw(getcwd abs_path);
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
@@ -73,7 +74,6 @@ __PACKAGE__->mk_accessors(
     cache
     cgi
     config
-    content_type
     context
     cookieless
     dispatch_action
@@ -123,6 +123,7 @@ sub handler : method {
   # 3. SAFETY NET: Inject Request if Missing
   if ( $r && !$self->request ) {
     $self->request($r);
+    $self->content_type('text/html');
     $self->init_request_dependent_objects();
   }
 
@@ -846,23 +847,65 @@ sub init_session {
 ########################################################################
   my ($self) = @_;
 
-  return
-    if !$self->config || !blessed( $self->config ) || !$self->config->can('get_module_config');
+  my $config = $self->config;  # global config (probably at least tagx.xml)
 
-  my $session_manager = $ENV{BEDROCK_SESSION_MANAGER} // $self->config('BEDROCK_SESSION_MANAGER') // 'UserSession';
+  my $session_config;
 
-  my $config = $self->config->get_module_config($session_manager);
+  # 1. Find a session manager if we can
+  my $session_manager = choose {
+    if ( $self->service_config && $self->service_config->{session} ) {
+      $session_config = $self->service_config->{session}->{config};
+      return $self->service_config->{session}->{module};
+    }
 
-  return
-    if !$config;
+    return $ENV{BEDROCK_SESSION_MANAGER} // $config->{BEDROCK_SESSION_MANAGER};
+  };
 
-  $config->{cookieless_sessions} = $self->cookieless;
+  # 2. It's ok if we have no session manager, not all services require them
+  if ( !$session_manager ) {
+    $self->request->log->warn('No session manager defined.');
+    return;
+  }
 
-  my $class = "BLM::Startup::$session_manager";
+  # 3. All session managers must have a configuration
+  #
+  # 3 a. see if our global configuration MODULES array has a configuration for us
+  if ( !$session_config && $config && blessed($config) && $config->can('get_module_config') ) {
+    $session_config = $config->get_module_config($session_manager);
+  }
+
+  # 3 b. If we don't have a session configuration then we might still find one in Bedrock's
+  #      configuration path?
+  if ( !$session_config ) {
+    my ($name) = $session_manager =~ /::([^:]+)\z/xsm;
+    $name = to_snake_case($name);
+
+    my @paths = ( getcwd, $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} );
+    my $config_file;
+
+    foreach my $p (@paths) {
+      my $candidate = "$p/$name";
+      ($config_file) = grep { -e $_ } map {"$candidate/$_"} qw(.xml .yml .yaml .json);
+      last if $config_file;
+    }
+
+    $session_config = eval { load_config($config_file); };
+
+    croak "ERROR: error trying to load session configuration file: $config_file\n$EVAL_ERROR"
+      if $session_config || $EVAL_ERROR;
+  }
+
+  croak "ERROR: You defined a session manager ($session_manager) but I can't find its configuration?\n"
+    if !$session_config;
+
+  # the service itself may have told us about cookies
+  $session_config->{cookieless_sessions} //= $self->cookieless;
+
+  my $class = $session_manager =~ /\ABLM::Startup::/xsm ? $session_manager : "BLM::Startup::$session_manager";
 
   load $class;
 
-  my $session = $class->new( $self->context, $config );
+  my $session = $class->new( $self->context, $session_config );
 
   $self->context->session($session);
 
@@ -957,6 +1000,8 @@ sub clear {
   my ($self) = @_;
 
   delete $self->{output_buffer};
+  delete $self->{content_type};
+  delete $self->{headers};
 
   return $EMPTY;
 }
@@ -979,9 +1024,6 @@ sub flush_output {
     eval { $headers_sent = $self->request->bytes_sent; };
 
     if ( !$headers_sent ) {
-      if ( $self->content_type ) {
-        $self->set_content_type;
-      }
 
       if ( $self->request->can('send_http_header') ) {
         $self->request->send_http_header;
@@ -1134,6 +1176,26 @@ sub raise {
   }
 
   return Bedrock::Exception->new(@args)->throw;
+}
+
+########################################################################
+sub content_type {
+########################################################################
+  my ( $self, $type ) = @_;
+
+  # 1. Delegate strictly to the Request object
+  if ( $self->request ) {
+    if ( defined $type ) {
+      return $self->request->content_type($type);
+    }
+    return $self->request->content_type;
+  }
+
+  # 2. Fallback for CLI/Test modes (no Request object)
+  if ( defined $type ) {
+    $self->{_fallback_content_type} = $type;
+  }
+  return $self->{_fallback_content_type};
 }
 
 ########################################################################

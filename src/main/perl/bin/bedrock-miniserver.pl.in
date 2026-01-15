@@ -12,6 +12,7 @@ my %ALIAS;
 my $MOUNT_POINT;
 my $SERVICE_INSTANCE;
 my $SERVICE_CLASS;
+my %EXTRA_ENV;
 
 # for static assets
 my %MIME_TYPES = (
@@ -36,6 +37,7 @@ use Apache::Request::CGI;
 use Benchmark;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use List::Util qw(pairs);
 use Log::Log4perl;
 use POSIX qw(strftime);
 
@@ -79,6 +81,14 @@ sub handle_request {
     $ENV{REQUEST_METHOD} = $cgi->request_method();
     $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || q{};
     $ENV{REQUEST_URI}    = $cgi->path_info();
+    $ENV{HTTP_COOKIE}    = $cgi->http('Cookie');
+    $ENV{CONTENT_LENGTH} = $cgi->http('Content-Length');
+    $ENV{CONTENT_TYPE}   = $cgi->http('Content-Type');
+  }
+
+  foreach my $p ( pairs %EXTRA_ENV ) {
+    my ( $k, $v ) = @{$p};
+    $ENV{$k} = $v; ## no critic
   }
 
   $SERVICE_INSTANCE->request(undef);
@@ -161,7 +171,7 @@ sub _serve_static {
 package Bedrock::MiniServer::CLI; ## no critic
 ########################################################################
 
-use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR);
+use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
@@ -212,6 +222,7 @@ sub cmd_start_server {
     foreach my $p ( pairs %{ $server_config->{env} } ) {
       my ( $k, $v ) = @{$p};
       $ENV{$k} = $v; ## no critic
+      $EXTRA_ENV{$k} = $v;
     }
   }
 
@@ -219,10 +230,7 @@ sub cmd_start_server {
 
   # 3. Resolve Service Class , env->cli->config
   my $service_class
-    = $ENV{BEDROCK_SERVICE}
-    || $self->get_service
-    || $server_config->{service_class}
-    || $server_config->{BEDROCK_SERVICE};
+    = $ENV{BEDROCK_SERVICE} || $self->get_service || $server_config->{service_class} || $server_config->{BEDROCK_SERVICE};
 
   croak "ERROR: no service!\nUse --service, BEDROCK_SERVICE or set service_class in configuration file.\n"
     if !$service_class;
@@ -237,7 +245,36 @@ sub cmd_start_server {
   # We pass the entire 'service_config' block. The Service decides what to do with it.
   $SERVICE_INSTANCE = eval {
     load $service_class;
-    return $service_class->new( service_config => $server_config->{service_config} );
+
+    # regardless of how we got this class name we got one and it is
+    # valid identify the service in the config, let's make sure
+    # everyone knows the canonical name...
+    my $service_config = $server_config->{service_config} // {};
+    $service_config->{service_class} = $service_class;
+    $ENV{BEDROCK_CLASS} = $service_class; ## no critic
+    $self->set_service($service_class);
+
+    # check to see if there is no session manager pre-defined and we
+    # want the default...
+    my $session_config = $service_config->{session};
+
+    # skip if there is already a session configuration
+    if ( !$session_config ) {
+      if ( to_boolean( $service_config->{default_session}->{enabled} ) ) {
+        $session_config = $service_config->{default_session};
+        delete $session_config->{enabled};
+        $service_config->{session} = $session_config;
+
+        # the default will be to enable persistence...
+        if ( to_boolean( $session_config->{config}->{persistence_enabled} ) ) {
+          my ($session_file) = $service_class =~ /::([^:]+)\z/xsm;
+          $session_file = sprintf 'memory-session-%s.dat', $session_file;
+          $session_config->{config}->{session_file} //= $session_file;
+        }
+      }
+    }
+
+    return $service_class->new( service_config => $service_config );
   };
 
   croak "ERROR: could not load service: $service_class\n$EVAL_ERROR"
@@ -248,11 +285,7 @@ sub cmd_start_server {
 
   # Fallback logic: CLI -> Config -> Default
   if ( $MOUNT_POINT eq q{/} ) {
-    $MOUNT_POINT
-      = $server_config->{server}->{mount_point}
-      || $server_config->{mount_point}
-      || $server_config->{service_config}->{overrides}->{BEDROCK_ADMIN_DIR}
-      || q{/};
+    $MOUNT_POINT = $server_config->{server}->{mount_point} || $server_config->{mount_point} || q{/};
   }
 
   # 6. Setup Static Aliases
@@ -266,28 +299,35 @@ sub cmd_start_server {
 
   my $url = "http://localhost:$port$MOUNT_POINT";
 
-  print {*STDERR} q{=} x 60 . "\n";
-  print {*STDERR} "BEDROCK MINISERVER STARTUP\n";
-  print {*STDERR} q{=} x 60 . "\n";
-  print {*STDERR} sprintf "%-15s : %s\n", 'Service Class', $SERVICE_CLASS;
-  print {*STDERR} sprintf "%-15s : %s\n", 'Mount Point',   $MOUNT_POINT;
-  print {*STDERR} sprintf "%-15s : %s\n", 'Port',          $port;
-  print {*STDERR} sprintf "%-15s : %s\n", 'Config Source', $server_config->{_source} || 'Internal Defaults';
-  print {*STDERR} sprintf "%-15s : %s\n", 'Access URL',    $url;
-  print {*STDERR} q{-} x 60 . "\n";
-  print {*STDERR} "Static Asset Aliases:\n";
+  my $logger = $SERVICE_INSTANCE->request->log;
+
+  $logger->notice( q{=} x 60 );
+  $logger->notice('BEDROCK MINISERVER STARTUP');
+  $logger->notice( q{=} x 60 );
+  $logger->notice( sprintf '%-15s : %s', 'Service Class', $SERVICE_CLASS );
+  $logger->notice( sprintf '%-15s : %s', 'Mount Point',   $MOUNT_POINT );
+  $logger->notice( sprintf '%-15s : %s', 'Port',          $port );
+  $logger->notice( sprintf '%-15s : %s', 'Config Source', $server_config->{_source} || 'Internal Defaults' );
+  $logger->notice( sprintf '%-15s : %s', 'Access URL',    $url );
+  $logger->notice( q{-} x 60 );
+  $logger->notice('Static Asset Aliases:');
 
   if ( keys %ALIAS ) {
     foreach my $alias ( sort keys %ALIAS ) {
-      print {*STDERR} sprintf "  %-20s -> %s\n", $alias, $ALIAS{$alias};
+      $logger->notice( sprintf '  %-20s -> %s', $alias, $ALIAS{$alias} );
     }
   }
   else {
-    print {*STDERR} "  (None defined)\n";
+    $logger->notice('  (None defined)');
   }
 
-  print {*STDERR} q{=} x 60 . "\n";
-  print {*STDERR} "Ready for requests...\n";
+  $logger->notice( q{=} x 60 );
+  $logger->notice('Ready for requests...');
+
+  $SIG{INT} = sub { ## no critic
+    print {*STDERR} "\nStopping miniserver...\n";
+    exit 0;
+  };
 
   Bedrock::MiniServer->new($port)->run();
 
@@ -439,32 +479,25 @@ by running the following command:
 The server looks for a configuration file in the current directory,
 then in C<BEDROCK_CONFIG_PATH>, C<CONFIG_PATH> and finally Bedrock's
 distribution directory. If no configuration file is specified defaults
-to the distributions's F<bedrock-miniserver.yml>. In that case you
-must at least supply the service name using the C<--service> option.
+to the distribution's F<bedrock-miniserver.yml>.
 
-=head2 Example JSON Configuration
+B<Required Arguments:>
 
-  {
-    "server": {
-      "port": 8080,
-      "mount_point": "/app"
-    },
-    "env": {
-      "BEDROCK_CONFIG_PATH": "./config"
-    },
-    "aliases": {
-      "/bedrock/js": "./dist/js",
-      "/local/assets": "./src/assets"
-    },
-    "service_config": {
-      "maintenance_mode": true,
-      "overrides": {
-        "LOG4PERL": "./dev-log.conf",
-        "DB_DSN": "dbi:SQLite:dbname=dev.db"
-      }
-    },
-    "service_class": "MyApp::Service"
-  }
+If you are using the default configuration, you B<must> supply the
+service name using the C<--service> option:
+
+  bedrock-miniserver.pl --service MyApp::Service
+
+B<Default Session Behavior:>
+
+When using the default configuration, the server automatically configures
+B<BLM::Startup::MemorySession> with persistence enabled. It generates a
+session storage file in the current directory named:
+
+  memory-session-<service-name>.dat
+
+If you provide your own configuration file, you must configure the
+session manager and persistence settings manually.
 
 =head1 EXIT STATUS
 

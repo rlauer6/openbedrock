@@ -1,17 +1,30 @@
-# TODO
+# Bedrock Roadmap
 
-* [ ] re-factor mod_perl handlers as Bedrock::Services
-* [ ] deprecate Apache::BedrockDocs, Apache::Autocomplete
-* [ ] rewrite tests for autocomplete
-* [ ] update documentation server
-  * [ ] add cache clearing
+# 3.6.5
+* [ ] update documentation application
+  * [ ] add cache clearing to HTML page
 * [ ] update bedrock-cache.pl
   * [ ] tablular format
-  * [ ] key sizes
+  * [ ] key sizes, compressed/uncompressed?
   * [ ] expiration times
 
+# 3.6.6
+* [ ] rewrite tests for autocomplete
+* [ ] re-factor mod_perl handlers as Bedrock::Services
+  * [ ] BedrockSessionFiles
+  * [ ] BedrockAuthenticate
+  * [ ] BedrockForm (?)
+* [ ] deprecate Apache::BedrockDocs, Apache::Autocomplete
 
-# Re-implement the Bedrock parser
+# 3.7.x
+
+# 4.x.x
+
+## Bedrock Compiler
+
+TBD - insert Gemini notes here...
+
+## Update the Bedrock Parser
 
 The Bedrock parser is not that great, but it sortakinda works.
 Although it works, it limits what we can do with the Bedrock

@@ -362,6 +362,7 @@ perl5blmstartuplib_DATA = \
     BLM/Startup/Env.pm \
     BLM/Startup/Header.pm \
     BLM/Startup/Input.pm \
+    BLM/Startup/MemorySession.pm \
     BLM/Startup/MySQLSession.pm \
     BLM/Startup/PostgreSQLSession.pm \
     BLM/Startup/REST.pm \

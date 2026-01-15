@@ -1,0 +1,305 @@
+package BLM::Startup::MemorySession;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+
+use strict;
+use warnings;
+
+use parent qw(BLM::Startup::BaseSession);
+
+use Bedrock::Constants qw(:booleans);
+use Bedrock qw(:booleans);
+use Carp qw(croak carp);
+use Cwd qw(getcwd);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
+use Storable qw(store retrieve);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+# FILE-SCOPED LEXICALS
+my %STORAGE;
+
+my $BEDROCK_SESSION_FILE;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $ctx, $config ) = @_;
+
+  if ( to_boolean( $config->{persistence_enabled} ) ) {
+    croak "ERROR: define a session_file if you are enabling persistence.\n"
+      if !$config->{session_file};
+
+    $BEDROCK_SESSION_FILE = $config->{session_file};
+
+    _restore();  # this has to be done prior to create session class
+  }
+
+  return $class->SUPER::new( $ctx, $config );
+}
+
+########################################################################
+sub FETCH_SESSION {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $sid = $args{session};
+
+  return if !defined $sid || $sid eq q{};
+
+  my $session_raw_data = $STORAGE{$sid};
+
+  # Auto-vivify (Initialize) the entry if missing.
+  if ( !$session_raw_data ) {
+    $session_raw_data = {
+      data => {
+        prefs => '{}',  # BaseSession expects a serialized string (JSON)
+      },
+      expires => time + ( $args{expires} // $args{config}->{cookie}->{expiry_secs} ),
+    };
+
+    $STORAGE{$sid} = $session_raw_data;
+  }
+
+  if ( $session_raw_data->{expires} && time > $session_raw_data->{expires} ) {
+    $self->get_logger->info( sprintf 'session %s expired, removing data', $sid );
+    delete $STORAGE{$sid};
+    return;
+  }
+
+  # Data Mapping (Hash -> Array)
+  my $data = $session_raw_data->{data};
+
+  return [ @{$data}{qw(username firstname lastname email prefs)} ];
+}
+
+########################################################################
+sub STORE_SESSION {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $sid = $args{session};
+
+  return $FALSE if !defined $sid;
+  my $expires = $args{expires} // $args{config}->{cookie}->{expiry_secs} // 86_400;
+
+  $STORAGE{$sid} = {
+    data    => $args{data},
+    expires => time + $expires,
+  };
+
+  return $TRUE;
+}
+
+########################################################################
+sub KILL_SESSION {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $sid = $args{session};
+
+  return $FALSE if !defined $sid;
+
+  delete $STORAGE{$sid};
+
+  return $TRUE;
+}
+
+########################################################################
+sub destroy {
+########################################################################
+  my ($class) = @_;
+
+  my $file = $BEDROCK_SESSION_FILE;
+
+  return
+    if !$file;
+
+  # Ensure we have something to save
+  return if !keys %STORAGE;
+
+  my $dir = dirname($file);
+
+  if ( !-d $dir ) {
+    make_path($dir)
+      or carp "[MemorySession] Could not create storage dir $dir: $OS_ERROR";
+  }
+
+  eval { store( \%STORAGE, $file ); };
+
+  if ($EVAL_ERROR) {
+    carp "[MemorySession] Failed to dump sessions: $EVAL_ERROR";
+  }
+  else {
+    carp sprintf '[MemorySession] Dumped %s sessions to %s', scalar( keys %STORAGE ), $file;
+  }
+
+  return;
+}
+
+########################################################################
+sub _restore {
+########################################################################
+  # If we have no dump path we will assume this is some yahoo that
+  # is using BLM::Startup::MemorySession and doesn't know they then
+  # need to tell us to persist sessions.
+  my $file = $BEDROCK_SESSION_FILE // q{};
+
+  return $TRUE
+    if !$file;
+
+  if ( -e $file ) {
+    my $restored = eval { retrieve($file); };
+
+    if ( $restored && ref $restored eq 'HASH' ) {
+      %STORAGE = %{$restored};
+      carp sprintf '[MemorySession] Restored %s sessions from file %s', scalar( keys %STORAGE ), $file;
+    }
+  }
+
+  return;
+}
+
+########################################################################
+# Ensure it runs when the miniserver is killed via exit()
+# HTTP::Server::Simple calls exit() on SIGINT, so this block WILL fire.
+########################################################################
+END {
+########################################################################
+  __PACKAGE__->destroy();
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+BLM::Startup::MemorySession - Persistent In-Memory Session Driver for Bedrock Miniserver
+
+=head1 SYNOPSIS
+
+  # In bedrock-miniserver.yml
+  service_config:
+    default_session:
+      module: BLM::Startup::MemorySession
+      config:
+        persistence_enabled: yes
+        session_file: ./my-sessions.dat
+
+=head1 DESCRIPTION
+
+This module implements a lightweight, in-memory session driver
+designed specifically for the Bedrock Miniserver development
+environment.
+
+Unlike the production-grade C<UserSession>, C<RedisSession>, or other
+session managers, this module stores session data in a package-scoped
+lexical hash (C<%STORAGE>).
+
+=head2 Persistence
+
+To support development workflows where the server is frequently
+restarted (Ctrl-C), this module implements a file-based persistence
+strategy.
+
+B<Configuration:>
+
+Persistence is enabled by setting C<persistence_enabled> to true in
+the session configuration.
+
+You must also specify a C<session_file> B<unless> you are using the
+default Miniserver configuration. In that specific case, the Miniserver
+harness automatically injects a distinct file path for the active
+service.
+
+B<Miniserver Default Behavior:>
+
+When running under C<bedrock-miniserver.pl>, persistence is usually enabled
+by default. The miniserver automatically calculates a unique file path
+based on the running service class and injects it into the configuration.
+
+  # Example auto-generated filename
+  memory-session-docs.dat
+  memory-session-myapp.dat
+
+B<Lifecycle:>
+
+=over 4
+
+=item 1.
+
+On B<startup> (specifically, the first time a session is accessed via
+C<FETCH> or C<STORE>), it attempts to load the dump file specified
+in C<$ENV{BEDROCK_SESSION_FILE}>.
+
+=item 2.
+
+On B<shutdown> (triggered by the Perl C<END> block), it serializes the
+in-memory hash and dumps it to disk.
+
+=back
+
+=head1 METHODS
+
+=head2 FETCH_SESSION
+
+  $self->FETCH_SESSION( session => $sid );
+
+Retrieves the session data for the given ID.
+
+B<Auto-Vivification Behavior:>
+
+If a session ID is provided via cookie but does not exist in memory
+(e.g., the browser has a cookie from a previous run, but the dump file
+was deleted), this method will B<initialize> an empty session record
+rather than returning C<undef>. This prevents the "Ghost Session" loop
+where C<BaseSession> continually generates new IDs that are never
+saved.
+
+Returns an C<ARRAYREF> compatible with C<BLM::Startup::BaseSession::init_session>:
+C<[ $username, $firstname, $lastname, $email, $prefs ]>
+
+=head2 STORE_SESSION
+
+  $self->STORE_SESSION( session => $sid, data => $hashref, expires => $epoch );
+
+Stores the session data in the memory hash. The C<data> argument is
+expected to be a HashRef containing the user details and a serialized
+C<prefs> string.
+
+=head2 KILL_SESSION
+
+  $self->KILL_SESSION( session => $sid );
+
+Removes the session from memory.
+
+=head2 destroy
+
+  __PACKAGE__->destroy();
+
+Class method called automatically by the C<END> block. Serializes
+C<%STORAGE> using L<Storable> and saves it to disk.
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=cut
