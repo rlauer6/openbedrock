@@ -3,8 +3,6 @@ package Bedrock::Service::Autocomplete;
 use strict;
 use warnings;
 
-use parent qw(Bedrock::Service);
-
 use Bedrock qw(slurp_file  to_boolean);
 use Bedrock::Constants qw(:booleans :chars :http);
 use Data::Dumper;
@@ -12,6 +10,8 @@ use English qw(-no_match_vars);
 use File::Basename qw(basename);
 use JSON qw(decode_json);
 use Text::URLEncode qw(Encode);
+
+use parent qw(Bedrock::Service);
 
 # "Modulino" Hook
 caller or __PACKAGE__->new->handler;
@@ -21,13 +21,7 @@ sub new {
 ########################################################################
   my ( $class, %args ) = @_;
 
-  my $self = $class->SUPER::new(
-    %args,
-    dispatch_map => {
-      '/'                   => 'status',
-      '/autocomplete/:file' => 'lookup',
-    }
-  );
+  my $self = $class->SUPER::new( %args, dispatch_map => { '/autocomplete/:file' => 'lookup', } );
 
   return $self;
 }
@@ -39,23 +33,21 @@ sub action_lookup {
 
   my $r = $self->cgi;  # The adapter for Request/Response
 
-  # 1. Configuration (faithfully ported from init_autocomplete)
   my $config          = $self->config->{autocomplete}   // {};
   my $global_root     = $ENV{BEDROCK_AUTOCOMPLETE_ROOT} // $config->{root};
   my $caching_enabled = to_boolean( $config->{cache} // 'yes' );
 
-  # 2. Resolve the Target File
   # We use the :file parameter from the route (e.g. /autocomplete/clients.json)
   my $requested_file = $self->context->param('file');
 
-  return $self->display_error( 'No file specified', $HTTP_BAD_REQUEST )
+  return $self->display_error( 'File not found', $HTTP_NOT_FOUND )
     if !$requested_file;
 
   my $file_info = $self->_resolve_file_path( $requested_file, $global_root );
 
   if ( !$file_info ) {
     $self->log->error("File not found for autocomplete: $requested_file");
-    return $self->display_error( "File not found", $HTTP_NOT_FOUND );
+    return $self->display_error( 'File not found', $HTTP_NOT_FOUND );
   }
 
   # 3. Processing & Caching (The logic from your handler)
@@ -71,7 +63,7 @@ sub action_lookup {
   my $entry = $cache_list->{$filename} // {};
   my ( $list, $cached_mtime ) = @{$entry}{qw(list mtime)};
 
-  # REFRESH LOGIC: If missing or stale (mtime changed), reload from disk
+  # If missing or stale (mtime changed), reload from disk
   if ( !$list || $cached_mtime ne $mtime ) {
 
     $list = eval {
@@ -130,7 +122,9 @@ sub _resolve_file_path {
 
   # B. Check Session Directory (Your Tier 3)
   # Mimics HandlerUtils logic using the Service's session path
-  if ( my $session_dir = $self->context->session->{_session_dir} ) {
+  my $session = $self->context->session;
+
+  if ( $session && ( my $session_dir = $self->context->session->{_session_dir} ) ) {
     my $session_file = "$session_dir/$clean_name";
     if ( -e $session_file ) {
       $self->log->debug("Serving session file [$session_file]");
@@ -169,3 +163,145 @@ sub get_result_set {
 }
 
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Service::Autocomplete - A RESTful service for creating
+autocompletion result sets
+
+=head1 SYNOPSIS
+
+  # Start the service from the command line
+  ./bedrock-miniserver.pl --service Bedrock::Service::Autocomplete --port 8080
+
+  # Query the service via CURL
+  # (Requires a valid session cookie for private files)
+  curl -b "session=..." http://localhost:8080/autocomplete/clients.json?term=gro
+
+  # JavaScript Example (jQuery UI Autocomplete)
+  $('#search').autocomplete({
+      source: function(request, response) {
+          $.ajax({
+              url: '/autocomplete/birds.json',
+              dataType: 'json',
+              data: {
+                  term: request.term,
+                  type: 'word'
+              },
+              success: response
+          });
+      }
+  });
+
+=head1 DESCRIPTION
+
+This module implements a B<Bedrock::Service> that serves JSON
+autocomplete files. It replaces the legacy C<Apache::BedrockAutocomplete>
+handler, offering a standardized REST API that runs under both Apache/mod_perl
+and the standalone Bedrock Miniserver.
+
+The service exposes a single endpoint: C</autocomplete/:file>
+
+It reads a JSON source file (containing a list of terms) and filters it
+based on a search C<term> provided in the query string.
+
+=head2 LOOKUP STRATEGY
+
+The service resolves the requested C<:file> (e.g., C<clients.json>) using
+a tiered lookup strategy:
+
+=over 4
+
+=item 1. B<Global Directory>
+
+First, it checks for the file in the system-wide autocomplete root directory.
+This path is defined via the C<BEDROCK_AUTOCOMPLETE_ROOT> environment
+variable or the C<root> key in the C<autocomplete> configuration block.
+
+=item 2. B<Session Directory>
+
+If the file is not found globally, it checks the authenticated user's
+private session directory (if a valid session exists). This allows for
+user-specific autocomplete lists (e.g., "My Contacts").
+
+=back
+
+=head1 API REFERENCE
+
+=head2 GET /autocomplete/:file
+
+Retrieves and filters the specified JSON file.
+
+B<Parameters:>
+
+=over 4
+
+=item * C<term> (Required)
+
+The search string fragment to match against the list.
+
+=item * C<type> (Optional, default: 'word')
+
+The matching algorithm to use:
+
+=over 8
+
+=item * B<word>: Matches if any word in the label starts with the term (e.g., "blu" matches "Eastern Bluebird").
+
+=item * B<prefix>: Matches if the label starts with the term.
+
+=item * B<exact>: Requires an exact, case-insensitive match.
+
+=item * B<contains>: Matches if the term appears anywhere in the label.
+
+=back
+
+=back
+
+=head1 CONFIGURATION
+
+You can configure this service via your application's `bedrock.xml` or
+YAML configuration files under the `autocomplete` key.
+
+  <object>
+    <object name="autocomplete">
+      <scalar name="search_key">label</scalar>
+      <scalar name="root">/var/www/bedrock/include</scalar>
+      <scalar name="cache">yes</scalar>
+    </object>
+  </object>
+
+=over 4
+
+=item * B<search_key>: The JSON key to search against (default: C<label>).
+
+=item * B<root>: The global directory path for public autocomplete files.
+
+=item * B<cache>: Enable or disable caching of JSON file contents (default: C<yes>).
+
+=back
+
+=head1 FILE FORMAT
+
+Autocomplete files must be valid JSON arrays containing objects. Each
+object should minimally have the key specified by C<search_key> (defaults
+to C<label>) and a C<value>.
+
+  [
+    { "label": "Bedrock", "value": "1" },
+    { "label": "Perl",    "value": "2" }
+  ]
+
+=head1 AUTHOR
+
+Rob Lauer - <bigfoot@cpan.org>
+
+=head1 SEE ALSO
+
+L<Bedrock::Service>, L<Bedrock::Service::Base>
+
+=cut

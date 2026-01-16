@@ -13,6 +13,7 @@ my $MOUNT_POINT;
 my $SERVICE_INSTANCE;
 my $SERVICE_CLASS;
 my %EXTRA_ENV;
+my %ERROR_DOC;
 
 # for static assets
 my %MIME_TYPES = (
@@ -22,6 +23,9 @@ my %MIME_TYPES = (
   jpg  => 'image/jpeg',
   gif  => 'image/gif',
   html => 'text/html',
+  roc  => 'text/html',
+  jroc => 'application/json',
+  ico  => 'image/x-icon',
 );
 
 exit Bedrock::MiniServer::CLI->main();
@@ -34,6 +38,7 @@ use strict;
 use warnings;
 
 use Apache::Request::CGI;
+use Bedrock qw(slurp_file);
 use Benchmark;
 use Data::Dumper;
 use English qw(-no_match_vars);
@@ -59,7 +64,7 @@ sub handle_request {
   my $path = $cgi->path_info();
 
   # --- A. Static Asset Handling ---
-  foreach my $alias ( keys %ALIAS ) {
+  foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
     next if index( $path, $alias ) != 0;
 
     return $self->_serve_static( $cgi, $alias, $ALIAS{$alias} );
@@ -151,13 +156,30 @@ sub _serve_static {
     print "Cache-Control: max-age=86400, public\r\n";
     print "\r\n";
 
-    local $RS = undef;
-    if ( open my $fh, '<', $fs_path ) {
-      print <$fh>;
-      close $fh;
-    }
+    print scalar slurp_file($fs_path);
   }
   else {
+    if ( my $error_page = $ERROR_DOC{404} ) {
+      # Recurse: Try to find the error page in our own aliases
+      # This allows /birds/not-found.html to be resolved via %ALIAS
+      foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+        next if index( $error_page, $alias ) != 0;
+
+        # Map URI -> Filesystem
+        my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+
+        if ( -e $err_fs ) {
+          print "HTTP/1.0 404 Not Found\r\n";
+          print "Content-Type: text/html\r\n\r\n";
+
+          print scalar slurp_file($err_fs);
+
+          print {*STDERR} "404 Not Found: $fs_path (Served Custom 404)\n";
+          return;
+        }
+      }
+    }
+
     print "HTTP/1.0 404 Not Found\r\n";
     print "Content-Type: text/plain\r\n\r\n";
     print "File not found: $path";
@@ -224,6 +246,10 @@ sub cmd_start_server {
       $ENV{$k} = $v; ## no critic
       $EXTRA_ENV{$k} = $v;
     }
+  }
+
+  if ( $server_config->{error_document} && ref $server_config->{error_document} eq 'HASH' ) {
+    %ERROR_DOC = %{ $server_config->{error_document} };
   }
 
   $ENV{GATEWAY_INTERFACE} = 'CGI/1.1'; ## no critic
@@ -294,6 +320,26 @@ sub cmd_start_server {
     %ALIAS = %{ $server_config->{aliases} };
   }
 
+  if ( $server_config->{directory} && ref $server_config->{directory} eq 'HASH' ) {
+    foreach my $dir ( keys %{ $server_config->{directory} } ) {
+      my $file = $server_config->{directory}->{$dir};
+
+      # Normalize directory key (strip trailing slash)
+      $dir =~ s{/\z}{}xsm;
+
+      # Inject all variants
+      # 1. The Folder itself (e.g. /birds -> index.roc)
+      $ALIAS{$dir} = $file;
+
+      # 2. The Trailing Slash (e.g. /birds/ -> index.roc)
+      $ALIAS{"$dir/"} = $file;
+
+      # 3. The Explicit File (e.g. /birds/index.roc -> index.roc)
+      #    CRITICAL: Prevents _serve_static from resolving to "index.roc/index.roc"
+      $ALIAS{"$dir/$file"} = $file;
+    }
+  }
+
   # 7. Startup Banner
   my $port = $self->get_port || $server_config->{server}->{port} || $server_config->{port} || 8080;
 
@@ -346,7 +392,7 @@ sub init {
   if ($config_file) {
     my @paths = grep {defined} ( q{}, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, $BEDROCK_DIST_DIR );
     foreach my $p (@paths) {
-      if ( $p !~ m{\z/}xsm ) {
+      if ( $p && $p !~ m{\z/}xsm ) {
         $p = "$p/";
       }
 

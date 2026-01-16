@@ -116,7 +116,7 @@ sub handler : method {
 
   # might not be able to use logger yet?
   my $logger = $r ? $r->log : $self->request->log;
-  $logger->notice( sprintf 'handler setup complete: (%s)', timestr($td) );
+  $logger->debug( sprintf 'handler setup complete: (%s)', timestr($td) );
 
   $t1 = $t2;
 
@@ -131,7 +131,7 @@ sub handler : method {
   $td = timediff( $t2, $t1 );
   $t1 = $t2;
 
-  $logger->notice( sprintf 'request setup complete: (%s)', timestr($td) );
+  $logger->debug( sprintf 'request setup complete: (%s)', timestr($td) );
 
   my $status = eval { return $self->dispatch() };
   my $err    = $EVAL_ERROR;
@@ -154,7 +154,7 @@ sub handler : method {
 
   $t2 = Benchmark->new;
   $td = timediff( $t2, $t1 );
-  $logger->notice( sprintf 'closeBLM time: (%s)', timestr($td) );
+  $logger->debug( sprintf 'closeBLM time: (%s)', timestr($td) );
 
   return 0;
 }
@@ -370,12 +370,29 @@ sub handle_cli {
     'mod-perl'     => \$args{mod_perl},
     'mod-cgi'      => \$args{mod_cgi},
     'env=s%'       => \$args{env_vars},
+    'service=s'    => \$args{target_service},
   );
 
   $args{mod_perl} //= $TRUE;
 
   if ( $args{mod_cgi} ) {
     $args{mod_perl} = $FALSE;
+  }
+
+  # --- DELEGATION LOGIC ---
+  if ( my $target = delete $args{target_service} ) {
+    # 1. Normalize name (customer-lookup -> Bedrock::Service::CustomerLookup)
+    $target =~ s/(?:^|[-_])(.)/uc($1)/ge;
+
+    if ( $target !~ /^Bedrock::Service::/ ) {
+      $target = "Bedrock::Service::$target";
+    }
+
+    # 2. Load the real service class
+    load $target;
+
+    # 3. Swap $self for the new delegate instance
+    $self = $target->new;
   }
 
   my $command = shift @ARGV || 'help';
@@ -403,23 +420,32 @@ sub install {
 
   my $class_name = ref($self) || $self;
 
-  # Prioritize $PROGRAM_NAME (the script executed)
+  # Determine the script source for comments/mod_cgi
   my $script_path = abs_path($PROGRAM_NAME);
-
   if ( !$script_path || !-f $script_path ) {
     require FindBin; ## no critic
     $script_path = abs_path( $FindBin::Bin . q{/} . $FindBin::Script ); ## no critic
   }
+  my $script_file = basename($script_path);
 
-  my $script_file  = basename($script_path);
-  my $service_name = $args{service_name} // basename( $script_path, qw(.cgi .pl .pm) );
+  # 1. Calculate Default Service Name from Class Name
+  #    Bedrock::Service::Docs -> 'docs'
+  #    Bedrock::Service::CustomerLookup -> 'customer-lookup'
+  my $default_name = do {
+    my $pkg = $class_name;
+    $pkg =~ s/^Bedrock::Service:://;
+    $pkg = to_snake_case($pkg);
+    $pkg =~ tr/_/-/;
+    $pkg;
+  };
+
+  my $service_name = $args{service_name} // $default_name;
   my $script_url   = $args{script_url}   // "/cgi-bin/$script_file";
   my $instance     = ref($self) ? $self : $self->new;
 
   my $base_uri = $args{base_uri} // $EMPTY;
-  $base_uri =~ s{/\z}{}xsmg;  # Strip trailing slash
+  $base_uri =~ s{/\z}{}xsmg;
 
-  # Logic to include ROOT route in the regex
   my $location_regex = choose {
 
     return sprintf '^%s/%s', $base_uri, $service_name
@@ -439,9 +465,6 @@ sub install {
 
     my $union = join $PIPE, uniq(@prefixes);
 
-    # If the service handles the root ('/'), we must match:
-    # 1. The base URI itself (e.g. /bedrock or /bedrock/)
-    # 2. The base URI + a separator + a known prefix (e.g. /bedrock/docs)
     if ($allow_root) {
       return qq{^$base_uri/?\$}
         if !$union;
@@ -454,9 +477,11 @@ sub install {
 
   my $timestamp = localtime;
 
-  # 1. Core Logic: Handle BEDROCK_BASE_URI and CLI Envs
+  # 2. Configure Environment Variables (without BEDROCK_SERVICE_NAME)
   my @core_lines;
   my $directive = $args{mod_perl} ? 'PerlSetEnv' : 'SetEnv';
+
+  push @core_lines, qq{$directive BEDROCK_SERVICE_NAME "$class_name"};
 
   if ($base_uri) {
     push @core_lines, qq{$directive BEDROCK_BASE_URI "$base_uri"};
@@ -469,12 +494,9 @@ sub install {
     push @core_lines, qq{$directive $key "$val"};
   }
 
-  # 2. Additive Logic: Call the hooks for EXTRA config
-  my @pre_lines = $instance->apache_config_pre( \%args );
-
+  my @pre_lines  = $instance->apache_config_pre( \%args );
   my @body_lines = $instance->apache_config_body( \%args );
 
-  # 3. Assemble
   my $pre_config  = join "\n    ", @pre_lines;
   my $body_config = join "\n        ", ( @core_lines, @body_lines );
 
