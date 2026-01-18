@@ -7,11 +7,10 @@ package main;
 use strict;
 use warnings;
 
-# FILE-SCOPED LEXICALS (used to pass values to HTTP::Server::Simple::CGI subclass)
+# FILE-SCOPED LEXICALS
 my %ALIAS;
-my $MOUNT_POINT;
-my $SERVICE_INSTANCE;
-my $SERVICE_CLASS;
+my %ROUTES;
+my %SERVICE_REGISTRY;
 my %EXTRA_ENV;
 my %ERROR_DOC;
 
@@ -63,61 +62,137 @@ sub handle_request {
 
   my $path = $cgi->path_info();
 
-  # --- A. Static Asset Handling ---
+  print {*STDERR} "[DEBUG] Request: $path\n";
+
+  # --- A. Static Asset Handling (Global) ---
   foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
     next if index( $path, $alias ) != 0;
 
-    return $self->_serve_static( $cgi, $alias, $ALIAS{$alias} );
+    # [FIX] Check return value.
+    if ( $self->_serve_static( $cgi, $alias, $ALIAS{$alias} ) ) {
+      print {*STDERR} "[DEBUG] Handled by Static Alias: $alias\n";
+      return;
+    }
+
+    print {*STDERR} "[DEBUG] Static Alias $alias DECLINED request. Falling through...\n";
   }
 
-  # --- B. Routing Logic ---
-  # Only strip the mount point if it's NOT root.
-  if ( $MOUNT_POINT ne q{/} && index( $path, $MOUNT_POINT ) == 0 ) {
-    $path = substr $path, length $MOUNT_POINT;
+  # --- B. Service Dispatch (Virtual Host Router) ---
+  foreach my $mount ( reverse sort { length($a) <=> length $b } keys %SERVICE_REGISTRY ) {
+
+    # Does the request start with this mount point?
+    next if index( $path, $mount ) != 0;
+
+    print {*STDERR} "[DEBUG] Matched Service Mount: $mount\n";
+
+    my $service = $SERVICE_REGISTRY{$mount};
+
+    # Virtualize the Environment for the Service
+    {
+      local $ENV{SCRIPT_NAME} = $mount eq '/' ? '' : $mount;
+
+      my $rel_path  = $path;
+      my $rewritten = 0;
+
+      # [NEW] Route Translation / Rewriting
+      if ( my $rules = $ROUTES{$mount} ) {
+        foreach my $pattern ( reverse sort { length($a) <=> length $b } keys %$rules ) {
+
+          # Convert Bedrock :param syntax to Regex capture
+          my $regex = $pattern;
+          my @vars;
+          while ( $regex =~ m{(:[a-zA-Z0-9_]+)}xsm ) {
+            push @vars, $1;
+            $regex =~ s/$1/([^\/]+)/xsm;
+          }
+
+          if ( my @captures = $path =~ m{\A$regex\z}xsm ) {
+            my $target = $rules->{$pattern};
+            for my $i ( 0 .. $#vars ) {
+              my $token = $vars[$i];
+              my $val   = $captures[$i];
+              $target =~ s/$token/$val/xsm;
+            }
+            $rel_path  = $target;
+            $rewritten = 1;
+            print {*STDERR} "[DEBUG] Rewrote path to: $rel_path\n";
+            last;
+          }
+        }
+      }
+
+      if ( !$rewritten ) {
+        if ( $mount ne '/' ) {
+          $rel_path = substr $path, length $mount;
+        }
+      }
+
+      $rel_path ||= '/';
+      local $ENV{PATH_INFO} = $rel_path;
+
+      print {*STDERR} "[DEBUG] Service PATH_INFO: $rel_path\n";
+
+      # Standard CGI Env vars
+      local $ENV{REQUEST_METHOD} = $cgi->request_method();
+      local $ENV{REQUEST_URI}    = $cgi->path_info();
+      local $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || '';
+      local $ENV{HTTP_COOKIE}    = $cgi->http('Cookie');
+      local $ENV{CONTENT_LENGTH} = $cgi->http('Content-Length');
+      local $ENV{CONTENT_TYPE}   = $cgi->http('Content-Type');
+
+      foreach my $p ( pairs %EXTRA_ENV ) {
+        my ( $k, $v ) = @{$p};
+        $ENV{$k} = $v; ## no critic
+      }
+
+      $service->request(undef);
+      $service->context(undef);
+      $service->bedrock_handler(undef);
+
+      my $r = Apache::Request::CGI->new();
+
+      eval { $service->handler($r); };
+
+      my $err    = $EVAL_ERROR;
+      my $t1     = Benchmark->new;
+      my $logger = Log::Log4perl->get_logger('Bedrock.MiniServer');
+
+      if ($EVAL_ERROR) {
+        print "HTTP/1.0 500 Internal Server Error\r\n";
+        print "Content-Type: text/plain\r\n\r\n";
+        print "Bedrock Service Crashed: $EVAL_ERROR";
+        $logger->error("CRITICAL ERROR in $mount: $EVAL_ERROR");
+      }
+
+      my $td = timediff( $t1, $t0 );
+
+      if ($rewritten) {
+        $logger->info( sprintf '%s %s -> %s (%s)', $cgi->request_method, $path, $rel_path, timestr($td) );
+      }
+      else {
+        $logger->info( sprintf '%s %s (%s)', $cgi->request_method, $path, timestr($td) );
+      }
+    }
+
+    return;
   }
 
-  $path ||= q{/};
-
-  {
-    ## no critic
-    # --- C. Dynamic Environment Update ---
-    $ENV{PATH_INFO}      = $path;
-    $ENV{SCRIPT_NAME}    = $MOUNT_POINT eq q{/} ? q{} : $MOUNT_POINT;
-    $ENV{REQUEST_METHOD} = $cgi->request_method();
-    $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || q{};
-    $ENV{REQUEST_URI}    = $cgi->path_info();
-    $ENV{HTTP_COOKIE}    = $cgi->http('Cookie');
-    $ENV{CONTENT_LENGTH} = $cgi->http('Content-Length');
-    $ENV{CONTENT_TYPE}   = $cgi->http('Content-Type');
+  # --- C. 404 Not Found (Global Fallback) ---
+  if ( my $error_page = $ERROR_DOC{404} ) {
+    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+      next if index( $error_page, $alias ) != 0;
+      my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+      if ( -e $err_fs ) {
+        print "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n";
+        print scalar slurp_file($err_fs);
+        print {*STDERR} "404 Not Found: $path (Served Custom 404)\n";
+        return;
+      }
+    }
   }
 
-  foreach my $p ( pairs %EXTRA_ENV ) {
-    my ( $k, $v ) = @{$p};
-    $ENV{$k} = $v; ## no critic
-  }
-
-  $SERVICE_INSTANCE->request(undef);
-  $SERVICE_INSTANCE->context(undef);
-  $SERVICE_INSTANCE->bedrock_handler(undef);
-
-  my $r = Apache::Request::CGI->new();
-
-  eval { $SERVICE_INSTANCE->handler($r); };
-
-  my $err = $EVAL_ERROR;
-
-  my $t1 = Benchmark->new;
-
-  if ($err) {
-    print "HTTP/1.0 500 Internal Server Error\r\n";
-    print "Content-Type: text/plain\r\n\r\n";
-    print "Bedrock Crashed: $err";
-    $r->log->error( 'CRITICAL ERROR: ' . $err );
-  }
-
-  my $td = timediff( $t1, $t0 );
-
-  $r->log->notice( sprintf '%s %s (%s)', $cgi->request_method, $path, timestr($td) );
+  print "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\n";
+  print "No service configured for path: $path";
 
   return;
 }
@@ -132,99 +207,82 @@ sub _serve_static {
 
   if ( $rel_file =~ /[.]{2}/xsm ) {
     print "HTTP/1.0 403 Forbidden\r\n\r\n";
-    return;
+    return 1;
   }
 
   my $fs_path = $local_base . $rel_file;
 
-  if ( -e $fs_path && -r $fs_path ) {
-    my ( $dev, $ino, $mode, $nlink, $uid, $gid, $rdev, $size, $atime, $mtime, $ctime, $blksize, $blocks ) = stat $fs_path;
-
+  # Success: File Exists
+  if ( -e $fs_path && -r $fs_path && !-d $fs_path ) {
     my ($ext) = $fs_path =~ /[.]([^.]+)$/xsm;
     my $type = $MIME_TYPES{ lc( $ext || q{} ) } || 'text/plain';
 
-    # 2. Format Date for HTTP Header (RFC 1123)
-    my $http_date = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime $mtime );
+    my $http_date = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime( ( stat $fs_path )[9] ) );
 
     print "HTTP/1.0 200 OK\r\n";
     print "Content-Type: $type\r\n";
-
-    # 3. Cache Headers
-    # "public" = safe for proxies/browsers
-    # "max-age=86400" = valid for 1 day
     print "Last-Modified: $http_date\r\n";
     print "Cache-Control: max-age=86400, public\r\n";
     print "\r\n";
-
     print scalar slurp_file($fs_path);
+    return 1;
   }
-  else {
-    if ( my $error_page = $ERROR_DOC{404} ) {
-      # Recurse: Try to find the error page in our own aliases
-      # This allows /birds/not-found.html to be resolved via %ALIAS
-      foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
-        next if index( $error_page, $alias ) != 0;
 
-        # Map URI -> Filesystem
-        my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+  # [FIX] Shadowing Logic
+  # Detect if this Alias was meant for a FILE (like index.roc)
+  # but the request is trying to treat it as a DIRECTORY (sub-path).
 
-        if ( -e $err_fs ) {
-          print "HTTP/1.0 404 Not Found\r\n";
-          print "Content-Type: text/html\r\n\r\n";
+  # Check if alias target is a file (exists OR has file extension)
+  my $is_file_alias = ( -e $local_base && !-d $local_base )
+    || ( !-e $local_base && $local_base =~ m{\.[a-zA-Z0-9]+$} );
 
-          print scalar slurp_file($err_fs);
+  if ($is_file_alias) {
+    # If there is ANY extra path content, this is invalid for a file alias.
+    # We decline handling it so it can fall through to the Service.
+    if ( length($rel_file) > 0 && $rel_file ne '/' ) {
+      print {*STDERR}
+        "[DEBUG] _serve_static: File-as-Directory detected. Alias: $alias_url -> $local_base. Path: $path. DECLINING.\n";
+      return 0;
+    }
+  }
 
-          print {*STDERR} "404 Not Found: $fs_path (Served Custom 404)\n";
-          return;
-        }
+  # Genuine 404 in a static directory
+  if ( my $error_page = $ERROR_DOC{404} ) {
+    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+      next if index( $error_page, $alias ) != 0;
+      my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+      if ( -e $err_fs ) {
+        print "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n";
+        print scalar slurp_file($err_fs);
+        print {*STDERR} "404 Not Found: $path (Served Custom 404)\n";
+        return 1;
       }
     }
-
-    print "HTTP/1.0 404 Not Found\r\n";
-    print "Content-Type: text/plain\r\n\r\n";
-    print "File not found: $path";
-    print {*STDERR} "404 Not Found: $fs_path\n";
   }
 
-  return;
+  print "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nFile not found: $path";
+  print {*STDERR} "404 File not found: $fs_path\n";
+
+  return 1;
 }
 
 ########################################################################
 package Bedrock::MiniServer::CLI; ## no critic
 ########################################################################
-
-use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean);
+use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean is_hash);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
-use Data::Dumper;
 use English qw(-no_match_vars);
-use JSON qw(encode_json decode_json);
 use Module::Load;
 use List::Util qw(pairs);
-
 use parent qw(CLI::Simple);
 
-########################################################################
 sub main {
-########################################################################
-  my %commands = (
-    default => \&cmd_start_server,
-    start   => \&cmd_start_server,
-  );
-
-  my @option_specs = qw(
-    help|h
-    mount-point|m=s
-    port|p=s
-    service|s=s
-    config|c=s
-  );
-
   my $cli = Bedrock::MiniServer::CLI->new(
-    commands        => \%commands,
-    option_specs    => \@option_specs,
-    default_options => { mount_point => $SLASH, },
+    commands        => { default => \&cmd_start_server },
+    option_specs    => [qw(help|h mount-point|m=s port|p=s service|s=s config|c=s)],
+    default_options => {},
     extra_options   => [qw(dist_dir server_config)],
   );
 
@@ -236,148 +294,110 @@ sub cmd_start_server {
 ########################################################################
   my ($self) = @_;
 
-  # 1. Load Server Configuration (File or Defaults)
   my $server_config = $self->get_server_config;
 
-  # 2. Environment Injection (Bootstrap Context)
-  if ( $server_config->{env} && ref $server_config->{env} eq 'HASH' ) {
-    foreach my $p ( pairs %{ $server_config->{env} } ) {
-      my ( $k, $v ) = @{$p};
-      $ENV{$k} = $v; ## no critic
-      $EXTRA_ENV{$k} = $v;
+  if ( $server_config->{env} ) {
+    foreach my $k ( keys %{ $server_config->{env} } ) {
+      $ENV{$k} = $server_config->{env}->{$k}; ## no critic
+      $EXTRA_ENV{$k} = $server_config->{env}->{$k};
     }
   }
 
-  if ( $server_config->{error_document} && ref $server_config->{error_document} eq 'HASH' ) {
+  if ( $server_config->{error_document} ) {
     %ERROR_DOC = %{ $server_config->{error_document} };
   }
 
   $ENV{GATEWAY_INTERFACE} = 'CGI/1.1'; ## no critic
 
-  # 3. Resolve Service Class , env->cli->config
-  my $service_class
-    = $ENV{BEDROCK_SERVICE} || $self->get_service || $server_config->{service_class} || $server_config->{BEDROCK_SERVICE};
+  my $global_service_config = $server_config->{service_config} // {};
 
-  croak "ERROR: no service!\nUse --service, BEDROCK_SERVICE or set service_class in configuration file.\n"
-    if !$service_class;
-
-  if ( $service_class !~ /\ABedrock::Service/xsm ) {
-    $service_class = "Bedrock::Service::$service_class";
+  if ( $server_config->{session} ) {
+    $global_service_config->{session} = $server_config->{session};
+  }
+  if ( $server_config->{overrides} ) {
+    $global_service_config->{overrides} = $server_config->{overrides};
   }
 
-  $SERVICE_CLASS = $service_class;
+  %SERVICE_REGISTRY = ();
+  %ROUTES           = ();
 
-  # 4. Service Instantiation (Context Injection)
-  # We pass the entire 'service_config' block. The Service decides what to do with it.
-  $SERVICE_INSTANCE = eval {
-    load $service_class;
-
-    # regardless of how we got this class name we got one and it is
-    # valid identify the service in the config, let's make sure
-    # everyone knows the canonical name...
-    my $service_config = $server_config->{service_config} // {};
-    $service_config->{service_class} = $service_class;
-    $ENV{BEDROCK_CLASS} = $service_class; ## no critic
-    $self->set_service($service_class);
-
-    # check to see if there is no session manager pre-defined and we
-    # want the default...
-    my $session_config = $service_config->{session};
-
-    # skip if there is already a session configuration
-    if ( !$session_config ) {
-      if ( to_boolean( $service_config->{default_session}->{enabled} ) ) {
-        $session_config = $service_config->{default_session};
-        delete $session_config->{enabled};
-        $service_config->{session} = $session_config;
-
-        # the default will be to enable persistence...
-        if ( to_boolean( $session_config->{config}->{persistence_enabled} ) ) {
-          my ($session_file) = $service_class =~ /::([^:]+)\z/xsm;
-          $session_file = sprintf 'memory-session-%s.dat', $session_file;
-          $session_config->{config}->{session_file} //= $session_file;
-        }
-      }
-    }
-
-    return $service_class->new( service_config => $service_config );
-  };
-
-  croak "ERROR: could not load service: $service_class\n$EVAL_ERROR"
-    if $EVAL_ERROR;
-
-  # 5. Resolve Mount Point
-  $MOUNT_POINT = $self->get_mount_point;
-
-  # Fallback logic: CLI -> Config -> Default
-  if ( $MOUNT_POINT eq q{/} ) {
-    $MOUNT_POINT = $server_config->{server}->{mount_point} || $server_config->{mount_point} || q{/};
+  if ( $server_config->{routes} && ref $server_config->{routes} eq 'HASH' ) {
+    %ROUTES = %{ $server_config->{routes} };
   }
 
-  # 6. Setup Static Aliases
+  my $mount_point = $self->get_mount_point // $server_config->{mount_point};
+  $mount_point //= '/';
+
+  my ( $services, $aliases, $directory ) = @{$server_config}{qw(services aliases directory)};
+  $services = {} if !is_hash($services);
+
+  my $cli_class = $ENV{BEDROCK_SERVICE} || $self->get_service;
+  if ($cli_class) {
+    $services->{$mount_point} = $cli_class;
+  }
+
+  croak q{ERROR: No services defined! Use --service or add a 'services' block to your config.}
+    if !keys %{$services};
+
+  foreach my $mount ( keys %{$services} ) {
+    my $class = $services->{$mount};
+    $self->_mount_service( $mount, $class, $global_service_config );
+  }
+
   %ALIAS = ();
-  if ( $server_config->{aliases} && ref $server_config->{aliases} eq 'HASH' ) {
-    %ALIAS = %{ $server_config->{aliases} };
+
+  if ($aliases) {
+    %ALIAS = %{$aliases};
   }
 
-  if ( $server_config->{directory} && ref $server_config->{directory} eq 'HASH' ) {
-    foreach my $dir ( keys %{ $server_config->{directory} } ) {
-      my $file = $server_config->{directory}->{$dir};
-
-      # Normalize directory key (strip trailing slash)
+  if ($directory) {
+    foreach my $dir ( keys %{$directory} ) {
+      my $file = $directory->{$dir};
       $dir =~ s{/\z}{}xsm;
-
-      # Inject all variants
-      # 1. The Folder itself (e.g. /birds -> index.roc)
-      $ALIAS{$dir} = $file;
-
-      # 2. The Trailing Slash (e.g. /birds/ -> index.roc)
-      $ALIAS{"$dir/"} = $file;
-
-      # 3. The Explicit File (e.g. /birds/index.roc -> index.roc)
-      #    CRITICAL: Prevents _serve_static from resolving to "index.roc/index.roc"
+      $ALIAS{$dir}         = $file;
+      $ALIAS{"$dir/"}      = $file;
       $ALIAS{"$dir/$file"} = $file;
     }
   }
 
-  # 7. Startup Banner
-  my $port = $self->get_port || $server_config->{server}->{port} || $server_config->{port} || 8080;
-
-  my $url = "http://localhost:$port$MOUNT_POINT";
-
-  my $logger = $SERVICE_INSTANCE->request->log;
+  my $port   = $self->get_port || $server_config->{port} || 8080;
+  my $logger = Log::Log4perl->get_logger('Bedrock::MiniServer');
 
   $logger->notice( q{=} x 60 );
   $logger->notice('BEDROCK MINISERVER STARTUP');
   $logger->notice( q{=} x 60 );
-  $logger->notice( sprintf '%-15s : %s', 'Service Class', $SERVICE_CLASS );
-  $logger->notice( sprintf '%-15s : %s', 'Mount Point',   $MOUNT_POINT );
-  $logger->notice( sprintf '%-15s : %s', 'Port',          $port );
-  $logger->notice( sprintf '%-15s : %s', 'Config Source', $server_config->{_source} || 'Internal Defaults' );
-  $logger->notice( sprintf '%-15s : %s', 'Access URL',    $url );
+
+  foreach my $mount ( sort keys %SERVICE_REGISTRY ) {
+    my $svc = $SERVICE_REGISTRY{$mount};
+    $logger->notice( sprintf 'Mount Point %-20s @ %s', ref($svc), $mount );
+  }
+
   $logger->notice( q{-} x 60 );
   $logger->notice('Static Asset Aliases:');
-
-  if ( keys %ALIAS ) {
-    foreach my $alias ( sort keys %ALIAS ) {
-      $logger->notice( sprintf '  %-20s -> %s', $alias, $ALIAS{$alias} );
-    }
+  foreach my $alias ( sort keys %ALIAS ) {
+    $logger->notice( sprintf '  %-20s -> %s', $alias, $ALIAS{$alias} );
   }
-  else {
-    $logger->notice('  (None defined)');
-  }
-
   $logger->notice( q{=} x 60 );
-  $logger->notice('Ready for requests...');
-
-  $SIG{INT} = sub { ## no critic
-    print {*STDERR} "\nStopping miniserver...\n";
-    exit 0;
-  };
 
   Bedrock::MiniServer->new($port)->run();
-
   return 0;
+}
+
+########################################################################
+sub _mount_service {
+########################################################################
+  my ( $self, $mount, $class, $config ) = @_;
+  if ( $class !~ /\ABedrock::Service/xsm ) {
+    $class = "Bedrock::Service::$class";
+  }
+  eval {
+    load $class;
+    my $instance = $class->new( service_config => $config );
+    $SERVICE_REGISTRY{$mount} = $instance;
+  };
+  croak "Failed to mount $class at $mount: $EVAL_ERROR"
+    if $EVAL_ERROR;
+  return;
 }
 
 ########################################################################
@@ -431,15 +451,19 @@ __END__
 
 =head1 NAME
 
-bedrock-miniserver.pl - Lightweight standalone development server for Bedrock applications
+bedrock-miniserver.pl - Multi-tenant application server for Bedrock
+services
 
 =head1 SYNOPSIS
 
-  # Start with default settings (Port 8080, Mount Point /)
-  bedrock-miniserver.pl --service MyApp::Service
+  # Run a full stack using a configuration file (Recommended)
+  bedrock-miniserver.pl --config app.yml
 
-  # Start on a specific port with a specific mount point
-  bedrock-miniserver.pl --port 3000 --mount-point /app --service MyApp::Service
+  # Run a single service (Legacy/Quick-start mode)
+  bedrock-miniserver.pl --service MyApp::Service --port 8080
+
+  # Inject a service into a configuration from the CLI
+  bedrock-miniserver.pl --config app.yml --service Debug::Service --mount-point /debug
 
   # Get help
   bedrock-miniserver.pl --help
@@ -447,109 +471,261 @@ bedrock-miniserver.pl - Lightweight standalone development server for Bedrock ap
 =head1 DESCRIPTION
 
 This script provides a standalone HTTP server for Bedrock
-applications, built on top of C<HTTP::Server::Simple::CGI>. It
-simulates a CGI environment (modifying C<PATH_INFO>, C<SCRIPT_NAME>,
-etc.) and dispatches requests to a specified Bedrock Service class.
+applications, built on top of C<HTTP::Server::Simple::CGI>. It acts as
+a lightweight B<Application Server>, capable of hosting multiple
+Bedrock Services simultaneously on a single port.
 
-It is designed primarily for development and testing, allowing you to
-run Bedrock applications without a full Apache/mod_perl stack.
+It simulates a CGI environment (virtualizing C<PATH_INFO>,
+C<SCRIPT_NAME>, etc.)  and dispatches requests to the appropriate
+service based on a "Longest Prefix Match" routing table.
 
 =head1 OPTIONS
 
 =over 4
 
+=item B<--config | -c>
+
+The path to the YAML configuration file defining the services,
+aliases, and environment. If omitted, the server looks for
+F<bedrock-miniserver.yml> in standard locations.
+
 =item B<--service | -s>
 
-B<Required>. The Perl class name of the Bedrock Service to instantiate
-and run (e.g., C<MyApp::Service>). This class must implement a
-C<handler()> method.
+The Perl class name of a Bedrock Service to run (e.g.,
+C<MyApp::Service>).
 
-=item B<--port | -p>
-
-The port to listen on. Defaults to C<8080>.
+If a configuration file is present, this option acts as an
+B<injector>, adding (or overriding) a service entry in the registry at
+the specified mount point.  If no configuration file is used, this
+option is required to start the server in single-tenant mode.
 
 =item B<--mount-point | -m>
 
-The URL path where the application is rooted. Defaults to C</>, or the
-value of C<BEDROCK_ADMIN_DIR> in your configuration if set.
+The URL prefix where the CLI-specified service will be
+mounted. Defaults to C</>.  (e.g., C<--mount-point /admin>).
+
+=item B<--port | -p>
+
+The port to listen on. Defaults to C<8080> or the value defined in the
+configuration.
 
 =back
 
-=head1 DEVELOPER NOTES
+=head1 ARCHITECTURE
+
+=head2 The Service Registry
+
+Unlike previous versions which ran a single script, this server
+maintains a registry of mounted services.
+
+  /       -> Bedrock::Service::RootApp
+  /birds  -> Bedrock::Service::Autocomplete
+  /admin  -> Bedrock::Service::SystemStatus
+
+=head2 Routing and Translation
+
+When a request arrives, the server routes it to the service with the
+longest matching prefix. It then B<translates> the path by stripping
+that prefix before handing it to the service.
+
+  Request:    /birds/autocomplete/robins.json
+  Mount:      /birds
+  Result:     Service receives PATH_INFO="/autocomplete/robins.json"
+
+This allows services to be written without knowledge of where they are
+mounted.
+
+=head2 Service Instantiation
+
+Services are instantiated (C<new()>) at server startup to build the
+registry.  Therefore, B<Service constructors must be lightweight and
+side-effect free.> Do not perform request-specific logic, database
+connections, or heavy initialization inside C<new()>. Defer those
+actions to C<init()> or C<handler()>.
 
 =head2 Static Asset Serving
 
-The miniserver handles static assets (CSS, JS, Images) internally to
-mimic the behavior of a production web server alias configuration.
+Static assets (CSS, JS, Images) are served globally, bypassing the
+service dispatch layer. This mimics the C<Alias> directives in a
+standard Apache configuration.
 
-It automatically maps the following URL paths to the C<Bedrock>
-distribution directory found in C<@INC>:
+Mappings are defined in the C<aliases> or C<directory> blocks of your
+configuration file.
+
+=head2 Logging
+
+The server initializes C<Log::Log4perl> using the configuration file
+shipped with the Bedrock distribution (or your local override).
 
 =over 4
 
-=item * C</bedrock/css> -> C<.../Bedrock/css>
+=item * B<Bedrock.MiniServer>: Logs server lifecycle events (startup,
+shutdown) and access logs.
 
-=item * C</bedrock/javascript> -> C<.../Bedrock/javascript>
-
-=item * C</bedrock/img> -> C<.../Bedrock/img>
+=item * B<Bedrock.Service>: Logs application logic, dispatch timing, and errors.
 
 =back
 
-When serving these assets, the server applies standard MIME types
-based on file extensions and adds a C<Cache-Control: max-age=86400,
-public> header to facilitate browser caching during development.
+=head1 CONFIGURATION CONCEPTS
 
-=head2 Logging and Log4perl
+It is important to distinguish between the B<Server Configuration>
+(the container) and the B<Service Configuration> (the application).
 
-The server initializes C<Log::Log4perl> using the configuration file
-shipped with the Bedrock distribution.
+=head2 Server Configuration
 
-Since your service is a subclass of B<Bedrock::Service>, it uses the
-logging facilities provided by the framework. To prevent developers
-from being overwhelmed by internal framework logs, a specific logging
-category B<C<Bedrock::Service>> has been defined in the default
-configuration. You should target this category (or your own service's
-class name) when tuning log levels for your application logic.
+Controls the HTTP listener and the "Virtual Host" environment.
 
-B<Locating the Configuration File:>
+=over 4
 
-If you need to modify the logging behavior (e.g., changing the level
-from INFO to DEBUG), you must edit the C<log4perl.conf> file located
-in the installed distribution directory. You can find the exact path
-by running the following command:
+=item * B<Port / Bind Address>: Where the server listens.
 
-  perl -MBedrock -e 'print "$Bedrock::BEDROCK_DIST_DIR/config/log4perl.conf\n"'
+=item * B<Mount Points>: Which URL prefixes map to which Perl Classes.
+
+=item * B<Static Assets>: Global aliases for CSS/JS/Images.
+
+=item * B<Error Documents>: Custom 404/500 pages.
+
+=back
+
+=head2 Service Configuration
+
+Controls the internal logic of the mounted applications.
+
+=over 4
+
+=item * B<Session Storage>: Database or Memory backends.
+
+=item * B<Dispatch Maps>: Internal routing tables (URI -> Method).
+
+=item * B<Application Settings>: API keys, feature flags, etc.
+
+=back
+
+Values defined in the session and overrides sections of your YAML file
+are injected into the Service's constructor at startup. The routes
+section is used by the Miniserver itself to handle URL rewriting.
+
+=head1 ADVANCED ROUTING
+
+=head2 1. Discovery (Introspection)
+
+To configure routing effectively, you first need to know what URLs a
+service expects by default. You can use the C<--routes> flag on the
+specific service:
+
+  $ ./bedrock-service.cgi --service Bedrock::Service::Autocomplete --routes
+
+  Route Configuration for Bedrock::Service::Autocomplete:
+  ------------------------------------------------------------
+  URL Pattern                    | Action Method
+  ------------------------------------------------------------
+  /autocomplete/:file            | action_lookup
+  /status                        | action_status
+  ------------------------------------------------------------
+
+=head2 2. Route Translation (Rewriting)
+
+The B<Route Translation> feature allows you to decouple your public
+URL structure from the internal implementation of your services.
+
+Instead of stripping the mount point prefix (default behavior), the
+server can B<rewrite> the incoming request URL to match the format the
+service expects.
+
+This is defined in the C<routes> block of your configuration, keyed by
+the
+
+B<Mount Point>.
+
+  # bedrock-miniserver-multi.yml
+
+  # 1. Mount the service
+  services:
+    /birds: Bedrock::Service::Autocomplete
+
+  # 2. Define Rewrite Rules
+  routes:
+    # Key MUST match the Mount Point defined above
+    /birds:
+      # Public URL Pattern   =>  Internal Service Pattern
+      '/birds/:file':            /autocomplete/:file
+      '/birds/status':           /status
+
+B<How it works:>
+
+=over 4
+
+=item 1.  B<Match:> The server receives a request for
+C</birds/status>.
+
+=item 2.  B<Find:> It identifies that the service mounted at C</birds>
+owns this request.
+
+=item 3.  B<Rewrite:> It checks the C<routes> map. It sees that
+C<'/birds/status'> matches.
+
+=item 4.  B<Transform:> It rewrites the path to the internal pattern:
+C</status>.
+
+=item 5.  B<Dispatch:> It sets C<PATH_INFO> to this new value and
+invokes the service.
+
+=back
+
+The service receives the path it expects (C</status>), avoiding
+conflicts with other services that might also use that path.
 
 =head1 CONFIGURATION
 
-The server looks for a configuration file in the current directory,
-then in C<BEDROCK_CONFIG_PATH>, C<CONFIG_PATH> and finally Bedrock's
-distribution directory. If no configuration file is specified defaults
-to the distribution's F<bedrock-miniserver.yml>.
+The server configuration is driven by a YAML file (e.g.,
+F<bedrock-miniserver-multi.yml>).
 
-B<Required Arguments:>
+  port: 8080
 
-If you are using the default configuration, you B<must> supply the
-service name using the C<--service> option:
+  # 1. The Service Registry (Mount Point -> Class)
+  services:
+    /birds: Bedrock::Service::Autocomplete
+    /admin: Bedrock::Service::Admin
 
-  bedrock-miniserver.pl --service MyApp::Service
+  # 2. Static Asset Aliases
+  aliases:
+    /favicon.ico: ./htdocs/favicon.ico
+    /css:         ./htdocs/css
 
-B<Default Session Behavior:>
+  # 3. Directory Sugar (Auto-generates aliases for folders)
+  directory:
+    /birds: index.roc
 
-When using the default configuration, the server automatically configures
-B<BLM::Startup::MemorySession> with persistence enabled. It generates a
-session storage file in the current directory named:
+  # 4. Global Service Configuration
+  #    These settings are injected into EVERY service instance.
+  session:
+    module: BLM::Startup::MemorySession
+    config:
+      persistence_enabled: yes
 
-  memory-session-<service-name>.dat
+  overrides:
+    BEDROCK_CONFIG_PATH: ./config
+  
+  # 5. Route Rewriting
+  routes:
+    /birds:
+      '/birds/:file': /autocomplete/:file
 
-If you provide your own configuration file, you must configure the
-session manager and persistence settings manually.
+=head2 Error Documents
+
+You can define custom HTML files to serve when specific HTTP errors
+occur (most commonly 404 Not Found for static assets).
+
+  error_document:
+    404: /not-found.html
+
+The path specified must be resolvable via your defined C<aliases>.
 
 =head1 EXIT STATUS
 
-Returns 0 on successful execution (though the server runs typically
-runs until interrupted), or non-zero if the service class cannot be
-loaded.
+Returns 0 on successful execution (server runs until
+interrupted). Returns non-zero if a service class fails to load or the
+configuration is invalid.
 
 =head1 SEE ALSO
 

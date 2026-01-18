@@ -114,8 +114,21 @@ sub handler : method {
   my $t2 = Benchmark->new;
   my $td = timediff( $t2, $t1 );
 
-  # might not be able to use logger yet?
-  my $logger = $r ? $r->log : $self->request->log;
+  # [LOGGING FIX]
+  # In Miniserver mode, $r is Apache::Request::CGI, which has a hardcoded
+  # logger that prints to STDERR in a fixed format. We want to bypass that
+  # and use Log4perl directly to maintain formatting consistency.
+  my $logger;
+
+  if ( $r && $r->isa('Apache::Request::CGI') ) {
+    # Miniserver: Bypass $r->log
+    $logger = Log::Log4perl->get_logger( ref($self) || 'Bedrock::Service' );
+  }
+  else {
+    # Apache/mod_perl: Use the Request logger (wraps Apache logging)
+    $logger = $r ? $r->log : $self->request->log;
+  }
+
   $logger->debug( sprintf 'handler setup complete: (%s)', timestr($td) );
 
   $t1 = $t2;
@@ -244,6 +257,15 @@ sub new {
 }
 
 ########################################################################
+sub routes {
+########################################################################
+  my ($self) = @_;
+
+  # Return a shallow copy to prevent accidental modification
+  return { %{ $self->dispatch_map // {} } };
+}
+
+########################################################################
 sub is_web { return $ENV{GATEWAY_INTERFACE} || $ENV{MOD_PERL}; }
 sub is_cli { return !is_web(); }
 ########################################################################
@@ -363,15 +385,38 @@ sub handle_cli {
 
   my %args;
   Getopt::Long::GetOptions(
-    'conf-dir=s'   => \$args{conf_dir},
-    'name=s'       => \$args{service_name},
-    'script-url=s' => \$args{script_url},
     'base-uri=s'   => \$args{base_uri},
-    'mod-perl'     => \$args{mod_perl},
-    'mod-cgi'      => \$args{mod_cgi},
+    'conf-dir=s'   => \$args{conf_dir},
     'env=s%'       => \$args{env_vars},
+    'mod-cgi'      => \$args{mod_cgi},
+    'mod-perl'     => \$args{mod_perl},
+    'name=s'       => \$args{service_name},
+    'routes'       => \$args{routes},
+    'script-url=s' => \$args{script_url},
     'service=s'    => \$args{target_service},
   );
+
+  # --- 1. Introspection Mode ---
+  if ( $args{routes} ) {
+    my $map = $self->routes;
+
+    print "\nRoute Configuration for " . ref($self) . ":\n";
+    print q{-} x 60 . "\n";
+    printf "%-30s | %-30s\n", 'URL Pattern', 'Action Method';
+    print q{-} x 60 . "\n";
+
+    foreach my $pattern ( sort keys %$map ) {
+      my $action = $map->{$pattern};
+      # Handle simple scalar actions or complex references
+      my $display_action = ref($action) ? 'CODE(...)' : "action_$action";
+
+      printf "%-30s | %s\n", $pattern, $display_action;
+    }
+
+    print "\n";
+
+    return 0;
+  }
 
   $args{mod_perl} //= $TRUE;
 
@@ -1282,6 +1327,9 @@ When invoked from the shell, the script acts as a management tool.
   # Install configuration to specific directory
   ./my-service.cgi install --conf-dir /etc/apache2/conf-available
 
+  # List the internal route patterns (Introspection)
+  ./my-service.cgi --routes
+
 =head1 DESCRIPTION
 
 C<Bedrock::Service> facilitates the creation of "Modulino" style web
@@ -1381,6 +1429,13 @@ omitted, writes to STDOUT.
   Example: --env FOO=bar --env BAZ=1
 
 =back
+
+=head2 Introspection
+
+  $ ./my-service.cgi --routes
+
+Prints the internal dispatch map (URL Pattern -> Method) to STDOUT. This is
+useful for debugging or configuring the Miniserver's Route Translation map.
 
 =head2 apache_config_pre
 
