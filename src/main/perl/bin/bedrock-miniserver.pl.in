@@ -1,31 +1,11 @@
 #!/usr/bin/env perl
-#
+########################################################################
 # ...a lightweight HTTP server harness for Bedrock services.
-#
+########################################################################
 package main;
 
 use strict;
 use warnings;
-
-# FILE-SCOPED LEXICALS
-my %ALIAS;
-my %ROUTES;
-my %SERVICE_REGISTRY;
-my %EXTRA_ENV;
-my %ERROR_DOC;
-
-# for static assets
-my %MIME_TYPES = (
-  css  => 'text/css',
-  js   => 'application/javascript',
-  png  => 'image/png',
-  jpg  => 'image/jpeg',
-  gif  => 'image/gif',
-  html => 'text/html',
-  roc  => 'text/html',
-  jroc => 'application/json',
-  ico  => 'image/x-icon',
-);
 
 exit Bedrock::MiniServer::CLI->main();
 
@@ -37,13 +17,18 @@ use strict;
 use warnings;
 
 use Apache::Request::CGI;
-use Bedrock qw(slurp_file);
+use Bedrock qw(slurp_file is_hash is_array);
+use Bedrock::Constants qw(:chars %LOG4PERL_LOG_LEVELS :booleans);
 use Benchmark;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use List::Util qw(pairs);
 use Log::Log4perl;
 use POSIX qw(strftime);
+use Module::Load;
+use Scalar::Util qw(blessed reftype);
+use Text::URLEncode qw(Htmlencode);
+use YAML::Tiny;
 
 use parent qw(HTTP::Server::Simple::CGI);
 
@@ -51,6 +36,53 @@ use parent qw(HTTP::Server::Simple::CGI);
 { ## no critic
   no warnings 'once'; ## no critic
   $Log::Log4perl::Config->allow_code(1);
+}
+
+my %MIME_TYPES; ## no critic
+
+BEGIN {
+  %MIME_TYPES = (
+    css  => 'text/css',
+    js   => 'application/javascript',
+    png  => 'image/png',
+    jpg  => 'image/jpeg',
+    gif  => 'image/gif',
+    html => 'text/html',
+    roc  => 'text/html',
+    jroc => 'application/json',
+    ico  => 'image/x-icon',
+  );
+}
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $port, $family, %args ) = @_;
+
+  # Extract our custom metadata
+  my $bedrock_metadata = delete $args{bedrock_metadata} // {};
+
+  # 1. Call Parent Constructor
+  my $self = $class->SUPER::new( $port, $family, %args );
+
+  # 2. Inject our custom state
+  $self->{_bedrock_metadata} = $bedrock_metadata;
+
+  my $custom_mime_types = $bedrock_metadata->{mime_types} // {};
+
+  foreach ( keys %{$custom_mime_types} ) {
+    $MIME_TYPES{$_} = $custom_mime_types->{$_};
+  }
+
+  return $self;
+}
+
+########################################################################
+sub bedrock_server_config {
+########################################################################
+  my ($self) = @_;
+
+  return $self->{_bedrock_metadata} // {};
 }
 
 ########################################################################
@@ -62,46 +94,58 @@ sub handle_request {
 
   my $path = $cgi->path_info();
 
-  print {*STDERR} "[DEBUG] Request: $path\n";
+  my $conf = $self->bedrock_server_config;
+
+  my $logger = Log::Log4perl->get_logger('Bedrock.MiniServer');
+
+  my $log_level = $conf->{log_level} // 'info';
+
+  $logger->level( $LOG4PERL_LOG_LEVELS{$log_level} // $LOG4PERL_LOG_LEVELS{info} );
+
+  $logger->debug("Request: $path");
 
   # --- A. Static Asset Handling (Global) ---
-  foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+  my $aliases = $conf->{aliases} || {};
+
+  foreach my $alias ( _length_sort($aliases) ) {
     next if index( $path, $alias ) != 0;
 
-    # [FIX] Check return value.
-    if ( $self->_serve_static( $cgi, $alias, $ALIAS{$alias} ) ) {
-      print {*STDERR} "[DEBUG] Handled by Static Alias: $alias\n";
+    if ( $self->_serve_static( $cgi, $alias, $aliases->{$alias} ) ) {
+      $logger->debug("Handled by Static Alias: $alias");
       return;
     }
 
-    print {*STDERR} "[DEBUG] Static Alias $alias DECLINED request. Falling through...\n";
+    $logger->debug("Static Alias $alias DECLINED request. Falling through...");
   }
 
   # --- B. Service Dispatch (Virtual Host Router) ---
-  foreach my $mount ( reverse sort { length($a) <=> length $b } keys %SERVICE_REGISTRY ) {
+  my $registry = $conf->{service_registry} || {};
+  my $routes   = $conf->{routes}           || {};
+
+  foreach my $mount ( _length_sort($registry) ) {
 
     # Does the request start with this mount point?
     next if index( $path, $mount ) != 0;
 
-    print {*STDERR} "[DEBUG] Matched Service Mount: $mount\n";
+    $logger->debug("Matched Service Mount: $mount");
 
-    my $service = $SERVICE_REGISTRY{$mount};
+    my $service = $registry->{$mount};
 
     # Virtualize the Environment for the Service
     {
-      local $ENV{SCRIPT_NAME} = $mount eq '/' ? '' : $mount;
+      my %env_vars = $self->_get_cgi_env( $cgi, $conf );
+      local $ENV{SCRIPT_NAME} = $mount eq $SLASH ? $EMPTY : $mount;
 
       my $rel_path  = $path;
       my $rewritten = 0;
 
-      # [NEW] Route Translation / Rewriting
-      if ( my $rules = $ROUTES{$mount} ) {
-        foreach my $pattern ( reverse sort { length($a) <=> length $b } keys %$rules ) {
+      # Route Translation / Rewriting
+      if ( my $rules = $routes->{$mount} ) {
+        foreach my $pattern ( _length_sort($rules) ) {
 
-          # Convert Bedrock :param syntax to Regex capture
           my $regex = $pattern;
           my @vars;
-          while ( $regex =~ m{(:[a-zA-Z0-9_]+)}xsm ) {
+          while ( $regex =~ m{(:[[:alnum:]_]+)}xsm ) {
             push @vars, $1;
             $regex =~ s/$1/([^\/]+)/xsm;
           }
@@ -115,34 +159,32 @@ sub handle_request {
             }
             $rel_path  = $target;
             $rewritten = 1;
-            print {*STDERR} "[DEBUG] Rewrote path to: $rel_path\n";
+            $logger->debug("Rewrote path to: $rel_path");
             last;
           }
         }
       }
 
-      if ( !$rewritten ) {
-        if ( $mount ne '/' ) {
-          $rel_path = substr $path, length $mount;
-        }
+      if ( !$rewritten && $mount ne $SLASH ) {
+        $rel_path = substr $path, length $mount;
       }
 
-      $rel_path ||= '/';
+      $rel_path ||= $SLASH;
       local $ENV{PATH_INFO} = $rel_path;
-
-      print {*STDERR} "[DEBUG] Service PATH_INFO: $rel_path\n";
 
       # Standard CGI Env vars
       local $ENV{REQUEST_METHOD} = $cgi->request_method();
       local $ENV{REQUEST_URI}    = $cgi->path_info();
-      local $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || '';
+      local $ENV{QUERY_STRING}   = $ENV{QUERY_STRING} || $EMPTY;
       local $ENV{HTTP_COOKIE}    = $cgi->http('Cookie');
       local $ENV{CONTENT_LENGTH} = $cgi->http('Content-Length');
       local $ENV{CONTENT_TYPE}   = $cgi->http('Content-Type');
 
-      foreach my $p ( pairs %EXTRA_ENV ) {
-        my ( $k, $v ) = @{$p};
-        $ENV{$k} = $v; ## no critic
+      if ( $conf->{extra_env} ) {
+        foreach my $p ( pairs %{ $conf->{extra_env} } ) {
+          my ( $k, $v ) = @{$p};
+          $ENV{$k} = $v; ## no critic
+        }
       }
 
       $service->request(undef);
@@ -153,9 +195,8 @@ sub handle_request {
 
       eval { $service->handler($r); };
 
-      my $err    = $EVAL_ERROR;
-      my $t1     = Benchmark->new;
-      my $logger = Log::Log4perl->get_logger('Bedrock.MiniServer');
+      my $err = $EVAL_ERROR;
+      my $t1  = Benchmark->new;
 
       if ($EVAL_ERROR) {
         print "HTTP/1.0 500 Internal Server Error\r\n";
@@ -178,10 +219,14 @@ sub handle_request {
   }
 
   # --- C. 404 Not Found (Global Fallback) ---
-  if ( my $error_page = $ERROR_DOC{404} ) {
-    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+  my $error_docs = $conf->{error_doc} || {};
+
+  if ( my $error_page = $error_docs->{404} ) {
+    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %{$aliases} ) {
       next if index( $error_page, $alias ) != 0;
-      my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+
+      my $err_fs = $aliases->{$alias} . substr $error_page, length $alias;
+
       if ( -e $err_fs ) {
         print "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n";
         print scalar slurp_file($err_fs);
@@ -198,16 +243,53 @@ sub handle_request {
 }
 
 ########################################################################
+sub _length_sort {
+########################################################################
+  my ($hash) = @_;
+
+  return reverse sort { length($a) <=> length $b } keys %{$hash};
+}
+
+########################################################################
+sub _get_cgi_env {
+########################################################################
+  my ( $self, $cgi, $conf ) = @_;
+
+  my %env = (
+    REQUEST_METHOD    => $cgi->request_method(),
+    REQUEST_URI       => $cgi->path_info(),
+    QUERY_STRING      => $ENV{QUERY_STRING} || $EMPTY,
+    HTTP_COOKIE       => $cgi->http('Cookie'),
+    CONTENT_LENGTH    => $cgi->http('Content-Length'),
+    CONTENT_TYPE      => $cgi->http('Content-Type'),
+    GATEWAY_INTERFACE => 'CGI/1.1',
+  );
+
+  if ( $conf->{extra_env} ) {
+    foreach my $p ( pairs %{ $conf->{extra_env} } ) {
+      my ( $k, $v ) = @{$p};
+      $env{$k} = $v;
+    }
+  }
+
+  return %env;
+}
+
+# return 1 if content served, 0 otherwise
+########################################################################
 sub _serve_static {
 ########################################################################
   my ( $self, $cgi, $alias_url, $local_base ) = @_;
 
-  my $path     = $cgi->path_info();
+  my $logger = Log::Log4perl->get_logger( ref $self );
+
+  my $path = $cgi->path_info();
+
   my $rel_file = substr $path, length $alias_url;
 
   if ( $rel_file =~ /[.]{2}/xsm ) {
     print "HTTP/1.0 403 Forbidden\r\n\r\n";
-    return 1;
+    return $TRUE;
   }
 
   my $fs_path = $local_base . $rel_file;
@@ -215,9 +297,122 @@ sub _serve_static {
   # Success: File Exists
   if ( -e $fs_path && -r $fs_path && !-d $fs_path ) {
     my ($ext) = $fs_path =~ /[.]([^.]+)$/xsm;
-    my $type = $MIME_TYPES{ lc( $ext || q{} ) } || 'text/plain';
+    $ext = lc( $ext || $EMPTY );
 
-    my $http_date = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime( ( stat $fs_path )[9] ) );
+    my $meta = $self->bedrock_server_config;
+
+    my $type = $MIME_TYPES{$ext} || 'text/plain';
+
+    # --- ACCELERATOR MODE (Template Parsing) ---
+    my $global_config = $meta->{global_config} || {};
+
+    if ( $meta->{parse_templates} && $meta->{template_extensions}->{$ext} ) {
+      eval {
+        my %env_vars = $self->_get_cgi_env( $cgi, $meta );
+
+        # Treat the alias (e.g., /birds) as the SCRIPT_NAME
+        $env_vars{SCRIPT_NAME} = $alias_url eq $SLASH ? $EMPTY : $alias_url;
+        $env_vars{PATH_INFO}   = $rel_file;
+
+        # Apply environment to the current scope (the eval block)
+        local @ENV{ keys %env_vars } = values %env_vars;
+        # ------------------------------------------------------
+        require Bedrock::Template;
+        require BLM::Startup::Header;
+        require BLM::Startup::Input;
+        require BLM::Startup::Env;
+        require BLM::Startup::Bedrock;
+        require BLM::Startup::Config;
+        require IO::Scalar;
+
+        my $tagx_config = Bedrock::Config->new('tagx.xml');
+
+        foreach ( keys %{$global_config} ) {
+          $tagx_config->{$_} = $global_config->{$_};
+        }
+
+        # Create capture buffer and IO handle
+        my $buffer = $EMPTY;
+        my $io     = IO::Scalar->new( \$buffer );
+
+        # Pass the IO handle to Faux::Context
+        my $ctx = Faux::Context->new( $io, cgi => $cgi, config => $tagx_config );
+
+        my $input = BLM::Startup::Input->new( $ctx, $tagx_config->get_module_config('Input') || {} );
+
+        my $header  = BLM::Startup::Header->new( $ctx, $tagx_config->get_module_config('Header') || {} );
+        my $env     = BLM::Startup::Env->new(%ENV);
+        my $bedrock = BLM::Startup::Bedrock->new( $ctx, $tagx_config->get_module_config('Bedrock') || {} );
+
+        ################################################################
+        # Important!
+        ################################################################
+        # The miniserver expects that if you want session a object,
+        # you declare it explicitly in the server configuration
+        # file. You do this by setting a session section. If you use
+        # the default `bedrock-miniserver.yml` configuration file, the
+        # BLM::Startup::MemorySession session object will be created
+        # for you. The miniserver will NOT search the MODULES array
+        # for a session object (one where session=yes)!
+        ################################################################
+
+        my $session = _init_session( $ctx, $global_config );
+
+        my $content = slurp_file($fs_path);
+
+        my $tpl = Bedrock::Template->new(
+          $content,
+          context => $ctx,
+          header  => $header,
+          input   => $input,
+          session => $session,
+          config  => bless( $tagx_config, 'BLM::Startup::Config' ),
+          env     => $env,
+          bedrock => $bedrock,
+        );
+
+        # Execute parsing first (populates $buffer via $ctx)
+        $tpl->parse();
+
+        # Only print headers on success
+        print "HTTP/1.0 200 OK\r\n";
+        print "Content-Type: $type\r\n";
+
+        # [FIX] Output accumulated headers (Cookies, etc.)
+        if ( my $h = $ctx->headers_out ) {
+          foreach my $key ( keys %{$h} ) {
+            my $val = $h->{$key};
+            if ( ref $val eq 'ARRAY' ) {
+              foreach my $v ( @{$val} ) { print "$key: $v\r\n"; }
+            }
+            else {
+              print "$key: $val\r\n";
+            }
+          }
+        }
+
+        print "\r\n";
+
+        # Print the captured buffer
+        print $buffer;
+      };
+
+      if ( my $err = $EVAL_ERROR ) {
+        my $err_html = _render_template_error( $err, $fs_path );
+
+        print "HTTP/1.0 500 Internal Server Error\r\n";
+        print "Content-Type: text/html\r\n\r\n";
+        print $err_html;
+
+        $logger->error("Template Parsing Failed for $fs_path: $err");
+      }
+
+      return $TRUE;
+    }
+
+    # --- Standard Static Serving ---
+    my $last_modified = ( stat $fs_path )[9];
+    my $http_date     = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime $last_modified );
 
     print "HTTP/1.0 200 OK\r\n";
     print "Content-Type: $type\r\n";
@@ -225,51 +420,141 @@ sub _serve_static {
     print "Cache-Control: max-age=86400, public\r\n";
     print "\r\n";
     print scalar slurp_file($fs_path);
-    return 1;
+    return $TRUE;
   }
 
-  # [FIX] Shadowing Logic
-  # Detect if this Alias was meant for a FILE (like index.roc)
-  # but the request is trying to treat it as a DIRECTORY (sub-path).
-
-  # Check if alias target is a file (exists OR has file extension)
+  # Shadowing Logic
   my $is_file_alias = ( -e $local_base && !-d $local_base )
-    || ( !-e $local_base && $local_base =~ m{\.[a-zA-Z0-9]+$} );
+    || ( !-e $local_base && $local_base =~ m{[.][[:alnum:]]+$}xsm );
 
-  if ($is_file_alias) {
-    # If there is ANY extra path content, this is invalid for a file alias.
-    # We decline handling it so it can fall through to the Service.
-    if ( length($rel_file) > 0 && $rel_file ne '/' ) {
-      print {*STDERR}
-        "[DEBUG] _serve_static: File-as-Directory detected. Alias: $alias_url -> $local_base. Path: $path. DECLINING.\n";
-      return 0;
-    }
+  if ( $is_file_alias && length($rel_file) > 0 && $rel_file ne $SLASH ) {
+    $logger->debug("serve_static: File-as-Directory detected. Alias: $alias_url -> $local_base. Path: $path. DECLINING.");
+    return $FALSE;
   }
 
-  # Genuine 404 in a static directory
-  if ( my $error_page = $ERROR_DOC{404} ) {
-    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %ALIAS ) {
+  my ( $error_docs, $aliases ) = @{ $self->bedrock_server_config }{qw(error_document aliases)};
+  $aliases    //= {};
+  $error_docs //= {};
+
+  if ( my $error_page = $error_docs->{404} ) {
+    foreach my $alias ( reverse sort { length($a) <=> length $b } keys %{$aliases} ) {
       next if index( $error_page, $alias ) != 0;
-      my $err_fs = $ALIAS{$alias} . substr $error_page, length $alias;
+
+      my $err_fs = $aliases->{$alias} . substr $error_page, length $alias;
+
       if ( -e $err_fs ) {
         print "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n";
         print scalar slurp_file($err_fs);
-        print {*STDERR} "404 Not Found: $path (Served Custom 404)\n";
-        return 1;
+        $logger->error("404 Not Found: $path (Served Custom 404)");
+        return $TRUE;
       }
     }
   }
 
   print "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nFile not found: $path";
-  print {*STDERR} "404 File not found: $fs_path\n";
+  $logger->error("404 File not found: $fs_path");
 
-  return 1;
+  return $TRUE;
+}
+
+########################################################################
+sub _init_session {
+########################################################################
+  my ( $ctx, $config ) = @_;
+
+  my $session_config = $config->{session};
+
+  return
+    if !$session_config;
+
+  my $class = $session_config->{module};
+
+  load $class;
+
+  return $class->new( $ctx, $session_config->{config} // {} );
+}
+
+########################################################################
+sub _render_template_error {
+########################################################################
+  my ( $err, $file_path ) = @_;
+
+  my $msg = "$err";
+
+  my $line;
+
+  # Inspect Exception Object
+  if ( blessed($err) ) {
+    # 1. Try standard 'line' method
+    if ( $err->can('line') ) {
+      $line = $err->line;
+    }
+    # 2. Try TagX array-ref structure
+    elsif ( is_array($err) && @{$err} && is_hash( $err->[0] ) ) {
+      $line = $err->[0]->{line};
+    }
+
+    # 3. Extract Message
+    if ( $err->can('as_string') ) {
+      $msg = $err->as_string;
+    }
+    elsif ( is_array($err) && @{$err} && is_hash( $err->[0] ) ) {
+      $msg = $err->[0]->{text} || "$err";
+    }
+  }
+  # Fallback: Parse string for line number
+  elsif ( $msg =~ /line\s+(\d+)/ixsm ) {
+    $line = $1;
+  }
+
+  $msg = Htmlencode($msg);
+
+  my $source = eval { slurp_file($file_path) } // $EMPTY;
+
+  my @lines = split /\n/, $source;
+
+  my $listing = $EMPTY;
+
+  for my $i ( 0 .. $#lines ) {
+    my $class = $line && $i == $line - 1 ? 'error' : 'code';
+    $listing .= sprintf qq{<span class="%s"'>%4d: %s</span>\n}, $class, $i + 1, Htmlencode( $lines[$i] );
+  }
+
+  my $html = <<"END_OF_HTML";
+<html>
+  <head>
+    <title>Template Error</title>
+  </head>
+  <body>
+    <style>
+    .error {
+       background-color: #ffcccc;
+       display: block;
+       width: 100%;
+     }
+
+    .code {
+      display: block:
+      width: 100%;     
+     }
+    </style>
+
+    <h1 style='color:red'>Template Error</h1>
+    <pre><strong>$msg</strong></pre>
+    <div style='border:1px solid #ccc; background:#f9f9f9; padding:10px; overflow:auto'>
+      <pre>$listing</pre>
+    </div>
+  </body>
+</html>
+END_OF_HTML
+
+  return $html;
 }
 
 ########################################################################
 package Bedrock::MiniServer::CLI; ## no critic
 ########################################################################
-use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean is_hash);
+use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
@@ -296,15 +581,39 @@ sub cmd_start_server {
 
   my $server_config = $self->get_server_config;
 
+  # --- Build Metadata for Instance ---
+  my %meta = (
+    global_config    => $server_config,
+    extra_env        => {},
+    error_doc        => {},
+    service_registry => {},
+    routes           => {},
+    aliases          => {},
+  );
+
+  # 1. Environment
   if ( $server_config->{env} ) {
     foreach my $k ( keys %{ $server_config->{env} } ) {
       $ENV{$k} = $server_config->{env}->{$k}; ## no critic
-      $EXTRA_ENV{$k} = $server_config->{env}->{$k};
+      $meta{extra_env}->{$k} = $server_config->{env}->{$k};
     }
   }
 
+  # 2. Error Docs
   if ( $server_config->{error_document} ) {
-    %ERROR_DOC = %{ $server_config->{error_document} };
+    $meta{error_doc} = { %{ $server_config->{error_document} } };
+  }
+
+  # 3. Template Config
+  if ( $server_config->{parse_templates} ) {
+    $meta{parse_templates} = to_boolean( $server_config->{parse_templates} );
+  }
+
+  if ( $server_config->{template_extensions} && is_array( $server_config->{template_extensions} ) ) {
+    $meta{template_extensions} = { map { $_ => 1 } @{ $server_config->{template_extensions} } };
+  }
+  else {
+    $meta{template_extensions} = { roc => 1, jroc => 1 };
   }
 
   $ENV{GATEWAY_INTERFACE} = 'CGI/1.1'; ## no critic
@@ -318,45 +627,45 @@ sub cmd_start_server {
     $global_service_config->{overrides} = $server_config->{overrides};
   }
 
-  %SERVICE_REGISTRY = ();
-  %ROUTES           = ();
-
+  # 4. Routes
   if ( $server_config->{routes} && ref $server_config->{routes} eq 'HASH' ) {
-    %ROUTES = %{ $server_config->{routes} };
+    $meta{routes} = { %{ $server_config->{routes} } };
   }
 
+  # 5. Services
   my $mount_point = $self->get_mount_point // $server_config->{mount_point};
-  $mount_point //= '/';
+  $mount_point //= $SLASH;
 
-  my ( $services, $aliases, $directory ) = @{$server_config}{qw(services aliases directory)};
-  $services = {} if !is_hash($services);
+  my ( $services_cfg, $aliases_cfg, $directory ) = @{$server_config}{qw(services aliases directory)};
+  if ( !is_hash($services_cfg) ) {
+    $services_cfg = {};
+  }
 
   my $cli_class = $ENV{BEDROCK_SERVICE} || $self->get_service;
   if ($cli_class) {
-    $services->{$mount_point} = $cli_class;
+    $services_cfg->{$mount_point} = $cli_class;
   }
 
   croak q{ERROR: No services defined! Use --service or add a 'services' block to your config.}
-    if !keys %{$services};
+    if !keys %{$services_cfg};
 
-  foreach my $mount ( keys %{$services} ) {
-    my $class = $services->{$mount};
-    $self->_mount_service( $mount, $class, $global_service_config );
+  foreach my $mount ( keys %{$services_cfg} ) {
+    my $class = $services_cfg->{$mount};
+    $self->_mount_service( $meta{service_registry}, $mount, $class, $global_service_config );
   }
 
-  %ALIAS = ();
-
-  if ($aliases) {
-    %ALIAS = %{$aliases};
+  # 6. Aliases
+  if ($aliases_cfg) {
+    $meta{aliases} = { %{$aliases_cfg} };
   }
 
   if ($directory) {
     foreach my $dir ( keys %{$directory} ) {
       my $file = $directory->{$dir};
       $dir =~ s{/\z}{}xsm;
-      $ALIAS{$dir}         = $file;
-      $ALIAS{"$dir/"}      = $file;
-      $ALIAS{"$dir/$file"} = $file;
+      $meta{aliases}->{$dir}         = $file;
+      $meta{aliases}->{"$dir/"}      = $file;
+      $meta{aliases}->{"$dir/$file"} = $file;
     }
   }
 
@@ -367,33 +676,39 @@ sub cmd_start_server {
   $logger->notice('BEDROCK MINISERVER STARTUP');
   $logger->notice( q{=} x 60 );
 
-  foreach my $mount ( sort keys %SERVICE_REGISTRY ) {
-    my $svc = $SERVICE_REGISTRY{$mount};
+  if ( $meta{parse_templates} ) {
+    $logger->notice( sprintf 'Accelerator Mode ENABLED (Parsing: %s)', join ', ', keys %{ $meta{template_extensions} } );
+  }
+
+  foreach my $mount ( sort keys %{ $meta{service_registry} } ) {
+    my $svc = $meta{service_registry}->{$mount};
     $logger->notice( sprintf 'Mount Point %-20s @ %s', ref($svc), $mount );
   }
 
   $logger->notice( q{-} x 60 );
   $logger->notice('Static Asset Aliases:');
-  foreach my $alias ( sort keys %ALIAS ) {
-    $logger->notice( sprintf '  %-20s -> %s', $alias, $ALIAS{$alias} );
+  foreach my $alias ( sort keys %{ $meta{aliases} } ) {
+    $logger->notice( sprintf '  %-20s -> %s', $alias, $meta{aliases}->{$alias} );
   }
   $logger->notice( q{=} x 60 );
 
-  Bedrock::MiniServer->new($port)->run();
+  # Instantiate with metadata
+  Bedrock::MiniServer->new( $port, undef, bedrock_metadata => \%meta )->run();
+
   return 0;
 }
 
 ########################################################################
 sub _mount_service {
 ########################################################################
-  my ( $self, $mount, $class, $config ) = @_;
+  my ( $self, $registry, $mount, $class, $config ) = @_;
   if ( $class !~ /\ABedrock::Service/xsm ) {
     $class = "Bedrock::Service::$class";
   }
   eval {
     load $class;
     my $instance = $class->new( service_config => $config );
-    $SERVICE_REGISTRY{$mount} = $instance;
+    $registry->{$mount} = $instance;
   };
   croak "Failed to mount $class at $mount: $EVAL_ERROR"
     if $EVAL_ERROR;
@@ -410,7 +725,7 @@ sub init {
   my $config_file = $self->get_config;
 
   if ($config_file) {
-    my @paths = grep {defined} ( q{}, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, $BEDROCK_DIST_DIR );
+    my @paths = grep {defined} ( $EMPTY, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, $BEDROCK_DIST_DIR );
     foreach my $p (@paths) {
       if ( $p && $p !~ m{\z/}xsm ) {
         $p = "$p/";
@@ -445,14 +760,155 @@ sub init {
   return;
 }
 
+########################################################################
+package Faux::Headers;
+########################################################################
+
+########################################################################
+sub new {
+########################################################################
+  my ($class) = @_;
+
+  return bless {}, $class;
+}
+
+########################################################################
+sub set { ## no critic
+########################################################################
+  my ( $self, $k, $v ) = @_;
+
+  $self->{$k} = $v;
+
+  return;
+}
+
+########################################################################
+sub add {
+########################################################################
+  my ( $self, $k, $v ) = @_;
+  # Handle multiple headers (like multiple Set-Cookie calls)
+
+  if ( exists $self->{$k} ) {
+    my $cur = $self->{$k};
+    $self->{$k} = ref($cur) eq 'ARRAY' ? [ @$cur, $v ] : [ $cur, $v ];
+  }
+  else {
+    $self->{$k} = $v;
+  }
+
+  return;
+}
+
+########################################################################
+sub get {
+########################################################################
+  my ( $self, $key ) = @_;
+
+  return $self->{$key};
+}
+
+########################################################################
+package Faux::Context; ## no critic
+########################################################################
+use Data::Dumper;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $outhandle, %args ) = @_;
+
+  my $self = {%args};
+  $self->{outhandle} = $outhandle;
+
+  bless $self, ref($class) || $class;
+
+  return $self;
+}
+
+########################################################################
+# Standard Accessors
+########################################################################
+sub config  { return shift->{config} // {}; }
+sub cgi     { return shift->{cgi}; }
+sub session { return shift->{session}; }
+sub input   { return shift->{input}; }
+########################################################################
+
+########################################################################
+# Context Proxies
+########################################################################
+sub getInputValue { return shift->cgi->param(@_); }
+sub route_params  { return {}; }
+sub request       { return shift->cgi; }
+sub filename      { return shift->cgi->path_info; }
+########################################################################
+
+########################################################################
+sub log { ## no critic
+########################################################################
+  return Log::Log4perl->get_logger('Bedrock::MiniServer');
+}
+
+########################################################################
+sub getCookieValue {
+########################################################################
+  my ( $self, $name ) = @_;
+
+  return $self->cgi->cookie($name);
+}
+
+########################################################################
+sub headers_out {
+########################################################################
+  my ( $self, $key, $value ) = @_;
+
+  my $headers_out = $self->{_headers_out};
+
+  if ( !$headers_out ) {
+    $headers_out = Faux::Headers->new();
+    $self->{_headers_out} = $headers_out;
+  }
+
+  return $headers_out
+    if !$key;
+
+  $headers_out->add( $key, $value );
+
+  return $headers_out;
+}
+
+########################################################################
+sub err_headers_out { goto &headers_out; }
+########################################################################
+
+########################################################################
+sub cgi_header_in {
+########################################################################
+  my ($self) = @_;
+
+  my $cgi = $self->cgi;
+
+  return map { $_ => $cgi->http($_) } $cgi->http();
+}
+
+########################################################################
+sub print { ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->{outhandle};
+
+  return $self->{outhandle}->print(@args);
+}
+
 __END__
 
 =pod
 
 =head1 NAME
 
-bedrock-miniserver.pl - Multi-tenant application server for Bedrock
-services
+bedrock-miniserver.pl - Multi-tenant application server and template accelerator for Bedrock
 
 =head1 SYNOPSIS
 
@@ -462,22 +918,26 @@ services
   # Run a single service (Legacy/Quick-start mode)
   bedrock-miniserver.pl --service MyApp::Service --port 8080
 
-  # Inject a service into a configuration from the CLI
-  bedrock-miniserver.pl --config app.yml --service Debug::Service --mount-point /debug
-
   # Get help
   bedrock-miniserver.pl --help
 
 =head1 DESCRIPTION
 
 This script provides a standalone HTTP server for Bedrock
-applications, built on top of C<HTTP::Server::Simple::CGI>. It acts as
-a lightweight B<Application Server>, capable of hosting multiple
-Bedrock Services simultaneously on a single port.
+applications, built on top of C<HTTP::Server::Simple::CGI>. It serves
+two distinct purposes:
 
-It simulates a CGI environment (virtualizing C<PATH_INFO>,
-C<SCRIPT_NAME>, etc.)  and dispatches requests to the appropriate
-service based on a "Longest Prefix Match" routing table.
+=over 4
+
+=item 1. B<Application Server>: Hosts multiple Bedrock Services
+simultaneously on a single port, dispatching requests based on a
+routing table.
+
+=item 2. B<Template Accelerator>: Serves and parses static Bedrock
+templates (F<.roc> files) directly from the filesystem, providing a
+simulated Bedrock environment for rapid development.
+
+=back
 
 =head1 OPTIONS
 
@@ -486,218 +946,122 @@ service based on a "Longest Prefix Match" routing table.
 =item B<--config | -c>
 
 The path to the YAML configuration file defining the services,
-aliases, and environment. If omitted, the server looks for
-F<bedrock-miniserver.yml> in standard locations.
+aliases, and environment.
 
 =item B<--service | -s>
 
 The Perl class name of a Bedrock Service to run (e.g.,
 C<MyApp::Service>).
 
-If a configuration file is present, this option acts as an
-B<injector>, adding (or overriding) a service entry in the registry at
-the specified mount point.  If no configuration file is used, this
-option is required to start the server in single-tenant mode.
-
 =item B<--mount-point | -m>
 
 The URL prefix where the CLI-specified service will be
-mounted. Defaults to C</>.  (e.g., C<--mount-point /admin>).
+mounted. Defaults to C</>.
 
 =item B<--port | -p>
 
-The port to listen on. Defaults to C<8080> or the value defined in the
-configuration.
+The port to listen on. Defaults to C<8080>.
 
 =back
+
+=head1 ACCELERATOR MODE (Template Parsing)
+
+In addition to hosting Services, the Miniserver acts as a "Smart Static Server."
+
+When a request matches a file with a Bedrock extension (configured via
+C<template_extensions>, typically F<.roc>), the server does B<not>
+serve the raw source code. Instead, it:
+
+=over 4
+
+=item 1. B<Instantiates the Bedrock Stack>: It manually loads the "Big
+5" startup objects that Bedrock pages expect:
+
+  * C<$bedrock> (Utilities)
+  * C<$config> (Configuration, merged with F<tagx.xml>)
+  * C<$env> (Environment variables)
+  * C<$header> (HTTP Header control)
+  * C<$input> (CGI Parameters)
+
+=item 2. B<Enables Sessions>: If a session manager is explicitly configured
+in the miniserver YAML, it initializes the session. 
+
+I<Note: The accelerator does I<not> auto-discover session managers from your 
+F<tagx.xml> configuration. You must add a C<session> block to your
+F<bedrock-miniserver.yml>.>
+
+=item 3. B<Parses the Template>: It renders the page using
+C<Bedrock::Template>.
+
+=item 4. B<Handles Errors>: If parsing fails, it generates a detailed
+HTML error report with code highlighting, similar to the full
+Apache::Bedrock handler.
+
+=back
+
+B<Usage:>
+
+Simply define an alias pointing to your document root. Any F<.roc>
+file accessed via that alias will be parsed automatically.
+
+  # In bedrock-miniserver.yml
+  aliases:
+    /birds: ./htdocs/birds
+
+  # Accessing http://localhost:8080/birds/index.roc now renders the template!
 
 =head1 ARCHITECTURE
 
 =head2 The Service Registry
 
-Unlike previous versions which ran a single script, this server
-maintains a registry of mounted services.
+The server maintains a registry of mounted services using "Longest
+Prefix Match" routing.
 
   /       -> Bedrock::Service::RootApp
   /birds  -> Bedrock::Service::Autocomplete
-  /admin  -> Bedrock::Service::SystemStatus
 
-=head2 Routing and Translation
+=head2 Route Translation
 
-When a request arrives, the server routes it to the service with the
-longest matching prefix. It then B<translates> the path by stripping
-that prefix before handing it to the service.
-
-  Request:    /birds/autocomplete/robins.json
-  Mount:      /birds
-  Result:     Service receives PATH_INFO="/autocomplete/robins.json"
-
-This allows services to be written without knowledge of where they are
-mounted.
-
-=head2 Service Instantiation
-
-Services are instantiated (C<new()>) at server startup to build the
-registry.  Therefore, B<Service constructors must be lightweight and
-side-effect free.> Do not perform request-specific logic, database
-connections, or heavy initialization inside C<new()>. Defer those
-actions to C<init()> or C<handler()>.
+When a request matches a service, the server B<translates> the path by
+stripping the mount prefix before invoking the service. This allows
+services to be written without knowledge of where they are mounted.
 
 =head2 Static Asset Serving
 
-Static assets (CSS, JS, Images) are served globally, bypassing the
-service dispatch layer. This mimics the C<Alias> directives in a
-standard Apache configuration.
-
-Mappings are defined in the C<aliases> or C<directory> blocks of your
-configuration file.
-
-=head2 Logging
-
-The server initializes C<Log::Log4perl> using the configuration file
-shipped with the Bedrock distribution (or your local override).
-
-=over 4
-
-=item * B<Bedrock.MiniServer>: Logs server lifecycle events (startup,
-shutdown) and access logs.
-
-=item * B<Bedrock.Service>: Logs application logic, dispatch timing, and errors.
-
-=back
-
-=head1 CONFIGURATION CONCEPTS
-
-It is important to distinguish between the B<Server Configuration>
-(the container) and the B<Service Configuration> (the application).
-
-=head2 Server Configuration
-
-Controls the HTTP listener and the "Virtual Host" environment.
-
-=over 4
-
-=item * B<Port / Bind Address>: Where the server listens.
-
-=item * B<Mount Points>: Which URL prefixes map to which Perl Classes.
-
-=item * B<Static Assets>: Global aliases for CSS/JS/Images.
-
-=item * B<Error Documents>: Custom 404/500 pages.
-
-=back
-
-=head2 Service Configuration
-
-Controls the internal logic of the mounted applications.
-
-=over 4
-
-=item * B<Session Storage>: Database or Memory backends.
-
-=item * B<Dispatch Maps>: Internal routing tables (URI -> Method).
-
-=item * B<Application Settings>: API keys, feature flags, etc.
-
-=back
-
-Values defined in the session and overrides sections of your YAML file
-are injected into the Service's constructor at startup. The routes
-section is used by the Miniserver itself to handle URL rewriting.
-
-=head1 ADVANCED ROUTING
-
-=head2 1. Discovery (Introspection)
-
-To configure routing effectively, you first need to know what URLs a
-service expects by default. You can use the C<--routes> flag on the
-specific service:
-
-  $ ./bedrock-service.cgi --service Bedrock::Service::Autocomplete --routes
-
-  Route Configuration for Bedrock::Service::Autocomplete:
-  ------------------------------------------------------------
-  URL Pattern                    | Action Method
-  ------------------------------------------------------------
-  /autocomplete/:file            | action_lookup
-  /status                        | action_status
-  ------------------------------------------------------------
-
-=head2 2. Route Translation (Rewriting)
-
-The B<Route Translation> feature allows you to decouple your public
-URL structure from the internal implementation of your services.
-
-Instead of stripping the mount point prefix (default behavior), the
-server can B<rewrite> the incoming request URL to match the format the
-service expects.
-
-This is defined in the C<routes> block of your configuration, keyed by
-the
-
-B<Mount Point>.
-
-  # bedrock-miniserver-multi.yml
-
-  # 1. Mount the service
-  services:
-    /birds: Bedrock::Service::Autocomplete
-
-  # 2. Define Rewrite Rules
-  routes:
-    # Key MUST match the Mount Point defined above
-    /birds:
-      # Public URL Pattern   =>  Internal Service Pattern
-      '/birds/:file':            /autocomplete/:file
-      '/birds/status':           /status
-
-B<How it works:>
-
-=over 4
-
-=item 1.  B<Match:> The server receives a request for
-C</birds/status>.
-
-=item 2.  B<Find:> It identifies that the service mounted at C</birds>
-owns this request.
-
-=item 3.  B<Rewrite:> It checks the C<routes> map. It sees that
-C<'/birds/status'> matches.
-
-=item 4.  B<Transform:> It rewrites the path to the internal pattern:
-C</status>.
-
-=item 5.  B<Dispatch:> It sets C<PATH_INFO> to this new value and
-invokes the service.
-
-=back
-
-The service receives the path it expects (C</status>), avoiding
-conflicts with other services that might also use that path.
+Static assets (CSS, JS, Images) are served globally. If a file does
+not match a Bedrock extension, it is served efficiently as a raw
+static file with the correct MIME type.
 
 =head1 CONFIGURATION
 
 The server configuration is driven by a YAML file (e.g.,
-F<bedrock-miniserver-multi.yml>).
+F<bedrock-miniserver.yml>).
 
   port: 8080
+  
+  # Control server verbosity (debug, info, warn, error, fatal)
+  # Default: info
+  log_level: debug 
 
-  # 1. The Service Registry (Mount Point -> Class)
+  # 1. Services
   services:
-    /birds: Bedrock::Service::Autocomplete
-    /admin: Bedrock::Service::Admin
+    /api: MyApp::Service::API
 
-  # 2. Static Asset Aliases
+  # 2. Aliases (Static & Accelerator)
   aliases:
-    /favicon.ico: ./htdocs/favicon.ico
-    /css:         ./htdocs/css
+    /css: ./htdocs/css
+    /:    ./htdocs/root   # Serve .roc files from here!
 
-  # 3. Directory Sugar (Auto-generates aliases for folders)
-  directory:
-    /birds: index.roc
+  # 3. Accelerator Configuration
+  parse_templates: yes
+  template_extensions:
+    - roc
+    - jroc
 
-  # 4. Global Service Configuration
-  #    These settings are injected into EVERY service instance.
+  # 4. Session Manager (Used by both Services and Accelerator)
+  #    IMPORTANT: You MUST explicitly define the session manager here.
+  #    Unlike the standard Bedrock Apache handler, the Miniserver does
+  #    NOT scan tagx.xml for modules with 'session=yes'.
   session:
     module: BLM::Startup::MemorySession
     config:
@@ -705,31 +1069,11 @@ F<bedrock-miniserver-multi.yml>).
 
   overrides:
     BEDROCK_CONFIG_PATH: ./config
-  
-  # 5. Route Rewriting
-  routes:
-    /birds:
-      '/birds/:file': /autocomplete/:file
-
-=head2 Error Documents
-
-You can define custom HTML files to serve when specific HTTP errors
-occur (most commonly 404 Not Found for static assets).
-
-  error_document:
-    404: /not-found.html
-
-The path specified must be resolvable via your defined C<aliases>.
 
 =head1 EXIT STATUS
 
-Returns 0 on successful execution (server runs until
-interrupted). Returns non-zero if a service class fails to load or the
-configuration is invalid.
-
-=head1 SEE ALSO
-
-L<Bedrock::Service>, L<Bedrock::LoadConfig>
+Returns 0 on successful execution. Returns non-zero if a service class
+fails to load or the configuration is invalid.
 
 =head1 AUTHOR
 
