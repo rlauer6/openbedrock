@@ -20,7 +20,7 @@ sub throw     { die shift; }
 package Bedrock::Service; ## no critic
 ########################################################################
 
-use Bedrock qw(:booleans resolve_stream choose to_snake_case);
+use Bedrock qw(:booleans resolve_stream choose to_snake_case is_array);
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Context;
 use Bedrock::Handler;
@@ -227,8 +227,8 @@ sub new {
 ########################################################################
   my ( $class, %options ) = @_;
 
-  $options{config}  = delete $options{CONFIG};
-  $options{session} = delete $options{SESSION};
+  $options{config}    //= delete $options{CONFIG};
+  $options{session}   //= delete $options{SESSION};
   $options{autoflush} //= $FALSE;
   $options{cache}     //= $TRUE;
 
@@ -875,14 +875,18 @@ sub session {
 ########################################################################
   my ( $self, @args ) = @_;
 
-  if ( @args == 1 && ref( $args[0] ) !~ /ARRAY/xsm ) {
-    my $ref = $args[0];
-    $self->set( session => $ref );
-    return $ref;
+  # $self->session(session-object)
+  if ( @args == 1 && ref $args[0] ) {
+    if ( !is_array( $args[0] ) ) {
+      my $ref = $args[0];
+      $self->set( session => $ref );
+      return $ref;
+    }
   }
 
   my $session = $self->get('session');
 
+  # initialize session if no session yet
   if ( !$session ) {
     $session = $self->init_session();
 
@@ -898,13 +902,16 @@ sub session {
   return $session
     if !@args;
 
+  return $session->{ $args[0] }
+    if @args == 1;
+
   return $session->{ $args[0] } = $args[1]
     if @args > 1;
 
   my $ref = $args[0];
 
   return @{$session}{ @{$ref} }
-    if reftype($ref) eq 'ARRAY';
+    if is_array($ref);
 
   return $session;
 }
@@ -1110,6 +1117,10 @@ sub flush_output {
 sub DESTROY {
 ########################################################################
   my ($self) = @_;
+
+  if ( $self->session ) {
+    $self->session->closeBlm;
+  }
 
   return;
 }
@@ -1508,6 +1519,64 @@ You can alter this behavior by passing an C<on_error> argument:
  redirect( $url )
 
 Sends an HTTP redirect header.
+
+=head2 session
+
+ session()
+ session( $key, $value )
+ session( $key ) 
+ session( \@keys )
+ session( $object )
+
+Returns the current Bedrock Session object. If the session has not
+been started yet, this method attempts to initialize it using the
+active configuration.
+
+B<Usage:>
+
+=over 4
+
+=item * B<Get Session Object:> Call without arguments.
+
+  my $session = $self->session;
+
+=item * B<Set Session Value:> Pass a key and value to store data.
+
+  $self->session( user_id => 42 );
+
+=item * B<Get Data Slice:> Pass an array reference to retrieve a list of values.
+
+  my ($id, $role) = $self->session( [qw(user_id role)] );
+
+=item * B<Inject Session:> Pass a single object (that is not an array
+ref) to replace the session manager (useful for testing).
+
+  $self->session( $mock_session_obj );
+
+=item * B<Single Value:> Retrive a single value from the session
+object.
+
+  my $foo = $self->session('foo');
+
+=back
+
+B<Configuration:>
+
+The session manager is initialized lazily based on the following
+priority:
+
+=over 4
+
+=item 1. B<Miniserver Config:> A C<session> block in
+F<bedrock-miniserver.yml>.
+
+=item 2. B<Environment:> The C<BEDROCK_SESSION_MANAGER> environment
+variable.
+
+=item 3. B<Global Config:> The C<BEDROCK_SESSION_MANAGER> variable in
+F<tagx.xml>.
+
+=back
 
 =head1 NAMING CONVENTIONS
 
