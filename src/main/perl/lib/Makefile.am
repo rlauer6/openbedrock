@@ -87,6 +87,8 @@ perl5bedrocklib_DATA = \
     Bedrock/CSRF.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
+    Bedrock/Error.pm \
+    Bedrock/Exception.pm \
     Bedrock/Handle.pm \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \

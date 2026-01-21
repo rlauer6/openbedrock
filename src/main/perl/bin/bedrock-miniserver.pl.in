@@ -19,6 +19,7 @@ use warnings;
 use Apache::Request::CGI;
 use Bedrock qw(slurp_file is_hash is_array);
 use Bedrock::Constants qw(:chars %LOG4PERL_LOG_LEVELS :booleans);
+use Bedrock::Error qw(handle_error resolve_error_page);
 use Benchmark;
 use Data::Dumper;
 use English qw(-no_match_vars);
@@ -194,15 +195,18 @@ sub handle_request {
       my $r = Apache::Request::CGI->new();
 
       eval { $service->handler($r); };
+      my $session = $service->context->session;
+
+      if ( $session && $session->can('closeBLM') ) {
+        $session->closeBLM;
+      }
 
       my $err = $EVAL_ERROR;
       my $t1  = Benchmark->new;
 
-      if ($EVAL_ERROR) {
-        print "HTTP/1.0 500 Internal Server Error\r\n";
-        print "Content-Type: text/plain\r\n\r\n";
-        print "Bedrock Service Crashed: $EVAL_ERROR";
-        $logger->error("CRITICAL ERROR in $mount: $EVAL_ERROR");
+      if ($err) {
+        handle_error( $r, $err );
+        $logger->error("CRITICAL ERROR in $mount: $err");
       }
 
       my $td = timediff( $t1, $t0 );
@@ -307,6 +311,12 @@ sub _serve_static {
     my $global_config = $meta->{global_config} || {};
 
     if ( $meta->{parse_templates} && $meta->{template_extensions}->{$ext} ) {
+      my $tpl;
+
+      # Create capture buffer and IO handle
+      my $buffer = $EMPTY;
+      my $io     = IO::Scalar->new( \$buffer );
+
       eval {
         my %env_vars = $self->_get_cgi_env( $cgi, $meta );
 
@@ -331,9 +341,14 @@ sub _serve_static {
           $tagx_config->{$_} = $global_config->{$_};
         }
 
-        # Create capture buffer and IO handle
-        my $buffer = $EMPTY;
-        my $io     = IO::Scalar->new( \$buffer );
+        # This matches the logic in Bedrock::Service::init_request_dependent_objects
+        if ( $global_config->{overrides} && is_hash( $global_config->{overrides} ) ) {
+          my $overrides = $global_config->{overrides};
+          @{$tagx_config}{ keys %{$overrides} } = values %{$overrides};
+        }
+
+        require Cwd;
+        $ENV{BEDROCK_ERROR_PAGE} //= resolve_error_page( $tagx_config, Cwd::getcwd() ); ## no critic
 
         # Pass the IO handle to Faux::Context
         my $ctx = Faux::Context->new( $io, cgi => $cgi, config => $tagx_config );
@@ -360,7 +375,7 @@ sub _serve_static {
 
         my $content = slurp_file($fs_path);
 
-        my $tpl = Bedrock::Template->new(
+        $tpl = Bedrock::Template->new(
           $content,
           context => $ctx,
           header  => $header,
@@ -371,11 +386,14 @@ sub _serve_static {
           bedrock => $bedrock,
         );
 
+        $tpl->set_source($fs_path);
+
         # Execute parsing first (populates $buffer via $ctx)
         $tpl->parse();
 
+        # BLMs must be explicitly closed
         foreach my $plugin ( $header, $input, $session, $env, $bedrock ) {
-          next if !$plugin->can('closeBLM');
+          next if $plugin && !$plugin->can('closeBLM');
 
           $plugin->closeBLM;
         }
@@ -384,7 +402,6 @@ sub _serve_static {
         print "HTTP/1.0 200 OK\r\n";
         print "Content-Type: $type\r\n";
 
-        # [FIX] Output accumulated headers (Cookies, etc.)
         if ( my $h = $ctx->headers_out ) {
           foreach my $key ( keys %{$h} ) {
             my $val = $h->{$key};
@@ -404,13 +421,38 @@ sub _serve_static {
       };
 
       if ( my $err = $EVAL_ERROR ) {
-        my $err_html = _render_template_error( $err, $fs_path );
+        require Apache::Request::CGI;
+        my $r = Apache::Request::CGI->new();
 
-        print "HTTP/1.0 500 Internal Server Error\r\n";
-        print "Content-Type: text/html\r\n\r\n";
-        print $err_html;
+        # Clear the buffer. We don't want half-rendered page content
+        # mixed with our error page.
+        $buffer = $EMPTY;
+        if ( $io && $io->can('seek') ) { $io->seek( 0, 0 ); }
 
-        $logger->error("Template Parsing Failed for $fs_path: $err");
+        # Generate the error page
+        # If this succeeds (Happy Path), it writes HTML into $buffer via $tpl
+        # If this fails, it prints "Panic" HTML directly to STDOUT
+        handle_error( $r, $err, $tpl );
+
+        # Flush the buffer to the client
+        # If $buffer has content, it means handle_error() used the template engine.
+        if ( length $buffer ) {
+          print "HTTP/1.0 500 Internal Server Error\r\n";
+          print "Content-Type: text/html\r\n\r\n";
+          print $buffer;
+        }
+
+        # Robust Logging (From previous step)
+        my $err_msg = "$err";
+
+        if ( blessed($err) ) {
+          if    ( $err->can('as_string') ) { $err_msg = $err->as_string; }
+          elsif ( $err->can('mesg') )      { $err_msg = $err->mesg; }
+          elsif ( $err->can('to_string') ) { $err_msg = $err->to_string; }
+          else                             { $err_msg = Dumper($err); }
+        }
+
+        $logger->error("Template Parsing Failed for $fs_path: $err_msg");
       }
 
       return $TRUE;
@@ -425,7 +467,9 @@ sub _serve_static {
     print "Last-Modified: $http_date\r\n";
     print "Cache-Control: max-age=86400, public\r\n";
     print "\r\n";
+
     print scalar slurp_file($fs_path);
+
     return $TRUE;
   }
 
@@ -843,11 +887,28 @@ sub input   { return shift->{input}; }
 ########################################################################
 # Context Proxies
 ########################################################################
-sub getInputValue { return shift->cgi->param(@_); }
-sub route_params  { return {}; }
-sub request       { return shift->cgi; }
-sub filename      { return shift->cgi->path_info; }
+sub route_params { return {}; }
+sub request      { return shift->cgi; }
+sub filename     { return shift->cgi->path_info; }
 ########################################################################
+sub getInputValue {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  # 1. If asking for specific keys, we want values.
+  # Use multi_param to safely return a list (silences the warning).
+  if (@args) {
+    if ( $self->cgi->can('multi_param') ) {
+      return $self->cgi->multi_param(@args);
+    }
+    # Fallback for ancient CGI.pm versions
+    return $self->cgi->param(@args);
+  }
+
+  # 2. If asking for no keys, we want the list of parameter names.
+  # param() is still safe/correct here.
+  return $self->cgi->param();
+}
 
 ########################################################################
 sub log { ## no critic

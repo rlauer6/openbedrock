@@ -3,26 +3,10 @@ package Bedrock::Service;
 use strict;
 use warnings;
 
-########################################################################
-package Bedrock::Exception; ## no critic
-########################################################################
-
-use overload '""' => 'to_string', fallback => 1; ## no critic
-
-sub new       { my ( $class, %args ) = @_; return bless \%args, $class; }
-sub message   { return shift->{message} }
-sub type      { return shift->{type} // 'generic' }
-sub payload   { return shift->{payload} }
-sub to_string { return shift->{message} }
-sub throw     { die shift; }
-
-########################################################################
-package Bedrock::Service; ## no critic
-########################################################################
-
 use Bedrock qw(:booleans resolve_stream choose to_snake_case is_array);
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Context;
+use Bedrock::Exception;
 use Bedrock::Handler;
 use Bedrock::Hash;
 use Bedrock::LoadConfig qw(load_config);
@@ -152,7 +136,6 @@ sub handler : method {
   $t2 = Benchmark->new;
   $td = timediff( $t2, $t1 );
   $logger->notice( sprintf 'dispatch complete: (%s)', timestr($td) );
-  $t1 = $t2;
 
   if ($err) {
     $self->handle_exception($EVAL_ERROR);
@@ -160,14 +143,6 @@ sub handler : method {
 
   # Explicit flush ONLY.
   $self->flush_output();
-
-  if ( my $session = $self->get('session') ) {
-    $session->closeBLM;
-  }
-
-  $t2 = Benchmark->new;
-  $td = timediff( $t2, $t1 );
-  $logger->debug( sprintf 'closeBLM time: (%s)', timestr($td) );
 
   return 0;
 }
@@ -264,11 +239,6 @@ sub routes {
   # Return a shallow copy to prevent accidental modification
   return { %{ $self->dispatch_map // {} } };
 }
-
-########################################################################
-sub is_web { return $ENV{GATEWAY_INTERFACE} || $ENV{MOD_PERL}; }
-sub is_cli { return !is_web(); }
-########################################################################
 
 ########################################################################
 sub dispatch {
@@ -1118,8 +1088,11 @@ sub DESTROY {
 ########################################################################
   my ($self) = @_;
 
-  if ( $self->session ) {
-    $self->session->closeBlm;
+  # we get('session') because ->session() would initialize a session
+  my $session = $self->get('session');
+
+  if ( $session && blessed($session) && $session->can('closeBLM') ) {
+    $session->closeBLM;
   }
 
   return;

@@ -1,4 +1,4 @@
-package Apache::Bedrock;  ## no critic
+package Apache::Bedrock; ## no critic
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
@@ -41,27 +41,26 @@ BEGIN {
   }
 }
 
-use Bedrock qw(slurp_file cache);
+use Bedrock qw(slurp_file cache choose is_mod_perl is_bedrock_shell);
 use Bedrock::Apache::Constants qw(:http %APACHE_LOG_LEVELS);
 use Bedrock::Constants qw(:chars :defaults :booleans :regexp);
 use Bedrock::BedrockConfig;
 use Bedrock::Context;
 use Bedrock::Dump;
+use Bedrock::Error qw(handle_error resolve_error_page);
 use Bedrock::Handler qw(:mlogger :bind require_module);
 use Text::TagX;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
-use HTML::Entities qw(encode_entities);
-use JSON;
 use List::Util qw( any uniq );
 use Scalar::Util qw(blessed reftype);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-our $VERSION = '@PACKAGE_VERSION@';  ## no critic
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic
 
 use parent qw(Exporter);
 
@@ -113,7 +112,7 @@ sub handler {
     = eval { return Bedrock::Handler->new( $r, cache => $cache, benchmarking_enabled => $ENV{BEDROCK_BENCHMARK} ); };
 
   if ( !$bedrock_handler ) {
-    display_init_error( $r, "could not initialize handler\n$EVAL_ERROR" );
+    handle_error( $r, "could not initialize handler\n$EVAL_ERROR" );
 
     return $OK;
   }
@@ -200,7 +199,7 @@ sub handler {
       $conf->{$env_var} = $conf->{"${var}_DIR"} = $ENV{$env_var};
     }
     else {
-      $ENV{$env_var} = defined $conf->{$env_var} ? defined $conf->{$env_var} : $EMPTY;  ## no critic
+      $ENV{$env_var} = defined $conf->{$env_var} ? defined $conf->{$env_var} : $EMPTY; ## no critic
     }
   }
 
@@ -209,26 +208,19 @@ sub handler {
     $conf->{CONFIG_PATH}         = $conf->{BEDROCK_CONFIG_PATH};
   }
   else {
-    $ENV{BEDROCK_CONFIG_PATH} = $ENV{CONFIG_PATH} = $conf->{CONFIG_PATH} // $conf->{BEDROCK_CONFIG_PATH};  ## no critic
+    $ENV{BEDROCK_CONFIG_PATH} = $ENV{CONFIG_PATH} = $conf->{CONFIG_PATH} // $conf->{BEDROCK_CONFIG_PATH}; ## no critic
   }
 
-  $ENV{BEDROCK_IMAGE_URL} //= $ENV{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL};                               ## no critic
+  $ENV{BEDROCK_IMAGE_URL} //= $ENV{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL}; ## no critic
 
-  my $error_page = $conf->{ERROR_LOCATION};
+  my $error_page = resolve_error_page( $conf, $ENV{DOCUMENT_ROOT} );
 
-  if ($error_page) {
-    $error_page = $ENV{DOCUMENT_ROOT} . $error_page;
-  }
-  else {
-    $error_page = $conf->{BEDROCK_ERROR_LOCATION};
-  }
-
-  $ENV{BEDROCK_ERROR_PAGE} = $error_page;                                                                  ## no critic
+  $ENV{BEDROCK_ERROR_PAGE} = $error_page; ## no critic
 
   $r->log->info( sprintf 'INCLUDE_DIR.........[%s]', $conf->{INCLUDE_DIR}       // $EMPTY );
   $r->log->info( sprintf 'PEBBLE_DIR..........[%s]', $conf->{PEBBLE_DIR}        // $EMPTY );
   $r->log->info( sprintf 'ALLOW_SNIPPET_TAG...[%s]', $conf->{ALLOW_SNIPPET_TAG} // $EMPTY );
-  $r->log->info( sprintf 'BEDROCK_ERROR_PAGE..[%s]', $ENV{BEDROCK_ERROR_PAGE}   // $EMPTY );
+  $r->log->info( sprintf 'BEDROCK_ERROR_PAGE..[%s]', $error_page                // $EMPTY );
 
   my $app_dir = $bedrock_handler->{path};
 
@@ -318,16 +310,7 @@ sub handler {
     1;
   } or do {
     my $err = $EVAL_ERROR;
-    $r->log->error( sprintf 'file:[%s] mime-type:[%s] error: [%s]', $bedrock_handler->{file}, $r->content_type, $err );
-
-    # Distinguish between Startup Panic vs Runtime Error
-    if ( $err =~ $PANIC_EXPR ) {
-      display_init_error( $r, $err );
-    }
-    else {
-      display_error( $r, $err, $tx );
-    }
-
+    handle_error( $r, $err, $tx );
     # We return OK so Apache serves the error page content we just generated
     $final_status = $OK;
   };
@@ -489,143 +472,6 @@ sub pre_bind_module {
   $context->{$pre_bound_type} = $obj;
 
   return $TRUE;
-}
-
-########################################################################
-sub is_bedrock_shell {
-########################################################################
-  my ($r) = @_;
-
-  return blessed($r) eq 'Apache::Request::Shell';
-}
-
-########################################################################
-sub is_mod_perl {
-########################################################################
-  return defined $ENV{MOD_PERL};
-}
-
-########################################################################
-sub display_init_error {
-########################################################################
-  my ( $r, $message ) = @_;
-
-  if ( is_bedrock_shell($r) ) {
-    print {*STDERR} $message;
-    exit 1;
-  }
-
-  $r->log->error($message);
-
-  display_html_init_error( $r, $message );
-
-  return;
-}
-
-########################################################################
-sub display_html_init_error {
-########################################################################
-  my ( $r, $message ) = @_;
-
-  my $safe_message = encode_entities($message);
-
-  $r->content_type('text/html');
-  $r->send_http_header;
-
-  print <<"END_OF_HTML";
-<html>
-  <head>
-    <title>Bedrock Initialization Error</title>
-  </head>
-  <body>
-    <div style="color:red;">An error was encountered while trying to initialize Bedrock</div>
-    <pre>
-      <p>$safe_message</p>
-    </pre>
-  </body>
-</html>
-END_OF_HTML
-
-  return;
-}
-
-########################################################################
-sub display_error {
-########################################################################
-  my ( $r, $err, $tx ) = @_;
-
-  if ( is_bedrock_shell($r) ) {
-    display_shell_error( $err, $tx );
-  }
-  elsif ( $r->content_type =~ /json/xsm ) {
-    if ( is_mod_perl() ) {
-      # NOTE: you can set the header like this:
-      #       $header.set('Status', '400 Bad Request')
-      # and that will override the 500 Server Error response
-      $r->status($SERVER_ERROR);
-    }
-    else {
-      $r->content_type('application/json');
-      $r->headers_out( Status => '500' );
-      $r->send_http_header;
-    }
-
-    chomp $err;
-
-    print {*STDOUT} JSON->new->encode( { error => $err } );
-  }
-  else {
-    $tx->show_error( $ENV{BEDROCK_ERROR_PAGE} );
-  }
-
-  return;
-}
-
-########################################################################
-sub display_shell_error {
-########################################################################
-  my ( $err, $tx ) = @_;
-
-  if ( !$tx || !$tx->{error} ) {
-    print {*STDERR} "Runtime Error: $err\n";
-    return;
-  }
-
-  my $line = $tx->{error}->line;
-  my $file = $tx->{error}->file;
-
-  # error in file or pebble?
-  my $source = eval {
-    return slurp_file $file
-      if !ref $file;
-
-    # first call return pebble name
-    my $pebble_name = $tx->pebble($file);
-    return $tx->pebble($pebble_name);
-  };
-
-  my @lines = split /\n/xsm, $source;
-
-  if ( $err !~ /\Asnippet/xsm ) {
-
-    print {*STDERR} sprintf 'Error on line [%d] (%s) - %s', $line, $file, $err;
-
-    # print the lines surrounding error
-    if ( $line > 1 ) {
-      print {*STDERR} sprintf "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ];
-    }
-
-    print {*STDERR} sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ];
-
-    if ( $line != @lines ) {
-      print {*STDERR} sprintf "  [%3d] %s\n", $line + 1, $lines[$line];
-    }
-  }
-  else {
-    print {*STDERR} $err;
-  }
-
-  return;
 }
 
 1;

@@ -1,0 +1,306 @@
+package Bedrock::Error;
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Bedrock qw(choose is_mod_perl is_bedrock_shell slurp_file);
+use Bedrock::Constants qw(:http :regexp :booleans);
+use Bedrock::Exception;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use HTML::Entities qw(encode_entities);
+use JSON;
+use Scalar::Util qw(blessed);
+
+use parent qw(Exporter);
+
+our @EXPORT_OK = qw(handle_error resolve_error_page);
+
+########################################################################
+sub handle_error {
+########################################################################
+  my ( $r, $err, $tx ) = @_;
+
+  # --- BSG: Fail Early (Validate Preconditions) ---
+
+  # We cannot handle an error if we don't have the context to report it
+  if ( !$r ) {
+    print {*STDERR} "CRITICAL: handle_error called without Request object.\nError: $err\n";
+    return;
+  }
+
+  # If there is no error, there is nothing to do
+  return
+    if !$err;
+
+  # --- 1. Panic Check (First Order Broke) ---
+  # If the error matches our "Panic Regex" (defined in Constants.pm),
+  # we skip the template engine entirely.
+  return _render_panic( $r, $err, 'Initialization Error', 'Bedrock initialization failed.' )
+    if "$err" =~ $PANIC_EXPR;
+
+  # --- 2. CLI / Shell Mode ---
+  return _render_shell( $err, $tx )
+    if is_bedrock_shell($r);
+
+  # --- 3. JSON / API Mode ---
+  return _render_json( $r, $err )
+    if $r->content_type && $r->content_type =~ /json/xsm;
+
+  # --- 4. Validation for Template Mode ---
+
+  # If we lack the parser ($tx), we cannot render templates. Fallback to panic.
+  return _render_panic( $r, $err, 'Unknown Failure', 'Possible Bedrock parser error.' )
+    if !$tx;
+
+  my $error_page = $ENV{BEDROCK_ERROR_PAGE};
+
+  # If the environment isn't configured, we cannot find the template.
+  # Log it as a configuration warning and fallback to panic.
+  if ( !$error_page ) {
+    $r->log->warn('BEDROCK_ERROR_PAGE environment variable is not set. Falling back to panic HTML.');
+    return _render_panic( $r, $err, 'Configuration Error', 'The BEDROCK_ERROR_PAGE is not set.' );
+  }
+
+  # --- 5. Standard Web Mode (The Gold Standard) ---
+  if ( -r $error_page ) {
+
+    # Hack for parsing templates using Bedrock::Template which looks
+    # like a pebble because the input source was a handle to a text
+    # object...may be a more elegant solution?
+    if ( $tx->isa('Bedrock::Template') ) {
+      if ( $tx->can('get_source') ) {
+        $tx->tagx->error->file( $tx->get_source );
+      }
+      else {
+        $tx->tagx->error->file('template');  # would have been 'anonymous'
+      }
+    }
+
+    # Attempt to render error.roc using TagX (Happy Path)
+    eval { $tx->show_error($error_page); };
+
+    return if !$EVAL_ERROR;
+
+    $r->log->error("Error rendering template [$error_page]: $EVAL_ERROR");
+  }
+  else {
+    # Log missing file but do not crash
+    $r->log->warn("BEDROCK_ERROR_PAGE configured [$error_page] but file not found or unreadable.");
+  }
+
+  # If TagX crashed while trying to show the error, log it and fall through to panic.
+  $r->log->error("Error rendering template [$error_page]: $EVAL_ERROR");
+
+  my $err_str = _safe_stringify($err);
+
+  return _render_panic( $r, $err_str, 'Template Render Error',
+    'Bedrock attempted to render the custom error page but failed.' );
+}
+
+########################################################################
+sub resolve_error_page {
+########################################################################
+  my ( $config, $doc_root ) = @_;
+
+  return if !$config;
+
+  # 1. Check for Relative Path first (Standard Web Config)
+  #    <scalar name="ERROR_LOCATION">/error.roc</scalar>
+  if ( my $rel = $config->{ERROR_LOCATION} ) {
+
+    # If upstream provided a root (e.g., Cwd or DocumentRoot), prepend it
+    if ($doc_root) {
+      $doc_root =~ s{/$}{}xsm;
+      $rel      =~ s{^/}{}xsm;
+      return "$doc_root/$rel";
+    }
+
+    # Fallback: if no docroot provided, try Cwd
+    require Cwd;
+    return Cwd::getcwd() . "/$rel";
+  }
+
+  # 2. Check for Absolute Path (Legacy/Override)
+  #    <scalar name="BEDROCK_ERROR_LOCATION">/var/www/bedrock/error.roc</scalar>
+  #    Return AS IS. Do not prepend doc_root.
+  return $config->{BEDROCK_ERROR_LOCATION};
+}
+
+########################################################################
+sub _render_panic {
+########################################################################
+  my ( $r, $message, $title, $subtitle ) = @_;
+
+  # Defaults
+  $title    //= 'Bedrock Critical Error';
+  $subtitle //= 'A critical error occurred, and Bedrock could not render the standard error page.';
+
+  # Log it first
+  $r->log->error("$title: $message");
+
+  my $err_str      = _safe_stringify($message);
+  my $safe_message = encode_entities($err_str);
+
+  # HTML Output
+  $r->content_type('text/html');
+  if ( $r->can('send_http_header') ) {
+    $r->send_http_header;
+  }
+
+  print <<"END_OF_HTML";
+<!DOCTYPE HTML>
+<html>
+  <head><title>$title</title></head>
+  <body>
+    <div style="color:red; font-weight:bold; font-size:120%">
+        $title
+    </div>
+    <div style="margin-top: 10px; font-size: 100%; color: #333;">
+        $subtitle
+    </div>
+    <pre style="background:#eee; padding:10px; border:1px solid #900; margin-top: 10px;">
+$safe_message
+    </pre>
+  </body>
+</html>
+END_OF_HTML
+
+  return;
+}
+
+########################################################################
+sub _render_json {
+########################################################################
+  my ( $r, $err ) = @_;
+
+  # Set 500 Status
+  if ( $r->can('status') ) {
+    $r->status($HTTP_INTERNAL_SERVER_ERROR);
+  }
+  elsif ( $r->can('headers_out') ) {
+    # Mod_perl 1 style
+    $r->headers_out->add( Status => $HTTP_INTERNAL_SERVER_ERROR );
+  }
+
+  $r->content_type('application/json');
+  if ( $r->can('send_http_header') ) {
+    $r->send_http_header;
+  }
+
+  # Stringify exception object if needed (BSG: Readability)
+  my $msg = _safe_stringify($err);
+  chomp $msg;
+
+  print JSON->new->encode( { error => $msg } );
+
+  return;
+}
+
+########################################################################
+sub _render_shell {
+########################################################################
+  my ( $err, $tx ) = @_;
+
+  # 1. Fallback if no parser context
+  if ( !$tx || !$tx->{error} ) {
+    print {*STDERR} "Runtime Error: $err\n";
+    return;
+  }
+
+  my $line = $tx->{error}->line;
+  my $file = $tx->{error}->file;
+
+  # 2. Source Retrieval Logic (Restored from Apache::Bedrock)
+  # Try to read the file, or ask the parser for the pebble content
+  my $source = choose {
+    return slurp_file $file
+      if !ref $file;
+
+    # If it's a ref (pebble handle), ask TagX for the name, then the content
+    my $pebble_name = $tx->pebble($file);
+    return $tx->pebble($pebble_name);
+  };
+
+  # If we couldn't get source code, just print the error
+  if ( !$source ) {
+    print {*STDERR} sprintf "Error on line [%d] (%s) - %s\n", $line, $file, $err;
+    return;
+  }
+
+  my @lines = split /\n/xsm, $source;
+
+  my $err_str = _safe_stringify($err);
+
+  # just print error if snippet block
+  if ( $err_str =~ /\Asnippet/xsm ) {
+    print {*STDERR} $err_str;
+    return;
+  }
+
+  print {*STDERR} sprintf "Error on line [%d] (%s) - %s\n", $line, $file, $err_str;
+
+  # Print the line before
+  if ( $line > 1 ) {
+    print {*STDERR} sprintf "  [%3d] %s\n", $line - 1, $lines[ $line - 2 ];
+  }
+
+  # Print the offending line (marked with >>)
+  print {*STDERR} sprintf ">>[%3d] %s\n", $line, $lines[ $line - 1 ];
+
+  # Print the line after
+  if ( $line < scalar @lines ) {
+    print {*STDERR} sprintf "  [%3d] %s\n", $line + 1, $lines[$line];
+  }
+
+  return;
+}
+
+########################################################################
+sub _safe_stringify {
+########################################################################
+  my ($obj) = @_;
+
+  return "$obj"
+    if !blessed($obj);
+
+  # 1. Standard Perl Exception Interface (TagX::Error, HTTP::Response, etc.)
+  return $obj->as_string
+    if $obj->can('as_string');
+
+  # 2. Bedrock::Exception / Java-style objects
+  return $obj->to_string
+    if $obj->can('to_string');
+
+  # 3. TagX::Error Specific (redundant vs as_string, but safe to keep)
+  return $obj->mesg
+    if $obj->can('mesg');
+
+  # 4. Bedrock::Exception (Data Accessor)
+  return $obj->message
+    if $obj->can('message');
+
+  # 5. Last Resort: String overloading or Memory Address
+  return "$obj";
+}
+
+1;
