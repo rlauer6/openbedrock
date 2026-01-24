@@ -7,12 +7,13 @@ REGISTER = \
      register/register.css \
      register/register.js
 
-
 dist_htdocs_DATA = \
     bedrock-rest-framework.jroc \
     error.roc \
+    fancy-error.roc \
     itworks.rock \
     index.rock \
     notworking.html \
+    not-found.html \
     unit_test.rock \
     $(REGISTER)

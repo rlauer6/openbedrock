@@ -24,6 +24,7 @@ perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
 perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
 perl5bedrockrequestlibdir      		  = $(perl5libdir)/Bedrock/Request
 
+perl5bedrockminiserverlibdir              = $(perl5libdir)/Bedrock/MiniServer
 perl5bedrockmodellibdir                   = $(perl5libdir)/Bedrock/Model
 perl5bedrockmodelserializerlibdir         = $(perl5libdir)/Bedrock/Model/Serializer
 perl5bedrockmodelreservedwordslibdir      = $(perl5libdir)/Bedrock/Model/ReservedWords
@@ -288,6 +289,11 @@ perl5bedrockserializerlib_DATA = \
 
 BEDROCK_SERIALIZER = $(perl5bedrockserializerlib_DATA:.pm=.pm.in)
 
+perl5bedrockminiserverlib_DATA = \
+    Bedrock/MiniServer/Context.pm
+
+BEDROCK_MINISERVER = $(perl5bedrockminiserver_DATA:.pm=.pm.in)
+
 perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \
     Bedrock/XML/Container/Object.pm \
@@ -386,6 +392,7 @@ PERL_PM = \
     $(BEDROCK_LOG) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
+    $(BEDROCK_MINISERVER) \
     $(BEDROCK_MODEL) \
     $(BEDROCK_MODEL_SERIALIZER) \
     $(BEDROCK_MODEL_RESERVEDWORDS) \

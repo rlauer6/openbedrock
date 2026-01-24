@@ -26,15 +26,22 @@ use warnings;
 ########################################################################
 sub new {
 ########################################################################
-  my ( $class, $outhandle, @args ) = @_;
+  my ( $class, %args ) = @_;
 
-  my $self = {@args};
+  return bless \%args, ref($class) || $class;
+}
 
-  bless $self, ref($class) || $class;
+########################################################################
+sub output_handler {
+########################################################################
+  my ( $self, @args ) = @_;
 
-  $self->{outhandle} = $outhandle;
+  return $self->{output_handler}
+    if !@args;
 
-  return $self;
+  $self->{output_handler} = $args[0];
+
+  return $args[0];
 }
 
 ########################################################################
@@ -46,8 +53,8 @@ sub print { ## no critic (ProhibitBuiltinHomonyms)
 ########################################################################
   my ( $self, @args ) = @_;
 
-  if ( ref( $self->{outhandle} ) && $self->{outhandle}->can('print') ) {
-    $self->{outhandle}->print(@args);
+  if ( ref( $self->output_handler ) && $self->output_handler->can('print') ) {
+    $self->output_handler->print(@args);
   }
 
   return;
@@ -58,8 +65,8 @@ sub close { ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 ########################################################################
   my ( $self, $handle ) = @_;
 
-  if ( ref( $self->{outhandle} ) && $self->{outhandle}->can('close') ) {
-    $self->{outhandle}->close($handle);
+  if ( ref( $self->output_handler ) && $self->output_handler->can('close') ) {
+    $self->output_handler->close($handle);
   }
 
   return;
@@ -78,6 +85,7 @@ __PACKAGE__->follow_best_practice();
 __PACKAGE__->mk_accessors(
   qw(
     config
+    context
     disable_tag
     file
     include_path
@@ -96,6 +104,7 @@ use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:chars :booleans);
 use Cwd;
 use Text::TagX;
+use TagX::Output;  # Required for set_output_handler wrapper
 
 use IO::Scalar;
 use Scalar::Util qw(reftype blessed openhandle);
@@ -132,6 +141,12 @@ sub new {
 
   if ( !$self->config ) {
     $self->config( Bedrock::Config->new('tagx.xml') );
+  }
+
+  unless ( my $ctx = $self->get_context ) { ## no critic
+    my $output = $EMPTY;
+    $ctx //= Bedrock::Template::Context->new( output_handler => IO::Scalar->new( \$output ), CONFIG => $self->config );
+    $self->set_context($ctx);
   }
 
   if ( $self->get_disable_tag ) {
@@ -282,6 +297,25 @@ sub disable_tag {
 }
 
 ########################################################################
+sub set_output_handler {
+########################################################################
+  my ( $self, $handler ) = @_;
+
+  # 1. Update the Context (The Data Source)
+  # The context holds the raw IO handle used by plugins/tags
+  $self->get_context->output_handler($handler);
+
+  # 2. Update the TagX Parser (The Consumer)
+  # If a parser instance exists, we must replace its output wrapper
+  # so it writes to the updated context immediately.
+  if ( my $tagx = $self->tagx ) {
+    $tagx->out_handle( TagX::Output->new( $self->get_context ) );
+  }
+
+  return $handler;
+}
+
+########################################################################
 sub parse {
 ########################################################################
   my ( $self, $text, %args ) = @_;
@@ -298,11 +332,14 @@ sub parse {
 
   map { $params->{$_} = $args{$_} } keys %args;
 
+  # 1. Create the local capture buffer
   my $output = $EMPTY;
 
-  my $ctx = $args{context} || $params->{context};
+  # 2. [FIX] Wire the Context to write to this local buffer
+  # This ensures TagX output lands in the variable we return below.
+  $self->set_output_handler( IO::Scalar->new( \$output ) );
 
-  $ctx //= Bedrock::Template::Context->new( IO::Scalar->new( \$output ), CONFIG => $self->config );
+  my $ctx = $self->get_context;
 
   my $fh = IO::Scalar->new( $self->text() );
 

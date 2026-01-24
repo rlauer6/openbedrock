@@ -68,6 +68,7 @@ PACKAGE_MODULES = \
     Bedrock/LoadConfig.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
+    Bedrock/MiniServer/Context.pm \
     Bedrock/Model.pm \
     Bedrock/Model/Serializer/MySQL.pm \
     Bedrock/Model/ReservedWords/MySQL.pm \

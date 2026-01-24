@@ -24,11 +24,12 @@ package Bedrock::Handler;
 use strict;
 use warnings;
 
-use Bedrock qw(choose);
+use Bedrock qw(choose to_boolean is_mod_perl);
 use Bedrock::Apache::Constants qw(:http);
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:chars :defaults :booleans);
 use Bedrock::Context;
+use Benchmark qw(:all timediff timestr :hireswallclock);
 use Carp qw(confess croak carp cluck);
 use Cwd qw(realpath fastcwd);
 use Data::Dumper;
@@ -124,6 +125,8 @@ sub new {
 
   my %options = @args;
 
+  $options{benchmarking_enabled} = to_boolean( $options{benchmarking_enabled} );
+
   $options{bedrock_config_path} = $ENV{BEDROCK_CONFIG_PATH} //= $DEFAULT_BEDROCK_CONFIG_PATH;
 
   @options{qw(pwd request)} = ( fastcwd(), $r );
@@ -160,20 +163,9 @@ sub init_benchmarking {
 ########################################################################
   my ($self) = @_;
 
-  my $benchmarking = $self->benchmarking_enabled;
-
   return
-    if !$benchmarking;
+    if !$self->benchmarking_enabled;
 
-  my ($enabled) = $benchmarking =~ /^(enabled|on|yes|1)$/xsmi ? 1 : 0;
-  $self->benchmarking_enabled($enabled);
-
-  return
-    if !$enabled;
-
-  require Benchmark;
-
-  Benchmark->import(qw(:all timediff timestr :hireswallclock));
   my $t0 = Benchmark->new;
   $self->benchmark( [ $t0, $t0 ] );
 
@@ -340,12 +332,6 @@ sub fetch_blm_config {
   push @{ $config->{MODULES} }, Bedrock::XML->new($filename);
 
   return $config;
-}
-
-########################################################################
-sub is_mod_perl {
-########################################################################
-  return $ENV{MOD_PERL};
 }
 
 ########################################################################
@@ -553,18 +539,19 @@ sub get_bedrock_config_path {
 
   my $bedrock_config_path = $ENV{BEDROCK_CONFIG_PATH} // $EMPTY;
 
-  if ($bedrock_config_path) {
-    $bedrock_config_path = realpath($bedrock_config_path) // $EMPTY;
-
-    if ( !$bedrock_config_path ) {
-      mlogger_error( $r, 'invalid BEDROCK_CONFIG_PATH %s', $ENV{BEDROCK_CONFIG_PATH} );
-    }
-  }
-  else {
+  if ( !$bedrock_config_path ) {
     mlogger( $r, 'No BEDROCK_CONFIG_PATH found. You probably have a misconfigured system.' );
+    return;
   }
 
-  return $bedrock_config_path;
+  $bedrock_config_path = realpath($bedrock_config_path) // $EMPTY;
+
+  return $bedrock_config_path
+    if -r $bedrock_config_path;
+
+  mlogger_error( $r, 'invalid BEDROCK_CONFIG_PATH %s', $bedrock_config_path );
+
+  return;
 }
 
 ########################################################################

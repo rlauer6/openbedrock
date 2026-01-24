@@ -22,9 +22,10 @@ package Bedrock::Error;
 use strict;
 use warnings;
 
-use Bedrock qw(choose is_mod_perl is_bedrock_shell slurp_file);
+use Bedrock qw(choose is_mod_perl is_bedrock_shell slurp_file $BEDROCK_DIST_DIR);
 use Bedrock::Constants qw(:http :regexp :booleans);
 use Bedrock::Exception;
+use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use HTML::Entities qw(encode_entities);
@@ -39,8 +40,6 @@ our @EXPORT_OK = qw(handle_error resolve_error_page);
 sub handle_error {
 ########################################################################
   my ( $r, $err, $tx ) = @_;
-
-  # --- BSG: Fail Early (Validate Preconditions) ---
 
   # We cannot handle an error if we don't have the context to report it
   if ( !$r ) {
@@ -72,13 +71,13 @@ sub handle_error {
   return _render_panic( $r, $err, 'Unknown Failure', 'Possible Bedrock parser error.' )
     if !$tx;
 
-  my $error_page = $ENV{BEDROCK_ERROR_PAGE};
+  my $error_page = $ENV{BEDROCK_ERROR_LOCATION};
 
   # If the environment isn't configured, we cannot find the template.
   # Log it as a configuration warning and fallback to panic.
   if ( !$error_page ) {
-    $r->log->warn('BEDROCK_ERROR_PAGE environment variable is not set. Falling back to panic HTML.');
-    return _render_panic( $r, $err, 'Configuration Error', 'The BEDROCK_ERROR_PAGE is not set.' );
+    $r->log->warn('BEDROCK_ERROR_LOCATION environment variable is not set. Falling back to panic HTML.');
+    return _render_panic( $r, $err, 'Configuration Error', 'The BEDROCK_ERROR_LOCATION is not set.' );
   }
 
   # --- 5. Standard Web Mode (The Gold Standard) ---
@@ -105,7 +104,7 @@ sub handle_error {
   }
   else {
     # Log missing file but do not crash
-    $r->log->warn("BEDROCK_ERROR_PAGE configured [$error_page] but file not found or unreadable.");
+    $r->log->warn("BEDROCK_ERROR_LOCATION configured [$error_page] but file not found or unreadable.");
   }
 
   # If TagX crashed while trying to show the error, log it and fall through to panic.
@@ -124,26 +123,32 @@ sub resolve_error_page {
 
   return if !$config;
 
-  # 1. Check for Relative Path first (Standard Web Config)
-  #    <scalar name="ERROR_LOCATION">/error.roc</scalar>
+  # precendence:
+  # 1. $ENV{BEDOCK_ERROR_LOCATION}
+  # 2. $doc_root/$config->{ERROR_LOCATION}
+  # 3. cwd/$config->{ERROR_LOCATION}
+  # 4. config->{BEDROCK_ERROR_LOCATION}
+  # 5. $BEDROCK_DIST_DIR/error.roc
+
+  my @candidates = $ENV{BEDROCK_ERROR_LOCATION};
+
   if ( my $rel = $config->{ERROR_LOCATION} ) {
 
-    # If upstream provided a root (e.g., Cwd or DocumentRoot), prepend it
+    push @candidates, sprintf '%s/%s', cwd, $rel;
+
     if ($doc_root) {
       $doc_root =~ s{/$}{}xsm;
       $rel      =~ s{^/}{}xsm;
-      return "$doc_root/$rel";
+      push @candidates, sprintf '%s/%s', $rel;
     }
-
-    # Fallback: if no docroot provided, try Cwd
-    require Cwd;
-    return Cwd::getcwd() . "/$rel";
   }
 
-  # 2. Check for Absolute Path (Legacy/Override)
-  #    <scalar name="BEDROCK_ERROR_LOCATION">/var/www/bedrock/error.roc</scalar>
-  #    Return AS IS. Do not prepend doc_root.
-  return $config->{BEDROCK_ERROR_LOCATION};
+  push @candidates, $config->{BEDROCK_ERROR_LOCATION};
+  push @candidates, "$BEDROCK_DIST_DIR/htdocs/error.roc";
+
+  my ($error_page) = grep { defined $_ && -r $_ } @candidates;
+
+  return $error_page;
 }
 
 ########################################################################

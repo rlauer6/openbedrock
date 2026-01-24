@@ -1,0 +1,175 @@
+########################################################################
+package Bedrock::MiniServer::Headers; ## no critic
+########################################################################
+
+use strict;
+use warnings;
+
+use Bedrock qw(is_array);
+
+use parent qw(Class::Accessor);
+
+########################################################################
+sub add {
+########################################################################
+  my ( $self, $k, $v ) = @_;
+  # Handle multiple headers (like multiple Set-Cookie calls)
+
+  if ( defined $self->get($k) ) {
+    my $cur = $self->get($k);
+    $self->set( $k => is_array($cur) ? [ @{$cur}, $v ] : [ $cur, $v ] );
+  }
+  else {
+    $self->set( $k => $v );
+  }
+
+  return;
+}
+
+########################################################################
+package Bedrock::MiniServer::Context; ## no critic
+########################################################################
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Log::Log4perl;
+use Scalar::Util qw(blessed);
+
+use parent qw(Class::Accessor);
+
+__PACKAGE__->mk_accessors(
+  qw(
+    cgi
+    config
+    headers_out
+    input
+    outhandle
+    request
+    route_params
+    session
+  )
+);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $outhandle, %args ) = @_;
+
+  $args{outhandle} = $outhandle;
+  $args{route_params} //= {};
+  $args{config}       //= {};
+
+  return $class->SUPER::new( \%args );
+}
+
+########################################################################
+# Request Object Emulation
+# In Apache/ModPerl, the context wraps the RequestRec ($r).
+# Here, the Context ACTS as the RequestRec.
+########################################################################
+
+# 1. Identity: The Context IS the Request
+########################################################################
+sub request { return shift; }
+########################################################################
+
+# 2. Proxies: Delegate CGI-specific methods to the CGI object
+########################################################################
+sub content_type   { return shift->cgi->content_type(@_); }
+sub param          { return shift->cgi->param(@_); }
+sub request_method { return shift->cgi->request_method(@_); }
+sub filename       { return shift->cgi->path_info; }
+sub referer        { return shift->cgi->referer; }
+sub user_agent     { return shift->user_agent; }
+
+########################################################################
+
+# 3. Headers: The Single Source of Truth
+########################################################################
+sub headers_out {
+########################################################################
+  my ( $self, $key, $value ) = @_;
+
+  my $headers_out = $self->get('headers_out');
+
+  if ( !$headers_out ) {
+    $headers_out = Bedrock::MiniServer::Headers->new();
+    $self->set( headers_out => $headers_out );
+  }
+
+  return $headers_out
+    if !$key;
+
+  # If arguments provided, act as a setter (legacy support)
+  $headers_out->set( $key => $value );
+
+  return $headers_out;
+}
+
+########################################################################
+sub getInputValue {
+########################################################################
+  my ( $self, @args ) = @_;
+
+  # 1. If asking for specific keys, we want values.
+  # Use multi_param to safely return a list (silences the warning).
+  if (@args) {
+    if ( $self->cgi->can('multi_param') ) {
+      return $self->cgi->multi_param(@args);
+    }
+    # Fallback for ancient CGI.pm versions
+    return $self->cgi->param(@args);
+  }
+
+  # 2. If asking for no keys, we want the list of parameter names.
+  # param() is still safe/correct here.
+  return $self->cgi->param();
+}
+
+########################################################################
+sub log { ## no critic
+########################################################################
+  return Log::Log4perl->get_logger('Bedrock::MiniServer');
+}
+
+########################################################################
+sub getCookieValue {
+########################################################################
+  my ( $self, $name ) = @_;
+
+  return $self->cgi->cookie($name);
+}
+
+########################################################################
+sub err_headers_out { goto &headers_out; }
+########################################################################
+
+########################################################################
+sub cgi_header_in { goto &headers_in; }
+########################################################################
+
+########################################################################
+sub headers_in {
+########################################################################
+  my ($self) = @_;
+
+  my $cgi = $self->cgi;
+
+  return map { $_ => $cgi->http($_) } $cgi->http();
+}
+
+########################################################################
+sub print { ## no critic
+########################################################################
+  my ( $self, @args ) = @_;
+
+  return
+    if !$self->outhandle;
+
+  return $self->outhandle->print(@args);
+}
+
+1;

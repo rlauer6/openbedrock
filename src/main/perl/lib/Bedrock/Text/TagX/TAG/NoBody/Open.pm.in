@@ -1,6 +1,7 @@
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,9 +24,9 @@ package TagX::TAG::NoBody::Open;
 use strict;
 use warnings;
 
-use Bedrock qw{slurp_file};
-use Bedrock::Constants qw{:chars};
-use English qw{-no_match_vars};
+use Bedrock qw(slurp_file to_boolean choose);
+use Bedrock::Constants qw(:chars);
+use English qw(-no_match_vars);
 use IO::File;
 use Symbol;
 use Text::CSV_XS;
@@ -36,7 +37,9 @@ use parent qw(Exporter TagX::TAG::NoBody);
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
+########################################################################
 sub define_options {
+########################################################################
   return (
     'define-var=s' => $UNDERSCORE,
     'mode=s'       => undef,
@@ -45,7 +48,7 @@ sub define_options {
     'slurp'        => undef,
   );
 
-} ## end sub define_options
+}
 
 ########################################################################
 sub finalize {
@@ -69,17 +72,12 @@ sub finalize {
   die "Specify the file to open using `--file' option or as argument, not both.\n"
     if exists $options{'file'} && @argv;
 
-  my $file;
-
-  if ( exists $options{file} && $options{file} ) {
-    $file = $options{'file'};
-  }
-  else {
-    $file = shift @argv;
-  }
+  my $file = $options{file} ? $options{file} : shift @argv;
 
   die "File not specified.\n"
     if !length $file;
+
+  my $found_file = $tx->find_file( $file, undef, $DOT );
 
   die "No file handle specified. Use --define-var to assign a file handle name.\n"
     if !length $name;
@@ -98,10 +96,12 @@ sub finalize {
     # For CLI scripts, this can be passed via Env or Config
     $allow_write //= $ENV{BEDROCK_ALLOW_FILE_WRITE};
 
-    if ( !$allow_write || $allow_write !~ /^(?:yes|true|1|on)$/ixsm ) {
+    if ( !to_boolean($allow_write) ) {
       die "Security Violation: Write mode '$mode' is disabled. "
         . "Set <scalar name='ALLOW_FILE_WRITE'>yes</scalar> in configuration to enable.\n";
     }
+
+    $found_file = $file;
   }
 
   # 2. Pipe Protection (Paranoia check)
@@ -112,8 +112,8 @@ sub finalize {
     my $config      = $tx->config;
     my $allow_pipes = ref($config) eq 'HASH' ? $config->{ALLOW_FILE_PIPES} : undef;
 
-    if ( !$allow_pipes || $allow_pipes !~ /^(?:yes|true|1|on)$/ixsm ) {
-      die "Security Violation: Pipe open is disabled by default. " . "Set ALLOW_FILE_PIPES to enable.\n";
+    if ( !to_boolean($allow_pipes) ) {
+      die "Security Violation: Pipe open is disabled by default. Set ALLOW_FILE_PIPES to enable.\n";
     }
   }
 
@@ -121,7 +121,7 @@ sub finalize {
 
   # slurp file?
   if ( $options{slurp} ) {
-    $tx->{'VARS'}->{$name} = slurp_file $file;
+    $tx->{VARS}->{$name} = slurp_file $file;
     return;
   }
 
@@ -139,102 +139,21 @@ sub finalize {
 
     my $fh = gensym;
 
-    tie *{$fh}, $class, $file, $mode, @argv;  ## no critic (ProhibitTies)
+    tie *{$fh}, $class, $file, $mode, @argv; ## no critic (ProhibitTies)
 
     bless $fh, $class;
 
-    $tx->{'VARS'}->{$name} = $fh;
+    $tx->{VARS}->{$name} = $fh;
 
     return;
   }
 
   my $fh = eval { return IO::File->new( $file, $mode ); };
 
-  die sprintf "Could not open file %s with mode = %s\n$OS_ERROR"
+  die sprintf "Could not open file %s with mode = %s\n%s", $file, $mode, $OS_ERROR
     if !$fh || $EVAL_ERROR;
 
-  $tx->{'VARS'}->{$name} = $fh;
-
-  return;
-}
-
-########################################################################
-sub xfinalize {
-########################################################################
-  my ( $self, $tx, @context ) = @_;
-
-  my %options = $self->define_options;
-
-  my @argv = $self->parse_options( \%options, @context );
-
-  $self->dump_options( \%options, @argv );
-
-  my $name     = $options{'define-var'} || $UNDERSCORE;
-  my $tag_opts = $self->parse_tag_name( $argv[0] );
-
-  if ( $tag_opts->{name} ) {
-    shift @argv;
-    $name = $tag_opts->{name};
-  }
-
-  die "Specify the file to open using `--file' option or as argument, not both.\n"
-    if exists $options{'file'} && @argv;
-
-  my $file;
-
-  if ( exists $options{file} && $options{file} ) {
-    $file = $options{'file'};
-  }
-  else {
-    $file = shift @argv;
-  }
-
-  die "File not specified.\n"
-    if !length $file;
-
-  die "No file handle specified. Use --define-var to assign a file handle name.\n"
-    if !length $name;
-
-  my $mode = $options{'mode'} || 'r';
-
-  # slurp file?
-  if ( $options{slurp} ) {
-
-    $tx->{'VARS'}->{$name} = slurp_file $file;
-
-    return;
-  }
-
-  if ( exists $options{'filter'} ) {
-    die "--filter requires a filter name\n"
-      if !$options{filter};
-
-    my $filter = sprintf 'BLM/Filter/%s.pm', $options{filter};
-
-    my $class = sprintf 'BLM::Filter::%s', $options{filter};
-
-    eval { require $filter; };
-
-    die sprintf "unknown or malformed filter: %s\n", $options{filter}
-      if $EVAL_ERROR;
-
-    my $fh = gensym;
-
-    tie *{$fh}, $class, $file, $mode, @argv;  ## no critic (ProhibitTies)
-
-    bless $fh, $class;
-
-    $tx->{'VARS'}->{$name} = $fh;
-
-    return;
-  }
-
-  my $fh = eval { return IO::File->new( $file, $mode ); };
-
-  die sprintf "Could not open file %s with mode = %s\n$OS_ERROR"
-    if !$fh || $EVAL_ERROR;
-
-  $tx->{'VARS'}->{$name} = $fh;
+  $tx->{VARS}->{$name} = $fh;
 
   return;
 }
@@ -303,6 +222,20 @@ The open mode of the file.  Can be one of:
  "a"  -> append
  "r+" -> reading/writing
 
+=head3 Notes
+
+=over 4
+
+=item 1. File writing must be enabled using the configuration variable
+C<ALLOW_FILE_WRITE> or the environment variable C<BEDROCK_ALLOW_FILE_WRITE>.
+
+=item 2. File and directory permission may restrict the reading and writing of files.
+
+=item 3. Set ABSOUTE_PATHS to a true value if you want to allow
+writing and reading from or to absolute paths.
+
+=back
+
 =item --file
 
 Fully qualified path of the file to open.
@@ -344,6 +277,6 @@ that you can invoke on an open file handle.
 
 =head1 SEE ALSO
 
-C<IO::Handle>
+L<IO::Handle>
 
 =cut

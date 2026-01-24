@@ -1,12 +1,12 @@
-create database if not exists bedrock;
+CREATE DATABASE IF NOT EXISTS bedrock;
 
-create user if not exists 'fred'@'%' identified by 'flintstone';
+CREATE USER IF NOT EXISTS 'fred'@'%' IDENTIFIED BY 'flintstone';
 
-grant all privileges on *.* to 'fred'@'%';
+GRANT ALL PRIVILEGES ON *.* TO 'fred'@'%';
 
-use bedrock;
+USE bedrock;
 
-create table if not exists session
+CREATE TABLE IF NOT EXISTS session
  (
   id           int(11)      not null auto_increment primary key,
   session      varchar(50)  default null,
@@ -21,4 +21,14 @@ create table if not exists session
   added        datetime     default null,
   expires      datetime     default null
 );
+
+CREATE OR REPLACE VIEW v_active_sessions AS
+  SELECT id, session, username, expires
+    FROM session
+    WHERE expires > now() AND username <> '';
+
+CREATE OR REPLACE VIEW v_expired_sesssion AS
+  SELECT id, session, username, expires
+    FROM session
+    WHERE expires < now();
 

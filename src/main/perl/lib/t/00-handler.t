@@ -156,14 +156,6 @@ subtest 'get_module_config' => sub {
 };
 
 ########################################################################
-subtest 'is_mod_perl' => sub {
-########################################################################
-  local $ENV{MOD_PERL} = 'mod_perl';
-
-  ok( $handler->is_mod_perl eq 'mod_perl', 'is_mod_perl' );
-};
-
-########################################################################
 subtest 'config - no module found' => sub {
 ########################################################################
   local $ENV{BEDROCK_CONFIG_PATH} = $config_path;
