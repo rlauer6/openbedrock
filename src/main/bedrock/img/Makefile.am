@@ -2,6 +2,7 @@
 
 dist_img_DATA = \
     bedbug.jpg \
+    bedbug.png \
     bedrock.gif \
     bedrock.jpg \
     bedrock.png \

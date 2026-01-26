@@ -292,7 +292,7 @@ BEDROCK_SERIALIZER = $(perl5bedrockserializerlib_DATA:.pm=.pm.in)
 perl5bedrockminiserverlib_DATA = \
     Bedrock/MiniServer/Context.pm
 
-BEDROCK_MINISERVER = $(perl5bedrockminiserver_DATA:.pm=.pm.in)
+BEDROCK_MINISERVER = $(perl5bedrockminiserverlib_DATA:.pm=.pm.in)
 
 perl5bedrockxmlcontainerlib_DATA = \
     Bedrock/XML/Container/Array.pm \

@@ -95,6 +95,10 @@ formatting.
         return 2;
     };
     ```
+* Hint: `choose` can be imported from Bedrock
+  ```
+  use Bedrock qw(choose);
+  ```
 * **Ternary Operator:** Use ternaries only when the choice is between two terse, single statements.
 * **Constants:**
     * Use constants (e.g., `$EMPTY`, `$SLASH`) from `Bedrock::Constants` or `q{}` instead of literal strings.
@@ -148,9 +152,35 @@ formatting.
 
 # 8. Tools & Libraries
 
-* **Logging:** Use `Log::Log4perl` for production logging.
+* **Logging:** Use `Log::Log4perl` or `Bedrock::Logger` for production
+  logging (see not on logging in the Scripts section)
 * **Debugging:** Use `Data::Dumper` for ad-hoc debugging (but remove before commit, or log at DEBUG level).
 * **CLI:** Use `CLI::Simple` for writing scripts.
+
+# 9. Scripts
+* **Standard Modules:** All scripts should include at a minimum
+  `Data::Dumper` and `English` (`use English qw(-no_match_vars)
+* **POD:** Add at least a stub for POD
+* **Logging:** Any sufficiently complex script should include logging
+  use the `Bedrock::Logger` role.
+  ```
+  use Role::Tiny::With;
+  with 'Bedrock::Logger';
+  
+  my $logger = get_logger();
+  ...
+  ```
+* **main():** Scripts should generally follow the modulino pattern by
+  creating a class and using `CLI::Simple`. However at the very
+  minimum a script should include a `main()` subroutine.
+  ```
+  sub main {
+    # do work
+    return $SUCCESS;
+  }
+  
+  exit main();
+  ```
 
 ---
 

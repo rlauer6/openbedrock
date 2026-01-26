@@ -3,8 +3,8 @@ package Bedrock::Service;
 use strict;
 use warnings;
 
-use Bedrock qw(:booleans resolve_stream choose to_snake_case is_array);
-use Bedrock::Constants qw(:chars :booleans);
+use Bedrock qw(:booleans resolve_stream choose to_snake_case);
+use Bedrock::Constants qw(:chars :booleans :http);
 use Bedrock::Context;
 use Bedrock::Exception;
 use Bedrock::Handler;
@@ -37,10 +37,7 @@ Readonly::Scalar our $FONT_SIZE => 'font-size:125%';
 Readonly::Scalar our $MARGIN    => 'margin:10px';
 Readonly::Scalar our $PURPLE    => 'color:purple';
 
-Readonly::Scalar our $SERVER_ERROR           => 500;
-Readonly::Scalar our $METHOD_NOT_IMPLEMENTED => 501;
-Readonly::Scalar our $NOT_FOUND              => 404;
-Readonly::Scalar our $BAD_REQUEST            => 400;
+our $VERSION = '@PACKAGE_VERSION@';
 
 use parent qw(Exporter Class::Accessor);
 
@@ -98,18 +95,17 @@ sub handler : method {
   my $t2 = Benchmark->new;
   my $td = timediff( $t2, $t1 );
 
-  # [LOGGING FIX]
   # In Miniserver mode, $r is Apache::Request::CGI, which has a hardcoded
   # logger that prints to STDERR in a fixed format. We want to bypass that
   # and use Log4perl directly to maintain formatting consistency.
   my $logger;
 
-  if ( $r && $r->isa('Apache::Request::CGI') ) {
+  if ( $r && $r->isa('Apache::Request::CGI') && $ENV{SERVER_SOFTWARE} =~ /simple/xmsi ) {
     # Miniserver: Bypass $r->log
     $logger = Log::Log4perl->get_logger( ref($self) || 'Bedrock::Service' );
   }
   else {
-    # Apache/mod_perl: Use the Request logger (wraps Apache logging)
+    # Apache/mod_perl/mod_cgi: Use the Request logger (wraps Apache logging)
     $logger = $r ? $r->log : $self->request->log;
   }
 
@@ -148,6 +144,19 @@ sub handler : method {
 }
 
 ########################################################################
+sub is_api {
+########################################################################
+  my ($self) = @_;
+
+  return
+    if !$self->request;
+
+  my $accept = $self->request->headers_in('ACCEPT');
+
+  return $accept =~ /json/xsmi;
+}
+
+########################################################################
 sub init_request_dependent_objects {
 ########################################################################
   my ($self) = @_;
@@ -166,8 +175,7 @@ sub init_request_dependent_objects {
     # We inspect the service_config object injected by the miniserver
     # for overrides and merge them directly into the active Bedrock config.
     if ( my $sc = $self->service_config ) {
-      if ( $sc->{overrides} && ref $sc->{overrides} eq 'HASH' ) {
-        my $overrides = $sc->{overrides};
+      if ( my $overrides = is_hash( $sc->{overrides} ) ) {
         @{$config}{ keys %{$overrides} } = values %{$overrides};
       }
     }
@@ -175,18 +183,17 @@ sub init_request_dependent_objects {
     $self->config($config);
   }
 
-  return
-    if $self->context;
+  if ( !$self->context ) {
+    my $route_params = $self->dispatch_map ? $self->init_route : {};
 
-  my $route_params = $self->dispatch_map ? $self->init_route : {};
-
-  $self->context(
-    Bedrock::Context->new(
-      REQUEST_HANDLER => $self->request,
-      CONFIG          => $self->config,
-      route_params    => $route_params,
-    )
-  );
+    $self->context(
+      Bedrock::Context->new(
+        REQUEST_HANDLER => $self->request,
+        CONFIG          => $self->config,
+        route_params    => $route_params,
+      )
+    );
+  }
 
   $self->init_input;
 
@@ -224,6 +231,8 @@ sub new {
 
   $self->init_headers;
 
+  $self->content_type( $self->is_api ? 'application/json' : 'text/html' );
+
   return $self;
 }
 
@@ -244,13 +253,21 @@ sub dispatch {
   my $action = $self->dispatch_action;
 
   if ( !$action ) {
+    # this solely for displaying an error message
     if ( $self->dispatch_map ) {
-      my $uri
-        = ( $self->request && $self->request->can('uri') ? $self->request->uri : undef ) || $ENV{REQUEST_URI} || 'UNKNOWN';
+      my $uri = choose {
+        return $self->request->uri
+          if $self->request && $self->request->can('uri');
+
+        return $ENV{REQUEST_URI} || 'UNKNOWN';
+      };
+
       $self->log->warn( sprintf 'No route matched for URI [%s]', $uri );
-      return $self->display_error( 'Not Found', $NOT_FOUND );
+      return $self->display_error( 'Not Found', $HTTP_NOT_FOUND );
     }
 
+    # we may want to trap this condition...a service that has no
+    # action?
     return;
   }
 
@@ -259,7 +276,7 @@ sub dispatch {
 
   $self->log->error( sprintf 'Route resolved to action [%s] but method not found in %s', $action, ref $self );
 
-  return $self->display_error( 'Method Not Implemented', $METHOD_NOT_IMPLEMENTED );
+  return $self->display_error( 'Method Not Implemented', $HTTP_NOT_IMPLEMENTED );
 }
 
 ########################################################################
@@ -293,8 +310,7 @@ sub init_route {
 
   $path //= q{/};
 
-  # FIX: Handle Base URI stripping
-  if ( my $base_uri = $ENV{BEDROCK_BASE_URI} ) {
+  if ( my $base_uri = $ENV{BEDROCK_BASE_URI} // $ENV{REDIRECT_BEDROCK_BASE_URI} ) {
     if ( index( $path, $base_uri ) == 0 ) {
       substr $path, 0, length($base_uri), $EMPTY;
       # Ensure we still have a leading slash if we stripped everything
@@ -318,7 +334,6 @@ sub init_route {
       if exists $map->{$base};
 
     push @routes, { pattern => $base, method => $method };
-
   }
 
   return
@@ -362,6 +377,37 @@ sub handle_cli {
     'service=s'    => \$args{target_service},
   );
 
+  if ( my $target = delete $args{target_service} ) {
+
+    # 1. Normalize name (customer-lookup -> Bedrock::Service::CustomerLookup)
+    $target =~ s/(?:^|[-_])(.)/uc($1)/ge;
+
+    $target = "Bedrock::Service::$target";
+
+    eval {
+      load $target;
+      # avoid running the actual new which does a bit too much for
+      # this case..
+      {
+        no strict 'refs'; ## no critic
+        no warnings 'redefine'; ## no critic
+        *{'Bedrock::Service::new'} = sub {
+          my ( $class, %options ) = @_;
+          return $class->SUPER::new( \%options );
+        };
+      }
+
+      $self = $target->new;
+    };
+
+    if ($EVAL_ERROR) {
+      if ( $EVAL_ERROR =~ /Can[']t\slocate/xsm ) {
+        carp "ERROR: Can't load $target\n";
+        exit 1;
+      }
+    }
+  }
+
   # --- 1. Introspection Mode ---
   if ( $args{routes} ) {
     my $map = $self->routes;
@@ -388,22 +434,6 @@ sub handle_cli {
 
   if ( $args{mod_cgi} ) {
     $args{mod_perl} = $FALSE;
-  }
-
-  # --- DELEGATION LOGIC ---
-  if ( my $target = delete $args{target_service} ) {
-    # 1. Normalize name (customer-lookup -> Bedrock::Service::CustomerLookup)
-    $target =~ s/(?:^|[-_])(.)/uc($1)/ge;
-
-    if ( $target !~ /^Bedrock::Service::/ ) {
-      $target = "Bedrock::Service::$target";
-    }
-
-    # 2. Load the real service class
-    load $target;
-
-    # 3. Swap $self for the new delegate instance
-    $self = $target->new;
   }
 
   my $command = shift @ARGV || 'help';
@@ -433,10 +463,12 @@ sub install {
 
   # Determine the script source for comments/mod_cgi
   my $script_path = abs_path($PROGRAM_NAME);
+
   if ( !$script_path || !-f $script_path ) {
     require FindBin; ## no critic
     $script_path = abs_path( $FindBin::Bin . q{/} . $FindBin::Script ); ## no critic
   }
+
   my $script_file = basename($script_path);
 
   # 1. Calculate Default Service Name from Class Name
@@ -457,6 +489,13 @@ sub install {
   my $base_uri = $args{base_uri} // $EMPTY;
   $base_uri =~ s{/\z}{}xsmg;
 
+  my $map = $self->routes;
+
+  warn "+----------------------------------------------------------+\n";
+  warn "| WARNING: You have not provided a --base-uri.             |\n";
+  warn "| All routes will be matched relative to the DOCUMENT_ROOT |\n";
+  warn "+----------------------------------------------------------+\n";
+
   my $location_regex = choose {
 
     return sprintf '^%s/%s', $base_uri, $service_name
@@ -470,6 +509,7 @@ sub install {
         $allow_root = $TRUE;
         next;
       }
+
       next if $route !~ m{^/([^/:]+)}xsm;
       push @prefixes, $1;
     }
@@ -509,7 +549,7 @@ sub install {
   my @body_lines = $instance->apache_config_body( \%args );
 
   my $pre_config  = join "\n    ", @pre_lines;
-  my $body_config = join "\n        ", ( @core_lines, @body_lines );
+  my $body_config = join "\n    ", ( @core_lines, @body_lines );
 
   my $config_block = choose {
 
@@ -727,7 +767,7 @@ sub display_error {
 ########################################################################
   my ( $self, $message, $status ) = @_;
 
-  $status //= $SERVER_ERROR;
+  $status //= $HTTP_INTERNAL_SERVER_ERROR;
 
   if ( $self->request && $self->request->can('status') ) {
     $self->request->status($status);
@@ -749,8 +789,14 @@ sub handle_exception {
   $self->request->log->error( Dumper( [ error => $err ] ) );
 
   my $html = choose {
-    return "<h1>$SERVER_ERROR Internal Server Error</h1><p>Unhandled Crash:</p><pre>$err</pre>",
-      if !blessed $err;
+    if ( !blessed $err ) {
+      my $message = <<"END_OF_HTML";
+<h1>$HTTP_INTERNAL_SERVER_ERROR Internal Server Error</h1>
+<p>Unhandled Crash:</p>
+<pre>$err</pre>
+END_OF_HTML
+      return $message;
+    }
 
     return $self->check_error( $err->message, $err->payload->{input} )
       if $err->type eq 'template_render' || $err->type eq 'template_setup';
@@ -758,7 +804,7 @@ sub handle_exception {
     return $err->message;
   };
 
-  return $self->display_error( $html, $SERVER_ERROR );
+  return $self->display_error( $html, $HTTP_INTERNAL_SERVER_ERROR );
 }
 
 ########################################################################
@@ -1255,13 +1301,13 @@ sub run { return shift->handler(@_); }
 
 =head1 NAME
 
-Bedrock::Service - Base class for creating hybrid Bedrock Web Services and CLI tools
+Bedrock::Service - Base class for creating Bedrock Web Services
 
 =head1 SYNOPSIS
 
   #!/usr/bin/env perl
   
-  package MyService;
+  package Bedrock::Service::MyService;
   use base qw(Bedrock::Service);
   
   # 1. Modulino Hook: Allows running as a script or loading as a class
@@ -1293,13 +1339,14 @@ Bedrock::Service - Base class for creating hybrid Bedrock Web Services and CLI t
 
 =head2 Web Service
 
-When invoked by Apache (via C<GATEWAY_INTERFACE>), the script acts as
-a RESTful controller, dispatching requests based on the
-C<dispatch_map>.
+When invoked by a web server like Apache or Bedrock's mini HTTP server
+based on HTTP::Server::Simple::CGI the script acts like a RESTful
+controller, dispatching requests based on a dispatch map.
 
 =head2 Command Line (CLI)
 
-When invoked from the shell, the script acts as a management tool.
+When invoked from the shell, the script acts as a management tool that
+helps you configure or discover the services endpoints.
 
   # Generate and print Apache configuration to STDOUT
   ./my-service.cgi install
@@ -1312,23 +1359,30 @@ When invoked from the shell, the script acts as a management tool.
 
 =head1 DESCRIPTION
 
-C<Bedrock::Service> facilitates the creation of "Modulino" style web
-services. These scripts are hybrid: they function as high-performance
-CGI scripts when accessed via the web, but morph into powerful CLI
-tools when run from the command line.
+C<Bedrock::Service> facilitates the creation of RESTful services you
+might use in your web applications. These services can execute in a
+C<mod_perl>, C<mod_cgi> or Bedrock's mini HTTP server context.
 
-This eliminates the need for separate installation scripts,
-configuration generators, or maintenance tools. The service describes
-itself.
+As a CLI tool it acts a service discovery and configuration helper.
+
+In addition to "modulino" style services (a single script that acts as
+both a CGI endpoint and a CLI tool), Bedrock::Service can also be
+deployed as a pure Perl module behind a generic CGI front controller
+such as F<bedrock-service.cgi>.
+
+In that mode, Apache sets the C<BEDROCK_SERVICE_NAME> environment
+variable to the fully-qualified service class
+(e.g. C<Bedrock::Service::UserLookup>), and the front controller loads
+that class and invokes C<handler()>.
 
 =head2 Micro-MVC Routing
 
-Pass a C<dispatch_map> to the constructor to enable internal
+Pass a C<dispatch_map> object to the constructor to enable internal
 routing. The map keys are URI patterns (supported by
 L<Bedrock::Router>) and the values are method suffixes.
 
-When a route matches, C<Bedrock::Service> calls the corresponding method
-prefixed with C<action_>.
+When a route matches, C<Bedrock::Service> calls the corresponding
+method prefixed with C<action_>.
 
 =head2 Unified Parameters
 
@@ -1457,6 +1511,33 @@ data structure as a JSON string.
 Returns the L<Bedrock::Context> object. Use this to access C<param()>,
 C<config()>, and database handles.
 
+=head2 display_error
+
+ display_error( $message, [$status_code] )
+
+Stops execution and returns an error response.
+
+If the Content-Type is set to C<application/json>, this returns a JSON
+object C<{ "error": "...", "status": ... }>. Otherwise, it logs the
+error and prints the message text.
+
+B<Arguments:>
+
+=over 4
+
+=item * B<$message>: The error string to display or log.
+
+=item * B<$status_code>: HTTP Status Code (default: 500). 
+See L<Bedrock::Constants> for available constants like C<$HTTP_NOT_FOUND>.
+
+=back
+
+=head2 is_api
+
+Returns true if the client request indicates it expects a JSON response 
+(e.g., the C<Accept> header contains C<json>). Useful for guarding API 
+endpoints against browser navigation.
+
 =head2 cgi
 
 Returns the underlying C<Bedrock::Request> adapter.
@@ -1469,7 +1550,9 @@ Processes a Bedrock template snippet with the provided variables.
 
 B<Error Handling:>
 
-By default, parsing errors (syntax, missing tags) throw a L<Bedrock::Exception> object, which is caught by C<handler()> to display a formatted error page.
+By default, parsing errors (syntax, missing tags) throw a
+L<Bedrock::Exception> object, which is caught by C<handler()> to
+display a formatted error page.
 
 You can alter this behavior by passing an C<on_error> argument:
 
@@ -1547,9 +1630,23 @@ F<tagx.xml>.
 
 =back
 
-=head1 NAMING CONVENTIONS
+=head2 Using bedrock-service.cgi (Generic CGI Front Controller)
 
-To ensure the auto-installation works correctly, follow these conventions:
+A Bedrock service does not need to be implemented as an executable CGI
+script.  You can deploy services as normal Perl modules
+(C<Bedrock::Service::*>), and use a single generic CGI entrypoint
+(F<bedrock-service.cgi>) to run them.
+
+When deployed this way, the Apache configuration sets:
+
+  SetEnv BEDROCK_SERVICE_NAME "Bedrock::Service::UserLookup"
+
+The front controller uses that value to load and run the correct
+service class.  This keeps your service implementation in a standard
+module and avoids one CGI script per service.
+
+To ensure the auto-installation works correctly, follow these
+conventions when running your service under C<mod_cgi>.
 
 =over 4
 

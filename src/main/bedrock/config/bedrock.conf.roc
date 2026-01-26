@@ -36,6 +36,7 @@ SetEnv BEDROCK_AUTOCOMPLETE_ENABLED <var $site.BEDROCK_AUTOCOMPLETE_ENABLED>
 <VirtualHost *:80>
 
   DocumentRoot <var $site.DOCUMENT_ROOT>
+  ErrorDocument 404 /not-found.html
 
   <if $config.DISTRO --eq 'redhat' >
 

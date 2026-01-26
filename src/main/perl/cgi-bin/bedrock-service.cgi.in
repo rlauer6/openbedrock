@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Bedrock qw(choose);
+use Bedrock qw(choose is_cli);
 use Carp qw(croak);
 use English qw(-no_match_vars);
 use File::Basename qw(fileparse);
@@ -17,13 +17,16 @@ use Module::Load;
 #    e.g. "/cgi-bin/autocomplete.cgi" -> "autocomplete"
 
 my $service_name = choose {
-  # (suffix only)
   return $ENV{BEDROCK_SERVICE_NAME}
     if $ENV{BEDROCK_SERVICE_NAME};
 
-  my ($source) = grep { !!$_ } (@ENV{qw(SCRIPT_FILENAME SCRIPT_NAME)}, $PROGRAM_NAME);
+  # mod_cgi
+  return $ENV{REDIRECT_BEDROCK_SERVICE_NAME}
+    if $ENV{REDIRECT_BEDROCK_SERVICE_NAME};
 
-  my ($name, $path, $ext) = fileparse($source, qr/\.[^.]*$/);
+  my ($source) = grep { !!$_ } ( @ENV{qw(SCRIPT_FILENAME SCRIPT_NAME)}, $PROGRAM_NAME );
+
+  my ( $name, $path, $ext ) = fileparse( $source, qr/\.[^.]*$/ );
 
   # 2. Normalize to Perl Class Case (Kebab/Snake -> CamelCase)
   #    e.g. "autocomplete"      -> "Autocomplete"
@@ -40,13 +43,47 @@ my $service_class = choose {
   return 'Bedrock::Service'
     if $service_name eq 'BedrockService';
 
-  return $service_name =~/\ABedrock::Service/xsm ? $service_name : "Bedrock::Service::$service_name";
+  return $service_name =~ /\ABedrock::Service/xsm ? $service_name : "Bedrock::Service::$service_name";
 };
 
 # 4. Load and Execute
 eval {
-    load $service_class;
-    $service_class->new->handler();
+  load $service_class;
+  my $service = $service_class->new;
+
+  if ( $service_class eq 'Bedrock::Service' && !is_cli() ) {
+    print <<'END_OF_HTML';
+Content-type: text/html
+Status: 400 Bad Request
+
+
+<!DOCTYPE HTML>
+<html>
+ <head>
+   <title>Bedrock Service</title>
+   <style>
+    .error {
+      color: red;
+      font-weight: 600;
+    }
+   </style>
+ </head>
+ <body>
+  <h1>Configuration Error</h1>
+  <p class="error">
+   It appears you are trying to run a web service but you have not defined a service name. You must either:<br/>
+   <ul>
+    <li>Set BEDROCK_SERVICE_NAME in the environment</li>
+    <li>Create a symbolic link like `bedrock-user-lookup.cgi` to `bedrock-service.cgi`</li>
+  </ul> 
+  </p>
+ </body>
+</html>
+END_OF_HTML
+    exit;
+  }
+
+  return $service->handler();
 };
 
 # Log the crash to the error log before dying
