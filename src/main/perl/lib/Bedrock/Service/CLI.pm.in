@@ -1,0 +1,387 @@
+package Bedrock::Service::CLI;
+
+use strict;
+use warnings;
+
+use Bedrock qw(to_snake_case choose);
+use Bedrock::Constants qw(:chars);
+use CLI::Simple::Constants qw(:booleans);
+use Carp;
+use Cwd qw(abs_path);
+use Data::Dumper;
+use FindBin; ## no critic
+use English qw(-no_match_vars);
+use File::Basename;
+use List::Util qw(pairs uniq);
+use Module::Load;
+
+use parent qw(CLI::Simple);
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  my $service_name = $self->get_service;
+
+  # Determine the script source for comments/mod_cgi
+  my $script_path = abs_path($PROGRAM_NAME);
+
+  if ( !$script_path || !-f $script_path ) {
+    require FindBin; ## no critic
+    $script_path = abs_path( $FindBin::Bin . q{/} . $FindBin::Script ); ## no critic
+  }
+  my $script_file = basename($script_path);
+
+  $self->set_script_path($script_path);
+  $self->set_script_file($script_file);
+
+  my $action_name = $service_name // $script_file;
+  $action_name =~ s/^Bedrock::Service:://;
+  $action_name = to_snake_case($action_name);
+  $action_name =~ tr/_/-/;
+
+  $self->set_action_name($action_name);
+
+  if ($service_name) {
+    if ( $service_name !~ /^Bedrock::Service::.*$/xsm ) {
+      # 1. Normalize name (customer-lookup -> Bedrock::Service::CustomerLookup)
+      $service_name =~ s/(?:^|[-_])(.)/uc($1)/ge;
+      $service_name = "Bedrock::Service::$service_name";
+    }
+
+    $self->set_service_class($service_name);
+
+    eval {
+      load $service_name;
+
+      my $instance = $service_name->new;
+      $self->set_service_instance($instance);
+    };
+
+    if ($EVAL_ERROR) {
+      if ( $EVAL_ERROR =~ /Can[']t\slocate/xsm ) {
+        carp "ERROR: Can't load $service_name\n";
+        exit 1;
+      }
+    }
+  }
+
+  return;
+}
+
+########################################################################
+sub cmd_install {
+########################################################################
+  my ($self) = @_;
+
+  my $mod_perl = $self->get_mod_perl // $TRUE;
+
+  if ( $self->get_mod_cgi ) {
+    $mod_perl = $FALSE;
+  }
+
+  my $service     = $self->get_service_instance;
+  my $class_name  = $self->get_service_class;
+  my $action_name = $self->get_action_name;
+
+  my $script_path = $self->get_script_path;
+  my $script_file = $self->get_script_file;
+
+  my $script_url = $self->get_script_url // sprintf "/cgi-bin/$script_file";
+
+  my $base_uri = $self->get_base_uri // $EMPTY;
+  $base_uri =~ s{/\z}{}xsmg;
+
+  if ( !$base_uri ) {
+    warn "+----------------------------------------------------------+\n";
+    warn "| WARNING: You have not provided a --base-uri.             |\n";
+    warn "| All routes will be matched relative to the DOCUMENT_ROOT |\n";
+    warn "+----------------------------------------------------------+\n";
+  }
+
+  my $map = $service->routes;
+
+  my $location_regex = choose {
+
+    return sprintf '^%s/%s', $base_uri, $action_name
+      if !$service->dispatch_map;
+
+    my @prefixes;
+
+    my $allow_root = $FALSE;
+
+    foreach my $route ( keys %{ $service->dispatch_map } ) {
+      if ( $route eq $SLASH ) {
+        $allow_root = $TRUE;
+        next;
+      }
+
+      next if $route !~ m{^/([^/:]+)}xsm;
+      push @prefixes, $1;
+    }
+
+    my $union = ( @prefixes == 1 ) ? $prefixes[0] : sprintf '(%s)', join $PIPE, uniq(@prefixes);
+
+    return qq{^$base_uri/?\$}
+      if $allow_root && !$union;
+
+    return qq{^$base_uri/?\$|^$base_uri/$union}
+      if $allow_root && $union;
+
+    return sprintf '^%s/%s', $base_uri, $union;
+  };
+
+  my $timestamp = localtime;
+
+  # 2. Configure Environment Variables (without BEDROCK_SERVICE_NAME)
+  my @core_lines;
+  my $directive = $mod_perl ? 'PerlSetEnv' : 'SetEnv';
+
+  push @core_lines, qq{$directive BEDROCK_SERVICE_NAME "$class_name"};
+
+  if ($base_uri) {
+    push @core_lines, qq{$directive BEDROCK_BASE_URI "$base_uri"};
+  }
+
+  foreach my $p ( pairs %{ $self->get_env // {} } ) {
+    my ( $key, $val ) = @{$p};
+    push @core_lines, qq{$directive $key "$val"};
+  }
+
+  my $body_config = join "\n    ", @core_lines;
+
+  my $config_block = choose {
+
+    return <<"END_APACHE" if $mod_perl;
+# Bedrock Service: $class_name
+# Mode: mod_perl
+# Generated: $timestamp
+# Source: $script_path
+<IfModule mod_perl.c>
+
+    <LocationMatch "$location_regex">
+        SetHandler modperl
+        PerlResponseHandler $class_name
+        $body_config
+    </LocationMatch>
+</IfModule>
+END_APACHE
+
+    return <<"END_APACHE";
+# Bedrock Service: $class_name
+# Mode: mod_cgi
+# Generated: $timestamp
+# Source: $script_path
+<IfModule mod_alias.c>
+    Action $action_name "$script_url" virtual
+</IfModule>
+<LocationMatch "$location_regex">
+    SetHandler $action_name
+    $body_config
+</LocationMatch>
+<Directory "$FindBin::Bin">
+    <Files "$script_file">
+        Options +ExecCGI +FollowSymLinks
+        Require all granted
+    </Files>
+</Directory>
+END_APACHE
+  };
+
+  my $dir = $self->get_conf_dir;
+
+  if ( !$dir ) {
+    print $config_block;
+    return 0;
+  }
+
+  die "Error: Directory $dir does not exist.\n"
+    if !-d $dir;
+
+  my $file = sprintf '%s/%s.conf', $dir, $action_name;
+
+  open my $fh, '>', $file
+    or die "Could not write to $file: $OS_ERROR";
+  print {$fh} $config_block;
+  close $fh;
+
+  print "Configuration installed to $file\n";
+
+  return $SUCCESS;
+}
+
+########################################################################
+sub cmd_routes {
+########################################################################
+  my ($self) = @_;
+
+  my $service = $self->get_service_instance;
+
+  # --- 1. Introspection Mode ---
+  my $map = $service->routes;
+
+  print "\nRoute Configuration for " . ref($service) . ":\n";
+  print q{-} x 60 . "\n";
+  printf "%-30s | %-30s\n", 'URL Pattern', 'Action Method';
+  print q{-} x 60 . "\n";
+
+  foreach my $pattern ( sort keys %{$map} ) {
+    my $action = $map->{$pattern};
+    # Handle simple scalar actions or complex references
+    my $display_action = ref($action) ? 'CODE(...)' : "action_$action";
+
+    printf "%-30s | %s\n", $pattern, $display_action;
+  }
+
+  print "\n";
+
+  return 0;
+
+}
+
+########################################################################
+sub main {
+########################################################################
+
+  my @option_specs = qw(
+    base-uri=s
+    conf-dir=s
+    env=s%
+    mod-cgi
+    mod-perl
+    routes
+    script-url=s
+    service=s
+    help|h
+  );
+
+  my %commands = (
+    install => \&cmd_install,
+    routes  => \&cmd_routes,
+  );
+
+  my $cli = Bedrock::Service::CLI->new(
+    { commands      => \%commands,
+      option_specs  => \@option_specs,
+      extra_options => [qw(service_instance service_class action_name script_path script_file)],
+    }
+  );
+
+  return $cli->run();
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Service::CLI - Modulino invoked by bedrock-service.cgi to
+help administer a Bedrock::Service
+
+=head1 DESCRIPTION
+
+C<Bedrock::Service::CLI> provides the administrative interface for 
+Bedrock services. It allows for service discovery, route 
+introspection, and automated deployment configuration.
+
+=head1 USAGE
+
+  bedrock-service.cgi --service=MyService [options] [command]
+
+=head2 Options
+
+=over 4
+
+=item * B<--service=S>: The name of the Bedrock Service class to load 
+(e.g., MyService). Normalized to C<Bedrock::Service::MyService>. 
+
+You can actually pass any of these variations:
+
+ my-service (snake case)
+ MyService
+ Bedrock::Service::MyService
+
+In addition if you are generating the configuration from a symlinked
+version of C<bedrock-service.cgi> the script will use name portion of
+the script in the same manner.
+
+ user-lookup.cgi => Bedrock::Service::UserLookup
+
+=item * B<--base-uri=U>: The base URI for the service. Used during 
+C<install> to calculate route patterns. 
+
+=item * B<--service=S>: Override the default service name used in the 
+generated configuration. 
+
+=item * B<--script-url=S>: Specify the absolute URL to the CGI script 
+for mod_cgi deployments. 
+
+Example: /cgi-bin/bedrock-service.cgi
+
+Defaults to the F</cgi-bin/{script-file-name}>
+
+=item * B<--conf-dir=S>: The directory where the generated Apache 
+configuration should be written. 
+
+Prints the configuration to STDOUT by default.
+
+
+=item * B<--env=K=V>: Define environment variables (e.g., 
+BEDROCK_CONFIG_PATH) to be included in the generated config. 
+
+I<NOTE: Environment variables are added to the LocationMatch directive
+block. Under C<mod_cgi> these environment variables will be prefixed
+with C<REDIRECT_>.>
+
+=item * B<--mod-perl>: Generate an Apache configuration block 
+specifically for a C<mod_perl> environment. 
+
+=item * B<--mod-cgi>: Generate an Apache configuration block for a 
+standard C<mod_cgi> environment.
+
+=item * B<--routes>: Introspection mode. Displays the internal 
+dispatch map for the service. 
+
+=back
+
+=head3 Notes
+
+=over 5
+
+=item 1. Write Apache Configurations to .conf files.
+
+ bedrock-service.cgi --conf-dir /etc/apache2/conf-available --base-uri /api --service my-service
+ a2enconf my-service
+
+=back
+
+=head2 Commands
+
+=over 4
+
+=item * B<install>: Generates and installs the Apache configuration 
+block for the service. 
+
+=item * B<routes>: Lists all registered service endpoints and 
+associated actions. 
+
+Prints the internal dispatch map (URL Pattern -> Method) to
+STDOUT. This is useful for debugging or configuring the Miniserver's
+Route Translation map.
+
+=item * B<help>: Displays this help message.
+
+=back
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
+=head1 SEE ALSO
+
+L<Bedrock::Service>
+=cut

@@ -60,8 +60,6 @@ PACKAGE_MODULES = \
     Bedrock/DBI/Locator.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
-    Bedrock/Error.pm \
-    Bedrock/Exception.pm \
     Bedrock/Handle.pm \
     Bedrock/Hash.pm \
     Bedrock/HTML/Helper.pm \
@@ -89,8 +87,6 @@ PACKAGE_MODULES = \
     Bedrock/Role/DocFinder.pm \
     Bedrock/Router.pm \
     Bedrock/Serializer.pm \
-    Bedrock/Service.pm \
-    Bedrock/Service/Docs.pm \
     Bedrock/Serializer/BedrockXML.pm \
     Bedrock/Serializer/JSON.pm \
     Bedrock/Serializer/YAML.pm \

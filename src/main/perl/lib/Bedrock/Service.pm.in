@@ -1,4 +1,6 @@
+########################################################################
 package Bedrock::Service;
+########################################################################
 
 use strict;
 use warnings;
@@ -7,9 +9,12 @@ use Bedrock qw(:booleans resolve_stream choose to_snake_case);
 use Bedrock::Constants qw(:chars :booleans :http);
 use Bedrock::Context;
 use Bedrock::Exception;
+use Bedrock::Error qw(handle_error);
 use Bedrock::Handler;
 use Bedrock::Hash;
 use Bedrock::LoadConfig qw(load_config);
+use Bedrock::Service::CLI;
+
 use Benchmark;
 use Carp;
 use Cwd qw(getcwd abs_path);
@@ -23,8 +28,10 @@ use List::Util qw(uniq pairs);
 use Module::Load;
 use Scalar::Util qw(reftype blessed);
 use Text::TagX;
+use Text::TagX::Output;
 use Text::URLEncode qw(Htmlencode);
 use Time::HiRes qw(time);
+use YAML::Tiny;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -65,6 +72,7 @@ __PACKAGE__->mk_accessors(
     request
     service_config
     session
+    tagx
   )
 );
 
@@ -237,6 +245,10 @@ sub new {
 }
 
 ########################################################################
+sub param { return shift->context->param(@_); }
+########################################################################
+
+########################################################################
 sub routes {
 ########################################################################
   my ($self) = @_;
@@ -353,262 +365,11 @@ sub init_route {
 }
 
 ########################################################################
-# Standard Utilities
-########################################################################
-
-########################################################################
 sub handle_cli {
 ########################################################################
   my ($self) = @_;
 
-  require Getopt::Long;
-  Getopt::Long::Configure('default');
-
-  my %args;
-  Getopt::Long::GetOptions(
-    'base-uri=s'   => \$args{base_uri},
-    'conf-dir=s'   => \$args{conf_dir},
-    'env=s%'       => \$args{env_vars},
-    'mod-cgi'      => \$args{mod_cgi},
-    'mod-perl'     => \$args{mod_perl},
-    'name=s'       => \$args{service_name},
-    'routes'       => \$args{routes},
-    'script-url=s' => \$args{script_url},
-    'service=s'    => \$args{target_service},
-  );
-
-  if ( my $target = delete $args{target_service} ) {
-
-    # 1. Normalize name (customer-lookup -> Bedrock::Service::CustomerLookup)
-    $target =~ s/(?:^|[-_])(.)/uc($1)/ge;
-
-    $target = "Bedrock::Service::$target";
-
-    eval {
-      load $target;
-      # avoid running the actual new which does a bit too much for
-      # this case..
-      {
-        no strict 'refs'; ## no critic
-        no warnings 'redefine'; ## no critic
-        *{'Bedrock::Service::new'} = sub {
-          my ( $class, %options ) = @_;
-          return $class->SUPER::new( \%options );
-        };
-      }
-
-      $self = $target->new;
-    };
-
-    if ($EVAL_ERROR) {
-      if ( $EVAL_ERROR =~ /Can[']t\slocate/xsm ) {
-        carp "ERROR: Can't load $target\n";
-        exit 1;
-      }
-    }
-  }
-
-  # --- 1. Introspection Mode ---
-  if ( $args{routes} ) {
-    my $map = $self->routes;
-
-    print "\nRoute Configuration for " . ref($self) . ":\n";
-    print q{-} x 60 . "\n";
-    printf "%-30s | %-30s\n", 'URL Pattern', 'Action Method';
-    print q{-} x 60 . "\n";
-
-    foreach my $pattern ( sort keys %$map ) {
-      my $action = $map->{$pattern};
-      # Handle simple scalar actions or complex references
-      my $display_action = ref($action) ? 'CODE(...)' : "action_$action";
-
-      printf "%-30s | %s\n", $pattern, $display_action;
-    }
-
-    print "\n";
-
-    return 0;
-  }
-
-  $args{mod_perl} //= $TRUE;
-
-  if ( $args{mod_cgi} ) {
-    $args{mod_perl} = $FALSE;
-  }
-
-  my $command = shift @ARGV || 'help';
-
-  return $self->install(%args)
-    if $command eq 'install';
-
-  print "Unknown command: $command\n";
-
-  return $FAILURE;
-}
-
-########################################################################
-# Configuration Hooks (Subclasses can override these)
-########################################################################
-
-sub apache_config_pre { return; }
-
-sub apache_config_body { return; }
-
-########################################################################
-sub install {
-########################################################################
-  my ( $self, %args ) = @_;
-
-  my $class_name = ref($self) || $self;
-
-  # Determine the script source for comments/mod_cgi
-  my $script_path = abs_path($PROGRAM_NAME);
-
-  if ( !$script_path || !-f $script_path ) {
-    require FindBin; ## no critic
-    $script_path = abs_path( $FindBin::Bin . q{/} . $FindBin::Script ); ## no critic
-  }
-
-  my $script_file = basename($script_path);
-
-  # 1. Calculate Default Service Name from Class Name
-  #    Bedrock::Service::Docs -> 'docs'
-  #    Bedrock::Service::CustomerLookup -> 'customer-lookup'
-  my $default_name = do {
-    my $pkg = $class_name;
-    $pkg =~ s/^Bedrock::Service:://;
-    $pkg = to_snake_case($pkg);
-    $pkg =~ tr/_/-/;
-    $pkg;
-  };
-
-  my $service_name = $args{service_name} // $default_name;
-  my $script_url   = $args{script_url}   // "/cgi-bin/$script_file";
-  my $instance     = ref($self) ? $self : $self->new;
-
-  my $base_uri = $args{base_uri} // $EMPTY;
-  $base_uri =~ s{/\z}{}xsmg;
-
-  my $map = $self->routes;
-
-  warn "+----------------------------------------------------------+\n";
-  warn "| WARNING: You have not provided a --base-uri.             |\n";
-  warn "| All routes will be matched relative to the DOCUMENT_ROOT |\n";
-  warn "+----------------------------------------------------------+\n";
-
-  my $location_regex = choose {
-
-    return sprintf '^%s/%s', $base_uri, $service_name
-      if !$instance->dispatch_map;
-
-    my @prefixes   = ($service_name);
-    my $allow_root = $FALSE;
-
-    foreach my $route ( keys %{ $instance->dispatch_map } ) {
-      if ( $route eq $SLASH ) {
-        $allow_root = $TRUE;
-        next;
-      }
-
-      next if $route !~ m{^/([^/:]+)}xsm;
-      push @prefixes, $1;
-    }
-
-    my $union = join $PIPE, uniq(@prefixes);
-
-    if ($allow_root) {
-      return qq{^$base_uri/?\$}
-        if !$union;
-
-      return qq{^$base_uri/?\$|^$base_uri/($union)};
-    }
-
-    return sprintf '^%s/(%s)', $base_uri, $union;
-  };
-
-  my $timestamp = localtime;
-
-  # 2. Configure Environment Variables (without BEDROCK_SERVICE_NAME)
-  my @core_lines;
-  my $directive = $args{mod_perl} ? 'PerlSetEnv' : 'SetEnv';
-
-  push @core_lines, qq{$directive BEDROCK_SERVICE_NAME "$class_name"};
-
-  if ($base_uri) {
-    push @core_lines, qq{$directive BEDROCK_BASE_URI "$base_uri"};
-  }
-
-  $args{env_vars} //= {};
-
-  foreach my $p ( pairs %{ $args{env_vars} } ) {
-    my ( $key, $val ) = @{$p};
-    push @core_lines, qq{$directive $key "$val"};
-  }
-
-  my @pre_lines  = $instance->apache_config_pre( \%args );
-  my @body_lines = $instance->apache_config_body( \%args );
-
-  my $pre_config  = join "\n    ", @pre_lines;
-  my $body_config = join "\n    ", ( @core_lines, @body_lines );
-
-  my $config_block = choose {
-
-    return <<"END_APACHE" if $args{mod_perl};
-# Bedrock Service: $service_name
-# Mode: mod_perl
-# Generated: $timestamp
-# Source: $script_path
-<IfModule mod_perl.c>
-    $pre_config
-    <LocationMatch "$location_regex">
-        SetHandler modperl
-        PerlResponseHandler $class_name
-        $body_config
-    </LocationMatch>
-</IfModule>
-END_APACHE
-
-    return <<"END_APACHE";
-# Bedrock Service: $service_name
-# Mode: mod_cgi
-# Generated: $timestamp
-# Source: $script_path
-<IfModule mod_alias.c>
-    Action $service_name "$script_url" virtual
-</IfModule>
-<LocationMatch "$location_regex">
-    SetHandler $service_name
-    $body_config
-</LocationMatch>
-<Directory "$FindBin::Bin">
-    <Files "$script_file">
-        Options +ExecCGI +FollowSymLinks
-        Require all granted
-    </Files>
-</Directory>
-END_APACHE
-  };
-
-  my $dir = $args{conf_dir};
-
-  if ( !$dir ) {
-    print $config_block;
-    return 0;
-  }
-
-  die "Error: Directory $dir does not exist.\n"
-    if !-d $dir;
-
-  my $file = sprintf '%s/%s.conf', $dir, $service_name;
-
-  open my $fh, '>', $file
-    or die "Could not write to $file: $OS_ERROR";
-  print {$fh} $config_block;
-  close $fh;
-
-  print "Configuration installed to $file\n";
-
-  return 0;
+  return Bedrock::Service::CLI::main();
 }
 
 ########################################################################
@@ -638,6 +399,7 @@ sub parse {
     or die "could not open scalar ref for writing\n";
 
   my $tx = Text::TagX->new( $fh, $output_fh );
+  $self->tagx($tx);
 
   my $session = choose {
     return delete $args{session}
@@ -646,14 +408,15 @@ sub parse {
     return $self->get('session')
       if $self->get('session');
 
+    return $self->context->session
+      if $self->context->session;
+
     return sub { return $self->session };
   };
 
   $tx->param( session => $session );
-
   $args{input}   //= $self->context->input;
   $args{config}  //= $self->context->config;
-  $args{session} //= $self->context->session;
   $args{context} //= $self->context;
   $args{env} = Bedrock::Hash->new(%ENV);
 
@@ -666,6 +429,14 @@ sub parse {
   $tx->close;
   $output_fh->close;
 
+  my $source;
+  {
+    seek $fh, 0, 0;
+    local $RS = undef;
+    $source = <$fh>;
+  }
+
+  # we should probably close this always...
   if ( $fh && !ref $thing ) {
     close $fh;
   }
@@ -704,7 +475,7 @@ sub parse {
     die Bedrock::Exception->new(
       message => $proc_err,
       type    => 'template_render',
-      payload => { input => $thing }
+      payload => { input => $source }
     );
   }
 
@@ -776,8 +547,6 @@ sub display_error {
   return $self->print_json( { error => $message, status => $status } )
     if $self->content_type && $self->content_type =~ /json/xsm;
 
-  $self->log->error($message);
-
   return $self->print($message);
 }
 
@@ -817,69 +586,33 @@ sub check_error {
 
   $self->clear;
 
-  my $err_msg;
-  my $offending_line_no;
+  my $tx = $self->tagx;
 
-  # Support TagX::Error objects (or any exception object with line/text methods)
-  if ( blessed($eval_error) && $eval_error->can('line') ) {
-    $offending_line_no = $eval_error->line;
+  return Bedrock::Error::handle_error( $self->request, $eval_error )
+    if !$tx;
 
-    $err_msg = $eval_error->can('as_string') ? $eval_error->as_string : "$eval_error";
-  }
-  else {
-    # Fallback for string-based errors
-    $err_msg = "$eval_error";
-    if ( $err_msg =~ /line\s*(\d+)/xsm ) {
-      $offending_line_no = $1;
-    }
-  }
+  # do some magic to get nice error page when we are parsing Bedrock
 
-  $err_msg = Htmlencode($err_msg);
+  # create a version thingy...
+  no strict 'refs'; ## no critic
 
-  my @lines;
+  my $thingy = bless {}, 'thingy';
+  *{'thingy::version'} = sub { return $VERSION };
 
-  if ( defined $source_input ) {
-    my $fh = eval { resolve_stream( \$source_input ) };
-    if ($fh) {
-      @lines = <$fh>;
-    }
-  }
+  my $buffer = $EMPTY;
 
-  my $output = element( element_start( 'h3', style($RED) ), 'Template Error' );
-  $output .= element( element_start( 'pre', style( $MARGIN, $BOLD ) ), $err_msg );
+  my $io = IO::Scalar->new( \$buffer );
 
-  return $output
-    if !@lines;
+  $self->context->output_handler($io);
+  $tx->out_handle( TagX::Output->new( $self->context ) );
 
-  for my $i ( 0 .. $#lines ) {
-    my $line_num = $i + 1;
+  $tx->param( bedrock => $thingy, config => $self->config );
+  $tx->error->file('template');
+  $tx->error->source($source_input);
 
-    my $code = Htmlencode( $lines[$i] );
-    $code =~ s/\R//;
+  Bedrock::Error::handle_error( $self->request, $eval_error, $tx );
 
-    my $formatted_line = sprintf '%4d: %s', $line_num, $code;
-
-    if ( defined $offending_line_no && $line_num == $offending_line_no ) {
-      my $span = element_start( 'span', style( $BOLD, $PURPLE ) );
-      $formatted_line = $span . $formatted_line . element_end('span');
-    }
-
-    $lines[$i] = $formatted_line;
-  }
-
-  my %style = (
-    'background-color' => '#fee',
-    'border'           => '1px solid red',
-    'padding'          => '10px',
-    'overflow'         => 'auto',
-  );
-
-  my $styles = style( join q{ }, map { sprintf '%s:%s;', $_, $style{$_} } keys %style );
-
-  my $div = element_start( 'div', $styles );
-  $output .= $div . element( 'pre', join "\n", @lines );
-
-  return $output;
+  return $buffer;
 }
 
 ########################################################################
@@ -934,17 +667,17 @@ sub init_session {
   my ($self) = @_;
 
   my $config = $self->config;  # global config (probably at least tagx.xml)
-
-  my $session_config;
+  my $service_config = $self->service_config;
 
   # 1. Find a session manager if we can
-  my $session_manager = choose {
-    if ( $self->service_config && $self->service_config->{session} ) {
-      $session_config = $self->service_config->{session}->{config};
-      return $self->service_config->{session}->{module};
+  my ( $session_config, $session_manager ) = choose {
+    if ($service_config) {
+      if ( my $session_config = $service_config->{session} ) {
+        return $session_config->{config}, $session_config->{module};
+      }
     }
 
-    return $ENV{BEDROCK_SESSION_MANAGER} // $config->{BEDROCK_SESSION_MANAGER};
+    return q{}, $ENV{BEDROCK_SESSION_MANAGER} // $config->{BEDROCK_SESSION_MANAGER};
   };
 
   # 2. It's ok if we have no session manager, not all services require them
@@ -953,33 +686,12 @@ sub init_session {
     return;
   }
 
-  # 3. All session managers must have a configuration
-  #
-  # 3 a. see if our global configuration MODULES array has a configuration for us
-  if ( !$session_config && $config && blessed($config) && $config->can('get_module_config') ) {
-    $session_config = $config->get_module_config($session_manager);
-  }
-
-  # 3 b. If we don't have a session configuration then we might still find one in Bedrock's
-  #      configuration path?
   if ( !$session_config ) {
-    my ($name) = $session_manager =~ /::([^:]+)\z/xsm;
-    $name = to_snake_case($name);
-
-    my @paths = ( getcwd, $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} );
-    my $config_file;
-
-    foreach my $p (@paths) {
-      my $candidate = "$p/$name";
-      ($config_file) = grep { -e $_ } map {"$candidate/$_"} qw(.xml .yml .yaml .json);
-      last if $config_file;
-    }
-
-    $session_config = eval { load_config($config_file); };
-
-    croak "ERROR: error trying to load session configuration file: $config_file\n$EVAL_ERROR"
-      if $session_config || $EVAL_ERROR;
+    $session_config = eval { $self->_find_session_config($session_manager); };
   }
+
+  croak "ERROR: error trying to load session configuration file.\n$EVAL_ERROR"
+    if !$session_config || $EVAL_ERROR;
 
   croak "ERROR: You defined a session manager ($session_manager) but I can't find its configuration?\n"
     if !$session_config;
@@ -999,12 +711,74 @@ sub init_session {
 }
 
 ########################################################################
+sub _find_session_config {
+########################################################################
+  my ( $self, $session_manager ) = @_;
+
+  my $config = $self->has_bedrock_config;
+
+  ########################################################################
+  # 3. All session managers MUST have a configuration
+  #   a. See if our global configuration MODULES array has a configuration for us
+  #   b. If we don't have a session configuration then we might still find one in Bedrock's
+  #      configuration path?
+  #   c. If see are using miniserver's default session manager (MemorySession) and no
+  #      configuration is found in the miniserver's configuration, make one up, cuz it's not
+  #      got a lot of options
+  ########################################################################
+
+  my $session_config = $config->get_module_config($session_manager);
+
+  return $session_config
+    if $session_config;
+
+  my ($config_name) = $session_manager =~ /::([^:]+)\z/xsm;
+  $config_name = to_snake_case($config_name);
+
+  my @paths = grep {defined} ( getcwd, $ENV{CONFIG_PATH}, $ENV{BEDROCK_CONFIG_PATH} );
+  my $config_file;
+
+  foreach my $p (@paths) {
+    my $candidate = sprintf '%s/%s', $p, $config_name;
+    ($config_file) = grep { -e $_ } map {"$candidate/$_"} qw(.xml .yml .yaml .json);
+    last if $config_file;
+  }
+
+  return load_config($config_file)
+    if $config_file;
+
+  if ( $session_manager =~ /MemorySession/xsm ) {
+    return {
+      table_name          => 'session',
+      'expiry_secs'       => 86_400,
+      param               => 'session',
+      log_level           => 'info',
+      persistence_enabled => 'no',
+    };
+  }
+
+  return;
+}
+
+########################################################################
+sub has_bedrock_config {
+########################################################################
+  my ($self) = @_;
+
+  if ( my $config = $self->config ) {
+    return $config
+      if blessed($config) && $self->config->can('get_module_config');
+  }
+
+  return;
+}
+
+########################################################################
 sub init_input {
 ########################################################################
   my ($self) = @_;
 
-  return
-    if !$self->config || !blessed( $self->config ) || !$self->config->can('get_module_config');
+  my $config = $self->has_bedrock_config;
 
   my $class = 'BLM::Startup::Input';
 
@@ -1015,7 +789,7 @@ sub init_input {
     return;
   }
 
-  my $input = eval { return $class->new( $self->context, $self->config->get_module_config('Input') ); };
+  my $input = eval { return $class->new( $self->context, $config->get_module_config('Input') ); };
 
   if ( $EVAL_ERROR || !$input ) {
     $self->get_logger->error("Failed to instantiate $class: $EVAL_ERROR");
@@ -1031,6 +805,9 @@ sub init_input {
 sub print { ## no critic
 ########################################################################
   my ( $self, @args ) = @_;
+
+  return
+    if !@args;
 
   if ( $self->autoflush ) {
     $self->flush_output( join $EMPTY, @args );
@@ -1297,7 +1074,7 @@ sub run { return shift->handler(@_); }
 
 1;
 
-=pod
+__END__
 
 =head1 NAME
 
@@ -1309,9 +1086,6 @@ Bedrock::Service - Base class for creating Bedrock Web Services
   
   package Bedrock::Service::MyService;
   use base qw(Bedrock::Service);
-  
-  # 1. Modulino Hook: Allows running as a script or loading as a class
-  caller or __PACKAGE__->new->handler();
   
   sub new {
       my ($class) = @_;
@@ -1335,61 +1109,49 @@ Bedrock::Service - Base class for creating Bedrock Web Services
       $self->print_json({ id => $id, name => "Barney" });
   }
 
-=head1 USAGE
-
-=head2 Web Service
-
-When invoked by a web server like Apache or Bedrock's mini HTTP server
-based on HTTP::Server::Simple::CGI the script acts like a RESTful
-controller, dispatching requests based on a dispatch map.
-
-=head2 Command Line (CLI)
-
-When invoked from the shell, the script acts as a management tool that
-helps you configure or discover the services endpoints.
-
-  # Generate and print Apache configuration to STDOUT
-  ./my-service.cgi install
-
-  # Install configuration to specific directory
-  ./my-service.cgi install --conf-dir /etc/apache2/conf-available
-
-  # List the internal route patterns (Introspection)
-  ./my-service.cgi --routes
-
 =head1 DESCRIPTION
 
 C<Bedrock::Service> facilitates the creation of RESTful services you
 might use in your web applications. These services can execute in a
 C<mod_perl>, C<mod_cgi> or Bedrock's mini HTTP server context.
 
-As a CLI tool it acts a service discovery and configuration helper.
+It is used by C<bedrock-service.cgi> as a CLI tool for service
+discovery and as an Apache configuration helper.
 
-In addition to "modulino" style services (a single script that acts as
-both a CGI endpoint and a CLI tool), Bedrock::Service can also be
-deployed as a pure Perl module behind a generic CGI front controller
-such as F<bedrock-service.cgi>.
-
-In that mode, Apache sets the C<BEDROCK_SERVICE_NAME> environment
-variable to the fully-qualified service class
-(e.g. C<Bedrock::Service::UserLookup>), and the front controller loads
-that class and invokes C<handler()>.
+Used as a base class for your services, C<Bedrock::Service> is
+installed as a C<PerlResponseHandler> or as a CGI script
+(C<bedrock-service.cgi>) in your Apache configuration. When used with
+Bedrock's miniserver is configured in the miniserver's F<.yml>
+configuration file.
 
 =head2 Micro-MVC Routing
 
-Pass a C<dispatch_map> object to the constructor to enable internal
+Your sub-class defines a dispatch map that maps specific service
+routes to the methods that implement that service. You pass a
+C<dispatch_map> object to the constructor to enable the internal
 routing. The map keys are URI patterns (supported by
-L<Bedrock::Router>) and the values are method suffixes.
+L<Bedrock::Router>) and the values are method suffixes. An example map might look like this:
+
+ my $dispatch_map = {
+   '/'            => 'index',
+   '/status'      => '/status',
+   '/product/:id' => 'product',
+ };
 
 When a route matches, C<Bedrock::Service> calls the corresponding
-method prefixed with C<action_>.
+method prefixed with C<action_>. You would there implement three methods:
+
+ action_index
+ action_status
+ action_product
 
 =head2 Unified Parameters
 
 When using the router, captured parameters (like C<:id>) are injected
-directly into the Bedrock Context.
+directly into the Bedrock Context object and are available using the
+context object's or service object's C<param()> method.
 
-You should use C<context-E<gt>param()> to access inputs. This method
+You should use C<param()> to access all input values. This method
 provides a unified view:
 
 =over 4
@@ -1400,7 +1162,58 @@ provides a unified view:
 
 =back
 
-=head1 METHODS
+=head2 Returning Responses
+
+Services typically return JSON or HTML payloads depending on the
+context in which they are invoked. The service instance will interpret
+the Accept header and set the output content type to
+C<application/json> or C<text/html>.
+
+To return a JSON payload use the C<print_json()> method.
+
+ return $self->print_json({ data => $data });
+
+Use the same method to return HTML snippets or full HTML pages. When
+you call C<display_error()> in HTML context, the service will output
+the response "as-is" with a content type header of C<text/html>.
+
+=head2 Handling Errors
+
+=head3 API Errors
+
+To return a JSON payload with an error, use C<display_error()>.
+
+ return $self->display_error('No username', $HTTP_BAD_REQUEST);
+
+I<NOTE: C<display_error()> detects the context of the request and will
+return a status header and JSON payload that looks like this:>
+
+ { error => 'No username', status => 400 } 
+
+=head3 Exceptions When Rendering Templates
+
+You can use the same method to output a simple error message to the
+browser.
+
+ return $self->display_error('No username', $HTTP_BAD_REQUEST);
+
+The service will recognize the context and output a string and content
+header of C<text/html>.
+
+When using the C<parse()> method you might encounter parsing
+errors. C<Text::TagX> will throw an exception and provide an error
+object that is procesed by the C<parse()> method into a
+C<Bedrock::Exception> object. This will be caught by the C<handler()>
+method will detect that this was a rendering exception and
+automatically provide you with an error page that will display the
+offending line in your template.
+
+When you throw an exception or your service contains a
+bug that causes an exception you can let the C<handler()> handle that
+as well. It will at least provide you with an error page that will
+assist in debugging the issue.
+
+=head1 METHODS AND SUBROUTINES
 
 =head2 new
 
@@ -1434,137 +1247,60 @@ command-line arguments (like C<install>).
 
 =back
 
-=head2 install
+=head2 param
 
- install( %args )
+Return query or route parameters.
 
-Generates an Apache 2.4 configuration file for this service.
-
-By default, this derives the B<Service Name> from the script filename
-(e.g., C<user-service.cgi> becomes C<user-service>) and generates a
-C<LocationMatch> directive based on your C<dispatch_map>.
-
-B<CLI Options:>
-
-=over 4
-
-=item * B<--conf-dir>: Directory to write the configuration file. If
-omitted, writes to STDOUT.
-
-=item * B<--name>: Override the service name (defaults to script basename).
-
-=item * B<--script-url>: Override the script URL path (defaults to /cgi-bin/script_name).
-
-=item * B<--base-uri>: The base URI for the service (e.g., /my-api).
-
-=item * B<--mod-cgi>: Generate configuration for mod_cgi/mod_alias instead of mod_perl.
-
-=item * B<--env>: Pass environment variables to the service configuration (can be used multiple times).
-  Example: --env FOO=bar --env BAZ=1
-
-=back
-
-=head2 Introspection
-
-  $ ./my-service.cgi --routes
-
-Prints the internal dispatch map (URL Pattern -> Method) to STDOUT. This is
-useful for debugging or configuring the Miniserver's Route Translation map.
-
-=head2 apache_config_pre
-
- apache_config_pre( \%args )
-
-Hook method for subclasses to inject Apache directives *before* the
-C<LocationMatch> block. Useful for loading modules (C<PerlModule>,
-C<PerlRequire>) or setting global behaviors.
-
-Returns a list of strings (lines of configuration).
-
-=head2 apache_config_body
-
- apache_config_body( \%args )
-
-Hook method for subclasses to inject Apache directives *inside* the
-C<LocationMatch> block. Useful for setting environment variables
-(C<SetEnv>, C<PerlSetVar>) or access controls.
-
-Returns a list of strings (lines of configuration).
-
-=head2 dispatch
-
- dispatch()
-
-Evaluates the current URI against the C<dispatch_map>. If a match is
-found, executes the corresponding C<action_*> method. Returns 404 if
-no route matches, or 501 if the method is missing.
-
-=head2 print_json
-
- print_json( $data )
-
-Sets the C<Content-Type> header to C<application/json> and prints the
-data structure as a JSON string.
-
-=head2 context
-
-Returns the L<Bedrock::Context> object. Use this to access C<param()>,
-C<config()>, and database handles.
-
-=head2 display_error
-
- display_error( $message, [$status_code] )
-
-Stops execution and returns an error response.
-
-If the Content-Type is set to C<application/json>, this returns a JSON
-object C<{ "error": "...", "status": ... }>. Otherwise, it logs the
-error and prints the message text.
-
-B<Arguments:>
-
-=over 4
-
-=item * B<$message>: The error string to display or log.
-
-=item * B<$status_code>: HTTP Status Code (default: 500). 
-See L<Bedrock::Constants> for available constants like C<$HTTP_NOT_FOUND>.
-
-=back
-
-=head2 is_api
-
-Returns true if the client request indicates it expects a JSON response 
-(e.g., the C<Accept> header contains C<json>). Useful for guarding API 
-endpoints against browser navigation.
-
-=head2 cgi
-
-Returns the underlying C<Bedrock::Request> adapter.
+See L<Bedrock::Context>
 
 =head2 parse
 
- parse( $template, %vars )
+ parse(content, [params]);
 
-Processes a Bedrock template snippet with the provided variables.
+Uses Bedrock's Tagx parser to render a template. Returns the rendered
+text.
 
-B<Error Handling:>
+=over 4
 
-By default, parsing errors (syntax, missing tags) throw a
-L<Bedrock::Exception> object, which is caught by C<handler()> to
-display a formatted error page.
+=item content
 
-You can alter this behavior by passing an C<on_error> argument:
+The text, filename or file handle of the template. To pass raw text use a reference.
 
-  # 1. Silent Mode: Log error and return undef
-  $self->parse( $tpl, on_error => 'return' );
+ my $text = '<var $foo>';
+ $service->parse(\$text, foo => 'bar');
 
-  # 2. Callback Mode: Handle the exception object manually
-  $self->parse( $tpl, on_error => sub {
-      my ($e) = @_;
-      warn "Template failed: " . $e->message;
-      return "Default Content";
-  });
+=item params
+
+Optional list of key/value pairs (not a reference) of parameters
+needed by your template. Keep in mind you are writing a service and
+the full weight of Bedrock's engine used when service Bedrock files is
+not available to you. However, you do get some things "for free"
+depending on how you have configured your service.
+
+=over 8 
+
+=item C<$session>
+
+If you have included a session configuration section in your
+configuration or C<Bedrock::Service> can determine a session manager,
+you will get a C<$session> object.
+
+=item C<$input>
+
+C<$input> will be available if your configuration object is a
+C<Bedrock::Config> object that contains a MODULES section and that
+section contains a configuration for a C<BLM::Startup::Input object.
+
+=item C<$config>
+
+The C<$config> object you passed in will always be available.
+
+=item C<$env>
+
+The C<$env> object will always be available as a C<Bedrock::Hash> with
+all the rights an privileges blessed upon that class.
+
+=back
 
 =head2 redirect
 
@@ -1657,6 +1393,78 @@ conventions when running your service under C<mod_cgi>.
 =item 3. The generated config will use C<SetHandler customer-lookup>.
 
 =back
+
+=head1 FAQs
+
+=head2 Can I use the same user's session when serving Bedrock files
+with the full engine?
+
+Yes, services are designed to help you augment the full Bedrock
+environment. A Bedrock application is typically a set of Bedrock
+templates served by the Bedrock engine that runs under
+Apache. Services might be mixed in for example, to provide RESTful
+services or other functionality to your front end. As long as the base
+configuration (F<tagx.xml>) you are pointing to using the
+C<BEDROCK_CONFIG_PATH> variable is the same as that used to serve
+pages by the full engine, C<Bedrock::Service> will instantiate the
+same configuration object and therefore use the same session
+manager.
+
+The session manager will be instantiated by using the
+C<BEDROCK_SESSION_MANAGER> environment or configuration value and the
+session configuration in your F<tagx.xml> file.
+
+I<NOTE: When running a service using Bedrock's miniserver you should
+set the BEDROCK_CONFIG_PATH to in the miniserver configuration
+file. You should also know that values in the miniserver configuration
+file are added to the configuration object. See man
+bedrock-miniserver.pl for additional details.>
+
+=head2 When I run under the full engine I have other BLMs
+available. Will I have access to those?
+
+No. In general the use case for services is highly specific and not
+designed to give you the full "Bedrock experience". If you want to
+instantiate a plugin in your service and pass that to C<parse()>, go
+right ahead, nothing is stopping you! The recipe is rather simple:
+
+ 1. Make sure you have access to the plugin's configuration.
+ 2. Load the class
+ 3. Instantiate the class
+ 4. Pass the object to the parse using some variable name
+
+The configuration object available via the C<config()> method contains
+the fully exploded Bedrock configuration (an instance of
+C<Bedrock::Config> used by the Bedrock engine. So, as long as you have
+that module configured in your F<tagx.xml> (or a .xml file that was
+merged into the configuration object) you can use the
+C<get_module_config()> method extract the configuration for your
+plugin.
+
+ # load the module
+ Module::Load::load 'BLM::Startup::MyPlugin'
+
+ # extract the module configuration form the configuration object
+ my $plugin_config = $self->config->get_module_config('MyPlugin');
+
+ # instantiate you plugin
+ my $plugin = BLM::Startup::MyPlugin->new($self->context, $plugin_config->{config});
+
+ # pass the plugin to parse()
+ my $content = '<var $my_plugin.foo() >';
+ $self->parse(\$content, my_plugin => $plugin);
+
+=head2 Can I use Plain Old Bedrock Plugins?
+
+Yes, any plugin that can be loaded using the C<plugin> tag can be used.
+
+=head2 Can I use the C<$header> object?
+
+No, you do not get a C<$header> object! You should use the C<parse()>
+method strictly for parsing, not for navigation or setting
+headers. You are after all writing a service. You can manipulate
+headers, return status and perform whatever other actions your service
+dictates.
 
 =head1 AUTHOR
 

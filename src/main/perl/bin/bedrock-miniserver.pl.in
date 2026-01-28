@@ -18,6 +18,7 @@ use Bedrock::Error qw(handle_error resolve_error_page);
 use Bedrock::MiniServer::Context;
 use Benchmark;
 use Data::Dumper;
+use Carp;
 use Cwd;
 use English qw(-no_match_vars);
 use IO::Scalar;
@@ -70,6 +71,10 @@ sub handle_request {
 
   # init logging for miniserver...
   my $logger = $self->_init_miniserver_logger( $self->bedrock_server_config->{log_level} );
+
+  my $env = $self->bedrock_server_config->{env} // {};
+
+  local @ENV{ keys %{$env} } = values %{$env};
 
   # check to see if request is for static or template asset
   if ( $self->_serve_alias($cgi) ) {
@@ -497,11 +502,12 @@ sub _serve_static {
   return $TRUE
     if !$err;
 
-  $logger->error($err);
+  $logger->error( Dumper( [ err => $err ] ) );
 
   $ENV{BEDROCK_ERROR_LOCATION} = resolve_error_page($tagx_config); ## no critic
 
   require Apache::Request::CGI;
+
   my $r = Apache::Request::CGI->new();
 
   my $buffer = $EMPTY;
@@ -512,7 +518,7 @@ sub _serve_static {
   # actually only needs a 'show_error()' method. Bedrock::Template
   # instantiates a Text::TagX instances, stores it and provides a
   # show_error() method itself that delegates to the Text::TagX
-  # instance
+  # instance...so yes this works.
   ######################################################################
   handle_error( $r, $err, $tpl );
 
@@ -664,6 +670,7 @@ use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
+use Data::Dumper;
 use English qw(-no_match_vars);
 use Module::Load;
 use List::Util qw(pairs);
@@ -679,7 +686,7 @@ sub main {
 
   my $cli = Bedrock::MiniServer::CLI->new(
     commands        => { default => \&cmd_start_server },
-    option_specs    => [qw(help|h mount-point|m=s port|p=s service|s=s config|c=s)],
+    option_specs    => [qw(help|h log-level|l=s mount-point|m=s port|p=s service|s=s config|c=s)],
     default_options => {
       mime_types => $defaults->{mime_types},
       aliases    => $defaults->{aliases},
@@ -706,12 +713,14 @@ sub cmd_start_server {
     error_document   => {},
     service_registry => {},
     routes           => {},
+    env              => {},
   );
 
   $server_config->{env} //= {};
 
   foreach my $k ( keys %{ $server_config->{env} } ) {
     $ENV{$k} = $server_config->{env}->{$k}; ## no critic
+    $runtime_config{env}->{$k} = $server_config->{env}->{$k};
   }
 
   $runtime_config{error_document}  = $server_config->{error_document} || {};
@@ -757,7 +766,7 @@ sub cmd_start_server {
     $self->_mount_service( $runtime_config{service_registry}, $mount, $class, $global_service_config );
   }
 
-  $runtime_config{aliases} = { %{ $runtime_config{aliases} }, %{$aliases_cfg} };
+  $runtime_config{aliases} = { %{ $runtime_config{aliases} }, %{ $aliases_cfg // {} } };
   _resolve_paths( $runtime_config{aliases} );
 
   #
@@ -853,14 +862,15 @@ sub init {
   my $config_file = $self->get_config;
 
   if ($config_file) {
-    my @paths = grep {defined} ( $EMPTY, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, $BEDROCK_DIST_DIR );
+    my @paths = grep {defined} ( $EMPTY, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, "$BEDROCK_DIST_DIR/config" );
 
     foreach my $p (@paths) {
       if ( $p && $p !~ m{\z/}xsm ) {
         $p = "$p/";
       }
 
-      next if !"$p$config_file";
+      next if !-r "$p$config_file";
+
       $config_file = "$p$config_file";
       last;
     }
@@ -869,7 +879,7 @@ sub init {
   $config_file //= sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
 
   croak "Configuration file not found: $config_file"
-    if !-e $config_file;
+    if !-r $config_file;
 
   my $config = slurp_file($config_file);
 
@@ -879,6 +889,10 @@ sub init {
     or croak "ERROR: could not open handle on scalar\n";
 
   my $conf = load_config( $fh, 1 );
+
+  if ( my $log_level = $self->get_log_level ) {
+    $conf->{log_level} = $log_level;
+  }
 
   close $fh;
 
@@ -911,19 +925,18 @@ exit Bedrock::MiniServer::CLI->main($defaults);
 __END__
 
 ---
-log_level: info
 mime_types: 
-css:  text/css
-  js :  application/javascript
- png:  image/png
- jpg:  image/jpeg
- gif:  image/gif
- html: text/html
- roc:  text/html
- jroc: application/json
- ico:  image/x-icon
+  css:  text/css
+  js:   application/javascript
+  png:  image/png
+  jpg:  image/jpeg
+  gif:  image/gif
+  html: text/html
+  roc:  text/html
+  jroc: application/json
+  ico:  image/x-icon
 
- aliases:
+aliases:
   /bedrock/img: '@dist_dir@/img'
   /bedrock/css: '@dist_dir@/css'
   /bedrock/javascript: '@dist_dir@/css'
