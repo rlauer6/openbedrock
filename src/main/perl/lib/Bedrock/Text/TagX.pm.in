@@ -44,7 +44,7 @@ use TagX::TAG::WithBody::Container;
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic
+our $VERSION = '3.7.2'; ## no critic
 
 our %TAGS_ENABLED = (
   q{#} => 'TagX::TAG::NoBody::Comment',
@@ -114,6 +114,66 @@ sub spawn {
   return ( $obj->new_child( $class->new ), $raw // 0 );
 }
 
+########################################################################
+sub _emit_token {
+########################################################################
+  my ( $self, $token ) = @_;
+
+  my $sink = $self->{token_sink};
+
+  if ( ref($sink) eq 'CODE' ) {
+    $sink->($token);
+    return;
+  }
+
+  my $tokens = $self->{tokens};
+
+  if ( ref($tokens) eq 'ARRAY' ) {
+    push @{$tokens}, $token;
+  }
+
+  return;
+}
+
+########################################################################
+sub get_tokens {
+########################################################################
+  my ($self) = @_;
+
+  my $tokens = $self->{tokens};
+
+  if ( ref($tokens) ne 'ARRAY' ) {
+    $tokens = [];
+    $self->{tokens} = $tokens;
+  }
+
+  return $tokens;
+}
+
+########################################################################
+sub clear_tokens {
+########################################################################
+  my ($self) = @_;
+
+  my $tokens = $self->{tokens};
+
+  if ( ref($tokens) eq 'ARRAY' ) {
+    @{$tokens} = ();
+  }
+
+  return;
+}
+
+########################################################################
+sub set_token_sink {
+########################################################################
+  my ( $self, $sink ) = @_;
+
+  $self->{token_sink} = $sink;
+
+  return;
+}
+
 # NOTE: logging during parsing is unaffected by --verbose option
 # if you want to see some debugging output you need to set the log level
 # of the TagX category directly in the Log::Log4perl configuration file
@@ -125,6 +185,10 @@ sub parse {
   my $optstring = $EMPTY;
 
   my $text = $EMPTY;
+
+  my $text_start_line = 1;
+
+  my $pending_open = undef;
 
   my $line = 0;
 
@@ -166,9 +230,54 @@ sub parse {
           # $optstring contains the options collected so far
           $optstring .= $1;
 
-          # chomp if tag ends in -
-          if ( $3 && $3 =~ /\-/xsm ) {
+          my $suffix = defined $3 ? $3 : $EMPTY;
+
+          # NOTE: $3 is the suffix capture from $OPTIONS_EXPR.
+          # Do not inspect $2 here; $2 is an inner capture from the options text.
+
+          #
+          # Backward-compatibility / safety net:
+          # If the OPTIONS_EXPR did not expose the suffix (older Constants),
+          # the '/>' or '-/>' marker can wind up at the end of the options text.
+          #
+          if ( !length $suffix ) {
+            if ( $optstring =~ s/\s*(\/-)\s*\z//xsm ) {
+              die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n";
+            }
+            elsif ( $optstring =~ s/\s*(-\/)\s*\z//xsm ) {
+              $suffix = '-/';
+            }
+            elsif ( $optstring =~ s/\s*(\/)\s*\z//xsm ) {
+              $suffix = '/';
+            }
+          }
+
+          die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n"
+            if $suffix eq '/-';
+
+          # chomp if tag ends in - (-> or -/>)
+          if ( $suffix =~ /^\-/xsm ) {
             s/\n//xsm;
+          }
+
+          my $end_style = 'NORMAL';
+
+          if ( $suffix eq '-' ) {
+            $end_style = 'CHOMP';
+          }
+          elsif ( $suffix eq '/' ) {
+            $end_style = 'SELFCLOSE';
+          }
+          elsif ( $suffix eq '-/' ) {
+            $end_style = 'CHOMP_SELFCLOSE';
+          }
+
+          if ($pending_open) {
+            $pending_open->{options_raw} = $optstring;
+            $pending_open->{suffix}      = $suffix;
+            $pending_open->{end_style}   = $end_style;
+            $self->_emit_token($pending_open);
+            $pending_open = undef;
           }
 
           # Remove escapes from the option string
@@ -203,6 +312,9 @@ sub parse {
       if ( !s/^(.*?)<//xsmoi ) {
 
         if (length) {
+          if ( !length $text ) {
+            $text_start_line = $line;
+          }
           $text .= $_;
         }
 
@@ -210,6 +322,9 @@ sub parse {
       }
 
       if ( length $1 ) {
+        if ( !length $text ) {
+          $text_start_line = $line;
+        }
         $text .= $1;
       }
 
@@ -222,6 +337,13 @@ sub parse {
         # Yes we do
         # The text before the '<' needs to be processed.
         if ( length $text ) {
+          $self->_emit_token(
+            { type => 'TEXT',
+              text => $text,
+              file => $file,
+              line => $text_start_line,
+            }
+          );
           $obj->text($text);
           $text = $EMPTY;
         }
@@ -267,13 +389,47 @@ sub parse {
 
         $obj->start_location( $file, $line );
 
+        $pending_open = {
+          type  => 'OPEN_TAG',
+          name  => $tag_name,
+          class => $class,
+          file  => $file,
+          line  => $line,
+        };
+
         # After creating object of suitable type depending on the tag, check
         # if the tag ends on the same line. Tag ending is an un-escaped '>'.
         if (s/$OPTIONS_EXPR//oixsm) {
 
           my $options = $1;
-          # chomp if tag ends in -
-          if ( $3 && $3 =~ /\-/xsm ) {
+
+          my $suffix = defined $3 ? $3 : $EMPTY;
+
+          # NOTE: $3 is the suffix capture from $OPTIONS_EXPR.
+          # Do not inspect $2 here; $2 is an inner capture from the options text.
+
+          #
+          # Backward-compatibility / safety net:
+          # If the OPTIONS_EXPR did not expose the suffix (older Constants),
+          # the '/>' or '-/>' marker can wind up at the end of the options text.
+          #
+          if ( !length $suffix ) {
+            if ( $options =~ s/\s*(\/-)\s*\z//xsm ) {
+              die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n";
+            }
+            elsif ( $options =~ s/\s*(-\/)\s*\z//xsm ) {
+              $suffix = '-/';
+            }
+            elsif ( $options =~ s/\s*(\/)\s*\z//xsm ) {
+              $suffix = '/';
+            }
+          }
+
+          die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n"
+            if $suffix eq '/-';
+
+          # chomp if tag ends in - (-> or -/>)
+          if ( $suffix =~ /^\-/xsm ) {
             s/\n//xsm;
           }
 
@@ -283,14 +439,32 @@ sub parse {
             $raw = $TRUE;
           }
 
+          my $end_style = 'NORMAL';
+
+          if ( $suffix eq '-' ) {
+            $end_style = 'CHOMP';
+          }
+          elsif ( $suffix eq '/' ) {
+            $end_style = 'SELFCLOSE';
+          }
+          elsif ( $suffix eq '-/' ) {
+            $end_style = 'CHOMP_SELFCLOSE';
+          }
+
+          if ($pending_open) {
+            $pending_open->{options_raw} = $options;
+            $pending_open->{suffix}      = $suffix;
+            $pending_open->{end_style}   = $end_style;
+            $self->_emit_token($pending_open);
+            $pending_open = undef;
+          }
+
           if ( ref($obj) eq 'TagX::TAG::NoBody::Comment' && /$/xsm ) {
             $_ = $EMPTY;
           }
 
           # The tag definition ended on same line -- all options specified on
           # one line
-
-          $options =~ s/\/$//xsm;  # allow /> for nobody tags
 
           # Unescape the options
           $options =~ s/\\([^\\])/$1/xsmg;
@@ -324,6 +498,25 @@ sub parse {
         if ($raw) {
 
           if ( $end =~ /\/(pebbledef|sink|noexec)/xsm ) {
+            if ( length $text ) {
+              $self->_emit_token(
+                { type => 'TEXT',
+                  text => $text,
+                  file => $file,
+                  line => $text_start_line,
+                }
+              );
+            }
+
+            $self->_emit_token(
+              { type  => 'CLOSE_TAG',
+                name  => $end,
+                chomp => ( $2 ? 1 : 0 ),
+                file  => $file,
+                line  => $line,
+              }
+            );
+
             $obj->text($text);
             $obj  = $obj->end_child;
             $raw  = $FALSE;
@@ -335,6 +528,15 @@ sub parse {
           redo MAIN;
         }
         else {
+          $self->_emit_token(
+            { type  => 'CLOSE_TAG',
+              name  => $end,
+              chomp => ( $2 ? 1 : 0 ),
+              file  => $file,
+              line  => $line,
+            }
+          );
+
           die "Illegal tag-end encountered.\n"
             if !$obj->parent;
 
@@ -348,6 +550,13 @@ sub parse {
 
           # A tag has ended. The text before the '<' needs to be processed.
           if ( length $text ) {
+            $self->_emit_token(
+              { type => 'TEXT',
+                text => $text,
+                file => $file,
+                line => $text_start_line,
+              }
+            );
             $obj->text($text);
             $text = $EMPTY;
           }
@@ -377,8 +586,16 @@ sub parse {
   }
 
   if ( length $text ) {
+    $self->_emit_token(
+      { type => 'TEXT',
+        text => $text,
+        file => $file,
+        line => $text_start_line,
+      }
+    );
     $obj->text($text);
     $text = $EMPTY;
+
   }
 
   return $obj->finalize;
