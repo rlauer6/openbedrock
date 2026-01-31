@@ -22,6 +22,139 @@ download an image from
 
 # What's New
 
+## 2025-05 - 2026-01
+
+* Significant updates and new features have been added to make
+  developing Bedrock applications in local environments easy. A new
+  "miniserver" allows developers to quickly test a web application
+  without the need for Apache.
+
+### 3.7.3 
+
+The 3.7.3 release marks a significant milestone in the maturity of the
+Bedrock::Service module. The primary focus of this release is the
+unification of the error-handling lifecycle and a refactoring of
+`bedrock-service.cgi` to improve developer experience.
+
+Unified error handing means that whether you are using Bedrock with
+Apache and mod_perl or mod_cgi, or Bedrock's miniserver, error
+handling is as robust as it can possibly be. If you are using
+Bedrock::Service to create services you also get the benefit of
+helpful error pages when you are parsing Bedrock content.
+
+### 3.7.2 
+
+The 3.7.2 release introduces several enhancements to the
+Bedrock::Service framework, specifically targeting mod_cgi
+compatibility, API detection, and improved error handling for web
+services.
+
+### 3.7.1
+
+Bedrock 3.7.1 represents a major architectural refactor of
+bedrock-miniserver.pl, reducing code size by approximately 15% while
+improving modularity and performance. Several new features have also
+been introduced in the miniserver.
+
+### 3.7.0
+
+Bedrock 3.7.0 represents a significant architectural improvement in
+error handling and system stability. This release unifies the error
+reporting pipeline across Apache/mod_perl and the Bedrock Miniserver,
+ensuring consistent behavior when rendering custom error templates.
+
+### 3.6.8
+
+Bedrock 3.6.8 is a minor release that includes minor bug fixes and
+documementation updates.
+
+### 3.6.7
+
+Bedrock 3.6.7 significantly enhances the Miniserver's "Accelerator Mode,"
+transforming it into a fully capable development environment for Bedrock
+templates. This release introduces robust environment simulation, ensuring
+that static .roc files have access to standard Bedrock objects like
+$session, $config, and $bedrock. It also improves logging observability
+and error reporting.
+
+
+### 3.6.6
+
+Bedrock 3.6.6 introduces a multi-tenant architecture to the standalone 
+miniserver, allowing multiple services to be mounted and routed 
+simultaneously. This release also adds introspection capabilities to 
+the core Service class and advanced route rewriting features.
+
+### 3.6.5
+
+Bedrock 3.6.5 focuses on hardening the standalone miniserver with
+improved routing logic and custom error page support. This release
+also enhances the generic service wrapper to support CLI delegation
+and improves the standard Autocomplete service.
+
+### 3.6.4
+
+Bedrock 3.6.4 focuses on improving the local development lifecycle by 
+introducing persistent sessions for the standalone miniserver. This 
+release also addresses critical environment handling issues in the test 
+harness and fixes session initialization logic in the core service class.
+
+### 3.6.3
+
+Bedrock 3.6.3 focuses on Developer Experience (DX), specifically improving 
+the logging and instrumentation of the standalone miniserver. It introduces 
+context-aware logging timestamps and granular performance profiling.
+
+### 3.6.2
+
+Bedrock 3.6.2 allows for significant performance optimization of the 
+documentation service and caching layer, while also addressing several 
+stability bugs in the development miniserver and shared memory driver.
+
+### 3.6.1
+
+Bedrock 3.6.1 introduces the Bedrock Miniserver, a lightweight standalone 
+HTTP server that removes the dependency on a local Apache installation for 
+development. This release also hardens the caching infrastructure against 
+shared memory corruption and improves the resilience of the documentation 
+service.
+
+### 3.6.0
+
+Bedrock version 3.6.0 is a non-breaking version that introduces a new
+layer (Bedrock::Service) used to create "Modulino" style CGI scripts or
+mod_perl handlers. This new layer replaces the deprecated Bedrock::CGI
+class and better aligns script-based services with the Apache::Bedrock
+lifecycle. The documentation server has been completely rewritten as
+Bedrock::Service::Docs, serving as the first validation of this new model.
+
+Significant improvements were also made to the caching engine. Bedrock now
+intelligently handles serialization—delegating it to the engine (like
+IPC::Shareable) when supported—and includes a critical patch to prevent
+shared memory segment proliferation.
+
+### 3.5.x
+
+Bedrock version 3.5.x is a non-breaking version that introduces path based
+routing. Paths can now be specified in the configuration' 'routes`
+object that allows you to map URI pretty paths to Bedrock files.
+
+### 3.4.x
+
+Bedrock version 3.4.x is a non-breaking version that introduces a new
+<cache> tag. Caching is now done using an extensible caching framework
+based on Bedrock::Cache. Included in 3.4.0 is a reference
+implementation using Redis. Version 3.4.1 cleans up and aligns
+Bedrock's configuration caching using the new framework. It also includes
+a caching engine base on IPC::Shareable.
+
+### 3.3.x
+
+Bedrock version 3.3.x is non-breaking version that includes a limited
+number of enhancements and small bug fixes. The most noteworthy change
+is a much more robust Docker image creation facility. Bedrock is now
+on Dockerhub!
+
 ## 2025-05
 
 * Download Bedrock the [DarkPAN repository](https://cpan.openbedrock.net).

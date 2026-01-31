@@ -1,4 +1,3 @@
-<!DOCTYPE HTML>
 <html>
   <head>
     <title>Bedrock Error</title>
@@ -126,6 +125,7 @@
         font-weight: bold;
       }
 
+      /* FIXED: Using pre tag to preserve whitespace/newlines */
       pre.code-view {
         padding: 15px;
         background: #fff;
@@ -148,7 +148,7 @@
     <div class="container">
       
       <div class="header">
-        <img src="/bedrock/img/bedbug.png" alt="Bedrock" class="logo">
+        <img src="/bedbug.png" alt="Bedrock" class="logo">
         <div class="meta">
           Version: <var $bedrock.version()> &nbsp;&bull;&nbsp; 
           Timestamp: <var $Timenow.ctime>
@@ -157,7 +157,7 @@
 
       <div class="hero">
         <div class="caveman-wrapper">
-          <img src="/bedrock/img/caveman.png" alt="Yabba Dabba Oops!">
+          <img src="/caveman.png" alt="Yabba Dabba Oops!">
         </div>
         <div class="error-content">
           <h1>Yabba Dabba Oops!</h1>
@@ -176,7 +176,7 @@
       </div>
 
       <div class="stack-trace">
-        <h2>Source</h2>
+        <h2>Stack Trace</h2>
         
         <foreach --define-index="i" $ERROR>
           <div class="trace-item">

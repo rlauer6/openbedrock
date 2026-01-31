@@ -1,0 +1,1030 @@
+#!/usr/bin/env perl
+package Bedrock::LSP;
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+# Bedrock LSP server
+
+use strict;
+use warnings;
+
+use Bedrock::Constants qw(:regexp :chars :booleans);
+use Bedrock::LSP::Tag;
+use Bedrock::Constants qw(:chars);
+
+use Data::Dumper;
+use English;
+use IO::Select;
+use List::Util qw(pairs);
+use JSON;
+use Module::Load;
+use Readonly;
+
+Readonly::Scalar our $CLASS    => 0;
+Readonly::Scalar our $COMMENT  => 1;
+Readonly::Scalar our $FUNCTION => 2;
+Readonly::Scalar our $KEYWORD  => 3;
+Readonly::Scalar our $NUMBER   => 4;
+Readonly::Scalar our $OPERATOR => 5;
+Readonly::Scalar our $STRING   => 7;
+Readonly::Scalar our $VARIABLE => 6;
+
+Readonly::Hash our %TYPE_MAP => (
+  tag       => $CLASS,
+  suffix    => $OPERATOR,
+  raw_mode  => $COMMENT,
+  attribute => $VARIABLE,  # Fallback for unparsed attributes
+  variable  => $VARIABLE,
+  function  => $FUNCTION,
+  keyword   => $KEYWORD,
+  operator  => $OPERATOR,
+  string    => $STRING,
+  number    => $NUMBER,
+);
+
+# LSP Token Legend
+Readonly::Array our @TOKEN_TYPES => qw(
+  class
+  comment
+  function
+  keyword
+  number
+  operator
+  regexp
+  string
+  type
+  variable
+);
+
+our %DOCUMENTS;
+
+our %TAGS;
+
+foreach ( @{ Bedrock::LSP::Tag->tags->{tags} } ) {
+  $TAGS{$_} = Bedrock::LSP::Tag->new( tag => $_ );
+}
+
+caller or __PACKAGE__->main();
+
+########################################################################
+sub main {
+########################################################################
+  # Import the Bedrock Regex definitions
+  our $VERSION = '@PACKAGE_VERSION@'; ## no critic
+
+  # ---------------------------------------------------------------------------
+  # GLOBAL STATE
+  # ---------------------------------------------------------------------------
+
+  local $OUTPUT_AUTOFLUSH = $TRUE;  # Auto-flush STDOUT
+
+  # ---------------------------------------------------------------------------
+  # Main Event Loop (Robust Header Parsing)
+  # ---------------------------------------------------------------------------
+  while ($TRUE) {
+    my $content_length = 0;
+
+    # 1. Parse Headers
+    while ( my $line = <> ) {
+      $line =~ s/[\r\n]+$//xsm;
+      last if $line eq $EMPTY;  # Blank line = end of headers
+
+      if ( $line =~ /^Content\-Length:\s*(\d+)/xsmi ) {
+        $content_length = $1;
+      }
+    }
+
+    # Check if stream closed
+    last
+      if !$content_length;
+
+    # 2. Read Body
+    my $buffer;
+    my $bytes_read = read STDIN, $buffer, $content_length;
+
+    last
+      if $bytes_read != $content_length;
+
+    # 3. Handle Message
+    my $request = eval { decode_json($buffer) };
+
+    if ($EVAL_ERROR) {
+      warn "JSON Error: $EVAL_ERROR";
+      next;
+    }
+
+    handle_request($request);
+  }
+
+  return $SUCCESS;
+}
+
+########################################################################
+sub handle_request {
+########################################################################
+  my ($req) = @_;
+
+  my $method = $req->{method};
+
+  # --- LIFECYCLE ---
+  my %dispatch = (
+    exit                               => sub { exit $SUCCESS },
+    initialize                         => \&_initialize,
+    shutdown                           => \&_shutdown,
+    'textDocument/didOpen'             => \&_didOpen,
+    'textDocument/didChange'           => \&_didChange,
+    'textDocument/semanticTokens/full' => \&_semanticTokens,
+    'textDocument/completion'          => \&_completion,
+    'textDocument/hover'               => \&_hover,
+  );
+
+  my $action = $dispatch{$method};
+
+  return $action ? $action->($req) : undef;
+}
+
+########################################################################
+sub send_response {
+########################################################################
+  my ( $id, $result ) = @_;
+
+  my $json = encode_json(
+    { jsonrpc => '2.0',
+      id      => $id,
+      result  => $result
+    }
+  );
+
+  print sprintf "Content-Length: %s\r\n\r\n%s", length($json), $json;
+
+  return;
+}
+
+########################################################################
+sub _initialize {
+########################################################################
+  my ($req) = @_;
+
+  my ( $method, $id ) = @{$req}{qw(method id)};
+
+  return send_response(
+    $req->{id},
+    { capabilities => {
+        textDocumentSync       => $TRUE,  # 1 = Full Sync
+        semanticTokensProvider => {
+          legend => {
+            tokenTypes     => \@TOKEN_TYPES,
+            tokenModifiers => []
+          },
+          full => JSON::true,
+        },
+        completionProvider => { triggerCharacters => [$DASH], },
+        hoverProvider      => JSON::true,
+      }
+    }
+  );
+}
+
+########################################################################
+sub _shutdown {
+########################################################################
+  my ($req) = @_;
+
+  my ( $method, $id ) = @{$req}{qw(method id)};
+
+  return send_response( $req->{id}, undef );
+}
+
+########################################################################
+sub _didOpen {
+########################################################################
+  my ($req) = @_;
+  my $params = $req->{params};
+
+  # Client opened a file, store the text
+  my $uri  = $params->{textDocument}->{uri};
+  my $text = $params->{textDocument}->{text};
+  $DOCUMENTS{$uri} = $text;
+  # Notifications have no ID, so no response needed
+  return;
+}
+
+########################################################################
+sub _didChange {
+########################################################################
+  my ($req) = @_;
+
+  my $params = $req->{params};
+  # Client changed file. Since we requested Full Sync (1),
+  # we get the whole text in the last contentChange.
+  my $uri     = $params->{textDocument}->{uri};
+  my $changes = $params->{contentChanges};
+
+  if ( @{$changes} ) {
+    $DOCUMENTS{$uri} = $changes->[0]->{text};
+  }
+  return;
+}
+
+########################################################################
+sub _semanticTokens {
+########################################################################
+  my ($req) = @_;
+  my $params = $req->{params};
+
+  my $uri  = $params->{textDocument}->{uri};
+  my $text = $DOCUMENTS{$uri};
+
+  # If we somehow missed the didOpen, try to read file from disk?
+  # (Optional, but safe)
+  if ( !defined $text && $uri =~ m{^file://(.*)}xsm ) {
+    # Simple fallback for local files
+    local $RS = undef;
+    if ( open my $fh, '<', $1 ) {
+      $text = <$fh>;
+      close $fh;
+    }
+  }
+
+  my $data = defined $text ? tokenize_bedrock($text) : [];
+  return send_response( $req->{id}, { data => $data } );
+}
+
+########################################################################
+sub _hover {
+########################################################################
+  my ($req) = @_;
+
+  my $params   = $req->{params};
+  my $position = $params->{position};
+  my $uri      = $params->{textDocument}->{uri};
+
+  my $text = $DOCUMENTS{$uri};
+
+  # Detect what's under cursor
+  my ( $element_type, $value ) = detect_element_at_position( $text, $position );
+
+  return send_response( $req->{id}, undef )
+    if !$element_type;
+
+  if ( $element_type eq 'tag' ) {
+    return send_response( $req->{id}, undef )
+      if !exists $TAGS{$value};
+
+    my $tag = $TAGS{$value};
+
+    # Get tag documentation
+    my $purpose = $tag->purpose('markdown');
+    my $syntax  = $tag->syntax('markdown');
+
+    # Build hover text with tag info
+    my $hover_text = "# <$value>\n\n";
+    $hover_text .= "## Purpose\n\n$purpose\n\n";
+    $hover_text .= "## Syntax\n\n```\n$syntax\n```\n\n";
+
+    # Add options section
+    my $tag_def   = $tag->tag_def;
+    my $opt_specs = $tag_def->{options};  # From define_options
+    my $opt_docs  = $tag->get_options;  # From POD
+
+    if ( $opt_specs && %{$opt_specs} ) {
+      $hover_text .= "## Options\n\n";
+
+      foreach my $opt_name ( sort keys %{$opt_specs} ) {
+        my $opt_spec = $opt_specs->{$opt_name};
+        my $opt_type = $opt_spec->{type};  # 'string' or 'boolean'
+
+        # Add option name with type
+        $hover_text .= "### --$opt_name";
+        $hover_text .= " [$opt_type]\n\n";
+
+        # Add documentation if available
+        if ( $opt_docs && exists $opt_docs->{$opt_name} ) {
+          my $doc = $opt_docs->{$opt_name}{markdown};
+          $hover_text .= "$doc\n\n";
+        }
+        else {
+          $hover_text .= "*No documentation available*\n\n";
+        }
+      }
+    }
+
+    return send_response(
+      $req->{id},
+      { contents => {
+          kind  => 'markdown',
+          value => $hover_text
+        }
+      }
+    );
+  }
+  elsif ( $element_type eq 'option' ) {
+    my ( $tag_name, $opt_name ) = @{$value};
+
+    if ( !exists $TAGS{$tag_name} ) {
+      return send_response( $req->{id}, undef );
+    }
+
+    my $tag      = $TAGS{$tag_name};
+    my $opt_docs = $tag->get_options;
+
+    if ( !$opt_docs || !exists $opt_docs->{$opt_name} ) {
+      return send_response( $req->{id}, undef );
+    }
+
+    my $doc = $opt_docs->{$opt_name}{markdown};
+
+    return send_response(
+      $req->{id},
+      { contents => {
+          kind  => 'markdown',
+          value => "# --$opt_name\n\n$doc"
+        }
+      }
+    );
+  }
+
+  return send_response( $req->{id}, undef );
+}
+
+########################################################################
+sub detect_element_at_position {
+########################################################################
+  my ( $text, $position ) = @_;
+
+  my @lines    = split /\n/xsm, $text;
+  my $line_num = $position->{line};
+  my $char_pos = $position->{character};
+
+  my $line = $lines[$line_num] // $EMPTY;
+
+  my $before = substr $line, 0, $char_pos;
+  my $after  = substr $line, $char_pos;
+
+  # Strategy: Find word boundaries, then determine what type of element it is
+
+  # Case 1: Are we inside/on a tag name?
+  # Look for pattern: <tagname or <tagname:stuff
+
+  # First, check if we're after a '<'
+  if ( $before =~ /<(\w*)$/ixsm ) {
+    my $tag_start = $1;
+
+    # Look ahead to complete the tag name (up to space, colon, or >)
+    my $tag_end = $EMPTY;
+    if ( $after =~ /^(\w*)/xsmi ) {
+      $tag_end = $1;
+    }
+
+    my $full_tag = lc( $tag_start . $tag_end );
+
+    # Verify it's a valid tag
+    return ( 'tag', $full_tag ) if $full_tag && exists $TAGS{$full_tag};
+  }
+
+  # Case 2: Are we on the :suffix part of a colon tag?
+  # e.g., <plugin:|TimeNow or <plugin:Time|Now
+  if ( $before =~ /<(\w+):(\w*)$/ixsm ) {
+    my $tag_name = lc $1;
+    # We're after the colon, but the tag is still the part before ':'
+    return ( 'tag', $tag_name ) if exists $TAGS{$tag_name};
+  }
+
+  # Case 3: Cursor on an option --format
+  if ( $before =~ /--([[:lower:]\d_-]*)$/ixsm ) {
+    my $opt_start = lc $1;
+
+    my $opt_end = $EMPTY;
+
+    if ( $after =~ /^([[:lower:]\d_-]*)/xsmi ) {
+      $opt_end = lc $1;
+    }
+
+    my $full_opt = $opt_start . $opt_end;
+
+    # Find which tag we're in
+    my $tag = detect_tag_at_position( $text, $position );
+    if ( $tag && exists $TAGS{$tag} ) {
+      return ( 'option', [ $tag, $full_opt ] );
+    }
+  }
+
+  # Case 4: Cursor on a variable $foo
+  if ( $before =~ /\$([[:alnum:]_.]*)$/xsm ) {
+    my $var_start = $1;
+    my $var_end   = $EMPTY;
+    if ( $after =~ /^([[:alnum:]_.]*)/xsm ) {
+      $var_end = $1;
+    }
+    return ( 'variable', $var_start . $var_end );
+  }
+
+  return ( undef, undef );
+}
+
+########################################################################
+# detect_tag_at_position($text, $position)
+#
+# Scans text up to the cursor position to find the innermost unclosed
+# Pod/HTML-style tag (e.g., B< or L<). Returns the lowercase tag name.
+########################################################################
+sub detect_tag_at_position {
+  my ( $text, $position ) = @_;
+
+  # Extract coordinates from the position hash
+  my $line_idx = $position->{line};
+  my $char_pos = $position->{character};
+
+  # 1. Isolate the text "before" the cursor
+  my @lines  = split /\n/xsm, $text;
+  my $before = join $EMPTY, map { $_ . $NEWLINE } @lines[ 0 .. $line_idx - 1 ];
+  $before .= substr $lines[$line_idx] // $EMPTY, 0, $char_pos;
+
+  # 2. Use a regex to find all opening and closing tags.
+  # This pattern captures '<' (start) or '>' (end).
+  # We ignore closed pairs by using a depth-tracking approach.
+  my @tags;
+  while ( $before =~ / (?<type> [<>]) /gxsm ) {
+    my $type = $LAST_PAREN_MATCH{type};
+
+    if ( $type eq '>' ) {
+      pop @tags;  # Close the most recent tag
+    }
+    else {
+      # Find the tag name immediately following this '<'
+      # We look specifically at the current position in $before
+      my $start_pos = pos($before) - 1;
+      if ( substr( $before, $start_pos ) =~ /^ < (?<name> \w+ ) /xsm ) {
+        push @tags, lc $LAST_PAREN_MATCH{name};
+      }
+    }
+  }
+
+  # The last element in the stack is the innermost unclosed tag
+  return pop @tags;
+}
+
+########################################################################
+sub _completion {
+########################################################################
+  my ($req) = @_;
+
+  my $params   = $req->{params};
+  my $uri      = $params->{textDocument}->{uri};
+  my $position = $params->{position};
+
+  my $text = $DOCUMENTS{$uri};
+
+  my $current_tag = detect_tag_at_position( $text, $position );
+
+  my @items;
+
+  if ( $current_tag && exists $TAGS{$current_tag} ) {
+    my $tag_def = $TAGS{$current_tag}->tag_def;
+    my $opts    = $tag_def->{options};
+
+    foreach my $opt_name ( sort keys %{$opts} ) {
+      my $opt = $opts->{$opt_name};
+
+      push @items,
+        {
+        label      => "--$opt_name",
+        kind       => $opt->{type} eq 'string' ? 12             : 14,
+        detail     => $opt->{type} eq 'string' ? 'string'       : 'flag',
+        insertText => $opt->{type} eq 'string' ? "--$opt_name=" : "--$opt_name",
+        };
+    }
+  }
+
+  # Return CompletionList with isIncomplete flag
+  return send_response(
+    $req->{id},
+    { isIncomplete => JSON::false,
+      items        => \@items
+    }
+  );
+}
+
+########################################################################
+sub parse_tag_options {
+########################################################################
+  my ($text) = @_;
+
+  my @tokens;
+  my $pos    = 0;
+  my $length = length $text;
+
+  while ( $pos < $length ) {
+    # Skip whitespace
+    if ( substr( $text, $pos, 1 ) =~ /\s/xsm ) {
+      $pos++;
+      next;
+    }
+
+    my $remaining = substr $text, $pos;
+
+    # 1. OPTION FLAGS: --option-name
+    if ( $remaining =~ /^(--[\w-]+)/xsm ) {
+      my $option = $1;
+      push @tokens,
+        {
+        type   => 'keyword',
+        text   => $option,
+        start  => $pos,
+        length => length($option),
+        };
+
+      $pos += length $option;
+
+      next;
+    }
+
+    # 2. VARIABLES AND METHOD CALLS: $var, $obj.prop, $obj.method(args)
+    # Note: Bedrock does NOT support chained method calls
+    if ( $remaining =~ /^(\$)/xsm ) {
+      my $var_start = $pos;
+      $pos++;  # Skip $
+
+      # Collect the variable name and property/method chain
+      my @parts = ();
+
+      # First part after $
+      if ( substr( $text, $pos ) =~ /^([\w]+)/xsm ) {
+        push @parts, $1;
+        $pos += length $1;
+      }
+      else {
+        # Just a lone $ - treat as variable
+        push @tokens,
+          {
+          type   => 'variable',
+          text   => $DOLLAR_SIGN,
+          start  => $var_start,
+          length => 1,
+          };
+        next;
+      }
+
+      # Collect property chain: .prop.prop.prop
+      while ( $pos < $length && substr( $text, $pos, 1 ) eq $DOT ) {
+        my $dot_pos = $pos;
+        $pos++;  # Skip dot
+
+        if ( substr( $text, $pos ) =~ /^([\w]+)/xsm ) {
+          push @parts, $1;
+          $pos += length $1;
+        }
+        else {
+          # Malformed, back up
+          $pos = $dot_pos;
+          last;
+        }
+      }
+
+      # Now check if the last part is a method call
+      if ( $pos < $length && substr( $text, $pos, 1 ) eq $LEFT_PAREN ) {
+        # This is a method call: $obj.prop.method(args)
+        my $method_name = pop @parts;  # Last part is the method
+
+        # Emit the object part (everything before the method)
+        if (@parts) {
+          my $obj_text = $DOLLAR_SIGN . join $DOT, @parts;
+
+          push @tokens,
+            {
+            type   => 'variable',
+            text   => $obj_text,
+            start  => $var_start,
+            length => length($obj_text),
+            };
+
+          # Emit the dot before method
+          push @tokens,
+            {
+            type   => 'operator',
+            text   => $DOT,
+            start  => $var_start + length($obj_text),
+            length => 1,
+            };
+        }
+
+        my $paren_depth = 0;
+        my $args_end    = $pos;
+
+        # Find closing paren for method args
+        my $method_start = $pos - length $method_name;
+        # Set the regex search pointer to the current position
+        pos($text) = $pos;
+
+        # Pattern: Matches a balanced parenthetical structure using recursion
+        # If the match fails (unbalanced), the 'else' block handles the fallback.
+        if ( $text =~ m/\G ( [(] (?: [^()]+ | (?1) )* [)] ) /gxsm ) {
+          $args_end = pos $text;
+        }
+        else {
+          # The original code's fallback for unbalanced parens
+          $args_end = length $text;
+        }
+
+        #        for ( my $i = $pos; $i < $length; $i++ ) {
+        #          my $ch = substr $text, $i, 1;
+        #          if ( $ch eq $LEFT_PAREN ) {
+        #            $paren_depth++;
+        #          }
+        #          elsif ( $ch eq $RIGHT_PAREN ) {
+        #            $paren_depth--;
+        #            if ( $paren_depth == 0 ) {
+        #              $args_end = $i + 1;
+        #              last;
+        #            }
+        #          }
+        #        }
+
+        # If no closing paren found, go to end
+        if ( $paren_depth != 0 ) {
+          $args_end = $length;
+        }
+
+        # Emit the method name (without parens)
+        push @tokens,
+          {
+          type   => 'function',
+          text   => $method_name,
+          start  => $method_start,
+          length => length($method_name),
+          };
+
+        # Emit opening paren as operator
+        push @tokens,
+          {
+          type   => 'operator',
+          text   => $LEFT_PAREN,
+          start  => $pos,
+          length => 1,
+          };
+
+        # Parse the arguments inside the parens
+        my $args_start = $pos + 1;
+        my $args_text  = substr $text, $args_start, $args_end - $args_start - 1;
+
+        if ( length $args_text > 0 ) {
+          # Recursively parse the arguments
+          my $arg_tokens = parse_tag_options($args_text);
+
+          # Adjust positions and add to tokens
+          foreach my $tok ( @{$arg_tokens} ) {
+            push @tokens,
+              {
+              type   => $tok->{type},
+              text   => $tok->{text},
+              start  => $args_start + $tok->{start},
+              length => $tok->{length},
+              };
+          }
+        }
+
+        # Emit closing paren as operator
+        push @tokens,
+          {
+          type   => 'operator',
+          text   => $LEFT_PAREN,
+          start  => $args_end - 1,
+          length => 1,
+          };
+
+        $pos = $args_end;
+      }
+      else {
+        # Just a variable with property chain (no method call)
+        my $var_text = $DOLLAR_SIGN . join $DOT, @parts;
+        push @tokens,
+          {
+          type   => 'variable',
+          text   => $var_text,
+          start  => $var_start,
+          length => length $var_text,
+          };
+      }
+
+      next;
+    }
+
+    # 3. STRING LITERALS: "..." or '...'
+    if ( $remaining =~ /^(["'])/xsm ) {
+      my $quote     = $1;
+      my $str_start = $pos;
+      my $str_pos   = $pos + 1;
+      my $escaped   = 0;
+
+      # Find closing quote, handling escapes
+      while ( $str_pos < $length ) {
+        my $ch = substr $text, $str_pos, 1;
+
+        if ($escaped) {
+          $escaped = 0;
+          $str_pos++;
+          next;
+        }
+
+        if ( $ch eq q{\\} ) {
+          $escaped = 1;
+          $str_pos++;
+          next;
+        }
+
+        if ( $ch eq $quote ) {
+          $str_pos++;  # Include closing quote
+          last;
+        }
+
+        $str_pos++;
+      }
+
+      my $str_text = substr $text, $str_start, $str_pos - $str_start;
+      push @tokens,
+        {
+        type   => 'string',
+        text   => $str_text,
+        start  => $str_start,
+        length => length($str_text),
+        };
+
+      $pos = $str_pos;
+      next;
+    }
+
+    # 4. NUMBERS: 123, 45.67, .5
+    if ( $remaining =~ /^(\d+[.]?\d*|[.]\d+)/xsm ) {
+      my $num = $1;
+      push @tokens,
+        {
+        type   => 'number',
+        text   => $num,
+        start  => $pos,
+        length => length($num),
+        };
+      $pos += length $num;
+      next;
+    }
+
+    # 5. OPERATORS: =, ., etc.
+    if ( $remaining =~ /^([=,.])/xsm ) {
+      my $op = $1;
+      push @tokens,
+        {
+        type   => 'operator',
+        text   => $op,
+        start  => $pos,
+        length => 1,
+        };
+      $pos++;
+      next;
+    }
+
+    # 6. Skip unknown characters
+    $pos++;
+  }
+
+  return \@tokens;
+}
+
+########################################################################
+sub tokenize_bedrock {
+########################################################################
+  my ($source) = @_;
+
+  my @tokens;
+  my $prev_line = 0;
+  my $prev_char = 0;
+
+  my $add_token = sub {
+    my ( $line, $col, $len, $type_name ) = @_;
+    return if $len <= 0;
+
+    my $type_id    = $TYPE_MAP{$type_name} // 0;
+    my $delta_line = $line - $prev_line;
+    my $delta_char = ( $delta_line == 0 ) ? ( $col - $prev_char ) : $col;
+
+    push @tokens, $delta_line, $delta_char, $len, $type_id, 0;
+
+    $prev_line = $line;
+    $prev_char = $col;
+  };
+
+  my $line_num = 0;
+  my @lines    = split /^/mxs, $source;
+
+  my $newscan = $TRUE;
+  my $raw     = $FALSE;
+
+  foreach my $line_content (@lines) {
+    my $current_col = 0;
+
+    while ( length($line_content) > 0 ) {
+
+      # --- STATE A: INSIDE TAG (Expecting Options or Closer) ---
+      if ( !$newscan ) {
+        # Attempt to match options ending in a closer
+        if ( $line_content =~ s/^$OPTIONS_EXPR//xsm ) {
+          my $full_match = $MATCH; ## no critic
+          my $suffix_capture = $3 // $EMPTY;
+
+          # The closing sequence is the suffix + the '>'
+          # e.g. ">", "->", "/>"
+          my $closer = $suffix_capture . q{>};
+
+          # 1. Parse and emit attribute tokens
+          my $attr_len = length($full_match) - length $closer;
+          if ( $attr_len > 0 ) {
+            my $attr_text     = substr $full_match, 0, $attr_len;
+            my $parsed_tokens = parse_tag_options($attr_text);
+
+            # Emit each parsed token
+            foreach my $tok ( @{$parsed_tokens} ) {
+              $add_token->( $line_num, $current_col + $tok->{start}, $tok->{length}, $tok->{type} );
+            }
+          }
+
+          # 2. Closer (Classified as 'tag' to match user requirement)
+          $add_token->( $line_num, $current_col + $attr_len, length($closer), 'tag' );
+
+          if ( $full_match =~ /\-\-noexec/xsm ) { $raw = 1; }
+
+          $current_col += length $full_match;
+          $newscan = $TRUE;  # Tag ended
+          next;
+        }
+        else {
+          # No closer found on this line.
+          # Parse and emit multi-line tag attributes
+          my $len       = length $line_content;
+          my $token_len = $len;
+
+          if ( substr( $line_content, -1 ) eq "\n" ) {
+            $token_len--;
+          }
+
+          if ( $token_len > 0 ) {
+            my $attr_text     = substr $line_content, 0, $token_len;
+            my $parsed_tokens = parse_tag_options($attr_text);
+
+            foreach my $tok ( @{$parsed_tokens} ) {
+              $add_token->( $line_num, $current_col + $tok->{start}, $tok->{length}, $tok->{type} );
+            }
+          }
+
+          $current_col += $len;
+          $line_content = $EMPTY;
+          next;
+        }
+      }
+
+      # --- STATE B: SCANNING FOR TAGS ---
+
+      # 1. Consume text up to the next '<'
+      if ( $line_content =~ s/^(.*?)<//xsm ) {
+        my $text     = $1;
+        my $len_text = length $text;
+
+        # Highlight Raw Text (if applicable)
+        if ( $len_text > 0 && $raw ) {
+          $add_token->( $line_num, $current_col, $len_text, 'raw_mode' );
+        }
+        $current_col += $len_text;
+
+        # We consumed the '<', so track its position
+        my $tag_start_col = $current_col;
+        $current_col += 1;
+
+        # 2. Check for Open Tag
+        if ( !$raw && $line_content =~ s/^$OPENTAG_EXPR//xsm ) {
+          my $tag_name = $1;
+          my $len_name = length $MATCH; ## no critic
+
+          # Check if there's a colon suffix (e.g., <null:msg>)
+          # OPENTAG_EXPR stops at the colon, so we need to manually capture it
+          my $colon_suffix = $EMPTY;
+          if ( $line_content =~ s/^(:[[:alnum:]_.-]+)//xsm ) {
+            $colon_suffix = $1;  # e.g., ":msg"
+            $len_name += length $colon_suffix;
+          }
+
+          # Now check if we have a colon tag
+          if ($colon_suffix) {
+            my $base_tag = $tag_name;  # e.g., "null"
+            my $var_name = substr $colon_suffix, 1;  # Remove leading ':'
+
+            # Emit: '<' + base tag
+            $add_token->( $line_num, $tag_start_col, 1 + length($base_tag), 'tag' );
+
+            # Emit: ':'
+            $add_token->( $line_num, $tag_start_col + 1 + length($base_tag), 1, 'operator' );
+
+            # Emit: variable name
+            $add_token->( $line_num, $tag_start_col + 1 + length($base_tag) + 1, length($var_name), 'variable' );
+          }
+          else {
+            # Regular tag without colon - emit as before
+            $add_token->( $line_num, $tag_start_col, 1 + $len_name, 'tag' );
+          }
+
+          $current_col += $len_name;
+
+          if ( $tag_name =~ /^(noexec|pebbledef|sink)$/ixsm ) { $raw = 1; }
+
+          # Check for immediate options/closure on same line
+          if ( $line_content =~ s/^$OPTIONS_EXPR//xsm ) {
+            my $opt_full = $MATCH; ## no critic
+            my $suffix_capture = $3 // $EMPTY;
+
+            my $closer = $suffix_capture . q{>};
+
+            # Parse and emit attribute tokens
+            my $attr_len = length($opt_full) - length $closer;
+            if ( $attr_len > 0 ) {
+              my $attr_text     = substr $opt_full, 0, $attr_len;
+              my $parsed_tokens = parse_tag_options($attr_text);
+
+              foreach my $tok ( @{$parsed_tokens} ) {
+                $add_token->( $line_num, $current_col + $tok->{start}, $tok->{length}, $tok->{type} );
+              }
+            }
+
+            # Closer (Classified as 'tag')
+            $add_token->( $line_num, $current_col + $attr_len, length($closer), 'tag' );
+
+            if ( $opt_full =~ /\-\-noexec/xsm ) { $raw = 1; }
+            $current_col += length $opt_full;
+            $newscan = 1;  # Closed
+          }
+          else {
+            $newscan = 0;  # Still open
+          }
+        }
+        # 3. Check for Close Tag (e.g. </var>)
+        elsif ( $line_content =~ s/^$CLOSETAG_EXPR//xsm ) {
+          my $full_match = $MATCH; ## no critic
+          my $tag_name   = $1;
+          my $len        = length $full_match;
+
+          if ($raw) {
+            # Only exit raw mode if it matches the specific tag
+            if ( $tag_name =~ /\/(pebbledef|sink|noexec)/xsm ) {
+              $raw = $FALSE;
+              $add_token->( $line_num, $tag_start_col, 1 + $len, 'tag' );
+            }
+            else {
+              $add_token->( $line_num, $tag_start_col, 1 + $len, 'raw_mode' );
+            }
+          }
+          else {
+            $add_token->( $line_num, $tag_start_col, 1 + $len, 'tag' );
+          }
+          $current_col += $len;
+        }
+        else {
+          # Lone '<' or non-Bedrock tag
+          if ($raw) {
+            $add_token->( $line_num, $tag_start_col, 1, 'raw_mode' );
+          }
+        }
+      }
+      else {
+        # Consume remaining line
+        my $len = length $line_content;
+        if ( $raw && $len > 0 ) {
+          my $token_len = $len;
+          if ( substr( $line_content, -1 ) eq "\n" ) {
+            $token_len--;
+          }
+          $add_token->( $line_num, $current_col, $token_len, 'raw_mode' );
+        }
+        $current_col += $len;
+        $line_content = $EMPTY;
+      }
+    }
+
+    $line_num++;
+  }
+  return \@tokens;
+}
+
+1;
