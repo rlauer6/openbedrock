@@ -20,6 +20,7 @@ PERLSCRIPTS = \
     bedrock-plugin.pl.in \
     bedrock-miniserver.pl.in \
     bedrock-model.pl.in \
+    bedrock-lsp.pl.in \
     bedrock-model-importer.pl.in \
     bedrock-cache.pl.in \
     brxml2json.pl.in \

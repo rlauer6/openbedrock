@@ -1,0 +1,393 @@
+#!/usr/bin/env perl
+package Bedrock::LSP::Tag;
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file benchmark);
+use Bedrock::Constants qw(:booleans);
+use Carp;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(dirname);
+use List::Util qw(pairs);
+use Module::Load;
+use Pod::Markdown;
+
+use parent qw(Class::Accessor::Fast);
+
+__PACKAGE__->follow_best_practice;
+__PACKAGE__->mk_accessors(
+  qw(
+    bedrock_path
+    options
+    pod
+    tag
+    tag_def
+  )
+);
+
+our %TAG_DEFS = (
+  array       => { loaded => undef, def => [ 0, 'Array' ] },
+  case        => { loaded => undef, def => [ 0, 'Case' ] },
+  comment     => { loaded => undef, def => [ 0, 'Comment' ] },
+  exec        => { loaded => undef, def => [ 0, 'Exec' ] },
+  flush       => { loaded => undef, def => [ 0, 'Flush' ] },
+  hash        => { loaded => undef, def => [ 0, 'Hash' ] },
+  iif         => { loaded => undef, def => [ 0, 'Iif' ] },
+  include     => { loaded => undef, def => [ 0, 'Include' ] },
+  null        => { loaded => undef, def => [ 0, 'NULL' ] },
+  open        => { loaded => undef, def => [ 0, 'Open' ] },
+  pebble      => { loaded => undef, def => [ 0, 'Pebble' ] },
+  plugin      => { loaded => undef, def => [ 0, 'Plugin' ] },
+  raise       => { loaded => undef, def => [ 0, 'Raise' ] },
+  recordset   => { loaded => undef, def => [ 0, 'RecordSet' ] },
+  sql         => { loaded => undef, def => [ 0, 'SQL' ] },
+  sqlcommit   => { loaded => undef, def => [ 0, 'SQLCommit' ] },
+  sqlconnect  => { loaded => undef, def => [ 0, 'SQLConnect' ] },
+  sqlrollback => { loaded => undef, def => [ 0, 'SQLRollback' ] },
+  sqltable    => { loaded => undef, def => [ 0, 'SQLTable' ] },
+  trace       => { loaded => undef, def => [ 0, 'Trace' ] },
+  var         => { loaded => undef, def => [ 0, 'Var' ] },
+  cache       => { loaded => undef, def => [ 1, 'Cache' ] },
+  catch       => { loaded => undef, def => [ 1, 'Catch' ] },
+  if          => { loaded => undef, def => [ 1, 'If' ] },
+  foreach     => { loaded => undef, def => [ 1, 'Loop/Foreach' ] },
+  sqlselect   => { loaded => undef, def => [ 1, 'Loop/SQLSelect' ] },
+  while       => { loaded => undef, def => [ 1, 'Loop/While' ] },
+  noexec      => { loaded => undef, def => [ 1, 'NoExec' ] },
+  pebbledef   => { loaded => undef, def => [ 1, 'PebbleDef' ] },
+  sink        => { loaded => undef, def => [ 1, 'Sink' ] },
+  snippet     => { loaded => undef, def => [ 1, 'Snippet' ] },
+  try         => { loaded => undef, def => [ 1, 'Try' ] },
+  unless      => { loaded => undef, def => [ 1, 'Unless' ] },
+);
+
+use Readonly;
+
+Readonly::Scalar our $TAG_BASE_PATH_TPL => '%s/Bedrock/Text/TagX/TAG/%sBody/%s.pm';
+Readonly::Scalar our $TAG_CLASS_TPL     => 'TagX::TAG::%sBody::%s';
+
+# Claude & Damian are going to hate this...
+{
+  no strict 'refs'; ## no critic
+
+  foreach my $m (qw(purpose syntax description)) {
+    __PACKAGE__->mk_accessors($m);  # in for a penny...in for a pound
+
+    *{ __PACKAGE__ . "::$m" } = sub {
+      my ( $self, $format ) = @_;
+
+      my $method  = "get_$m";
+      my $section = $self->$method;
+
+      if ( !$section ) {
+        $section = $self->_parse_section( uc $m );
+      }
+
+      return $format ? $section->{$format} : $section;
+    }
+  }
+}
+
+caller or __PACKAGE__->main;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  my $options = ref $args[0] ? $args[0] : {@args};
+
+  my $self = $class->SUPER::new($options);
+
+  $self->set_bedrock_path( dirname( $INC{'Bedrock.pm'} ) );
+
+  # this is dumb...I would have died earlier, but here ya go Claude...
+  croak "ERROR: Bedrock does not seem to be installed?\n"
+    if !$self->get_bedrock_path;
+
+  croak "ERROR: tag is a required argument\n"
+    if !$self->get_tag;
+
+  $self->tag_def;
+
+  $self->_parse_pod;
+
+  return $self;
+}
+
+########################################################################
+sub tags {
+########################################################################
+  my ($self) = @_;
+
+  my @tags = keys %TAG_DEFS;
+
+  my $html = sprintf "<ul>\n%s</ul>", join "\n", map { sprintf '  <li>&lt;%s&gt;</li>', $_ } @tags;
+
+  my $markdown = join "\n", map {"* <$_>"} @tags;
+
+  return { tags => \@tags, html => $html, markdown => $markdown };
+}
+
+########################################################################
+sub tag_def {
+########################################################################
+  my ( $self, $tag ) = @_;
+
+  $tag //= $self->get_tag;
+
+  my $tag_def = $self->get_tag_def;
+
+  return $tag_def
+    if $tag_def;
+
+  my $def = $TAG_DEFS{ lc $tag };
+
+  my ( $body_type, $suffix ) = @{ $def->{def} };
+  my $type = $body_type ? 'With' : 'No';
+
+  my $class_suffix = $suffix;
+  $class_suffix =~ s/\//::/xsm;
+
+  my $tag_class = sprintf $TAG_CLASS_TPL,     $type, $class_suffix;
+  my $tag_path  = sprintf $TAG_BASE_PATH_TPL, $self->get_bedrock_path, $type, $suffix;
+
+  $tag_def = {
+    path  => $tag_path,
+    class => $tag_class,
+  };
+
+  $self->set_tag_def($tag_def);
+
+  if ( !defined $def->{loaded} ) {
+    eval { load $tag_class; };
+    $def->{loaded} = $EVAL_ERROR ? 0 : 1;
+  }
+
+  return $tag_def  # this really should not happen!
+    if !$def->{loaded} || !$tag_class->can('define_options');
+
+  my %opts = $tag_class->define_options();
+
+  # Parse the options
+  $tag_def->{options} = _parse_option_spec( \%opts );
+
+  $self->set_tag_def($tag_def);
+
+  return $tag_def;
+}
+
+########################################################################
+sub tag_class {
+########################################################################
+  my ( $self, $tag ) = @_;
+  $tag //= $self->get_tag;
+
+  return $self->tag_def($tag)->{class};
+}
+
+########################################################################
+sub tag_path {
+########################################################################
+  my ( $self, $tag ) = @_;
+  $tag //= $self->get_tag;
+
+  return $self->tag_def($tag)->{path};
+}
+
+########################################################################
+sub _parse_section {
+########################################################################
+  my ( $self, $section_name ) = @_;
+
+  my $pod = $self->pod;
+
+  return
+    if !$pod;
+
+  my $pod_text = $pod->{pod};
+
+  my ($section_text) = $pod_text =~ m{
+  =head1\s+$section_name\s*\n
+  (.*?)
+  (?:\n=head1|\n=cut|\z)  # Stop at next head1, =cut, or end
+                              }xsm;
+
+  while ( $section_text =~ s/\n\z//xsm ) { }
+
+  if ( !$section_text ) {
+    carp sprintf "WARN: No text in section %s for %s\n", $section_name, $self->get_tag;
+    return;
+  }
+
+  my $markdown = _to_markdown($section_text);
+
+  my $section = {
+    pod      => $section_text,
+    markdown => $markdown,
+    html     => _to_html($markdown)
+  };
+
+  $self->set( lc $section_name => $section );
+
+  return $section;
+}
+
+########################################################################
+sub _to_markdown {
+########################################################################
+  my ($pod) = @_;
+
+  my $markdown = q{};
+
+  my $parser = Pod::Markdown->new;
+
+  $parser->output_string( \$markdown );
+
+  $parser->parse_string_document("=pod\n\n$pod\n\n=cut");
+
+  return $markdown;
+}
+
+{
+  my $markdown_available;
+
+########################################################################
+  sub _to_html {
+########################################################################
+    my ($markdown) = @_;
+
+    return q{}
+      if defined $markdown_available && !$markdown_available;
+
+    $markdown_available = eval { require Text::Markdown::Discount; };
+    $markdown_available = $EVAL_ERROR ? 0 : 1;
+
+    return q{}
+      if !$markdown_available;
+
+    return Text::Markdown::Discount::markdown($markdown);
+  }
+}
+
+########################################################################
+sub pod {
+########################################################################
+  my ($self) = @_;
+
+  my $pod = $self->get_pod;
+
+  return $pod
+    if $pod;
+
+  my $path = $self->tag_def->{path};
+
+  my $source = slurp_file($path);
+
+  ($pod) = $source =~ /=pod\s*\n*(.*?\n=cut)/xsm;
+
+  if ( !$pod ) {
+    carp sprintf "*** %s has no pod\n", $self->get_tag;
+    return;
+  }
+
+  my $markdown = _to_markdown($pod);
+  $pod = { pod => $pod, markdown => $markdown, html => _to_html($markdown) };
+
+  $self->set_pod($pod);
+
+  return $pod;
+}
+
+########################################################################
+sub _parse_pod {
+########################################################################
+  my ($self) = @_;
+
+  my $tag = $self->get_tag;
+
+  my $tag_def = $self->tag_def($tag);
+
+  my $pod = $self->pod;
+
+  return
+    if !$pod;
+
+  $self->description;
+
+  $self->syntax;
+
+  $self->purpose;
+
+  my %options;
+  my $pod_text = $pod->{pod};
+
+  while ( $pod_text =~ /=item\s+--([^\n\s=]+)(?:=s)?\s*\n(.*?)(?=\n=|\z)/xgms ) {
+    my ( $name, $content ) = ( $1, $2 );
+    $name =~ s/\=.*$//xsm;
+
+    while ( $content =~ s/\n\z//xsm ) { }
+
+    my $markdown = _to_markdown($content);
+
+    $options{$name} = {
+      pod      => $content,
+      markdown => $markdown,
+      html     => _to_html($markdown),
+    };
+
+  }
+
+  $self->set_options( \%options );
+
+  return;
+}
+
+########################################################################
+sub _parse_option_spec {
+########################################################################
+  my ($options) = @_;
+
+  my %parsed;
+
+  foreach my $p ( pairs %{$options} ) {
+    my ( $spec, $default ) = @{$p};
+    my ( $name, $type )    = $spec =~ /^([^=]+)(=.)?$/xsm;
+
+    $parsed{$name} = {
+      spec    => $spec,
+      type    => $type ? 'string' : 'boolean',
+      default => $default,
+    };
+  }
+
+  return \%parsed;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my ($tag_name) = @ARGV;
+
+  my $t0 = benchmark();
+
+  foreach ( keys %Bedrock::LSP::Tag::TAG_DEFS ) {
+    my $tag = Bedrock::LSP::Tag->new( tag => $_ );
+    #    print {*STDERR} Dumper(
+    #      [
+    #        #       tag         => $_,
+    #        #       description => $tag->description,
+    #        # syntax => $tag->syntax,
+    #        purpose => $tag->purpose,
+    #      ]
+    #    );
+  }
+
+  print {*STDERR} sprintf "%s\n", benchmark($t0)->[0];
+
+  return 0;
+}
+
+1;

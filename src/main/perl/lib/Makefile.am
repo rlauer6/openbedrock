@@ -21,6 +21,7 @@ perl5bedrockcachelibdir    	          = $(perl5libdir)/Bedrock/Cache
 perl5bedrockcontextlibdir      		  = $(perl5libdir)/Bedrock/Context
 perl5bedrockhtmllibdir             	  = $(perl5libdir)/Bedrock/HTML
 perl5bedrockloglibdir      		  = $(perl5libdir)/Bedrock/Log
+perl5bedrocklsplibdir      		  = $(perl5libdir)/Bedrock/LSP
 perl5bedrockdbilibdir      		  = $(perl5libdir)/Bedrock/DBI
 perl5bedrockrequestlibdir      		  = $(perl5libdir)/Bedrock/Request
 
@@ -70,6 +71,11 @@ perl5bedrockcachelib_DATA = \
    Bedrock/Cache/Shareable.pm
 
 BEDROCK_CACHE = $(perl5bedrockcachelib_DATA:.pm=.pm.in)
+
+perl5bedrocklsplib_DATA = \
+   Bedrock/LSP/Tag.pm
+
+BEDROCK_LSP = $(perl5bedrocklsplib_DATA:.pm=.pm.in)
 
 perl5lib_DATA = \
     Bedrock.pm \
@@ -391,6 +397,7 @@ PERL_PM = \
     $(BEDROCK_APACHE_REQUEST) \
     $(BEDROCK_DBI) \
     $(BEDROCK_LOG) \
+    $(BEDROCK_LSP) \
     $(BEDROCK_HTML) \
     $(BEDROCK_FILTER) \
     $(BEDROCK_MINISERVER) \

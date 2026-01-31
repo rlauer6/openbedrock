@@ -27,6 +27,7 @@ use Bedrock::Constants qw( :regexp :booleans :chars);
 use Carp;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use IO::Scalar;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
@@ -159,12 +160,12 @@ sub view_source {
     return $fh;
   };
 
-  my $newscan      = $TRUE;
-  my $optstring    = $EMPTY;
-  my $options_expr = '^(\s*([^>\\\\]|\\\\.)*)>';
+  my $newscan   = $TRUE;
+  my $optstring = $EMPTY;
+  my $raw       = $FALSE;  # Added to track non-executing blocks
 
   # implements a skeleton parser to create an HTML encoded source file
-  my $output;
+  my $output = $EMPTY;
 
   INPUT:
   ## no critic
@@ -180,11 +181,18 @@ sub view_source {
 
         # Collecting options for a matched tag -- Look for tag end which is
         # an un-escaped '>'
-        if (s/$options_expr//xsmo) {
+        # Using global OPTIONS_EXPR to capture suffix in $3
+        if (s/$OPTIONS_EXPR//xsmo) {
 
           # Found an un-escaped '>', which terminates the current tag and its options
           # $optstring contains the options collected so far
           $optstring .= $1;
+          my $suffix = defined $3 ? $3 : $EMPTY;
+
+          # Check for raw mode trigger in options
+          if ( $optstring =~ /--noexec/xsm ) {
+            $raw = $TRUE;
+          }
 
           # Remove escapes from the option string
           $optstring =~ s/\\([^\\])/$1/xsmg;
@@ -197,7 +205,18 @@ sub view_source {
             s/>/\&gt;/xsmg;
           }
 
-          $output .= $optstring . '&gt;</span>';
+          # Apply syntax highlighting to the suffix
+          my $suffix_class = $EMPTY;
+          if    ( $suffix eq '-' )  { $suffix_class = 'chomp'; }
+          elsif ( $suffix eq '/' )  { $suffix_class = 'selfclose'; }
+          elsif ( $suffix eq '-/' ) { $suffix_class = 'chomp-selfclose'; }
+
+          if ($suffix_class) {
+            $output .= sprintf q{%s<span class="suffix %s">%s</span>&gt;</span>}, $optstring, $suffix_class, $suffix;
+          }
+          else {
+            $output .= $optstring . '&gt;</span>';
+          }
 
           # Start a new scan after this
           $newscan = $TRUE;
@@ -218,14 +237,25 @@ sub view_source {
       if ( !s/^(.*?)<//xsmoi ) {
 
         if (length) {
+          my $text = $_;
 
-          for ($_) {
+          # Handle newline separation for raw text wrapping
+          my $has_newline = chomp($text);
+
+          for ($text) {
             s/\&/\&amp;/xsmg;
             s/</\&lt;/xsmg;
             s/>/\&gt;/xsmg;
           }
 
-          $output .= $_;
+          if ($raw) {
+            $output .= qq{<span class="raw-text">$text</span>};
+          }
+          else {
+            $output .= $text;
+          }
+
+          if ($has_newline) { $output .= "\n"; }
         }
         next INPUT;
       }
@@ -241,22 +271,34 @@ sub view_source {
           s/>/\&gt;/xsmg;
         }
 
-        $output .= $text;
+        # Dim text if in raw mode
+        $output .= $raw ? qq{<span class="raw-text">$text</span>} : $text;
       }
 
-      # Check if we have a supported tag
-      if (s/$OPENTAG_EXPR//oixsm) {
+      # Check if we have a supported tag (only if not in raw mode)
+      if ( !$raw && s/$OPENTAG_EXPR//oixsm ) {
 
         # Yes we do
         my $tag = $1;
-        $output .= sprintf q{<span class="%s">&lt;%s}, $tag, $tag;
+        $output .= sprintf q{<span class="tag %s">&lt;%s}, $tag, $tag;
+
+        # Check if tag enters raw mode by name
+        if ( $tag =~ /^(noexec|pebbledef|sink)$/i ) {
+          $raw = $TRUE;
+        }
 
         # After creating object of suitable type depending on the tag, check
         # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-        if (s/$options_expr//xsmoi) {
+        if (s/$OPTIONS_EXPR//xsmoi) {
 
           # The tag definition ended on same line -- all options specified on one line
           my $options = $1;
+          my $suffix  = defined $3 ? $3 : $EMPTY;
+
+          # Check for raw mode trigger in options
+          if ( $options =~ /--noexec/xsm ) {
+            $raw = $TRUE;
+          }
 
           # Unescape the options
           # $options =~ s/\\([^\\])/$1/g;
@@ -268,7 +310,19 @@ sub view_source {
             s/</\&lt;/gxsm;
             s/>/\&gt;/gxsm;
           }
-          $output .= $options . '&gt;</span>';
+
+          # Apply syntax highlighting to the suffix
+          my $suffix_class = $EMPTY;
+          if    ( $suffix eq '-' )  { $suffix_class = 'chomp'; }
+          elsif ( $suffix eq '/' )  { $suffix_class = 'selfclose'; }
+          elsif ( $suffix eq '-/' ) { $suffix_class = 'chomp-selfclose'; }
+
+          if ($suffix_class) {
+            $output .= sprintf q{%s<span class="suffix %s">%s</span>&gt;</span>}, $options, $suffix_class, $suffix;
+          }
+          else {
+            $output .= $options . '&gt;</span>';
+          }
 
           # And rescan the string for more tags -- Note that $newscan is unchanged
           # from its value of 1, so we don't need to set it here
@@ -289,12 +343,23 @@ sub view_source {
 
         # Check whether we have hit a tag-body-ending tag
         # and if so, end the current object
-        my $tag = $1;
+        my $tag      = $1;
+        my $is_chomp = $2 ? 'chomp' : $EMPTY;
+
+        # Exit raw mode if we hit the closer
+        if ( $raw && $tag =~ /\/(pebbledef|sink|noexec)/xsm ) {
+          $raw = $FALSE;
+        }
 
         my $class = $tag;
         $class =~ s/\W//xsmg;
 
-        $output .= sprintf q{<span class="%s">&lt;%s&gt;</span>}, $class, $tag;
+        if ($is_chomp) {
+          $output .= sprintf q{<span class="tag-close %s">&lt;%s<span class="suffix chomp">-</span>&gt;</span>}, $class, $tag;
+        }
+        else {
+          $output .= sprintf q{<span class="tag-close %s">&lt;%s&gt;</span>}, $class, $tag;
+        }
 
         # And rescan string for more tags
         redo MAIN;

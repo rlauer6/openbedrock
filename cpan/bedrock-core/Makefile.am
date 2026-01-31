@@ -66,6 +66,7 @@ PACKAGE_MODULES = \
     Bedrock/LoadConfig.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
+    Bedrock/LSP/Tag.pm \
     Bedrock/MiniServer/Context.pm \
     Bedrock/Model.pm \
     Bedrock/Model/Serializer/MySQL.pm \
@@ -187,7 +188,8 @@ PACKAGE_MODULES = \
 
 PACKAGE_EXE = \
     bin/bedrock.pl \
-    bin/bedrock
+    bin/bedrock \
+    bin/bedrock-lsp.pl
 
 include $(srcdir)/bedrock-core.mk
 

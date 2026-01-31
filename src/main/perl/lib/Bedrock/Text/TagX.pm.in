@@ -44,7 +44,7 @@ use TagX::TAG::WithBody::Container;
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic
+our $VERSION = '3.7.2'; ## no critic
 
 our %TAGS_ENABLED = (
   q{#} => 'TagX::TAG::NoBody::Comment',
@@ -114,145 +114,232 @@ sub spawn {
   return ( $obj->new_child( $class->new ), $raw // 0 );
 }
 
-# NOTE: logging during parsing is unaffected by --verbose option
-# if you want to see some debugging output you need to set the log level
-# of the TagX category directly in the Log::Log4perl configuration file
-########################################################################
+sub _emit_token {
+  my ( $self, $token ) = @_;
+
+  # Validate token has required fields based on type
+  if ( $token->{type} eq 'TEXT' ) {
+    die "TEXT token missing 'text' field\n" unless exists $token->{text};
+
+    # Add end_line if not present
+    $token->{end_line} //= $token->{line} + ( $token->{text} =~ tr/\n// );
+
+    # Add chomped flag if not present
+    $token->{chomped} //= 0;
+  }
+  elsif ( $token->{type} eq 'OPEN_TAG' ) {
+    die "OPEN_TAG token missing 'name' field\n" unless exists $token->{name};
+
+    # Ensure end_style is present
+    $token->{end_style} //= 'NORMAL';
+
+    # Detect raw mode tags
+    $token->{raw_mode} = ( $token->{name} =~ /^(noexec|pebbledef|sink)$/i ) ? 1 : 0;
+
+    # Check if options contain --noexec
+    if ( exists $token->{options_raw} && $token->{options_raw} =~ /--noexec/ ) {
+      $token->{raw_mode} = 1;
+    }
+  }
+  elsif ( $token->{type} eq 'CLOSE_TAG' ) {
+    die "CLOSE_TAG token missing 'name' field\n" unless exists $token->{name};
+
+    $token->{chomp} //= 0;
+  }
+  elsif ( $token->{type} eq 'RAW_MODE' ) {
+    die "RAW_MODE token missing 'enabled' field\n" unless exists $token->{enabled};
+  }
+
+  my $sink = $self->{token_sink};
+
+  if ( ref($sink) eq 'CODE' ) {
+    $sink->($token);
+    return;
+  }
+
+  # Initialize tokens array if not present
+  $self->{tokens} //= [];
+
+  # Now push the token (we know it's always an array)
+  push @{ $self->{tokens} }, $token;
+
+  return;
+}
+
+# ============================================================================
+# MODIFICATIONS TO parse() METHOD
+# ============================================================================
+
 sub parse {
-########################################################################
   my ($self) = @_;
 
-  my $optstring = $EMPTY;
-
-  my $text = $EMPTY;
-
-  my $line = 0;
-
-  my $file = $self->{'error'}->file;
-
+  my $optstring       = '';
+  my $text            = '';
+  my $text_start_line = 1;
+  my $pending_open    = undef;
+  my $line            = 0;
+  my $file            = $self->{'error'}->file;
   local $_ = undef;
-
-  my $raw = $FALSE;
-
-  my $obj = TagX::TAG::WithBody::Container->new($self);
-
-  my $newscan = $TRUE;
-
-  my $input = $self->{input};
-
+  my $raw          = 0;
+  my $obj          = TagX::TAG::WithBody::Container->new($self);
+  my $newscan      = 1;
+  my $input        = $self->{input};
   my $opentag_expr = $self->{OPENTAG_EXPR};
 
-  ## no critic
-  INPUT:
-  while (<$input>) {
+  # Track whether we chomped the last text
+  my $last_text_chomped = 0;
 
-    # bedrock shell shebang
+  INPUT:
+  ## no critic
+  while (<$input>) {
     next if $line == 0 && /^[#]!/xsm;
 
     $self->{error}->line( ++$line );
+
     MAIN: {
-
-      #
-      # Check whether we are into a new scan or collecting options
-      # for a matched tag
-      #
       if ( !$newscan ) {
-
-        # Collecting options for a matched tag -- Look for tag end which is
-        # an un-escaped '>'
+        # Collecting options for a matched tag
         if (s/$OPTIONS_EXPR//xsmo) {
-
-          # Found an un-escaped '>', which terminates the current tag and its options
-          # $optstring contains the options collected so far
           $optstring .= $1;
+          my $suffix = defined $3 ? $3 : '';
 
-          # chomp if tag ends in -
-          if ( $3 && $3 =~ /\-/xsm ) {
-            s/\n//xsm;
+          # Handle backward compatibility
+          if ( !length $suffix ) {
+            if ( $optstring =~ s/\s*(\/-)\s*\z//xsm ) {
+              die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n";
+            }
+            elsif ( $optstring =~ s/\s*(-\/)\s*\z//xsm ) {
+              $suffix = '-/';
+            }
+            elsif ( $optstring =~ s/\s*(\/)\s*\z//xsm ) {
+              $suffix = '/';
+            }
           }
 
-          # Remove escapes from the option string
+          die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n"
+            if $suffix eq '/-';
+
+          # ENHANCEMENT: Track if we're chomping
+          my $will_chomp = 0;
+          if ( $suffix =~ /^\-/xsm ) {
+            s/\n//xsm;
+            $will_chomp = 1;
+          }
+
+          my $end_style = 'NORMAL';
+          if ( $suffix eq '-' ) {
+            $end_style = 'CHOMP';
+          }
+          elsif ( $suffix eq '/' ) {
+            $end_style = 'SELFCLOSE';
+          }
+          elsif ( $suffix eq '-/' ) {
+            $end_style = 'CHOMP_SELFCLOSE';
+          }
+
+          if ($pending_open) {
+            $pending_open->{options_raw} = $optstring;
+            $pending_open->{suffix}      = $suffix;
+            $pending_open->{end_style}   = $end_style;
+
+            # ENHANCEMENT: Check if this tag enables raw mode
+            if ( $optstring =~ /--noexec/xsm ) {
+              $pending_open->{raw_mode} = 1;
+
+              # Emit RAW_MODE token
+              $self->_emit_token(
+                { type    => 'RAW_MODE',
+                  enabled => 1,
+                  file    => $file,
+                  line    => $line,
+                }
+              );
+            }
+
+            $self->_emit_token($pending_open);
+            $pending_open = undef;
+          }
+
+          # Remove escapes
           $optstring =~ s/\\([^\\])/$1/xsmg;
           $optstring =~ s/\\\\/\\/xsmg;
 
-          # And set the current object options
           $obj = $obj->options($optstring);
 
-          $self->get_logger->trace( 'options string: ', $optstring );
-
           if ( $optstring =~ /--noexec/xsm ) {
-            $raw = $TRUE;
+            $raw = 1;
           }
 
-          # Start a new scan after this
-          $newscan = $TRUE;
-
-          # Handle possible left over stuff after the '>'
+          $newscan = 1;
           redo MAIN;
         }
         else {
-
-          # No terminating '>' in entire line -- start by reading input again
           $optstring .= $_;
           next INPUT;
         }
       }
 
-      # New scan from here -- scan afresh for tags.
-      # if no '<' found in line, skip line
+      # New scan
       if ( !s/^(.*?)<//xsmoi ) {
-
         if (length) {
+          if ( !length $text ) {
+            $text_start_line = $line;
+          }
           $text .= $_;
         }
-
         next INPUT;
       }
 
       if ( length $1 ) {
+        if ( !length $text ) {
+          $text_start_line = $line;
+        }
         $text .= $1;
       }
 
-      # We did find a '<' -- could be we have a possible supported tag next
-      # Check if we have a supported tag
       my $tag = $_;
 
       if ( !$raw && s/$opentag_expr//xsmi ) {
-
-        # Yes we do
-        # The text before the '<' needs to be processed.
+        # Found a tag
         if ( length $text ) {
+          # ENHANCEMENT: Include end_line and chomped flag
+          my $text_end_line = $line;
+          my $text_chomped  = $last_text_chomped;
+
+          $self->_emit_token(
+            { type     => 'TEXT',
+              text     => $text,
+              file     => $file,
+              line     => $text_start_line,
+              end_line => $text_end_line,
+              chomped  => $text_chomped,
+            }
+          );
+
           $obj->text($text);
-          $text = $EMPTY;
+          $text              = '';
+          $last_text_chomped = 0;
         }
 
         my $tag_name = $1;
+        my $tag_def  = $TAGS_ENABLED{$tag_name}
+          or die "unsupported tag ($tag_name)\n";
 
-        my $tag_def = $TAGS_ENABLED{$tag_name}
-          or die "unsupport tag ($tag_name)\n";
+        # ... (tag class resolution code remains the same) ...
 
         my ( $class, $sub ) = choose {
-
-          # 1. RESOLVE ALIAS
-          # If it is a CODE ref, run it to get the real key (String or Array).
           if ( ref($tag_def) eq 'CODE' ) {
             my $target_key = $tag_def->();
             $tag_def = $TAGS_ENABLED{$target_key}
               or die "Alias target '$target_key' not found";
-
-            # Flatten the alias so we don't run this code again
             $TAGS_ENABLED{$tag_name} = $tag_def;
           }
 
-          # 2. INFLATE STRING
-          # Handles standard tags OR aliases that resolved to strings (like exec -> pebble)
           if ( !ref $tag_def ) {
             $tag_def = [ $tag_def, \&spawn, 0 ];
             $TAGS_ENABLED{$tag_name} = $tag_def;
           }
 
-          # 3. JIT LOAD
-          # Check 'Loaded' flag at index 2. If 0/undef, load and set to 1.
           if ( !$tag_def->[2] ) {
             load $tag_def->[0];
             $tag_def->[2] = 1;
@@ -264,70 +351,169 @@ sub parse {
         ( $obj, $raw ) = $sub->( $class, $obj, $raw );
 
         $obj->name($tag_name);
-
         $obj->start_location( $file, $line );
 
-        # After creating object of suitable type depending on the tag, check
-        # if the tag ends on the same line. Tag ending is an un-escaped '>'.
-        if (s/$OPTIONS_EXPR//oixsm) {
+        $pending_open = {
+          type  => 'OPEN_TAG',
+          name  => $tag_name,
+          class => $class,
+          file  => $file,
+          line  => $line,
+        };
 
+        # Check if tag ends on same line
+        if (s/$OPTIONS_EXPR//oixsm) {
           my $options = $1;
-          # chomp if tag ends in -
-          if ( $3 && $3 =~ /\-/xsm ) {
-            s/\n//xsm;
+          my $suffix  = defined $3 ? $3 : '';
+
+          # Handle backward compatibility
+          if ( !length $suffix ) {
+            if ( $options =~ s/\s*(\/-)\s*\z//xsm ) {
+              die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n";
+            }
+            elsif ( $options =~ s/\s*(-\/)\s*\z//xsm ) {
+              $suffix = '-/';
+            }
+            elsif ( $options =~ s/\s*(\/)\s*\z//xsm ) {
+              $suffix = '/';
+            }
           }
 
-          $self->get_logger->trace( 'options string: ', $options );
+          die "Invalid tag ending '/->' (use '-/>' or '/>' instead)\n"
+            if $suffix eq '/-';
+          # ENHANCEMENT: Track chomping
+          # Track if there's a chomped newline (don't emit yet)
+          my $has_chomped_newline = 0;
 
-          if ( $options =~ /--noexec/xsm ) {
-            $raw = $TRUE;
+          if ( $suffix =~ /^\-/xsm ) {
+            # Check if there's a newline to chomp
+            if (/^\n/) {
+              $has_chomped_newline = 1;  # Remember for later
+            }
+            s/\n//xsm;  # Remove it from the input
+            $last_text_chomped = 1;
+          }
+
+          my $end_style = 'NORMAL';
+          if ( $suffix eq '-' ) {
+            $end_style = 'CHOMP';
+          }
+          elsif ( $suffix eq '/' ) {
+            $end_style = 'SELFCLOSE';
+          }
+          elsif ( $suffix eq '-/' ) {
+            $end_style = 'CHOMP_SELFCLOSE';
+          }
+
+          if ($pending_open) {
+            $pending_open->{options_raw} = $options;
+            $pending_open->{suffix}      = $suffix;
+            $pending_open->{end_style}   = $end_style;
+
+            # ENHANCEMENT: Check for raw mode
+            if ( $options =~ /--noexec/xsm ) {
+              $pending_open->{raw_mode} = 1;
+
+              $self->_emit_token(
+                { type    => 'RAW_MODE',
+                  enabled => 1,
+                  file    => $file,
+                  line    => $line,
+                }
+              );
+            }
+
+            # Emit the OPEN_TAG token
+            $self->_emit_token($pending_open);
+            $pending_open = undef;
+          }
+
+          # NOW emit the chomped newline AFTER the tag
+          if ($has_chomped_newline) {
+            $self->_emit_token(
+              { type    => 'TEXT',
+                text    => "\n",
+                file    => $file,
+                line    => $line,
+                chomped => 1,
+              }
+            );
           }
 
           if ( ref($obj) eq 'TagX::TAG::NoBody::Comment' && /$/xsm ) {
-            $_ = $EMPTY;
+            $_ = '';
           }
 
-          # The tag definition ended on same line -- all options specified on
-          # one line
-
-          $options =~ s/\/$//xsm;  # allow /> for nobody tags
-
-          # Unescape the options
           $options =~ s/\\([^\\])/$1/xsmg;
           $options =~ s/\\\\/\\/xsmg;
 
-          # And set the current object options
           $obj = $obj->options($options);
 
-          # And rescan the string for more tags -- Note that $newscan is unchanged
-          # from its value of 1, so we don't need to set it here
+          if ( $options =~ /--noexec/xsm ) {
+            $raw = 1;
+          }
+
           redo MAIN;
         }
         else {
-
-          # Tag definition did not end on one line -- Further input is consumed for
-          # looking for the tag ending
-          $newscan = 0;
-
-          # Start collection of the options string
+          $newscan   = 0;
           $optstring = $_;
         }
-
       }
       elsif (s/$CLOSETAG_EXPR//oixsm) {
-        my $end = lc $1;
+        my $end        = lc $1;
+        my $will_chomp = $2 ? 1 : 0;
+
+        # Track if there's a chomped newline for CLOSE tags
+        my $close_has_chomped_newline = 0;
 
         if ($2) {
+          if (/^\n/) {
+            $close_has_chomped_newline = 1;  # Remember for later
+          }
           s/\n//xsm;
+          $last_text_chomped = 1;
         }
 
         if ($raw) {
-
           if ( $end =~ /\/(pebbledef|sink|noexec)/xsm ) {
+            if ( length $text ) {
+              # ENHANCEMENT: Include end_line and chomped flag
+              my $text_end_line = $line;
+
+              $self->_emit_token(
+                { type     => 'TEXT',
+                  text     => $text,
+                  file     => $file,
+                  line     => $text_start_line,
+                  end_line => $text_end_line,
+                  chomped  => $last_text_chomped,
+                }
+              );
+            }
+
+            $self->_emit_token(
+              { type  => 'CLOSE_TAG',
+                name  => $end,
+                chomp => $will_chomp,
+                file  => $file,
+                line  => $line,
+              }
+            );
+
+            # ENHANCEMENT: Emit RAW_MODE exit token
+            $self->_emit_token(
+              { type    => 'RAW_MODE',
+                enabled => 0,
+                file    => $file,
+                line    => $line,
+              }
+            );
+
             $obj->text($text);
             $obj  = $obj->end_child;
-            $raw  = $FALSE;
-            $text = $EMPTY;
+            $raw  = 0;
+            $text = '';
           }
           else {
             $text .= '<' . $1 . '>';
@@ -338,6 +524,10 @@ sub parse {
           die "Illegal tag-end encountered.\n"
             if !$obj->parent;
 
+          # Save the original tag name before normalization
+          my $original_end = $end;
+
+          # Normalize unless to if for internal processing
           if ( $end eq '/unless' ) {
             $end = '/if';
           }
@@ -346,26 +536,53 @@ sub parse {
             $self->improper_end( $obj, $end );
           }
 
-          # A tag has ended. The text before the '<' needs to be processed.
+          # EMIT TEXT FIRST (if any)
           if ( length $text ) {
+            my $text_end_line = $line;
+
+            $self->_emit_token(
+              { type     => 'TEXT',
+                text     => $text,
+                file     => $file,
+                line     => $text_start_line,
+                end_line => $text_end_line,
+                chomped  => $last_text_chomped,
+              }
+            );
+
             $obj->text($text);
-            $text = $EMPTY;
+            $text              = '';
+            $last_text_chomped = 0;
           }
 
-          # Check whether we have hit a tag-body-ending tag
-          # and if so, end the current object
-          $obj = $obj->end_child;
+          # THEN EMIT CLOSE_TAG with ORIGINAL name
+          $self->_emit_token(
+            { type  => 'CLOSE_TAG',
+              name  => $original_end,  # Use original, not normalized
+              chomp => $will_chomp,
+              file  => $file,
+              line  => $line,
+            }
+          );
 
-          # And rescan string for more tags
+          # Emit chomped newline AFTER close tag (if any)
+          if ($close_has_chomped_newline) {
+            $self->_emit_token(
+              { type    => 'TEXT',
+                text    => "\n",
+                file    => $file,
+                line    => $line,
+                chomped => 1,
+              }
+            );
+          }
+
+          $obj = $obj->end_child;
           redo MAIN;
         }
       }
       else {
-
-        # Unsupported tag hit -- output the '<' since we don't consume it
         $text .= q{<};
-
-        # And rescan for more tags
         redo MAIN;
       }
     }
@@ -377,11 +594,135 @@ sub parse {
   }
 
   if ( length $text ) {
+    # ENHANCEMENT: Include end_line and chomped flag
+    my $text_end_line = $line;
+
+    $self->_emit_token(
+      { type     => 'TEXT',
+        text     => $text,
+        file     => $file,
+        line     => $text_start_line,
+        end_line => $text_end_line,
+        chomped  => $last_text_chomped,
+      }
+    );
+
     $obj->text($text);
-    $text = $EMPTY;
+    $text = '';
   }
 
   return $obj->finalize;
+}
+
+# ============================================================================
+# TOKEN REPLAY FUNCTIONALITY
+# ============================================================================
+########################################################################
+sub replay_tokens {
+########################################################################
+  my ( $self, $tokens ) = @_;
+
+  my $output   = '';
+  my $raw_mode = 0;
+
+  foreach my $token (@$tokens) {
+    my $type = $token->{type};
+
+    if ( $type eq 'TEXT' ) {
+      $output .= $token->{text};
+    }
+    elsif ( $type eq 'OPEN_TAG' ) {
+      $output .= '<' . $token->{name};
+
+      # FIX 1: Don't add space if options start with ':'
+      # This handles <null:foo> and <var:bar> syntax
+      if ( exists $token->{options_raw} && length $token->{options_raw} ) {
+        my $opts = $token->{options_raw};
+
+        # Only add space if options don't start with ':'
+        if ( $opts !~ /^:/ ) {
+          $output .= ' ';
+        }
+
+        $output .= $opts;
+      }
+
+      # FIX 2: Reconstruct the suffix correctly
+      my $suffix = $token->{suffix} // '';
+
+      if ( $suffix eq '-' ) {
+        $output .= '->';
+      }
+      elsif ( $suffix eq '/' ) {
+        $output .= '/>';
+      }
+      elsif ( $suffix eq '-/' ) {
+        $output .= '-/>';
+      }
+      else {
+        $output .= '>';
+      }
+    }
+    elsif ( $type eq 'CLOSE_TAG' ) {
+      # FIX 3: Handle the '//' prefix correctly - it should just be '/'
+      my $name = $token->{name};
+      $name =~ s/^\/+/\//;  # Remove extra leading slashes
+
+      $output .= '<' . $name;
+
+      if ( $token->{chomp} ) {
+        $output .= '->';
+      }
+      else {
+        $output .= '>';
+      }
+    }
+    elsif ( $type eq 'RAW_MODE' ) {
+      # This is informational only - affects how we interpret subsequent tokens
+      $raw_mode = $token->{enabled};
+    }
+  }
+
+  return $output;
+}
+
+########################################################################
+sub get_tokens {
+########################################################################
+  my ($self) = @_;
+
+  my $tokens = $self->{tokens};
+
+  if ( ref($tokens) ne 'ARRAY' ) {
+    $tokens = [];
+    $self->{tokens} = $tokens;
+  }
+
+  return $tokens;
+}
+
+########################################################################
+sub clear_tokens {
+########################################################################
+  my ($self) = @_;
+
+  my $tokens = $self->{tokens};
+
+  if ( ref($tokens) eq 'ARRAY' ) {
+    @{$tokens} = ();
+  }
+
+  return;
+}
+
+########################################################################
+sub set_token_sink {
+########################################################################
+  my ( $self, $sink ) = @_;
+
+  $self->{token_sink} = $sink;
+
+  return;
 }
 
 ########################################################################
