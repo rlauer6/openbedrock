@@ -22,6 +22,7 @@ use Carp;
 use Cwd;
 use English qw(-no_match_vars);
 use IO::Scalar;
+use JSON::Schema::Validate;
 use List::Util qw(pairs);
 use Log::Log4perl;
 use POSIX qw(strftime);
@@ -666,7 +667,8 @@ END_OF_HTML
 ########################################################################
 package Bedrock::MiniServer::CLI; ## no critic
 ########################################################################
-use Bedrock qw(choose slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
+use Bedrock qw(choose slurp_json slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
+use Bedrock::Constants qw(%LOG4PERL_LOG_LEVELS);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
@@ -684,15 +686,39 @@ sub main {
 ########################################################################
   my ( $class, $defaults ) = @_;
 
+  my @option_specs = qw(
+    config|c=s
+    help|h
+    log-level|l=s
+    mount-point|m=s
+    port|p=s
+    service|s=s
+    strict!
+  );
+
+  my @extra_options = qw(
+    aliases
+    dist_dir
+    mime_types
+    server_config
+  );
+
+  my $default_options = {
+    mime_types => $defaults->{mime_types},
+    aliases    => $defaults->{aliases},
+    strict     => $TRUE,
+  };
+
+  my %commands = (
+    default => \&cmd_start_server,
+    start   => \&cmd_start_server
+  );
+
   my $cli = Bedrock::MiniServer::CLI->new(
-    commands        => { default => \&cmd_start_server },
-    option_specs    => [qw(help|h log-level|l=s mount-point|m=s port|p=s service|s=s config|c=s)],
-    default_options => {
-      mime_types => $defaults->{mime_types},
-      aliases    => $defaults->{aliases},
-      port       => '8080',
-    },
-    extra_options => [qw(dist_dir server_config mime_types aliases)],
+    option_specs    => \@option_specs,
+    extra_options   => \@extra_options,
+    default_options => $default_options,
+    commands        => \%commands,
   );
 
   return $cli->run();
@@ -705,6 +731,11 @@ sub cmd_start_server {
 
   my $server_config = $self->get_server_config;
 
+  # Set log level EARLY for startup messages
+  my $log_level = $server_config->{log_level} || 'info';
+  my $logger    = Log::Log4perl->get_logger('Bedrock::MiniServer');
+  $logger->level( $LOG4PERL_LOG_LEVELS{$log_level} // $LOG4PERL_LOG_LEVELS{info} );
+
   # --- initialize runtime configuration
   my %runtime_config = (
     global_config    => $server_config,
@@ -714,6 +745,7 @@ sub cmd_start_server {
     service_registry => {},
     routes           => {},
     env              => {},
+    log_level        => $server_config->{log_level} || 'info',
   );
 
   $server_config->{env} //= {};
@@ -792,8 +824,7 @@ sub cmd_start_server {
     }
   }
 
-  my $port   = $self->get_port || $server_config->{port};
-  my $logger = Log::Log4perl->get_logger('Bedrock::MiniServer');
+  my $port = $self->get_port // $server_config->{port} // 8080;
 
   $logger->notice( q{=} x 60 );
   $logger->notice('BEDROCK MINISERVER STARTUP');
@@ -876,7 +907,20 @@ sub init {
     }
   }
 
-  $config_file //= sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
+  $self->_init_server_config($config_file);
+
+  return;
+}
+
+########################################################################
+sub _init_server_config {
+########################################################################
+  my ( $self, $config_file ) = @_;
+
+  if ( !$config_file ) {
+    $config_file = sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
+    $self->get_logger->warn( sprintf 'WARNING: attempting to use default miniserver configuration: %s', $config_file );
+  }
 
   croak "Configuration file not found: $config_file"
     if !-r $config_file;
@@ -896,12 +940,40 @@ sub init {
 
   close $fh;
 
+  # validate the configuration against our schema
+  $self->validate_config($conf);
+
   $conf->{_source} = $config_file;
 
   $self->set_server_config($conf);
 
-  return;
+  return $conf;
 }
+
+########################################################################
+sub validate_config {
+########################################################################
+  my ( $self, $conf ) = @_;
+
+  # Path to the schema file defined above
+  my $schema_path = "$BEDROCK_DIST_DIR/config/miniserver-schema.json";
+
+  return $TRUE
+    if !-e $schema_path || !$self->get_strict;
+
+  my $schema = slurp_json($schema_path);
+
+  my $v  = JSON::Schema::Validate->new($schema);
+  my $ok = $v->validate($conf);
+
+  if ( !$ok ) {
+    my $err = $v->error;
+    croak sprintf "ERROR: CONFIGURATION ERROR at %s: %s\n", $err->{path}, $err->{message};
+  }
+
+  return $TRUE;
+}
+
 ########################################################################
 package main;
 ########################################################################

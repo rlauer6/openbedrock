@@ -1,9 +1,12 @@
 #!/usr/bin/env perl
+package Bedrock::Model::CLI;
+########################################################################
+# Create a Bedrock::Model class from a MySQL table
+########################################################################
 
-#
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
-#    Copyright (C) 2024, TBC Developent Group, LLC.
+#    Copyright (C) 2026, TBC Developent Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -24,17 +27,220 @@
 use strict;
 use warnings;
 
-# create a model class from a MySQL table
-
-use DBI;
+use Bedrock qw(choose slurp_file);
+use Bedrock::LoadConfig qw(load_config);
 use Bedrock::Model;
 use Bedrock::Model::Maker;
 use Bedrock::Model::Migration;
 use Bedrock::Template;
-use Data::Dumper;
-use Getopt::Long;
-use Bedrock::Constants qw(:booleans);
 use BLM::DBHandler qw(easy_connect);
+
+use Carp;
+use CLI::Simple::Constants qw(:booleans :chars);
+use Cwd;
+use Data::Dumper;
+use DBI;
+use English qw(-no_match_vars);
+use File::HomeDir;
+use File::ShareDir qw(dist_dir);
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+use parent qw(CLI::Simple);
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  $self->set_dist_dir( dist_dir('Bedrock') );
+
+  my $dbi = easy_connect(
+    user     => $self->get_user,
+    password => $self->get_password,
+    database => $self->get_database,
+    host     => $self->get_host,
+  );
+
+  my $config_file = choose {
+    return $self->get_config_file
+      if $self->get_config_file;
+
+    my $path = File::HomeDir->my_home;
+    $path //= cwd;
+
+    return "$path/.bedrock_modelrc"
+      if -e "$path/.bedrock_modelrc";
+
+    return '.bedrock_modelrc'
+      if -e '.bedrock_modelrc';
+
+    my $default_config = sprintf '%s/config/bedrock_modelrc', $self->get_dist_dir;
+    {
+      local $RS = undef;
+
+      open my $fh, '>', '.bedrock_modelrc'
+        or croak "ERROR: could not create .bedrock_modelrc\n";
+
+      print {$fh} scalar slurp_file($default_config);
+
+      close $fh;
+    }
+
+    print {*STDERR} "A .bedrock_modelrc file has been created for you in the current directory.\n";
+    return '.bedrock_modelrc';
+  };
+
+  croak "ERROR: no such file $config_file\n"
+    if !-e $config_file && $self->get_config_file;
+
+  my $config = eval { load_config($config_file); };
+
+  croak "ERROR: unable to load config file ($config_file). File must be .json, .yml or .xml\n$EVAL_ERROR"
+    if !$config || $EVAL_ERROR;
+
+  $self->set_config($config);
+
+  $self->set_dbi($dbi);
+
+  return;
+}
+
+########################################################################
+sub cmd_make_model {
+########################################################################
+  my ($self) = @_;
+
+  my ($table) = $self->get_args;
+  $table //= $self->get_table;
+
+  my $command = $self->command;
+
+  my $class_prefix = $self->get_prefix // $self->get_config->{prefix};
+
+  croak "ERROR: no table specifed\n"
+    if !$table;
+
+  # create a model definition from a table
+  my $model_maker = Bedrock::Model::Maker->new(
+    { dbi          => $self->get_dbi,
+      table        => $table,
+      package_name => ucfirst $table,
+    }
+  );
+
+  my @model_def = $model_maker->create_model_def();
+
+  my $model = Bedrock::Model->new(
+    dbi   => $self->get_dbi,
+    table => $table,
+    model => \@model_def,
+  );
+
+  if ( $command =~ /dump/xsm ) {
+    print $model->as_string;
+    return $SUCCESS;
+  }
+
+  my $sep = $self->get_camel_case ? $EMPTY : $UNDERSCORE;
+
+  my $class_name = sprintf '%s::%s', $class_prefix, join $sep, map { ucfirst $_ } split /_/xsm, $table;
+  my $timestamp  = localtime;
+
+  my $template = $self->get_config->{template};
+
+  my $bedrock_template = Bedrock::Template->new(
+    $template,
+    class_name   => $class_name,
+    timestamp    => $timestamp,
+    model        => $model->as_string,
+    table        => $table,
+    version      => $VERSION,
+    program_name => $PROGRAM_NAME,
+    author       => $self->get_config->{author} // 'Anonymouse <anonymouse@example.org>',
+  );
+
+  my $output = $bedrock_template->parse();
+
+  require Perl::Tidy;
+
+  my $class = $EMPTY;
+
+  Perl::Tidy::perltidy( source => \$output, destination => \$class );
+
+  print {*STDOUT} $class;
+
+  return;
+}
+
+########################################################################
+sub cmd_dump_model {
+########################################################################
+  my ($self) = @_;
+
+  my $dbi = $self->get_dbi;
+
+  my ($table) = $self->get_args;
+  $table //= $self->get_table;
+
+  my $model = Bedrock::Model->new(
+    dbi   => $dbi,
+    table => $table,
+  )->fetch_model;
+
+  $model = Bedrock::Model->new(
+    dbi   => $dbi,
+    table => $table,
+    model => $model,
+  );
+
+  print {*STDOUT} $model->as_string;
+
+  return $SUCCESS;
+}
+
+########################################################################
+sub main {
+########################################################################
+
+  my %commands = ( make => \&cmd_make_model, );
+
+  my @option_specs = qw(
+    camel-case|C
+    config-file|c=s
+    database|d=s
+    dryrun|D
+    help|h
+    host|H=s
+    password|p=s
+    prefix|P=s
+    table|t=s
+    user|u=s
+  );
+
+  my $maker = Bedrock::Model::CLI->new(
+    commands      => \%commands,
+    option_specs  => \@option_specs,
+    extra_options => [qw(dbi dist_dir config)],
+    alias         => {
+      commands => {
+        'make-model' => 'make',
+        'dump-model' => 'make',
+        'dump'       => 'make',
+      }
+    },
+  );
+
+  $maker->run();
+
+  $maker->get_dbi->disconnect;
+
+  return $SUCCESS;
+}
+
+exit main();
+
+__END__
 
 =pod
 
@@ -42,212 +248,61 @@ use BLM::DBHandler qw(easy_connect);
 
 =head1 SYNOPSIS
 
+ bedrock-model.pl -t table-name -u user -p password -d database make-model
+
 =head1 DESCRIPTION
 
-=head1 NOTES
+Utility for creating a Bedrock::Model::Handler class from a MySQL
+table.
+
+=head1 USAGE
+
+=head2 Options
+
+ -h, --host        MySQL host, default: localhost
+ -u, --user        MySQL user
+ -p, --password    MySQL password (optional)
+ -D, --dryrun      do not execute create or migrations, only report
+ -d, --database    MySQL database name
+ -P, --prefix      class prefix, default: Bedrock::Model
+ -t, --table       table name
+
+=head2 Commands
+
+=over 5
+
+=item * help
+
+=item * make-model
+
+=item * dump table-name
+
+=item * migrate
+
+=back
+
+=head2 Notes
+
+=over 5
+
+=item 1. Tidy up your model!
+
+   bedrock-model -u root -d some_database -t contacts dump | perltidy
+
+=item 2. Instead of using options for database credentials, environment
+variables are recognized as well.
+
+ DBI_USER
+ DBI_PASS
+ DBI_DSN
+ DBI_DB
+
+ DBI_DSN=dbi:mysql:foo:localhost DBI_USER=root DBI_PASS="" bedrock-model dump foo
+
+=back
 
 =head1 AUTHOR
 
 Rob Lauer - <bigfoot@cpan.org>k
 
 =cut
-
-sub help {
-  print <<'END_OF_HELP';
-bedrock-model options command
-
-Options
--------
--h, --host        MySQL host, default: localhost
--u, --user        MySQL user
--p, --password    MySQL password (optional)
--D, --dryrun      do not execute create or migrations, only report
--d, --database    MySQL database name
--P, --prefix      class prefix, default: Bedrock::Model
--t, --table       table name
-
-Environment Variables
----------------------
-Instead of using options for database credentials, environment
-variables are recognized as well.
-
-DBI_USER
-DBI_PASS
-DBI_DSN
-DBI_DB
-
-DBI_DSN=dbi:mysql:foo:localhost DBI_USER=root DBI_PASS="" bedrock-model dump foo
-
-Commands
---------
-help
-make-model
-dump table-name
-migrate
-
-Hints
------
-1. tidy up your model...
-
-   bedrock-model -u root -d some_database -t contacts dump | perltidy
-END_OF_HELP
-
-  return;
-
-}
-
-# +---------------------------+
-# | MAIN PROGRAM STARTS HERE |
-# +---------------------------+
-
-my %options;
-
-my @option_specs = qw(
-  host=s
-  user=s
-  password=s
-  dryrun|D
-  table|t=s
-  database|d=s
-  prefix|P=s
-);
-
-GetOptions( \%options, @option_specs );
-
-my $command = shift;
-
-if ( !$command ) {
-  help();
-  exit;
-}
-
-my $database = $options{database};
-my $host     = $options{host};
-my $user     = $options{user};
-my $pass     = $options{password};
-my $dryrun   = exists $options{'dryrun'} ? $TRUE : $FALSE;
-
-my $dbi = easy_connect(
-  user     => $user,
-  password => $pass,
-  database => $database,
-  host     => $host
-);
-
-foreach ("$command") {
-  /help/xsm && do {
-    help();
-
-    last;
-  };
-
-  /(dump|make\-model)/xsm && do {
-    my $table = shift;
-    $table //= $options{table};
-
-    my $class_prefix = $options{prefix} || 'Bedrock::Model';
-
-    die "no table specifed for dump command\n"
-      if !$table;
-
-    my $model = Bedrock::Model->new(
-      dbi   => $dbi,
-      table => $table,
-    )->fetch_model;
-
-    $model = Bedrock::Model->new(
-      dbi   => $dbi,
-      table => $table,
-      model => $model,
-    );
-
-    #    my $model_maker = Bedrock::Model::Maker->new(
-    #      { dbi          => $dbi,
-    #        table        => $table,
-    #        package_name => ucfirst $table,
-    #        tidy         => $TRUE,
-    #      }
-    #    );
-    #
-    #    my $model = [ $model_maker->create_model_def() ];
-    #    print {*STDOUT} Dumper( [ model => $model ] );
-    #    print {*STDOUT} $model_maker->as_string();
-    #    exit;
-
-    if ( $command eq 'dump' ) {
-      print $model->as_string;
-    }
-    else {
-      my $class_name = sprintf '%s::%s', $class_prefix, ucfirst $table;
-      my $timestamp  = localtime;
-
-      my $template = <<'END_OF_TEXT';
-package <var $class_name>;
-
-# -*- AUTOGENERATED: <var $timestamp> -*-
-
-use strict;
-use warnings;
-
-use parent qw(BLM::IndexedTableHandler);
-
-use Role::Tiny::With;
-with 'Bedrock::Model::Role';
-
-<var $model>
-
-=pod
-
-=head1 NAME
-
-<var $class_name> - ORM to support the $table table
-
-=head1 SYNOPSIS
-
- my $table = <var $class_name>->new($dbi);
-
-=head1 DESCRIPTION
-
-ORM to support the $table table.
-
-=head1 METHODS AND SUBROUTINES
-
-=cut
-
-1;
-END_OF_TEXT
-
-      my $bedrock_template = Bedrock::Template->new(
-        $template,
-        class_name => $class_name,
-        timestamp  => $timestamp,
-        model      => $model->as_string,
-        table      => $table,
-      );
-
-      my $output = $bedrock_template->parse();
-      require Perl::Tidy;
-
-      my $class = q{};
-
-      Perl::Tidy::perltidy( source => \$output, destination => \$class );
-
-      print {*STDOUT} $class;
-
-    }
-
-    last;
-  };
-
-  /create/xsm && do {
-    last;
-  };
-
-  /migrate/xsm && do {
-    last;
-  };
-}
-
-$dbi->disconnect;
-
-exit;

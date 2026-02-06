@@ -24,7 +24,8 @@ $(GAPACHE_ENV_FILES): % : %.in
 
 EXTRA_FILES = \
     bedrock.users \
-    site-config.inc
+    site-config.inc \
+    miniserver-schema.json
 
 ROC_FILES= \
     bedrock.conf.roc \
