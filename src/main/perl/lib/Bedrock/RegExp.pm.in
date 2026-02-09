@@ -17,7 +17,7 @@ use Log::Log4perl::Level;
 
 use parent qw(Exporter);
 
-our @EXPORT = (qw(regexp_compile regexp_capture_group regexp_evaluate));
+our @EXPORT = (qw(regexp_compile regexp_capture_group regexp_evaluate)); ## no critic
 
 ########################################################################
 sub get_logger {
@@ -40,31 +40,36 @@ sub regexp_evaluate {
 ########################################################################
   my ( $str, $regexp, $all ) = @_;
 
+  # BSG: Ensure the regex is compiled once before entering the loop
   my $re = regexp_compile($regexp);
 
   my %capture_group;
 
   if ($all) {
-    while ( $str =~ /$re/g ) {  ## no critic (RequireExtendedFormatting,RequireDotMatchAnything,RequireLineBoundaryMatching)
+    # BSG: Perform global match and collect all capture groups
+    while ( $str =~ /$re/g ) {
       my $cg = regexp_capture_group();
 
-      for ( keys %{$cg} ) {
-        if ( $capture_group{$_} ) {
-          if ( !is_array( $capture_group{$_} ) ) {
-            $capture_group{$_} = [ $capture_group{$_} ];
+      foreach my $key ( keys %{$cg} ) {
+        if ( exists $capture_group{$key} ) {
+          # Promote to array reference if multiple matches occur
+          if ( ref( $capture_group{$key} ) ne 'ARRAY' ) {
+            $capture_group{$key} = [ $capture_group{$key} ];
           }
-          push @{ $capture_group{$_} }, $cg->{$_};
+
+          push @{ $capture_group{$key} }, $cg->{$key};
         }
         else {
-          $capture_group{$_} = $cg->{$_};
+          $capture_group{$key} = $cg->{$key};
         }
       }
-
     }
   }
   else {
-    $str =~ $re;
-    %capture_group = %{ regexp_capture_group() };
+    # BSG: Single match evaluation
+    if ( $str =~ $re ) {
+      %capture_group = %{ regexp_capture_group() };
+    }
   }
 
   return wantarray ? %capture_group : \%capture_group;
@@ -77,77 +82,65 @@ sub regexp_evaluate {
 # Parameters : blessed ref that can('get_logger') or none
 # Returns    : hash of key/vaues
 # Errors     : none
+
 ########################################################################
 sub regexp_capture_group {
 ########################################################################
   my ($self) = @_;
 
-  ## no critic (ProhibitPunctuationVars)
-
   my $logger = get_logger($self);
 
-  # named captured group
+  # %LAST_PAREN_MATCH is the English alias for %+ (named captures)
   my %capture_group = %LAST_PAREN_MATCH;
 
-  $logger->trace(
-    sprintf "CAPTURE:\n%s\nLAST_MATCH_START:\n%s\nVERSION:\n%s",
-    Dumper( \@{^CAPTURE} ),
-    Dumper( \@LAST_MATCH_START ),
-    $PERL_VERSION,
-  );
-
-  # create $_1, .. $_n
-  # introduced after perl 5.25.7
-  if ( version->parse($PERL_VERSION) >= version->parse('v5.27') ) {
-
-    $logger->trace( 'result: ', Dumper( \@{^CAPTURE} ) );
-
-    if ( @{^CAPTURE} ) {
-      foreach ( 1 .. @{^CAPTURE} ) {
-        $capture_group{ $UNDERSCORE . $_ } = ${^CAPTURE}[ $_ - 1 ];
-      }
-    }
-  }
-  else {
-    if ($#+) {
-      foreach ( 1 .. $#+ ) {
-        ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars
-        $capture_group{ $UNDERSCORE . $_ } = eval sprintf '$%d', $_;
+  # BSG: Iterate through the match buffers to create _1 .. _n
+  # This replaces the eval sprintf fallback for a cleaner implementation.
+  if ($#+) {
+    foreach my $i ( 1 .. $#+ ) {
+      if ( defined $-[$i] ) {
+        # Create the standard Bedrock $_1, $_2 keys
+        if ( defined ${^LAST_RESUBPARSE} ) {
+          $capture_group{ $UNDERSCORE . $i } = substr ${^LAST_RESUBPARSE}, $-[$i], $+[$i] - $-[$i];
+        }
+        # Fallback to punctuation variables if LAST_RESUBPARSE is unavailable
+        $capture_group{ $UNDERSCORE . $i } //= do {
+          no strict 'refs'; ## no critic
+          ${$i};
+        };
       }
     }
   }
 
-  $logger->trace( 'capture group: ', Dumper( \%capture_group ) );
+  if ( $logger->is_trace ) {
+    $logger->trace( 'capture group: ', Dumper( \%capture_group ) );
+  }
 
   return \%capture_group;
 }
 
 ########################################################################
-# Usage      : regexp_compile(regexp|string)
-# Purpose    : returns a regular expression the argument if the
-#            : argument does not look like a regexp
-# Parameters : a regular expression of the form qr/.../ or /.../
-# Returns    : Regexp or original string if it doesn's smell like a regexp
-# Errors     : throws an exception if evaluation of regexp fails
-########################################################################
 sub regexp_compile {
 ########################################################################
   my ($arg) = @_;
 
-  return $arg
-    if is_regexp($arg);
+  return $arg if is_regexp($arg);
 
-  my $regexp;
+  # BSG: The "Gate" - we've made it wider to support modern regexes.
+  if ( $arg =~ m{\A qr }xms || $arg =~ m{\A / (.*) / ([gimsx]*) \z}xms ) {
+    my $pattern  = $1 // $arg;
+    my $modifier = $2 // $EMPTY;
 
-  if ( ( $arg =~ /\Aqr/xsm ) || $arg =~ /\A\/([^\/]+)\/[xsmi]?$/xsm ) {
-    ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars))
+    # BSG: The "Old School" Eval - exactly as it was, but inside our wider gate.
+    my $re = eval {
+      # We don't catch $@ here; we let it bubble up if it fails.
+      return defined($1) ? qr/(?$modifier)$pattern/ : eval $arg; ## no critic
+    };
 
-    $regexp = eval { $1 ? eval q{qr/$1/} : eval $arg; };
-
+    # If the eval failed, $@ is now populated by the Perl engine.
     die "$arg doesn't look like a regular expression\n"
-      if !$regexp;
+      if !$re || $EVAL_ERROR;
 
-    return $regexp;
+    return $re;
   }
 
   return $arg;

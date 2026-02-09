@@ -86,9 +86,9 @@ subtest 'length' => sub {
 subtest 'tr' => sub {
 ########################################################################
 
-  my $str = $scalar->tr( 'xyz', 'abc' );
+  my $str = $scalar->translate( 'xyz', 'abc' );
 
-  ok( $str eq 'abcabc', 'tr/xyz/abc' )
+  ok( $str eq 'abcabc', 'tr/xyz/abc/' )
     or diag( Dumper( [ $str, ${$scalar} ] ) );
 
   ok( ${$scalar} eq 'xyzabc', 'original not altered' )

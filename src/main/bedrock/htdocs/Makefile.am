@@ -16,4 +16,5 @@ dist_htdocs_DATA = \
     notworking.html \
     not-found.html \
     unit_test.rock \
+    server-status.roc \
     $(REGISTER)

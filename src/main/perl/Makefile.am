@@ -30,7 +30,9 @@ BEDROCK_TESTS = \
     t/18-hash.yml \
     t/19-pebble.yml \
     t/20-benchmark.yml \
-    t/22-include.yml
+    t/22-include.yml \
+    t/27-replace.yml \
+    t/28-matches.yml
 
 BEDROCK_CACHE_TESTS = \
     t/24-cache.yml \

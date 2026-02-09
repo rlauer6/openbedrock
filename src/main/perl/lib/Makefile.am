@@ -283,9 +283,10 @@ perl5bedrockrolelib_DATA = \
     Bedrock/Role/DocFinder.pm
 
 perl5bedrockservicelib_DATA = \
+    Bedrock/Service/Autocomplete.pm \
     Bedrock/Service/CLI.pm \
     Bedrock/Service/Docs.pm \
-    Bedrock/Service/Autocomplete.pm
+    Bedrock/Service/ServerStatus.pm
 
 perl5bedrockserializerlib_DATA = \
     Bedrock/Serializer/CSV.pm         \

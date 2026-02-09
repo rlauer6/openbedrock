@@ -1,7 +1,29 @@
 #!/usr/bin/env perl
+#-*- mode: cperl-mode; -*-
+
 ########################################################################
-# ...a lightweight HTTP server harness for Bedrock services.
+# A lightweight HTTP server that supports Bedrock services, HTML and
+# Bedrock documents
 ########################################################################
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
 
 ########################################################################
 package Bedrock::MiniServer; ## no critic
@@ -16,6 +38,7 @@ use Bedrock::Constants qw(:chars %LOG4PERL_LOG_LEVELS :booleans :http);
 use Bedrock::BedrockConfig;
 use Bedrock::Error qw(handle_error resolve_error_page);
 use Bedrock::MiniServer::Context;
+use Bedrock::Router;
 use Benchmark;
 use Data::Dumper;
 use Carp;
@@ -33,6 +56,8 @@ use YAML::Tiny;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
+
+our $version = '@PACKAGE_VERSION@';
 
 use parent qw(HTTP::Server::Simple::CGI);
 
@@ -89,6 +114,33 @@ sub handle_request {
     return;
   }
 
+  my ( $template, $route_params ) = $self->_resolve_template_route($cgi);
+
+  if ($template) {
+    # Resolve against PEBBLE_DIR like Apache::Bedrock
+    my $pebble_dir = $self->bedrock_server_config->{PEBBLE_DIR} // $ENV{SERVER_ROOT} // Cwd::getcwd();
+
+    my $fs_path = "$pebble_dir/$template";
+
+    $logger->debug( sprintf 'Route matched! Checking filesystem for: [%s]', $fs_path );
+    $logger->debug( sprintf 'Current Working Directory: %s',                Cwd::getcwd() );
+
+    if ( -r $fs_path ) {
+      $logger->debug('File found and readable. Invoking _serve_template.');
+      $self->_serve_template( $cgi, $fs_path, $route_params );
+
+      return $self->_log_complete(
+        path         => $cgi->path_info,
+        request_time => benchmark($t0)->[0],
+        cgi          => $cgi,
+        logger       => $logger
+      );
+    }
+    else {
+      $logger->error( sprintf 'ROUTING FAILURE: Match found (%s) but file not readable at [%s]', $template, $fs_path );
+    }
+  }
+
   # see if the request is handled by a service
   my ( $mount, $service ) = $self->_is_service($cgi);
 
@@ -105,6 +157,42 @@ sub handle_request {
     logger       => $logger,
   );
 
+  return;
+}
+
+########################################################################
+sub _resolve_template_route {
+########################################################################
+  my ( $self, $cgi ) = @_;
+  my $logger = Log::Log4perl->get_logger( ref $self );
+
+  require Bedrock::Router;
+  my $routes_config = $self->bedrock_server_config->{routes} || {};
+
+  foreach my $mount ( keys %{$routes_config} ) {
+    next if index( $cgi->path_info, $mount ) != 0;
+
+    my $rel_path = substr $cgi->path_info, length $mount;
+    $rel_path = "/$rel_path" if $rel_path !~ m{^/}xsm;
+
+    # DIAGNOSTIC: Check structure before passing to Router
+    my $rules = $routes_config->{$mount};
+
+    # If rules is a HASH, we must convert it to an ARRAY for Bedrock::Router
+    if ( ref($rules) eq 'HASH' ) {
+      $logger->debug("Converting HASH routes to ARRAY for mount: $mount");
+      $rules = [ map { { pattern => $_, template => $rules->{$_} } } keys %{$rules} ];
+    }
+
+    $logger->debug("Attempting route match: Mount[$mount] Path[$rel_path]");
+
+    my $router = Bedrock::Router->new( { routes => $rules } );
+    if ( my $match = $router->match($rel_path) ) {
+      $logger->info("Route Match Found! Template: $match->{template}");
+      return ( $match->{template}, $match->{params} );
+    }
+  }
+  $logger->debug( "No route matched for: " . $cgi->path_info );
   return;
 }
 
@@ -327,9 +415,23 @@ sub _sort_by_longest {
 }
 
 ########################################################################
+sub _serve_template {
+########################################################################
+  my ( $self, $cgi, $fs_path, $route_params ) = @_;
+
+  # This simply re-uses the logic from _serve_static but bypasses
+  # the alias/filesystem existence checks because we've already
+  # resolved the path.
+
+  # We call _serve_static but pass the full file path as the local_base
+  # to force it to treat the file as the target.
+  return $self->_serve_static( $cgi, $cgi->path_info, $fs_path, $route_params );
+}
+
+########################################################################
 sub _serve_static {
 ########################################################################
-  my ( $self, $cgi, $alias_url, $local_base ) = @_;
+  my ( $self, $cgi, $alias_url, $local_base, $route_params ) = @_;
 
   my $logger = Log::Log4perl->get_logger( ref $self );
 
@@ -354,14 +456,17 @@ sub _serve_static {
     return $FALSE;
   }
 
-  my $fs_path = $local_base . $rel_file;
+  # Inside _serve_static
+  my $fs_path = $local_base;
+  if ( length $rel_file && $rel_file ne $SLASH ) {
+    $fs_path .= $rel_file;
+  }
 
-  # 3. The Phase Gate (The Critical Fix)
-  # If the file is missing, unreadable, OR IS A DIRECTORY, we decline.
-  # We do NOT print a 404 here. We let the request fall through to the
-  # Service Dispatcher.
-  return $FALSE
-    if !-e $fs_path || !-r $fs_path || -d $fs_path;
+  # Add this log to catch the 404 source
+  if ( !-e $fs_path || !-r $fs_path ) {
+    $logger->error("File system check failed for: $fs_path");
+    return $FALSE;
+  }
 
   # --- If we get here, we are definitely serving this file ---
   my ($ext) = $fs_path =~ /[.]([^.]+)$/xsm;
@@ -390,16 +495,17 @@ sub _serve_static {
     $tagx_config->{$_} = $global_config->{$_};
   }
 
-  # This matches the logic in Bedrock::Service::init_request_dependent_objects
   if ( $global_config->{overrides} && is_hash( $global_config->{overrides} ) ) {
-    my $overrides = $global_config->{overrides};
-    foreach my $k ( keys %{$overrides} ) {
-      my $v = delete $overrides->{$k};
-      $v =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsm;
-      $overrides->{$k} = $v;
+    my %processed_overrides;
+    my $raw_overrides = $global_config->{overrides};
+
+    foreach my $k ( keys %{$raw_overrides} ) {
+      my $v = $raw_overrides->{$k};
+      $v =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg;
+      $processed_overrides{$k} = $v;
     }
 
-    @{$tagx_config}{ keys %{$overrides} } = values %{$overrides};
+    @{$tagx_config}{ keys %processed_overrides } = values %processed_overrides;
   }
 
   eval {
@@ -418,7 +524,12 @@ sub _serve_static {
     require BLM::Startup::Bedrock;
     require BLM::Startup::Config;
 
-    my $ctx = Bedrock::MiniServer::Context->new( $io, cgi => $cgi, config => $tagx_config );
+    my $ctx = Bedrock::MiniServer::Context->new(
+      $io,
+      cgi          => $cgi,
+      config       => $tagx_config,
+      route_params => $route_params || {},
+    );
 
     my $input   = BLM::Startup::Input->new( $ctx, $tagx_config->get_module_config('Input')     || {} );
     my $header  = BLM::Startup::Header->new( $ctx, $tagx_config->get_module_config('Header')   || {} );
@@ -672,10 +783,13 @@ use Bedrock::Constants qw(%LOG4PERL_LOG_LEVELS);
 use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
+use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use Module::Load;
 use List::Util qw(pairs);
+
+our $VERSION = '@PACKAGE_VERSION@';
 
 use parent qw(CLI::Simple);
 
@@ -736,6 +850,15 @@ sub cmd_start_server {
   my $logger    = Log::Log4perl->get_logger('Bedrock::MiniServer');
   $logger->level( $LOG4PERL_LOG_LEVELS{$log_level} // $LOG4PERL_LOG_LEVELS{info} );
 
+  # Capture the 'sovereign' launch root
+  my $server_root = Cwd::getcwd();
+  local $ENV{SERVER_ROOT} = $server_root;
+
+  # Ensure PEBBLE_DIR defaults to this root if set to '.' or undefined
+  if ( ( $server_config->{PEBBLE_DIR} // $EMPTY ) eq $DOT || !$server_config->{PEBBLE_DIR} ) {
+    $server_config->{PEBBLE_DIR} = $server_root;
+  }
+
   # --- initialize runtime configuration
   my %runtime_config = (
     global_config    => $server_config,
@@ -795,7 +918,7 @@ sub cmd_start_server {
 
   foreach my $mount ( keys %{$services_cfg} ) {
     my $class = $services_cfg->{$mount};
-    $self->_mount_service( $runtime_config{service_registry}, $mount, $class, $global_service_config );
+    $self->_mount_service( \%runtime_config, $mount, $class, $global_service_config );
   }
 
   $runtime_config{aliases} = { %{ $runtime_config{aliases} }, %{ $aliases_cfg // {} } };
@@ -824,28 +947,54 @@ sub cmd_start_server {
     }
   }
 
-  my $port = $self->get_port // $server_config->{port} // 8080;
+  my $port        = $self->get_port // $server_config->{port} // 8080;
+  my $line_length = 80;
 
-  $logger->notice( q{=} x 60 );
-  $logger->notice('BEDROCK MINISERVER STARTUP');
-  $logger->notice( q{=} x 60 );
+  $logger->notice( q{=} x $line_length );
+  $logger->notice( sprintf 'BEDROCK MINISERVER RUNNING ON PORT: %s', $port );
 
-  if ( $runtime_config{parse_templates} ) {
-    $logger->notice( sprintf 'Accelerator Mode ENABLED (Parsing: %s)',
-      join ', ', keys %{ $runtime_config{template_extensions} } );
-  }
+  $logger->notice( q{-} x $line_length );
+  $logger->notice('Services:');
+  $logger->notice( q{-} x $line_length );
 
   foreach my $mount ( sort keys %{ $runtime_config{service_registry} } ) {
     my $svc = $runtime_config{service_registry}->{$mount};
-    $logger->notice( sprintf 'Mount Point %-20s @ %s', ref($svc), $mount );
+    $logger->notice( sprintf '  %-20s -> %s', $mount, ref $svc );
   }
 
-  $logger->notice( q{-} x 60 );
-  $logger->notice('Static Asset Aliases:');
-  foreach my $alias ( sort keys %{ $runtime_config{aliases} } ) {
-    $logger->notice( sprintf '  %-20s -> %s', $alias, $runtime_config{aliases}->{$alias} );
+  if ( keys %{ $runtime_config{error_document} } ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Error Documents:');
+    $logger->notice( q{-} x $line_length );
+    foreach my $code ( sort keys %{ $runtime_config{error_document} } ) {
+      $logger->notice( sprintf '  %-5s -> %s', $code, $runtime_config{error_document}->{$code} );
+    }
   }
-  $logger->notice( q{=} x 60 );
+
+  $logger->notice( q{-} x $line_length );
+  $logger->notice('MIME Types:');
+  $logger->notice( q{-} x $line_length );
+  foreach my $type ( sort keys %{ $runtime_config{mime_types} } ) {
+    $logger->notice( sprintf '  %-5s -> %s', $type, $runtime_config{mime_types}->{$type} );
+  }
+
+  if ( keys %{ $runtime_config{aliases} } ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Static Asset Aliases:');
+    $logger->notice( q{-} x $line_length );
+
+    foreach my $alias ( sort keys %{ $runtime_config{aliases} } ) {
+      $logger->notice( sprintf '  %-20s -> %s', $alias, $runtime_config{aliases}->{$alias} );
+    }
+  }
+
+  if ( $runtime_config{parse_templates} ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice( sprintf '* Bedrock template parsing ENABLED for (%s) files.',
+      join ', ', keys %{ $runtime_config{template_extensions} } );
+  }
+
+  $logger->notice( q{=} x $line_length );
 
   # Instantiate with runtime_config
   Bedrock::MiniServer->new( $port, undef, bedrock_runtime => \%runtime_config )->run();
@@ -869,17 +1018,27 @@ sub _resolve_paths {
 ########################################################################
 sub _mount_service {
 ########################################################################
-  my ( $self, $registry, $mount, $class, $config ) = @_;
+  my ( $self, $runtime_config, $mount, $class, $config ) = @_;
+
   if ( $class !~ /\ABedrock::Service/xsm ) {
     $class = "Bedrock::Service::$class";
   }
+
   eval {
     load $class;
-    my $instance = $class->new( service_config => $config );
-    $registry->{$mount} = $instance;
+
+    my $instance = $class->new(
+      service_config => $config,
+      registry       => $runtime_config->{service_registry},
+      server_config  => $runtime_config,
+    );
+
+    $runtime_config->{service_registry}->{$mount} = $instance;
   };
+
   croak "Failed to mount $class at $mount: $EVAL_ERROR"
     if $EVAL_ERROR;
+
   return;
 }
 
@@ -994,6 +1153,7 @@ my $defaults = eval {
 };
 
 exit Bedrock::MiniServer::CLI->main($defaults);
+
 __END__
 
 ---
@@ -1074,9 +1234,22 @@ mounted. Defaults to C</>.
 
 The port to listen on. Defaults to C<8080>.
 
+=item B<--strict | --no-strict>
+
+Enables or disables formal configuration validation. When enabled (default), 
+the server validates the YAML configuration against a JSON schema 
+(miniserver-schema.json) before startup. Use C<--no-strict> to bypass 
+this check[cite: 1, 34, 37].
+
+=item B<--log-level | -l>
+
+Overrides the C<log_level> defined in the configuration file. This 
+affects the verbosity of the server from the earliest stages of the 
+boot process, including configuration validation and service mounting[cite: 1, 21, 22].
+
 =back
 
-=head1 Bedrock Template Parsing
+=head1 BEDROCK TEMPLATE PARSING
 
 In addition to hosting Services, the Miniserver acts as a "Smart Static Server."
 
@@ -1153,6 +1326,11 @@ file accessed via that alias will be parsed automatically.
 
   # Accessing http://localhost:8080/birds/index.roc now renders the template!
 
+While F<.roc> is the standard extension, the list of extensions that 
+trigger the accelerator is fully configurable via C<template_extensions> 
+in the YAML. This allows for specialized templates, such as F<.jroc> for 
+dynamic JSON generation[cite: 1, 23].
+
 =head1 ARCHITECTURE
 
 =head2 The Phase Gate (Overlay Routing)
@@ -1191,6 +1369,30 @@ Prefix Match" routing.
 When a request matches a service, the server B<translates> the path by
 stripping the mount prefix before invoking the service. This allows
 services to be written without knowledge of where they are mounted.
+
+=head2 Advanced Routing (Regex Rewrites)
+
+In addition to simple prefix stripping, the server supports complex 
+URL remapping via the C<routes> configuration block. This allows 
+mapping RESTful URLs to internal service paths using named captures 
+and variable substitution.
+
+Example:
+
+  routes:
+    /api:
+      '^/user/(:id)$': '/user/view?id=$1'
+
+In this example, a request to C</api/user/123> is translated to 
+C</user/view?id=123> before being handed to the service.
+
+=head2 Environment Virtualization
+
+To ensure that Services and Templates are portable, the Miniserver 
+manages the environment for each request. It manually calculates and 
+overrides C<SCRIPT_NAME> and C<PATH_INFO> based on the mount point 
+or alias, allowing code to operate correctly regardless of its 
+location in the public URL space.
 
 =head1 CONFIGURATION
 
@@ -1249,6 +1451,57 @@ F<bedrock-miniserver.yml>).
 
   overrides:
     BEDROCK_CONFIG_PATH: ./config
+
+=head1 CONFIGURATION VALIDATION
+
+As of version 3.7.5, the Miniserver performs strict validation of its 
+configuration file using B<JSON Schema>. This prevents misconfigurations 
+from being interpreted as runtime server bugs.
+
+The server looks for the schema definition at:
+C<@dist_dir@/config/miniserver-schema.json>.
+
+If the configuration contains unknown keys or invalid data types (e.g., 
+providing a string where an array is expected for C<directory_index>), 
+the server will refuse to start and provide a specific path to the 
+error within the YAML file.
+
+I<You can override this check using the C<--no-strict> option...although caveat emptor.>
+
+=head1 ROUTE RESOLUTION 
+
+The MiniServer employs a specific precedence logic when resolving incoming
+requests to ensure behavior parity with C<Apache::Bedrock>.
+
+=over 4
+
+=item 1. Explicit Route Matching
+
+The server first iterates through the C<routes:> list in the order defined
+in the YAML configuration. The first route 
+with a C<path> that matches the beginning of the request URI is selected.
+
+=item 2. Default File Fallback
+
+If no explicit route matches, the server attempts to locate a physical
+file relative to the C<SERVER_ROOT>. If a directory is requested, it
+searches for C<index.roc> or C<index.html> within that directory (if
+the C<directory_index> object was specified for that directory.
+
+=item 3. MIME Type Dependency
+
+For B<alias> routes serving static assets, the server relies on the 
+C<mime_types:> hash to set the C<Content-Type> header. 
+If an extension is not defined in the configuration, the server defaults 
+to C<text/plain>.
+
+=item 4. Path Sovereignty
+
+All C<mount>, C<alias>, and C<resource> paths are resolved relative to 
+the C<SERVER_ROOT>, which is automatically determined by the location of 
+the configuration file unless explicitly overridden.
+
+=back
 
 =head1 EXIT STATUS
 

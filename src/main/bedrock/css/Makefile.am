@@ -4,4 +4,5 @@ dist_css_DATA = \
     bedrock.css \
     indexed-table-handler.css \
     pod.css \
-    source.css
+    source.css \
+    server-status.css

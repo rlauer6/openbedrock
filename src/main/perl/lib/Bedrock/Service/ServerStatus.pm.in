@@ -1,0 +1,83 @@
+package Bedrock::Service::ServerStatus;
+
+use strict;
+use warnings;
+
+use Bedrock qw($BEDROCK_DIST_DIR);
+use Bedrock::Hash;
+use Bedrock::Constants qw(:booleans :chars $SECONDS_IN_A_DAY);
+
+use Carp;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Time::HiRes qw(time);
+
+use parent qw(Bedrock::Service);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  return $class->SUPER::new( %args, dispatch_map => { $SLASH => 'index' } );
+}
+
+########################################################################
+sub action_index {
+########################################################################
+  my ($self) = @_;
+
+  my $start_time     = $self->get('start_time') || time;
+  my $uptime_seconds = int( time - $start_time );
+  my $server_config  = $self->get('server_config');
+
+  my $html = $self->parse(
+    sprintf( '%s/htdocs/server-status.roc', $BEDROCK_DIST_DIR ),
+    runtime  => bless( $server_config,         'Bedrock::Hash' ),
+    registry => bless( $self->get('registry'), 'Bedrock::Hash' ),
+    # Extract specific nested hashes for easier iteration in TagX
+    mime_types          => bless( $server_config->{mime_types}                 // {}, 'Bedrock::Hash' ),
+    template_extensions => bless( $server_config->{template_extensions}        // {}, 'Bedrock::Hash' ),
+    overrides           => bless( $server_config->{global_config}->{overrides} // {}, 'Bedrock::Hash' ),
+    uptime              => $self->_format_uptime($uptime_seconds),
+    version             => $Bedrock::VERSION,
+  );
+
+  return $self->print($html);
+}
+########################################################################
+sub xaction_index {
+########################################################################
+  my ($self) = @_;
+
+  my $start_time     = $self->get('start_time') || time;
+  my $uptime_seconds = int( time - $start_time );
+
+  # Determine the hosting context
+  my $server_type = $ENV{SERVER_SOFTWARE} // 'Unknown Bedrock Host';
+
+  # The "Announcement" - we pull from the handler's config which
+  # merges tagx.xml and server-level overrides.
+  my $full_config = $self->bedrock_handler->get_config;
+
+  my $html = $self->parse(
+    sprintf( '%s/htdocs/server-status.roc', $BEDROCK_DIST_DIR ),
+    runtime     => bless( $self->get('server_config'), 'Bedrock::Hash' ),
+    registry    => bless( $self->get('registry'),      'Bedrock::Hash' ),
+    server_type => $server_type,
+    uptime      => $self->_format_uptime($uptime_seconds),
+    version     => $Bedrock::VERSION,
+  );
+
+  return $self->print($html);
+}
+
+########################################################################
+sub _format_uptime {
+########################################################################
+  my ( $self, $s ) = @_;
+
+  return sprintf '%dd %dh %dm %ds', $s / $SECONDS_IN_A_DAY, ( $s / 3600 ) % 24, ( $s / 60 ) % 60, $s % 60;
+}
+
+1;

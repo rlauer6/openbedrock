@@ -148,7 +148,7 @@
     <div class="container">
       
       <div class="header">
-        <img src="/bedbug.png" alt="Bedrock" class="logo">
+        <img src="/bedrock/img/bedbug.png" alt="Bedrock" class="logo">
         <div class="meta">
           Version: <var $bedrock.version()> &nbsp;&bull;&nbsp; 
           Timestamp: <var $Timenow.ctime>
@@ -157,7 +157,7 @@
 
       <div class="hero">
         <div class="caveman-wrapper">
-          <img src="/caveman.png" alt="Yabba Dabba Oops!">
+          <img src="/bedrock/img/caveman.png" alt="Yabba Dabba Oops!">
         </div>
         <div class="error-content">
           <h1>Yabba Dabba Oops!</h1>
