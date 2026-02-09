@@ -40,12 +40,12 @@ my $user_session_config = Bedrock::Config->new($mysql_session_config_file);
 
 push @{$modules}, $user_session_config;
 
-my $session_config = $config->get_module_config('Session');
+my $session_config = $config->get_module_config('UserSession');
 
-isa_ok( $session_config, 'Bedrock::Hash', 'get_module_config("Session")' )
+isa_ok( $session_config, 'Bedrock::Hash', 'get_module_config("UserSession")' )
   or do {
-  diag( Dumper( [$modules] ) );
-  BAIL_OUT('did not find Session');
+  diag( Dumper( [ modules => $modules ] ) );
+  BAIL_OUT('did not find UserSession');
   };
 
 like( $session_config->{param}, qr/session/xsmi, 'get_module_config("Session")' )

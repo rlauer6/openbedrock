@@ -19,22 +19,39 @@ EXCLUDE_LIST = \
     Bedrock/Apache/Constants.pm \
     Bedrock/VERSION.pm \
     Bedrock/Array.pm \
+    Bedrock/Cache.pm \
+    Bedrock/Cache/Redis.pm \
+    Bedrock/Cache/Engine.pm \
+    Bedrock/Cache/Memory.pm \
+    Bedrock/Cache/Null.pm \
+    Bedrock/Cache/Shareable.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Constants.pm \
     Bedrock/DBI/Utils.pm \
+    Bedrock/DBI/Locator.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
+    Bedrock/Handle.pm \
     Bedrock/Hash.pm \
     Bedrock/HTML/Helper.pm \
     Bedrock/LoadConfig.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
-    Bedrock/Model/Role.pm \
+    Bedrock/LSP/Tag.pm \
+    Bedrock/Model.pm \
+    Bedrock/Model/Serializer/MySQL.pm \
+    Bedrock/Model/ReservedWords/MySQL.pm \
+    Bedrock/Model/Importer.pm \
+    Bedrock/Model/Migration.pm \
     Bedrock/Model/Field.pm \
+    Bedrock/Model/Maker.pm \
+    Bedrock/Model/ReservedWords.pm \
     Bedrock/Model/Handler.pm \
+    Bedrock/Model/Role.pm \
     Bedrock/Object.pm \
+    Bedrock/Pager.pm \
     Bedrock/Plugin.pm \
     Bedrock/RegExp.pm \
     Bedrock/Role/Config.pm \

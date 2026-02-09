@@ -52,7 +52,6 @@ PACKAGE_MODULES = \
     Bedrock/Cache/Null.pm \
     Bedrock/Cache/Shareable.pm \
     Bedrock/BedrockConfig.pm \
-    Bedrock/BedrockCGI.pm \
     Bedrock/BedrockJSON.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Constants.pm \
@@ -67,7 +66,6 @@ PACKAGE_MODULES = \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \
     Bedrock/LSP/Tag.pm \
-    Bedrock/MiniServer/Context.pm \
     Bedrock/Model.pm \
     Bedrock/Model/Serializer/MySQL.pm \
     Bedrock/Model/ReservedWords/MySQL.pm \
@@ -85,7 +83,6 @@ PACKAGE_MODULES = \
     Bedrock/Request.pm \
     Bedrock/Request/Upload.pm \
     Bedrock/Role/Config.pm \
-    Bedrock/Role/DocFinder.pm \
     Bedrock/Router.pm \
     Bedrock/Serializer.pm \
     Bedrock/Serializer/BedrockXML.pm \

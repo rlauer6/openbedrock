@@ -1,0 +1,813 @@
+package Bedrock::Bootstrap;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Bedrock qw(slurp_file cache choose is_mod_perl is_bedrock_shell);
+use Bedrock::BedrockConfig;
+use Bedrock::Constants qw(:chars :defaults :booleans);
+use Bedrock::Context;
+use Bedrock::Error qw(resolve_error_page);
+use Bedrock::Handler qw(:mlogger :bind require_module);
+use Benchmark qw(:all timediff timestr :hireswallclock);
+use Carp qw(confess croak carp);
+use Cwd qw(realpath fastcwd);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(fileparse);
+use List::Util qw(uniq any);
+use Scalar::Util qw(reftype blessed);
+use Text::TagX;
+
+use parent qw(Class::Accessor);
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic
+
+__PACKAGE__->mk_accessors(
+  qw(
+    benchmark
+    benchmarking_enabled
+    config
+    config_files_processed
+    file
+    filename
+    path
+    pwd
+    request
+    uri_dir
+    uri_name
+  )
+);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  croak "usage: Bedrock::Bootstrap->new(request => \$r, ...)\n"
+    if !$args{request} || !blessed( $args{request} );
+
+  my $self = bless {
+    request                => $args{request},
+    benchmarking_enabled   => $args{benchmarking_enabled} // $FALSE,
+    pwd                    => fastcwd(),
+    config_files_processed => [],
+  }, $class;
+
+  return $self;
+}
+
+########################################################################
+sub initialize {
+########################################################################
+  my ($self) = @_;
+
+  # 1. Initialize benchmarking
+  $self->init_benchmarking();
+
+  # 2. Parse request to extract file paths
+  $self->init_request();
+
+  # 3. Load configuration
+  my $config = eval { return $self->load_config(); };
+
+  if ( !$config || $EVAL_ERROR ) {
+    my $r     = $self->request;
+    my $error = $EVAL_ERROR;
+
+    mlogger_error( $r, 'error loading configuration files: %s', $error );
+    mlogger_error( $r, 'processed the following files: %s',     Dumper( $self->config_files_processed ) );
+
+    croak $error;
+  }
+
+  $self->log_benchmark('config load time');
+
+  # 4. Set up environment variables
+  $self->setup_environment();
+
+  return $self;
+}
+
+########################################################################
+sub init_benchmarking {
+########################################################################
+  my ($self) = @_;
+
+  return if !$self->benchmarking_enabled;
+
+  my $t0 = Benchmark->new;
+  $self->benchmark( [ $t0, $t0 ] );
+
+  return;
+}
+
+########################################################################
+sub log_benchmark {
+########################################################################
+  my ( $self, $message, $elapsed ) = @_;
+
+  return if !$self->benchmarking_enabled;
+
+  my $benchmark = $self->benchmark;
+
+  my $t1 = Benchmark->new;
+
+  $elapsed //= timestr( timediff( $t1, $benchmark->[1] ) );
+
+  $benchmark->[1] = $t1;
+
+  my $r = $self->request;
+  mlogger_info( $r, '[benchmark] %s: %s', $message, $elapsed );
+
+  return;
+}
+
+########################################################################
+sub init_request {
+########################################################################
+  my ($self) = @_;
+
+  my $r = $self->request;
+
+  # Handle directory content types (mod_perl specific)
+  $self->file($EMPTY);
+
+  if ( $r->content_type && $r->content_type =~ /directory/xsm ) {
+    $ENV{PATH_TRANSLATED} = $r->filename; ## no critic
+    $r->content_type('text/html');
+  }
+
+  $self->file( $r->filename );
+
+  # Parse URI into components
+  if ( $r->uri ) {
+    my ( $uri_name, $uri_dir ) = fileparse( $r->uri );
+    $self->uri_name($uri_name);
+    $self->uri_dir($uri_dir);
+  }
+
+  # Parse filename into components
+  if ( $r->filename ) {
+    my ( $filename, $path ) = fileparse( $r->filename );
+    $self->filename($filename);
+    $self->path($path);
+  }
+
+  # Debug logging
+  {
+    no warnings 'uninitialized'; ## no critic
+
+    if ( $ENV{BEDROCK_DUMP_ENV} ) {
+      foreach ( keys %ENV ) {
+        mlogger_debug( $r, 'ENV{%s} => %s', $_, $ENV{$_} );
+      }
+    }
+
+    mlogger_debug( $r, 'BEDROCK_CONFIG_PATH.....[%s]', $ENV{BEDROCK_CONFIG_PATH} // $EMPTY );
+    mlogger_debug( $r, 'CONFIG_PATH.............[%s]', $ENV{CONFIG_PATH}         // $EMPTY );
+    mlogger_debug( $r, 'CONTENT TYPE............[%s]', $r->content_type          // $EMPTY );
+    mlogger_debug( $r, 'Cookie..................[%s]', $r->headers_in->{Cookie}  // $EMPTY );
+    mlogger_debug( $r, 'HTTP_COOKIE.............[%s]', $ENV{HTTP_COOKIE}         // $EMPTY );
+    mlogger_debug( $r, 'PATH_INFO...............[%s]', $ENV{PATH_INFO}           // $EMPTY );
+    mlogger_debug( $r, 'PATH_TRANSLATED.........[%s]', $ENV{PATH_TRANSLATED}     // $EMPTY );
+    mlogger_debug( $r, 'SCRIPT_NAME.............[%s]', $ENV{SCRIPT_NAME}         // $EMPTY );
+    mlogger_debug( $r, 'URI.....................[%s]', $r->uri                   // $EMPTY );
+    mlogger_debug( $r, 'URI_DIR.................[%s]', $self->uri_dir            // $EMPTY );
+    mlogger_debug( $r, 'URI_NAME................[%s]', $self->uri_name           // $EMPTY );
+    mlogger_debug( $r, 'filename................[%s]', $self->filename           // $EMPTY );
+    mlogger_debug( $r, 'mod_perl................[%s]', $ENV{MOD_PERL}            // $EMPTY );
+    mlogger_debug( $r, 'path....................[%s]', $self->path               // $EMPTY );
+    mlogger_debug( $r, 'request file............[%s]', $self->file               // $EMPTY );
+  }
+
+  return $self;
+}
+
+########################################################################
+sub load_config {
+########################################################################
+  my ($self) = @_;
+
+  return $self->config if $self->config;
+
+  # Delegate to Bedrock::Handler for config loading
+  # (This preserves all the existing complex config loading logic)
+  my $handler = Bedrock::Handler->new(
+    $self->request,
+    cache                => cache(),
+    benchmarking_enabled => $self->benchmarking_enabled,
+  );
+
+  my $config = $handler->config;
+
+  # Store processed files for error reporting
+  $self->config_files_processed( $handler->config_files_processed );
+
+  $self->config($config);
+
+  return $config;
+}
+
+########################################################################
+sub setup_environment {
+########################################################################
+  my ($self) = @_;
+
+  my $r    = $self->request;
+  my $conf = $self->config;
+
+  # Set URI environment variables
+  local $ENV{BEDROCK_URI}     = $r->uri;
+  local $ENV{BEDROCK_URIDIR}  = $self->uri_dir;
+  local $ENV{BEDROCK_URINAME} = $self->uri_name;
+
+  # Set file environment variables
+  local $ENV{BEDROCK_FILE}     = $r->filename;
+  local $ENV{BEDROCK_FILEDIR}  = $self->path;
+  local $ENV{BEDROCK_FILENAME} = $self->filename;
+
+  # Override configuration with environment variables
+  foreach my $var (qw(PEBBLE INCLUDE SESSION IMAGE)) {
+    my $env_var = "BEDROCK_${var}_DIR";
+
+    if ( $ENV{$env_var} ) {
+      $conf->{$env_var} = $conf->{"${var}_DIR"} = $ENV{$env_var};
+    }
+    else {
+      $ENV{$env_var} = defined $conf->{$env_var} ? $conf->{$env_var} : $EMPTY; ## no critic
+    }
+  }
+
+  # Config path setup
+  if ( $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH} ) {
+    $conf->{BEDROCK_CONFIG_PATH} = $ENV{BEDROCK_CONFIG_PATH} // $ENV{CONFIG_PATH};
+    $conf->{CONFIG_PATH}         = $conf->{BEDROCK_CONFIG_PATH};
+  }
+  else {
+    $ENV{BEDROCK_CONFIG_PATH} = $ENV{CONFIG_PATH} = $conf->{CONFIG_PATH} // $conf->{BEDROCK_CONFIG_PATH}; ## no critic
+  }
+
+  # Image URL
+  $ENV{BEDROCK_IMAGE_URL} //= $ENV{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL}; ## no critic
+
+  # Error page location
+  my $error_page = resolve_error_page( $conf, $ENV{DOCUMENT_ROOT} );
+  $ENV{BEDROCK_ERROR_LOCATION} = $error_page; ## no critic
+
+  # Log configuration
+  $r->log->info( sprintf 'INCLUDE_DIR.............[%s]',  $conf->{INCLUDE_DIR}       // $EMPTY );
+  $r->log->info( sprintf 'PEBBLE_DIR..............[%s]',  $conf->{PEBBLE_DIR}        // $EMPTY );
+  $r->log->info( sprintf 'ALLOW_SNIPPET_TAG.......[%s]',  $conf->{ALLOW_SNIPPET_TAG} // $EMPTY );
+  $r->log->info( sprintf 'BEDROCK_ERROR_LOCATION...[%s]', $error_page                // $EMPTY );
+
+  return;
+}
+
+########################################################################
+sub create_context {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  return Bedrock::Context->new(
+    request      => $self->request,
+    config       => $self->config,
+    cache        => cache(),
+    route_params => $args{route_params} // {},
+  );
+}
+
+########################################################################
+sub init_tagx {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my $ctx = $args{context} || croak "context parameter required";
+
+  my $r      = $self->request;
+  my $config = $self->config;
+  my $file   = $self->file;
+
+  my $tx = Text::TagX->new( $file, $ctx );
+
+  $tx->options(
+    INCLUDE_DIR       => $config->get_include_dir(),
+    ALLOW_SNIPPET_TAG => $config->{ALLOW_SNIPPET_TAG},
+    CONFIG            => $config,
+  );
+
+  # Handle shell-specific tag customization
+  if ( is_bedrock_shell($r) && $r->{OPENTAG_EXPR} ) {
+    $tx->{OPENTAG_EXPR} = $r->{OPENTAG_EXPR};
+  }
+
+  # Bind special variables
+  $tx->param( '_request' => $r );
+  $tx->param( '_version' => sprintf '%s', $VERSION );
+
+  return $tx;
+}
+
+########################################################################
+sub load_startup_modules {
+########################################################################
+  my ( $self, $ctx, $tx, $modules ) = @_;
+
+  croak "context and tagx parameters required"
+    if !$ctx || !$tx;
+
+  $modules //= $self->config->get_module_config();
+
+  if ( !$modules ) {
+    die 'error in config file: MODULES is not defined.';
+  }
+
+  # Initialize plugin path
+  $self->config->init_plugin_path();
+
+  my %pre_bound_modules;
+
+  my $r = $self->request;
+
+  mlogger_debug( $r, Dumper( [ startup_modules => $modules ] ) );
+
+  foreach my $idx ( 0 .. $#{$modules} ) {
+    my $module = $modules->[$idx];
+
+    my $class = $module->{module};
+
+    die sprintf q{'binding' not defined for module (%s)}, $idx
+      if !$module->{binding};
+
+    $module->{type} //= 'hash';
+    die sprintf 'invalid type (%s) in module (%s)', $module->{type}, $idx
+      if !any { lc $module->{type} eq $_ } qw( hash array handle object);
+
+    # Pre-bind HEADER and SESSION modules
+    if ( any { exists $module->{$_} && $module->{$_} =~ /^y/ixsm } qw( header session ) ) {
+
+      my $type = exists $module->{header} ? 'HEADER' : 'SESSION';
+
+      die "multiple modules defined for $type module"
+        if exists $pre_bound_modules{$type};
+
+      $pre_bound_modules{$type} = $type;
+
+      $self->pre_bind_module(
+        module         => $module,
+        context        => $ctx,
+        tagx           => $tx,
+        pre_bound_type => $type,
+      );
+    }
+    else {
+      # Lazy-bind other modules
+      $tx->param(
+        $module->{binding},
+        sub {
+          my ($symbtab) = @_;
+
+          require_module($class);
+
+          return bind_module(
+            type    => $module->{type},
+            module  => $class,
+            context => $ctx,
+            config  => $module->{config},
+            tagx    => $tx
+          );
+        }
+      );
+    }
+
+    $self->log_benchmark( $module->{binding} );
+  }
+
+  return \%pre_bound_modules;
+}
+
+########################################################################
+sub pre_bind_module {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $module, $pre_bound_type, $ctx, $tx ) = @args{qw(module pre_bound_type context tagx)};
+
+  my ( $class, $type, $config, $binding ) = @{$module}{qw(module type config binding)};
+
+  # Bind the module
+  my $obj = eval { return bind_module( module => $class, type => $type || 'hash', context => $ctx, config => $config, ); };
+
+  die sprintf q{could not bind module (%s) as '%s': %s}, $class, $binding, $EVAL_ERROR
+    if !$obj || $EVAL_ERROR;
+
+  # Add the object to TagX's top frame (symbol table)
+  $tx->param( $binding => $obj );
+
+  # TagX wants to know who the header and session objects are
+  $tx->options( $pre_bound_type => $obj );
+
+  # Context also needs references
+  $ctx->{$pre_bound_type} = $obj;
+
+  return $TRUE;
+}
+
+########################################################################
+sub get_bedrock_admin_dir {
+########################################################################
+  my ($self) = @_;
+
+  return $self->config->{BEDROCK_ADMIN_DIR} || '/bedrock';
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::Bootstrap - Bootstrap initialization for Bedrock environments
+
+=head1 SYNOPSIS
+
+ use Bedrock::Bootstrap;
+ 
+ # Create bootstrap instance
+ my $bootstrap = Bedrock::Bootstrap->new(
+   request              => $r,                    # Request object (Apache, Shell, CGI)
+   cache                => $cache,                # Optional cache object
+   benchmarking_enabled => $ENV{BEDROCK_BENCHMARK},
+ );
+ 
+ # Initialize configuration and environment
+ $bootstrap->initialize();
+ 
+ # Create context
+ my $ctx = $bootstrap->create_context(
+   route_params => $route_params,
+ );
+ 
+ # Initialize TagX parser
+ my $tx = $bootstrap->init_tagx(
+   context => $ctx,
+ );
+ 
+ # Load startup modules (BLMs)
+ my $pre_bound = $bootstrap->load_startup_modules($ctx, $tx);
+
+=head1 DESCRIPTION
+
+C<Bedrock::Bootstrap> extracts the common initialization logic used across
+all Bedrock environments (web, shell, miniserver). It handles:
+
+=over 4
+
+=item * Configuration loading and merging
+
+=item * File path parsing from request
+
+=item * Environment variable setup
+
+=item * Bedrock::Context creation
+
+=item * TagX parser initialization
+
+=item * BLM (Bedrock Loadable Module) loading and binding
+
+=back
+
+This class enables each environment (Apache/mod_perl, CGI, shell, miniserver)
+to use the same initialization code while maintaining environment-specific
+execution logic.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 new
+
+ my $bootstrap = Bedrock::Bootstrap->new(
+   request              => $r,
+   cache                => $cache,
+   benchmarking_enabled => 0,
+ );
+
+Creates a new Bootstrap instance.
+
+=head3 Required Parameters
+
+=over 4
+
+=item request
+
+The request object. Can be any of:
+
+=over 4
+
+=item * C<Apache2::RequestRec> (mod_perl)
+
+=item * C<Apache::Request::Shell> (Bedrock shell)
+
+=item * C<Apache::Request::CGI> (CGI/miniserver)
+
+=item * C<Bedrock::MiniServer::Context> (miniserver alternative)
+
+=back
+
+The request object must provide:
+
+=over 4
+
+=item * C<$r-E<gt>uri> - Request URI (or file path for shell)
+
+=item * C<$r-E<gt>filename> - File path
+
+=item * C<$r-E<gt>log> - Logger object
+
+=back
+
+=back
+
+=head3 Optional Parameters
+
+=over 4
+
+=item cache
+
+Cache object for configuration caching.
+
+=item benchmarking_enabled
+
+Boolean. Enable benchmark timing.
+
+=back
+
+=cut
+
+=head1 EXTRACTED FROM
+
+This class consolidates initialization code previously scattered across:
+
+=over 4
+
+=item * C<Apache::Bedrock::handler()> - Environment setup, context creation
+
+=item * C<Bedrock::Handler> - Configuration loading, path parsing
+
+=item * C<Apache::Bedrock::init_tagx()> - TagX initialization
+
+=item * C<Apache::Bedrock::load_startup_modules()> - BLM loading
+
+=back
+
+=head2 initialize
+
+ $bootstrap->initialize();
+
+Performs the bootstrap initialization sequence:
+
+=over 4
+
+=item 1. Initialize benchmarking (if enabled)
+
+=item 2. Parse file paths from request
+
+=item 3. Load Bedrock configuration
+
+=item 4. Set up environment variables
+
+=back
+
+Dies on configuration errors.
+
+=head2 init_request
+
+ $bootstrap->init_request();
+
+Parses the request object to extract and store file path components:
+
+=over 4
+
+=item * C<file> - Full file path
+
+=item * C<filename> - Base filename
+
+=item * C<path> - Directory path
+
+=item * C<uri_name> - URI filename component
+
+=item * C<uri_dir> - URI directory component
+
+=back
+
+Extracted from C<Bedrock::Handler-E<gt>init_request()>.
+
+=head2 load_config
+
+ my $config = $bootstrap->load_config();
+
+Loads and merges Bedrock configuration from tagx.xml and related files.
+
+Returns C<Bedrock::Config> object.
+
+This delegates to C<Bedrock::Handler> methods for actual loading logic.
+The configuration is cached in the Bootstrap object.
+
+=head2 setup_environment
+
+ $bootstrap->setup_environment();
+
+Sets up environment variables used by Bedrock templates and modules:
+
+=over 4
+
+=item * BEDROCK_URI, BEDROCK_URIDIR, BEDROCK_URINAME
+
+=item * BEDROCK_FILE, BEDROCK_FILEDIR, BEDROCK_FILENAME
+
+=item * BEDROCK_*_DIR (PEBBLE, INCLUDE, SESSION, IMAGE)
+
+=item * BEDROCK_CONFIG_PATH, CONFIG_PATH
+
+=item * BEDROCK_IMAGE_URL
+
+=item * BEDROCK_ERROR_LOCATION
+
+=back
+
+Extracted from C<Apache::Bedrock::handler()>.
+
+=head2 create_context
+
+ my $ctx = $bootstrap->create_context(
+   route_params => $route_params,  # Optional
+ );
+
+Creates and returns a C<Bedrock::Context> object.
+
+=head3 Parameters
+
+=over 4
+
+=item route_params
+
+Optional hashref of routing parameters from URL pattern matching.
+
+=back
+
+Extracted from C<Apache::Bedrock::handler()>.
+
+=cut
+
+=head2 init_tagx
+
+ my $tx = $bootstrap->init_tagx(
+   context => $ctx,
+ );
+
+Initializes and returns a C<Text::TagX> parser object.
+
+=head3 Parameters
+
+=over 4
+
+=item context
+
+Required. The C<Bedrock::Context> object.
+
+=back
+
+Extracted from C<Apache::Bedrock::init_tagx()>.
+
+=head2 get_bedrock_admin_dir
+
+ my $admin_dir = $bootstrap->get_bedrock_admin_dir();
+
+Returns the Bedrock admin directory path (typically C</bedrock>).
+
+=head2 load_startup_modules
+
+ my $pre_bound = $bootstrap->load_startup_modules($ctx, $tx);
+
+Loads and binds BLMs (Bedrock Loadable Modules) from configuration.
+
+=head3 Parameters
+
+=over 4
+
+=item ctx
+
+The C<Bedrock::Context> object.
+
+=item tx
+
+The C<Text::TagX> parser object.
+
+=back
+
+=head3 Returns
+
+Hashref of pre-bound module types (HEADER, SESSION).
+
+Extracted from C<Apache::Bedrock::load_startup_modules()>.
+
+=head1 USAGE EXAMPLE
+
+ # In Apache::Bedrock::handler()
+ 
+ sub handler {
+   my ($r) = @_;
+   
+   # Bootstrap initialization
+   my $bootstrap = Bedrock::Bootstrap->new(
+     request              => $r,
+     cache                => cache(),
+     benchmarking_enabled => $ENV{BEDROCK_BENCHMARK},
+   );
+   
+   $bootstrap->initialize();
+   
+   # Get config for additional setup
+   my $conf = $bootstrap->config;
+   
+   # Apply shell config overrides (if shell)
+   if ($r->can('config_var')) {
+     foreach my $override (@{$r->config_var}) {
+       my ($k, $v) = split /[:=]/, $override;
+       $conf->{$k} = $v;
+     }
+   }
+   
+   # HTTP-specific logic (routing, cache checking, etc.)
+   # ...
+   
+   # Create context
+   my $ctx = $bootstrap->create_context(
+     route_params => $route_params,
+   );
+   
+   # Initialize TagX
+   my $tx = $bootstrap->init_tagx(
+     context => $ctx,
+   );
+   
+   # Load startup modules
+   my $pre_bound = $bootstrap->load_startup_modules($ctx, $tx);
+   
+   # Execute template
+   my $output = $tx->output();
+   
+   # Handle output
+   # ...
+   
+   return $OK;
+ }
+
+=head1 BENEFITS
+
+=over 4
+
+=item * B<Code Reuse> - Common initialization across all environments
+
+=item * B<Testability> - Can unit test bootstrap independently
+
+=item * B<Maintainability> - Centralized initialization logic
+
+=item * B<Extensibility> - Easy to add new environments (Lambda, etc.)
+
+=back
+
+=head1 SEE ALSO
+
+L<Apache::Bedrock>, L<Bedrock::Handler>, L<Bedrock::Context>, L<Text::TagX>
+
+=head1 AUTHOR
+
+TBC Development Group, LLC.
+
+=head1 COPYRIGHT
+
+Copyright (C) 2025, TBC Development Group, LLC.
+
+=cut

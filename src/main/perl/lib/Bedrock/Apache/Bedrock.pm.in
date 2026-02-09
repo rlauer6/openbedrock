@@ -2,7 +2,7 @@ package Apache::Bedrock; ## no critic
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
-#    Copyright (C) 2024, TBC Development Group, LLC.
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -24,11 +24,6 @@ use strict;
 use warnings;
 
 BEGIN {
-  # TBD: extract core Bedrock template serving code and leave Apache
-  # dependencies in an Apache::Bedrock module that is used exclusively
-  # with Apache, essentially decoupling Apache from the Bedrock page
-  # serving logic.
-
   if ( $ENV{MOD_PERL} ) {
     eval {
       require Apache2::ServerRec;
@@ -36,54 +31,37 @@ BEGIN {
 
       require Apache2::ServerUtil;
       Apache2::ServerUtil->import;
-
     };
   }
 }
 
-use Bedrock qw(slurp_file cache choose is_mod_perl is_bedrock_shell);
+use Bedrock qw(cache is_mod_perl is_bedrock_shell);
 use Bedrock::Apache::Constants qw(:http %APACHE_LOG_LEVELS);
-use Bedrock::Constants qw(:chars :defaults :booleans :regexp);
-use Bedrock::BedrockConfig;
-use Bedrock::Context;
-use Bedrock::Dump;
-use Bedrock::Error qw(handle_error resolve_error_page);
-use Bedrock::Handler qw(:mlogger :bind require_module);
-use Text::TagX;
+use Bedrock::Bootstrap;
+use Bedrock::Constants qw(:chars :defaults :booleans);
+use Bedrock::Error qw(handle_error);
+use Bedrock::Handler qw(:mlogger);
+use Bedrock::Router;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Basename;
-use List::Util qw( any uniq );
-use Scalar::Util qw(blessed reftype);
+use List::Util qw(any);
+use Scalar::Util qw(reftype);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic
 
-use parent qw(Exporter);
-
-our @EXPORT_OK = qw(
-  load_startup_modules
-  pre_bind_module
-);
-
-our %EXPORT_TAGS = (
-  bind => [
-    qw(
-      load_startup_modules
-      pre_bind_module
-    )
-  ]
-);
-
 ########################################################################
 sub handler {
 ########################################################################
   my ($r) = @_;
 
-  # see if our page is in cache, if so send a 304
+  # ====================================================================
+  # HTTP-SPECIFIC: ETag caching
+  # ====================================================================
   my $cache = cache();
 
   if ($cache) {
@@ -98,7 +76,9 @@ sub handler {
     }
   }
 
-  # reset Apache log level to match BedrocLogLevel
+  # ====================================================================
+  # HTTP-SPECIFIC: Apache log level configuration
+  # ====================================================================
   if ( is_mod_perl() ) {
     my $s = $r->server;
 
@@ -108,24 +88,38 @@ sub handler {
     mlogger_notice( $r, 'Resetting Apache log level: %s', $bedrock_log_level );
   }
 
-  my $bedrock_handler
-    = eval { return Bedrock::Handler->new( $r, cache => $cache, benchmarking_enabled => $ENV{BEDROCK_BENCHMARK} ); };
+  # ====================================================================
+  # BOOTSTRAP: Initialize Bedrock environment
+  # ====================================================================
+  my $bootstrap = eval {
+    return Bedrock::Bootstrap->new(
+      request              => $r,
+      cache                => $cache,
+      benchmarking_enabled => $ENV{BEDROCK_BENCHMARK},
+    );
+  };
 
-  if ( !$bedrock_handler ) {
-    handle_error( $r, "could not initialize handler\n$EVAL_ERROR" );
-
+  if ( !$bootstrap ) {
+    handle_error( $r, "could not initialize bootstrap\n$EVAL_ERROR" );
     return $OK;
   }
 
-  my $benchmarking_enabled = $bedrock_handler->benchmarking_enabled;
+  eval { $bootstrap->initialize(); };
 
-  # --- benchmark
-  $benchmarking_enabled && $bedrock_handler->log_benchmark('Bedrock::Handler->new() complete');
+  if ($EVAL_ERROR) {
+    handle_error( $r, "bootstrap initialization failed\n$EVAL_ERROR" );
+    return $OK;
+  }
 
-  # get the Bedrock config object
-  my $conf = $bedrock_handler->config;
+  my $benchmarking = $bootstrap->benchmarking_enabled;
+  $benchmarking && $bootstrap->log_benchmark('Bedrock::Bootstrap->initialize() complete');
 
-  # check for configuration file OVERRIDES (only allowed by Bedrock Shell)
+  # Get configuration
+  my $conf = $bootstrap->config;
+
+  # ====================================================================
+  # SHELL-SPECIFIC: Configuration overrides
+  # ====================================================================
   if ( $r->can('config_var') ) {
     foreach my $override ( @{ $r->config_var || [] } ) {
       my ( $k, $v ) = split /[:=]/xsm, $override;
@@ -134,125 +128,79 @@ sub handler {
     }
   }
 
-  if ( !$conf || reftype($conf) eq 'Bedrock::Config' ) {
+  # Validate configuration
+  if ( !$conf || ref $conf ne 'Bedrock::Config' ) {
     $r->log->error('unable to create Bedrock::Config object');
-
     return $SERVER_ERROR;
   }
 
-  my $bedrock_admin_dir = $bedrock_handler->get_bedrock_admin_dir;  # typically /bedrock
+  my $file = $bootstrap->file;
 
-  my $file = $bedrock_handler->{file};
-
-  # if mod_perl or Apache::Request::CGI has done their jobs, there
-  # should already be a content type set...but just in case?
+  # ====================================================================
+  # HTTP-SPECIFIC: Content type and file validation
+  # ====================================================================
   my $content_type = $r->content_type;
 
   if ( !$content_type ) {
-    $r->log->warn('somebody forgot to set content type?');
+    $r->log->warn('content type not set, defaulting to text/html');
     $content_type = 'text/html';
   }
 
-  # might want to revisit this, but the point is that this handler
-  # should only be serving HTML, JSON or plain text files?
-  if ($file) {
-
-    # check mime-type
-    if ( !any { $content_type eq $_ } qw(text/html application/json text/plain ) ) {
-      $r->log->error( sprintf 'content type: [%s] not supported', $content_type );
-
-      return $UNSUPPORTED;
-    }
-
-    if ( !-e $file ) {
-      $r->log->error( sprintf 'file does not exist: [%s]', $file );
-      return $NOT_FOUND;
-    }
-
-    if ( !-r $file ) {
-      $r->log->error( sprintf 'file permissions deny access: [%s]', $file );
-
-      return $FORBIDDEN;
-    }
-  }
-  else {
+  # Validate we're serving a file (not directory)
+  if ( !$file ) {
     $r->log->error( sprintf 'attempt to serve directory: [%s]', $r->uri );
-
     return $FORBIDDEN;
   }
 
-  # Shove the URI params in environment.
-  local $ENV{BEDROCK_URI}     = $r->uri;
-  local $ENV{BEDROCK_URIDIR}  = $bedrock_handler->{uri_dir};
-  local $ENV{BEDROCK_URINAME} = $bedrock_handler->{uri_name};
-
-  # And the file params too.
-  local $ENV{BEDROCK_FILE}     = $r->filename;
-  local $ENV{BEDROCK_FILEDIR}  = $bedrock_handler->{path};
-  local $ENV{BEDROCK_FILENAME} = $bedrock_handler->{filename};
-
-  # override configuration file with environment variables
-  foreach my $var (qw(PEBBLE INCLUDE SESSION IMAGE)) {
-    my $env_var = "BEDROCK_${var}_DIR";
-
-    if ( $ENV{$env_var} ) {
-      $conf->{$env_var} = $conf->{"${var}_DIR"} = $ENV{$env_var};
-    }
-    else {
-      $ENV{$env_var} = defined $conf->{$env_var} ? defined $conf->{$env_var} : $EMPTY; ## no critic
-    }
+  # Validate content type
+  if ( !any { $content_type eq $_ } qw(text/html application/json text/plain) ) {
+    $r->log->error( sprintf 'content type: [%s] not supported', $content_type );
+    return $UNSUPPORTED;
   }
 
-  if ( $ENV{BEDROCK_CONFIG_PATH} || $ENV{CONFIG_PATH} ) {
-    $conf->{BEDROCK_CONFIG_PATH} = $ENV{BEDROCK_CONFIG_PATH} // $ENV{CONFIG_PATH};
-    $conf->{CONFIG_PATH}         = $conf->{BEDROCK_CONFIG_PATH};
-  }
-  else {
-    $ENV{BEDROCK_CONFIG_PATH} = $ENV{CONFIG_PATH} = $conf->{CONFIG_PATH} // $conf->{BEDROCK_CONFIG_PATH}; ## no critic
+  # Validate file exists and is readable
+  if ( !-e $file ) {
+    $r->log->error( sprintf 'file does not exist: [%s]', $file );
+    return $NOT_FOUND;
   }
 
-  $ENV{BEDROCK_IMAGE_URL} //= $ENV{IMAGE_URL} || $conf->{BEDROCK_IMAGE_URL}; ## no critic
+  if ( !-r $file ) {
+    $r->log->error( sprintf 'file permissions deny access: [%s]', $file );
+    return $FORBIDDEN;
+  }
 
-  my $error_page = resolve_error_page( $conf, $ENV{DOCUMENT_ROOT} );
-
-  $ENV{BEDROCK_ERROR_LOCATION} = $error_page; ## no critic
-
-  $r->log->info( sprintf 'INCLUDE_DIR.............[%s]',  $conf->{INCLUDE_DIR}       // $EMPTY );
-  $r->log->info( sprintf 'PEBBLE_DIR..............[%s]',  $conf->{PEBBLE_DIR}        // $EMPTY );
-  $r->log->info( sprintf 'ALLOW_SNIPPET_TAG.......[%s]',  $conf->{ALLOW_SNIPPET_TAG} // $EMPTY );
-  $r->log->info( sprintf 'BEDROCK_ERROR_LOCATION...[%s]', $error_page                // $EMPTY );
-
-  my $app_dir = $bedrock_handler->{path};
+  # ====================================================================
+  # HTTP-SPECIFIC: Change to application directory
+  # ====================================================================
+  my $app_dir = $bootstrap->path;
 
   if ( $app_dir && !chdir $app_dir ) {
     return $r->log->error( sprintf 'chdir(%s) failed: [%s]', $app_dir, $OS_ERROR );
   }
 
-  # --- benchmark
-  $benchmarking_enabled && $bedrock_handler->log_benchmark('environment setup complete');
+  $benchmarking && $bootstrap->log_benchmark('environment setup complete');
 
-  my $ctx;
-  my $tx;
-  my $final_status = $OK;
-
+  # ====================================================================
+  # HTTP-SPECIFIC: URL Routing
+  # ====================================================================
   my $route_params = {};
 
   if ( exists $conf->{routes} && reftype( $conf->{routes} ) eq 'ARRAY' ) {
-    require Bedrock::Router;
-
     my $router = Bedrock::Router->new($conf);
 
     if ( my $match = $router->match( $r->uri ) ) {
-      # 1. Override the file to be processed
+      # Override the file to be processed based on route
       my $new_file = sprintf '%s/%s', $conf->{PEBBLE_DIR}, $match->{template};
 
       if ( -e $new_file ) {
-        $file = $new_file;  # Override local var used by init_tagx
+        $file = $new_file;
 
-        # Update Handler state so relative includes works
-        @{$bedrock_handler}{qw(file path filename)} = ( $file, dirname($file), basename($file) );
+        # Update Bootstrap state for relative includes
+        $bootstrap->file($file);
+        $bootstrap->path( dirname($file) );
+        $bootstrap->filename( basename($file) );
 
-        # 2. Capture Params
+        # Capture route parameters
         $route_params = $match->{params};
 
         $r->log->info( sprintf 'Route matched: %s->%s', $r->uri, $match->{template} );
@@ -260,61 +208,51 @@ sub handler {
     }
   }
 
+  # ====================================================================
+  # BOOTSTRAP: Create context, TagX, and load modules
+  # ====================================================================
+  my ( $ctx, $tx );
+  my $final_status = $OK;
+
   eval {
-    $ctx = Bedrock::Context->new(
-      request      => $r,
-      config       => $conf,
-      cache        => $cache,
-      route_params => $route_params,
-    );
+    # Create Bedrock context
+    $ctx = $bootstrap->create_context( route_params => $route_params, );
 
-    # --- benchmark
-    $benchmarking_enabled && $bedrock_handler->log_benchmark('context object created');
+    $benchmarking && $bootstrap->log_benchmark('context object created');
 
-    # this needs to be done before load_startup_modules()
-    $conf->init_plugin_path();
+    # Initialize TagX parser
+    $tx = $bootstrap->init_tagx( context => $ctx, );
 
-    # load module config
-    my $modules = $conf->get_module_config();
+    $benchmarking && $bootstrap->log_benchmark('TagX object creation complete');
 
-    if ( !$modules ) {
-      die 'error in config file: MODULES is not defined.';
-    }
-
-    $tx = init_tagx(
-      file            => $file,
-      config          => $conf,
-      request_handler => $r,
-      context         => $ctx
-    );
-
-    # --- benchmark
-    $benchmarking_enabled && $bedrock_handler->log_benchmark('TagX object creation complete');
-
-    # load startup modules
-    my $pre_bound = load_startup_modules( $modules, $ctx, $tx, $bedrock_handler );
+    # Load startup modules (BLMs)
+    my $pre_bound = $bootstrap->load_startup_modules( $ctx, $tx );
 
     if ( !$pre_bound->{HEADER} ) {
       die 'error in config file: No header module';
     }
 
-    # --- benchmark
-    $benchmarking_enabled && $bedrock_handler->log_benchmark('module_binding_complete');
+    $benchmarking && $bootstrap->log_benchmark('startup modules loaded');
 
-    # this is where Bedrock starts parsing the template
+    # ====================================================================
+    # EXECUTE: Parse and execute template
+    # ====================================================================
     $tx->output;
 
-    # --- benchmark
-    $benchmarking_enabled && $bedrock_handler->log_benchmark('Bedrock tag processing complete');
+    $benchmarking && $bootstrap->log_benchmark('Bedrock tag processing complete');
 
     1;
   } or do {
     my $err = $EVAL_ERROR;
     handle_error( $r, $err, $tx );
-    # We return OK so Apache serves the error page content we just generated
+
+    # Return OK so Apache serves the error page content we generated
     $final_status = $OK;
   };
 
+  # ====================================================================
+  # CLEANUP
+  # ====================================================================
   if ($tx) {
     $tx->close;
   }
@@ -323,16 +261,22 @@ sub handler {
     $ctx->cleanup;
   }
 
-  # --- benchmark
-  $benchmarking_enabled && $bedrock_handler->log_benchmark( 'request complete', 1 );
+  $benchmarking && $bootstrap->log_benchmark( 'request complete', 1 );
 
-  $bedrock_handler->restore_dir;
+  # Restore original working directory
+  if ( $bootstrap->pwd ) {
+    chdir $bootstrap->pwd;
+  }
 
+  # ====================================================================
+  # SHELL/CGI: Early return (no HTTP redirect handling needed)
+  # ====================================================================
   return $final_status
     if is_bedrock_shell($r) || !is_mod_perl();
 
-  # Apache 2 hack for redirection...let's not send unnecessary content
-  # to the browser if a redirect header has been set.
+  # ====================================================================
+  # HTTP-SPECIFIC: Handle redirects
+  # ====================================================================
   my $location;
   my $status = $r->headers_out->{Status} // $r->err_headers_out->{Status};
 
@@ -351,127 +295,6 @@ sub handler {
   }
 
   return $final_status;
-}
-
-########################################################################
-sub init_tagx {
-########################################################################
-  my (%args) = @_;
-
-  my ( $file, $config, $ctx, $r ) = @args{qw(file config context request_handler)};
-
-  my $tx = Text::TagX->new( $file, $ctx );
-
-  $tx->options(
-    INCLUDE_DIR       => $config->get_include_dir(),
-    ALLOW_SNIPPET_TAG => $config->{ALLOW_SNIPPET_TAG},
-    CONFIG            => $config,
-  );
-
-  # disable tags?
-  if ( is_bedrock_shell($r) && $r->{OPENTAG_EXPR} ) {
-    $tx->{OPENTAG_EXPR} = $r->{OPENTAG_EXPR};
-  }
-
-  $tx->param( '_request' => $r );
-  $tx->param( '_version' => sprintf '%s', $VERSION );
-
-  return $tx;
-}
-
-########################################################################
-sub load_startup_modules {
-########################################################################
-  my ( $modules, $context, $tx, $bedrock_handler ) = @_;
-
-  my %pre_bound_modules;
-
-  my $handler = $context->request;
-
-  mlogger_debug( $handler, Dumper( [ startup_modules => $modules ] ) );
-
-  foreach my $idx ( 0 .. $#{$modules} ) {
-    my $module = $modules->[$idx];
-
-    mlogger_debug( $handler, Dumper( [ module => $module ] ) );
-
-    $module->{type} //= 'hash';
-
-    my $class = $module->{module};
-
-    die sprintf q{'binding' not defined for module (%s)}, $idx
-      if !$module->{binding};
-
-    die sprintf 'invalid type (%s) in module (%s)', $module->{type}, $idx
-      if !any { lc $module->{type} eq $_ } qw( hash array handle object);
-
-    if ( any { exists $module->{$_} && $module->{$_} =~ /^y/ixsm } qw( header session ) ) {
-
-      my $type = exists $module->{header} ? 'HEADER' : 'SESSION';
-
-      die "multiple modules defined for $type module"
-        if exists $pre_bound_modules{$type};
-
-      $pre_bound_modules{$type} = $type;
-
-      pre_bind_module(
-        module         => $module,
-        context        => $context,
-        tagx           => $tx,
-        pre_bound_type => $type,
-      );
-    }
-    else {
-      $tx->param(
-        $module->{binding},
-        sub {
-          my ($symbtab) = @_;
-
-          require_module($class);
-
-          return bind_module(
-            type    => $module->{type},
-            module  => $class,
-            context => $context,
-            config  => $module->{config},
-            tagx    => $tx
-          );
-
-        }
-      );
-    }
-
-    $bedrock_handler && $bedrock_handler->log_benchmark( $module->{binding} );
-  }
-
-  return \%pre_bound_modules;
-}
-
-########################################################################
-sub pre_bind_module {
-########################################################################
-  my (%args) = @_;
-
-  my ( $module, $pre_bound_type, $context, $tagx ) = @args{qw(module pre_bound_type context tagx)};
-
-  my ( $class, $type, $config, $binding ) = @{$module}{qw(module type config binding)};
-
-  # Bind the module
-  my $obj = eval { return bind_module( module => $class, type => $type || 'hash', context => $context, config => $config, ); };
-
-  die sprintf q{could not bind module (%s) as '%s': %s}, $class, $binding, $EVAL_ERROR
-    if !$obj || $EVAL_ERROR;
-
-  # add the object to Bedrock' top frame (symbol table)
-  $tagx->param( $binding => $obj );
-
-  # tagX wants to know who the header and session object are
-  $tagx->options( $pre_bound_type => $obj );
-
-  # ...so does the context object which can be used by Bedrock::CGI
-  $context->{$pre_bound_type} = $obj;
-
-  return $TRUE;
 }
 
 1;
@@ -494,29 +317,60 @@ Apache::Bedrock - Apache handler for serving Bedrock pages
 
  use Apache::Bedrock;
 
- Apache::Bedrock::handler->new( Apache::Request::CGI->new );
+ Apache::Bedrock::handler( Apache::Request::CGI->new );
 
- Apache::Bedrock::handler->new( Apache::Request::Shell->new );
+ Apache::Bedrock::handler( Apache::Request::Shell->new );
 
-I<See F<bedrock.cgi> if want to see how this module can be used stand
-alone.>
+I<See F<bedrock.cgi> if want to see how this module can be used stand alone.>
 
 =head1 DESCRIPTION
 
-Handler for parsing Bedrock files.  Can be used with Apache as a
+Handler for parsing Bedrock files. Can be used with Apache as a
 C<mod_perl> handler or in other configurations including a shell
 interpreter.
 
+This module now delegates most initialization work to L<Bedrock::Bootstrap>,
+focusing exclusively on HTTP-specific request handling, routing, caching,
+and output delivery.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 handler
+
+ Apache::Bedrock::handler($r);
+
+Main request handler. Handles HTTP-specific logic including:
+
+=over 4
+
+=item * ETag-based caching
+
+=item * Apache log level configuration
+
+=item * Content type validation
+
+=item * File permission checking
+
+=item * URL routing
+
+=item * Template execution
+
+=item * HTTP response handling
+
+=back
+
+Delegates initialization to L<Bedrock::Bootstrap>.
+
 =head1 ROUTING
 
-Bedrock includes a configuration-driven router that allows you to map application
-URIs to specific Bedrock templates.
+Bedrock includes a configuration-driven router that allows you to map
+application URIs to specific Bedrock templates.
 
 =head2 Configuration
 
-Routes are defined in your Bedrock configuration (typically F<routes.xml>) using
-Bedrock's typed XML format. You must define a C<routes> object containing an
-array of route objects.
+Routes are defined in your Bedrock configuration (typically F<routes.xml>)
+using Bedrock's typed XML format. You must define a C<routes> object
+containing an array of route objects.
 
  <object name="routes">
    <array>
@@ -534,8 +388,9 @@ array of route objects.
 
 =head2 Template Resolution (PEBBLE_DIR vs DOCUMENT_ROOT)
 
-When a request matches a route, Bedrock resolves the target C<template> relative
-to the configured B<PEBBLE_DIR>, not the web server's B<DOCUMENT_ROOT>.
+When a request matches a route, Bedrock resolves the target C<template>
+relative to the configured B<PEBBLE_DIR>, not the web server's
+B<DOCUMENT_ROOT>.
 
 This distinction is intentional:
 
@@ -548,82 +403,116 @@ legacy scripts that map directly to the file system.
 
 =item *
 
-B<PEBBLE_DIR>: The repository for your application's logic and templates.
-By resolving routes against C<PEBBLE_DIR>, Bedrock keeps your application code
-separate from the public web root, improving security and organization.
+B<PEBBLE_DIR>: Intended for application templates that are accessed via
+routes, not direct URLs.
 
 =back
 
-=head2 Route Parameters
+=head2 Pattern Syntax
 
-The router supports named parameters defined by a colon prefix (e.g., C<:id>).
-When a route matches, these parameters are captured and passed to the
-L<Bedrock::Context> object.
-
-=cut
-
-=head1 METHODS AND SUBROUTINES
-
-=head2 is_bedrock_shell
-
-Returns true if running as bedrock shell.
-
-=head2 is_mod_perl
-
-Returns true if running under C<mod_perl>.
-
-=head2 load_startup_modules
-
- load_startup_modules(modules, context, tagx)
-
-This method installs plugins defined in F<tagx.xml>'s C<MODULES>
-section and those with configurations defined in Bedrock's plugin
-configuration directories:
-
- {path-to-config}/config.d/plugin
- {path-to-config}/config.d/startup
-
-Aside from the C<$header> and C<$session> objects these modules are
-lazy-loaded and only are instantiated if they are used on a page.
-
-When modules are instantiated they are passed these parameters:
+Route patterns support:
 
 =over 4
 
-=item *
+=item * B<Static paths>: C</about>, C</contact>
 
-B<context>: The current C<Bedrock::Context> object.
+=item * B<Named parameters>: C</user/:id>, C</blog/:year/:month/:slug>
 
-=item *
-
-B<config>: The module-specific configuration hash.
-
-=item *
-
-B<tagx>: The current C<Text::TagX> parser instance.
+=item * B<Wildcards>: C</files/*path>
 
 =back
 
-The module objects are bound to the TagX symbol table, making them available
-within your Bedrock templates using the configured binding name.
+See L<Bedrock::Router> for complete pattern syntax.
 
-=head2 pre_bind_module
+=head2 Route Parameters
 
- pre_bind_module(options)
+Captured route parameters are available in templates via C<$input>:
 
-Internal method used to bind special "pre-bound" modules (specifically
-C<HEADER> and C<SESSION> types) that must be available immediately, rather than
-lazy-loaded.
+ # Route: /user/:id
+ # URL: /user/123
+ # Template: user_profile.roc
 
-=head1 AUTHOR
+ <var $input.id>  <!-- prints: 123 -->
 
-Jay Sridhar
+=head1 ARCHITECTURE
 
-Rob Lauer - <bigfoot@cpan.org>
+This module has been refactored to use L<Bedrock::Bootstrap> for
+initialization. The separation is:
+
+=head2 Apache::Bedrock (HTTP-specific)
+
+=over 4
+
+=item * ETag-based caching
+
+=item * Apache log level configuration
+
+=item * Content type validation
+
+=item * File permission checking
+
+=item * URL routing
+
+=item * HTTP redirect handling
+
+=item * Response delivery
+
+=back
+
+=head2 Bedrock::Bootstrap (Generic)
+
+=over 4
+
+=item * Configuration loading
+
+=item * File path parsing
+
+=item * Environment setup
+
+=item * Context creation
+
+=item * TagX initialization
+
+=item * BLM loading
+
+=back
+
+This separation enables:
+
+=over 4
+
+=item * Code reuse across environments (web, shell, miniserver)
+
+=item * Independent testing of initialization logic
+
+=item * Clearer responsibilities
+
+=item * Easier maintenance
+
+=back
+
+=head1 MIGRATION FROM OLD CODE
+
+If you have code that directly uses C<init_tagx()>, C<load_startup_modules()>,
+or C<pre_bind_module()>, these functions are deprecated but still work.
+
+However, for new code, use L<Bedrock::Bootstrap> directly:
+
+ # Old way (deprecated)
+ my $tx = Apache::Bedrock::init_tagx(...);
+
+ # New way
+ my $bootstrap = Bedrock::Bootstrap->new(request => $r);
+ $bootstrap->initialize();
+ my $tx = $bootstrap->init_tagx(context => $ctx);
 
 =head1 SEE ALSO
 
-L<Apache::Request::CGI>, L<Apache::Request::Shell>, L<Bedrock>,
-L<Bedrock::Context>, L<Bedrock::Handler>
+L<Bedrock::Bootstrap>, L<Bedrock::Handler>, L<Bedrock::Context>,
+L<Bedrock::Router>, L<Text::TagX>
+
+=head1 AUTHOR
+
+TBC Development Group, LLC.
 
 =cut

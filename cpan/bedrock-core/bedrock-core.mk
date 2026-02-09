@@ -26,6 +26,7 @@ tmpdir := $(shell mktemp -d)
 .PHONY: cpan
 cpan: $(TARBALL)
 
+# note Bedrock::Core is a fabricated module from Bedrock.pm
 $(TARBALL): buildspec.yml
 	$(MAKE) -C $(top_builddir) prefix=/usr install DESTDIR=$(tmpdir)
 	trap 'rm -rf "$(tmpdir)"' EXIT INT TERM HUP; \

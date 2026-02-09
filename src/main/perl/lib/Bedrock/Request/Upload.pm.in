@@ -1,8 +1,32 @@
 package Bedrock::Request::Upload;
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
 
 use Role::Tiny;
 
-# Dependencies strictly for this Role
+use Bedrock qw(choose);
+use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::Hash;
 use Bedrock::Dump;
 use Digest::MD5;
@@ -11,6 +35,7 @@ use File::Temp qw(tempdir);
 use Crypt::CBC;
 use Carp qw(croak);
 use Scalar::Util qw(blessed);
+
 use Readonly;
 
 Readonly my $UPLOAD_BUFFER_SIZE => 4 * 1024;
@@ -23,11 +48,9 @@ requires 'debug';
 requires 'info';
 requires 'warn';
 
-#
-# The method is named 'upload_file' to maintain backward compatibility
-# with your existing code calling $ctx->upload_file
-#
+########################################################################
 sub upload_file {
+########################################################################
   my ( $self, $form_var, @args ) = @_;
 
   # ---------------------------------------------------------
@@ -42,10 +65,10 @@ sub upload_file {
   my $req    = $self->request_adapter;
   my $upload = $req->upload($form_var);
 
-  unless ($upload) {
+  if ( !$upload ) {
     # Check if it was just a missing field or empty upload
     $self->warn("upload_file: No file found for field '$form_var'");
-    die "upload_file upload error: No file received";
+    die "upload_file upload error: No file received\n";
   }
 
   my $fh = $upload->{fh};
@@ -56,38 +79,34 @@ sub upload_file {
   my $md5_digest = Digest::MD5->new->addfile($fh)->hexdigest;
   $fh->seek( 0, 0 );
 
-  my $platform = $req->param('platform') || '';
+  my $platform = $req->param('platform') || $EMPTY;
 
-  $options->{path} //= $self->config->{UPLOAD_PATH} // tempdir( CLEANUP => 1 );
+  $options->{path} //= $self->config->{UPLOAD_PATH} // tempdir( CLEANUP => $TRUE );
 
   $self->debug( 'upload_file options: ' . Bedrock::Dump::compact($options) );
 
   # Content-Type Validation
   $options->{'content-type'} //= $options->{'Content-type'};
+  my $content_type = $options->{'content-type'};
 
-  if ( $options->{'content-type'} ) {
-    my $allowed_ref
-      = ref $options->{'content-type'} eq 'ARRAY'
-      ? $options->{'content-type'}
-      : [ $options->{'content-type'} ];
+  if ($content_type) {
+    my $allowed_ref = is_array($content_type) ? $content_type : [$content_type];
+    $self->debug( sprintf 'upload_file acceptable content-types: %s', join ', ', @{$allowed_ref} );
 
-    $self->debug( "upload_file acceptable content-types: " . join( ', ', @$allowed_ref ) );
-
-    if ( !grep { $_ eq $upload->{type} } @$allowed_ref ) {
-      die sprintf 'upload_file content_type error: uploading (%s), must be one of (%s)',
-        $upload->{type}, join( ', ', @$allowed_ref );
-    }
+    die sprintf 'upload_file content_type error: uploading (%s), must be one of (%s)',
+      $upload->{type}, join ', ', @{$allowed_ref}
+      if !grep { $_ eq $upload->{type} } @{$allowed_ref};
   }
 
   # Windows Path Handling (Legacy IE/Edge)
-  if ( ( $platform && $platform =~ /win/i ) || $upload->{filename} =~ /^[a-z]:\\/i ) {
+  if ( ( $platform && $platform =~ /win/xsmi ) || $upload->{filename} =~ /^[[:lower:]]:\\/ixsm ) {
     fileparse_set_fstype('MSWin32');
   }
   else {
     fileparse_set_fstype('Unix');
   }
 
-  my ( $name, $path, $ext ) = fileparse( $upload->{filename}, qr/[.][^.]*/ );
+  my ( $name, $path, $ext ) = fileparse( $upload->{filename}, qr/[.][^.]*/xsm );
 
   # Prepare Directory
   if ( !-d $options->{path} ) {
@@ -95,21 +114,36 @@ sub upload_file {
       or die "unable to create path: $options->{path}";
   }
 
-  if ( !-w $options->{path} ) {
-    die "unable to write to path: $options->{path}";
-  }
+  die "unable to write to path: $options->{path}"
+    if !-w $options->{path};
 
   my $upload_filename = $options->{filename} || ( $name . $ext );
-  my $dest_file       = "$options->{path}/$upload_filename";
 
-  $self->info( "upload_file processing: file => [$dest_file], content-type => [" . $upload->{type} . "]" );
-  $self->info( "upload_file processing: file => [$dest_file], content-type => [" . ( $upload->{type} // 'unknown' ) . "]" );
+  my $dest_file = sprintf '%s/%s', $options->{path}, $upload_filename;
+
+  $self->info( sprintf "upload_file processing: file => [%s], content-type => [%s]\n",
+    $dest_file, $upload->{type} // 'unknown' );
+
   # Size Limits
-  my $maxsize = $options->{maxsize};
-  if ($maxsize) {
-    $maxsize *= 1024            if $maxsize =~ s/k$//i;
-    $maxsize *= ( 1024 * 1024 ) if $maxsize =~ s/m$//i;
-  }
+  my $maxsize = choose {
+    my $maxsize = $options->{maxsize};
+
+    return
+      if !$maxsize;
+
+    $maxsize =~ s/[km]//ixsm;
+
+    die "maxsize must be an integer\n"
+      if $maxsize !~ /\A\d+\z/xsm;
+
+    return $maxsize * 1024
+      if $options->{maxsize} =~ /k\z/xsmi;
+
+    return $maxsize * 1024 * 1024
+      if $options->{maxsize} =~ /m\z/xmsi;
+
+    return;
+  };
 
   # Encryption Setup
   my $cipher;
@@ -125,22 +159,29 @@ sub upload_file {
   }
 
   # Write File
-  open my $out_fh, '>', $dest_file or die "could not open $dest_file for writing";
+  open my $out_fh, '>', $dest_file ## no critic
+    or die "could not open $dest_file for writing\n";
 
   my $total = 0;
-  while ( my $bytes = read( $fh, my $buffer, $UPLOAD_BUFFER_SIZE ) ) {
+  while ( my $bytes = read $fh, my $buffer, $UPLOAD_BUFFER_SIZE ) {
     $total += $bytes;
     die "File size limit reached.\n" if $maxsize && $total >= $maxsize;
 
     print {$out_fh} ( $cipher ? $cipher->crypt($buffer) : $buffer );
   }
-  print {$out_fh} $cipher->finish if $cipher;
+
+  if ($cipher) {
+    print {$out_fh} $cipher->finish;
+  }
+
   close $out_fh;
 
-  return unless -s $dest_file;
+  return
+    if !-s $dest_file;
 
   # Stats Return
   my %stats;
+
   my @file_info = stat $dest_file;
   @stats{qw(dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks)} = @file_info;
 
@@ -150,7 +191,7 @@ sub upload_file {
     file           => $dest_file,
     $form_var      => "$name$ext",
     'content-type' => $upload->{type},
-    cipher         => $options->{cipher} // '',
+    cipher         => $options->{cipher} // $EMPTY,
   );
 }
 

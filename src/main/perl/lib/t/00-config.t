@@ -367,7 +367,8 @@ subtest 'get_module_config' => sub {
 
   my $input = $config->get_module_config('Buzz');
 
-  isa_ok( $input, 'Bedrock::Hash' ) or diag( Dumper( [ $input, $config ] ) );
+  isa_ok( $input, 'Bedrock::Hash' )
+    or diag( Dumper( [ $input, $config ] ) );
 
   ok( exists $input->{foo} && $input->{foo} eq 'bar', 'retrieved config object' )
     or diag( Dumper( [ $input, $config ] ) );

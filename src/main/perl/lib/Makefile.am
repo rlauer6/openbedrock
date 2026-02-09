@@ -78,8 +78,7 @@ perl5bedrocklsplib_DATA = \
 BEDROCK_LSP = $(perl5bedrocklsplib_DATA:.pm=.pm.in)
 
 perl5lib_DATA = \
-    Bedrock.pm \
-    bedrock_handler_common.pm
+    Bedrock.pm
 
 perl5bedrocklib_DATA = \
     Bedrock/Application.pm \
@@ -87,6 +86,7 @@ perl5bedrocklib_DATA = \
     Bedrock/BedrockCGI.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
+    Bedrock/Bootstrap.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Cache.pm \
     Bedrock/Context.pm \
@@ -150,8 +150,6 @@ perl5bedrockapachelib_DATA = \
 BEDROCK_APACHE = \
     Bedrock/Apache/Bedrock.pm.in \
     Bedrock/Apache/BedrockAuthenticate.pm.in \
-    Bedrock/Apache/BedrockAutocomplete.pm.in \
-    Bedrock/Apache/BedrockDocs.pm.in \
     Bedrock/Apache/BedrockForm.pm.in \
     Bedrock/Apache/BedrockModPerl.pm.in \
     Bedrock/Apache/BedrockSessionFiles.pm.in \
@@ -391,7 +389,6 @@ BLM_STARTUP=$(perl5blmstartuplib_DATA:.pm=.pm.in)
 
 PERL_PM = \
     Bedrock.pm.in \
-    bedrock_handler_common.pm.in \
     $(BEDROCK) \
     $(BEDROCK_APPLICATION) \
     $(BEDROCK_APACHE) \
@@ -496,7 +493,6 @@ testsdir = $(datadir)/bedrock/tests/lib
 ALL_TESTS = \
     t/00-application.t \
     t/00-array.t \
-    t/00-autocomplete.t \
     t/00-bedrock-application-plugin.t \
     t/00-bedrock.t \
     t/00-bedrock-xml.t \
