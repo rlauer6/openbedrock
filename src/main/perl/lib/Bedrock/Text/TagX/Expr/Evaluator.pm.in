@@ -1,0 +1,422 @@
+package TagX::Expr::Evaluator;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Bedrock qw(:booleans);
+use Bedrock::Constants qw(:chars :booleans);
+use Bedrock::RegExp;
+
+use Cwd;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use Scalar::Util qw(reftype looks_like_number blessed);
+use version;
+
+use Role::Tiny;
+
+our $VERSION = '@PACKAGE_VERSION@'; ## no critic
+
+########################################################################
+sub file_test {
+########################################################################
+  my ( $test, $file ) = @_;
+
+  if ( $file =~ /^(\S*)/xsm ) {
+    $file = $1;
+  }
+  else {
+    die "no filename specified: usage: filename --file file-test-op\n";
+  }
+
+  for ($file) {
+    /^\~([^~]*)$/xsm && do {
+      $file = sprintf '%s/%s', getcwd(), $1;
+      last;
+    };
+
+    /^[^\/~]/xsm && do {
+      $file = sprintf '%s/%s', ( $ENV{DOCUMENT_ROOT} // $DOT ), $file;
+      last;
+    };
+  }
+
+  if ( $test =~ /^-?([rwxoRWXOezsfdlpSbctugkTBMAC])/xsm ) {
+    my $test_str = sprintf '%s "%s"', $test, $file;
+
+    return eval $test_str; ## no critic (ProhibitStringyEval)
+  }
+  else {
+    die "invalid file test operation\n";
+  }
+}
+
+########################################################################
+sub evaluate {
+########################################################################
+  my ( $self, $args, $context, $tx ) = @_;
+
+  if ( @{$args} == 1 ) {
+    return $args->[0];
+  }
+  elsif ( @{$args} == 2 ) {
+
+    # unary op
+    my ( $op, $v ) = @{$args};
+    for ($op) {
+
+      $_ eq '--not' and return not $v;
+
+      if ( $_ eq '--exists' ) {
+        my $what = $self->{'__argv'}->[1];
+
+        if ( ref($what) eq 'TagX::Term::Var' ) {
+
+          return defined $what->exists( @{$context} ) ? $TRUE : $FALSE;
+        }
+        elsif ( ref $what ) {
+          return $TRUE;
+        }
+        else {
+          return defined $v;
+        }
+      }
+
+      $self->get_logger->trace(
+        sub {
+          sprintf "op: %s\narg: %s\nref arg: %s\n", $op, Dumper( [$v] ), ref $v;
+        }
+      );
+
+      $_ eq '--cached'  && return $tx->is_cached($v);
+      $_ eq '--object'  && return is_hash($v);
+      $_ eq '--hash'    && return is_hash($v);
+      $_ eq '--blm'     && return ref($v) =~ /^blm/xsmi;
+      $_ eq '--plugin'  && return ref($v) =~ /^blm/xsmi;
+      $_ eq '--array'   && return is_array($v);
+      $_ eq '--scalar'  && return !ref $v;
+      $_ eq '--ref'     && return ref $v;
+      $_ eq '--blessed' && return blessed($v);
+      $_ eq '--defined' && return defined $v;
+
+      my $error = "invalid unary operator in expression: $_";
+      $self->get_logger->error($error);
+
+      die "$error\n";
+    }
+  }
+  elsif ( @{$args} == 3 ) {
+    my ( $lhs, $cond, $rhs ) = @{$args};
+
+    $self->get_logger->trace( sprintf 'lhs: %s cond %s rhs: %s', map { defined $_ ? $_ : '<undef>' } ( $lhs, $cond, $rhs ) );
+
+    my $ref = ref $lhs;
+    {
+      no warnings qw/uninitialized/; ## no critic (ProhibitNoWarnings)
+
+      for ( lc $cond ) {
+        if ( looks_like_number($lhs) && looks_like_number($rhs) ) {
+          $_ eq '--gt' and return $lhs > $rhs;
+          $_ eq '--ge' and return $lhs >= $rhs;
+          $_ eq '--lt' and return $lhs < $rhs;
+          $_ eq '--le' and return $lhs <= $rhs;
+          $_ eq '--eq' and return $lhs == $rhs;
+          $_ eq '--ne' and return $lhs != $rhs;
+        }
+        else {
+          $_ eq '--gt'   and return $lhs gt $rhs;
+          $_ eq '--ge'   and return $lhs ge $rhs;
+          $_ eq '--lt'   and return $lhs lt $rhs;
+          $_ eq '--le'   and return $lhs le $rhs;
+          $_ eq '--eq'   and return $lhs eq $rhs;
+          $_ eq '--ne'   and return $lhs ne $rhs;
+          $_ eq '--file' and return file_test( $lhs, $rhs );
+        }
+
+        $_ eq '--and' && return $lhs && $rhs;
+        $_ eq '--or' && return $lhs || $rhs;
+
+        # --ref(type)
+        if ( $_ =~ /^--ref/xsm ) {
+          $rhs = regexp_compile($rhs);
+
+          $self->get_logger->trace("--ref(type): $_, $lhs, $rhs");
+
+          my $thing = $_ eq '--ref' ? ref($lhs) : reftype($lhs);
+          $thing //= 'SCALAR';
+
+          if ( ref($rhs) eq 'Regexp' ) {
+            return $thing =~ $rhs;
+          }
+          else {
+            return $thing eq $rhs;
+          }
+        }
+
+        if ( $_ eq '--re' ) {
+          ## no critic (ProhibitStringyEval, RequireInterpolationOfMetachars))
+          my $re = regexp_compile($rhs);
+
+          # we really only support >= 5.10 anyway
+          if ( version->parse($PERL_VERSION) >= version->parse('v5.10') ) {
+            if ( $lhs =~ $re ) {
+
+              my $capture_group = regexp_capture_group($self);
+
+              return $lhs =~ $re ? ( 1, $capture_group ) : undef;
+            }
+            else {
+              return $FALSE;
+            }
+          }
+          else {
+            return $lhs =~ $re;
+          }
+        }
+
+        if ( $_ eq '--exists' ) {
+          die "invalid argument for '--exists': HASH --exists KEY\n"
+            if !is_hash($lhs);
+
+          return ( exists $lhs->{$rhs} ) ? $TRUE : $FALSE;
+
+        }
+      }
+
+      die "invalid binary operator in expression: [$_]\n";
+    }
+  }
+  else {
+    die sprintf "invalid number of args(%d) in expression.\n", scalar @{$args};
+  }
+
+  return $FALSE;
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+TagX::Expr::Evaluator - Role for evaluating Bedrock boolean
+expressions
+
+=head1 SYNOPSIS
+
+ package TagX::TAG::WithBody::If;
+ 
+ use Role::Tiny::With;
+ with 'TagX::Expr::Evaluator';
+ 
+ sub finalize {
+   my ($self, $tx, @context) = @_;
+   my @argv = $self->parse_options(\%options, @context);
+   
+   # Evaluate expression using role method
+   my ($v, $cg) = $self->evaluate(\@argv, \@context, $tx);
+   
+   if ($v) {
+     # execute true branch
+   }
+ }
+
+=head1 DESCRIPTION
+
+This role provides expression evaluation capabilities for Bedrock tags that
+need to evaluate boolean expressions. It supports unary operators (--not,
+--exists, --defined, etc.), binary operators (--eq, --gt, --and, --re, etc.),
+and file test operations.
+
+The role is consumed by tags like C<E<lt>ifE<gt>>, C<E<lt>unlessE<gt>>, and
+C<E<lt>iifE<gt>> to provide consistent expression evaluation across different
+tag types.
+
+=head1 METHODS
+
+=head2 evaluate
+
+ my ($result, $capture_groups) = $self->evaluate(\@args, \@context, $tx);
+
+Evaluates a Bedrock boolean expression.
+
+=head3 Arguments
+
+=over 4
+
+=item args
+
+Arrayref of expression arguments. Can be:
+
+=over 4
+
+=item * Single value: C<[$value]> - returns truthiness of value
+
+=item * Unary operation: C<[$operator, $value]> - e.g., C<['--not', $foo]>
+
+=item * Binary operation: C<[$lhs, $operator, $rhs]> - e.g., C<[$foo, '--eq', 'bar']>
+
+=back
+
+=item context
+
+Arrayref of context frames for variable resolution.
+
+=item tx
+
+TagX parser object for accessing cached values and regex capture groups.
+
+=back
+
+=head3 Returns
+
+=over 4
+
+=item result
+
+Boolean result of expression evaluation (true/false).
+
+=item capture_groups
+
+Hashref of regex capture groups (only for C<--re> operator), undef otherwise.
+
+=back
+
+=head3 Supported Operators
+
+=head4 Unary Operators
+
+ --not      ! value
+ --exists   defined and exists check
+ --defined  defined check
+ --cached   check if value is cached
+ --array    is array object
+ --hash     is hash object
+ --object   is hash object (deprecated, use --hash)
+ --scalar   is scalar value
+ --ref      has reference
+ --blessed  is blessed object
+ --blm      is BLM (deprecated, use --plugin)
+ --plugin   is plugin/BLM
+
+=head4 Binary Operators
+
+ --eq, --ne  string/numeric equality
+ --gt, --ge  greater than/equal
+ --lt, --le  less than/equal
+ --and       logical and
+ --or        logical or
+ --re        regex match
+ --ref       reference type check
+ --reftype   reftype check
+ --exists    hash key existence
+ --file      file test operation
+
+=head2 file_test
+
+ my $result = file_test($test_op, $filename);
+
+Performs Perl file test operations.
+
+=head3 Arguments
+
+=over 4
+
+=item test_op
+
+File test operator (e.g., '-e', '-r', '-w', '-d', '-f', '-s')
+
+=item filename
+
+Filename to test. Path resolution:
+
+=over 4
+
+=item * Starts with C</> - absolute path
+
+=item * Starts with C<~> - relative to current working directory
+
+=item * Otherwise - relative to DOCUMENT_ROOT
+
+=back
+
+=back
+
+=head3 Returns
+
+Result of file test operation (boolean or file size for C<-s>).
+
+=head1 EXAMPLES
+
+ # In a tag using the role:
+ package TagX::TAG::NoBody::Iif;
+ 
+ use Role::Tiny::With;
+ with 'Bedrock::Logger';
+ with 'TagX::Expr::Evaluator';
+ 
+ sub finalize {
+   my ($self, $tx, @context) = @_;
+   my @argv = $self->parse_options(\%options, @context);
+   
+   # Simple truthiness
+   my ($result) = $self->evaluate([$argv[0]], \@context, $tx);
+   
+   # Binary comparison
+   my ($result) = $self->evaluate([$foo, '--eq', 'bar'], \@context, $tx);
+   
+   # Regex with capture groups
+   my ($result, $captures) = $self->evaluate([$str, '--re', '/(\w+)/'], \@context, $tx);
+   if ($result && $captures) {
+     # $captures->{_1} contains first capture group
+   }
+ }
+
+=head1 NOTES
+
+=over 4
+
+=item * Comparisons are numeric if both operands look like numbers, otherwise string
+
+=item * Regex capture groups are returned as hashref with keys like C<_1>, C<_2>, etc.
+
+=item * Named capture groups are also supported
+
+=item * The C<--ref> and C<--reftype> operators accept both strings and regexes
+
+=item * File test operations use Perl's built-in file test operators
+
+=back
+
+=head1 SEE ALSO
+
+L<TagX::TAG::WithBody::If>, L<TagX::TAG::NoBody::Iif>, L<Bedrock::RegExp>
+
+=head1 AUTHOR
+
+Rob Lauer - rlauer6@comcast.net
+
+=cut

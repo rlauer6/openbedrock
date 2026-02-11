@@ -13,11 +13,12 @@ function init_sqlite_session {
         cp $SQLITE_DIST_DIR/sqlite.xml /var/www/bedrock/config.d/startup
     fi
 
-    dnky-config -r -i /var/www/bedrock/config/tagx.xml BEDROCK_SESSION_MANAGER SQLiteSession
+    /usr/src/app/local/bin/dnky-config.pl -r -i /var/www/bedrock/config/tagx.xml BEDROCK_SESSION_MANAGER SQLiteSession
 
     if ! test -e /var/lib/bedrock/bedrock.db; then
         echo "Creating new bedrock.db database and session table..." 2>&1
-        create-sqlite-session-table
+        mkdir -p /var/lib/bedrock
+        sqlite3 /var/lib/bedrock/bedrock.db <$SQLITE_DIST_DIR/create-session-table.sql
         chown www-data:www-data -R /var/lib/bedrock
     fi
 }
@@ -34,6 +35,8 @@ function init_mysql_session {
     if test -e /usr/local/share/setup.sql; then
         mysql -h $MYSQL_HOST -u root -p"$MYSQL_ROOT_PASSWORD" < /usr/local/share/setup.sql
     fi
+
+    /usr/src/app/local/bin/dnky-config.pl -r -i /var/www/bedrock/config/tagx.xml BEDROCK_SESSION_MANAGER UserSession
 }
 
 ########################################################################
@@ -46,9 +49,9 @@ export PATH=$APP_PATH/local/bin:$PATH
 
 env
 
-if [[ "$BEDROCK_SESSION_MANAGER" = mysql ]]; then
+if [[ "$BEDROCK_SESSION_MANAGER" = "UserSession" ]]; then
     init_mysql_session;
-elif [[ "$BEDROCK_SESSION_MANAGER" = sqlite ]]; then
+elif [[ "$BEDROCK_SESSION_MANAGER" = "SQLiteSession" ]]; then
     init_sqlite_session;
 else
     echo "WARNING: no session available"

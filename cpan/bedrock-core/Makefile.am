@@ -53,6 +53,7 @@ PACKAGE_MODULES = \
     Bedrock/Cache/Shareable.pm \
     Bedrock/BedrockConfig.pm \
     Bedrock/BedrockJSON.pm \
+    Bedrock/Bootstrap.pm \
     Bedrock/BufferStream.pm \
     Bedrock/Constants.pm \
     Bedrock/DBI/Utils.pm \
@@ -186,7 +187,10 @@ PACKAGE_MODULES = \
 PACKAGE_EXE = \
     bin/bedrock.pl \
     bin/bedrock \
-    bin/bedrock-lsp.pl
+    bin/bedrock-lsp.pl \
+    bin/bedrock-runner.pl \
+    bin/bedrock-test.pl \
+    bin/dnky-config.pl
 
 include $(srcdir)/bedrock-core.mk
 

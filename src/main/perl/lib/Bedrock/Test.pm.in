@@ -239,7 +239,7 @@ sub close { ## no critic (ProhibitBuiltinHomonyms, ProhibitAmbiguousNames)
 package Bedrock::Test;
 ########################################################################
 
-use Bedrock qw(slurp_file);  # keep this first
+use Bedrock qw(slurp_file :booleans);  # keep this first
 use Bedrock::BedrockConfig;
 use Bedrock::Constants qw(:chars :booleans :defaults);
 use Bedrock::Bootstrap;
@@ -267,8 +267,9 @@ sub run {
 ########################################################################
   my ( $tests, %options ) = @_;
 
-  my $name   = $options{name};
-  my $config = $options{config} || config();
+  my ( $name, $config ) = @options{qw(name config)};
+
+  $config //= config();
 
   if ( !ref $tests ) {
     $tests = load( $tests, %options );
@@ -277,11 +278,8 @@ sub run {
       if !ref $tests;
   }
 
-  if ( !ref $tests || reftype($tests) ne 'ARRAY' ) {
-    die "test object is not an array\n";
-  }
-
-  plan tests => exists $options{plan} ? $options{plan} : scalar @{$tests};
+  die "test object is not an array\n"
+    if !is_array($tests);
 
   foreach my $t ( @{$tests} ) {
     check_test($t);
@@ -350,7 +348,7 @@ sub run {
     # default for all results is equal to
     my $op = $t->{op} || 'is';
 
-    if ( ref $t->{result} && reftype( $t->{result} ) eq 'ARRAY' ) {
+    if ( is_array( $t->{result} ) ) {
       $op = 'any';
     }
 
@@ -395,7 +393,7 @@ sub run {
 
         my @expected = ref( $t->{result} ) ? @{ $t->{result} } : $t->{result};
 
-        return ok( ( any { $_ eq $got } @expected ), $t->{name} );
+        return ok( ( any { $got =~ /$_/ } @expected ), $t->{name} );
       },
 
       is => sub {
@@ -445,6 +443,15 @@ sub run {
 }
 
 ########################################################################
+sub finalize {
+########################################################################
+
+  done_testing;
+
+  return;
+}
+
+########################################################################
 sub config {
 ########################################################################
   my ($config_path) = @_;
@@ -470,23 +477,20 @@ sub load {
   }
 
   my $tests = eval {
-    if ( exists $options{yaml} && $options{yaml} ) {
-      return [ LoadFile($file) ];
-    }
-    else {
+    return [ LoadFile($file) ]
+      if exists $options{yaml} && $options{yaml};
 
-      local $RS = undef;
+    local $RS = undef;
 
-      open my $fh, '<', $file
-        or croak "could not open $file";
+    open my $fh, '<', $file
+      or croak "could not open $file";
 
-      my $tests = <$fh>;
+    my $tests = <$fh>;
 
-      close $fh
-        or croak "could not close $file";
+    close $fh
+      or croak "could not close $file";
 
-      return JSON->new->utf8->relax->decode($tests);
-    }
+    return JSON->new->utf8->relax->decode($tests);
   };
 
   die "unable to load test file [$file]: $EVAL_ERROR"
@@ -515,7 +519,6 @@ sub bedrock {
 
   $tx->param( %param, config => $config );
 
-  # NEW: Create Bootstrap
   my $bootstrap = Bedrock::Bootstrap->new( request => $ctx->request, );
 
   $bootstrap->config($config);
@@ -568,6 +571,16 @@ sub check_test {
 
     die "$EVAL_ERROR"
       if !$test->{test} || $EVAL_ERROR;
+  }
+
+  my $param_list = $test->{param};
+
+  # promote hashes & arrays to Bedrock objects
+  foreach my $k ( keys %{ $test->{param} } ) {
+    my $v = $param_list->{$k};
+    next if !ref $v;
+
+    bless $v, sprintf 'Bedrock::%s', ucfirst lc reftype $v;
   }
 
   return $TRUE;

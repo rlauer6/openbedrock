@@ -16,13 +16,15 @@ POD2MAN = /usr/bin/pod2man
 
 PERLSCRIPTS = \
     bedrock.pl.in \
+    bedrock-cache.pl.in \
     bedrock-dist.pl.in \
-    bedrock-plugin.pl.in \
+    bedrock-lsp.pl.in \
     bedrock-miniserver.pl.in \
     bedrock-model.pl.in \
-    bedrock-lsp.pl.in \
+    bedrock-plugin.pl.in \
     bedrock-model-importer.pl.in \
-    bedrock-cache.pl.in \
+    bedrock-test.pl.in \
+    bedrock-runner.pl.in \
     brxml2json.pl.in \
     bedrock-site-install.pl.in \
     dnky-config.pl.in \

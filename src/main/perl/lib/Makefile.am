@@ -36,6 +36,8 @@ perl5bedrocktemplatelibdir    		  = $(perl5libdir)/Bedrock/Template
 perl5bedrocktestlibdir         		  = $(perl5libdir)/Bedrock/Test
 perl5bedrocktextlibdir         		  = $(perl5libdir)/Bedrock/Text
 perl5bedrocktexttagxlibdir     		  = $(perl5libdir)/Bedrock/Text/TagX
+perl5bedrocktexttagxexprlibdir            = $(perl5libdir)/Bedrock/Text/TagX/Expr
+
 perl5bedrocktexttagxtaglibdir  		  = $(perl5libdir)/Bedrock/Text/TagX/TAG
 perl5bedrocktexttagxtagnobodylibdir   	  = $(perl5libdir)/Bedrock/Text/TagX/TAG/NoBody
 perl5bedrocktexttagxtagwithbodylibdir 	  = $(perl5libdir)/Bedrock/Text/TagX/TAG/WithBody
@@ -199,7 +201,10 @@ perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/TAG.pm \
     Bedrock/Text/TagX/Term.pm
 
-BEDROCK_TEXT_TAGX=$(perl5bedrocktexttagxlib_DATA:.pm=.pm.in)
+perl5bedrocktexttagxexprlib_DATA = \
+    Bedrock/Text/TagX/Expr/Evaluator.pm
+
+BEDROCK_TEXT_TAGX_EXPR=$(perl5bedrocktexttagxexprlib_DATA:.pm=.pm.in)
 
 perl5bedrocktexttagxtaglib_DATA = \
     Bedrock/Text/TagX/TAG/NoBody.pm \
@@ -411,6 +416,7 @@ PERL_PM = \
     $(BEDROCK_TEST) \
     $(BEDROCK_TEXT) \
     $(BEDROCK_TEXT_TAGX) \
+    $(BEDROCK_TEXT_TAGX_EXPR) \
     $(BEDROCK_TEXT_TAGX_TAG) \
     $(BEDROCK_TEXT_TAGX_TAG_NOBODY) \
     $(BEDROCK_TEXT_TAGX_TAG_WITHBODY) \

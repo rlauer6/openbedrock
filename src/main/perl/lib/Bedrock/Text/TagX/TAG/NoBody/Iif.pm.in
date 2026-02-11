@@ -1,7 +1,9 @@
+package TagX::TAG::NoBody::Iif;
 
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -19,10 +21,14 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-package TagX::TAG::NoBody::Iif;
-
 use strict;
 use warnings;
+
+use Data::Dumper;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+with 'TagX::Expr::Evaluator';
 
 use parent qw (Exporter TagX::TAG::NoBody);
 
@@ -35,12 +41,21 @@ sub finalize {
 
   my @argv = $self->parse_options( \%options, @context );
 
+  # print {*STDERR} Dumper( [ argv => \@argv ] );
+
   $self->dump_options( \%options, @argv );
 
-  die "usage: <iif expr value-if-true value-if-false>\n"
+  die "usage: <iif expr value-if-true [value-if-false]>\n"
     if @argv < 2;
 
-  return $tx->out_handle->print( $argv[0] ? $argv[1] : $argv[2] );
+  # Pop consequent and alternative from END
+  my $alternative = @argv >= 3 ? pop @argv : q{};
+  my $consequent  = pop @argv;
+
+  # Evaluate expression (everything remaining in @argv)
+  my ( $v, $cg ) = $self->evaluate( \@argv, \@context, $tx );
+
+  return $tx->out_handle->print( $v ? $consequent : $alternative );
 }
 
 1;
@@ -55,7 +70,7 @@ __END__
 
 =head1 PURPOSE
 
-An inline if tag - implements a ternary operator.
+An inline if tag - implements a ternary operator with full expression evaluation.
 
 =head1 SYNTAX
 
@@ -63,11 +78,66 @@ An inline if tag - implements a ternary operator.
 
 =head1 DESCRIPTION
 
-Tag for selecting between two alternate values.  This is an output tag!
+Tag for selecting between two alternate values based on expression
+evaluation.  This is an output tag!
 
- <iif $foo this that>
+The first argument(s) form a Bedrock boolean expression (supporting
+all operators like --eq, --gt, --and, --re, etc.). The expression is
+evaluated and if true, the second argument is output; otherwise the
+third argument is output.
 
- <input tpe="checkbox" name="cb1" value="1" <iif $cb1 checked>>
+=head1 EXAMPLES
+
+ # Simple truthiness
+ <iif $foo "yes" "no">
+
+ # Expression with operator
+ <iif $count --gt 5 "many" "few">
+ 
+ # Multiple operators
+ <iif $user --and $user.admin "Admin" "User">
+ 
+ # String comparison
+ <iif $status --eq "active" "✓" "✗">
+ 
+ # Regex matching
+ <iif $email --re '@gmail\.com$' "Gmail" "Other">
+ 
+ # In HTML attributes
+ <input type="checkbox" name="cb1" value="1" <iif $cb1 "checked">>
+ 
+ # Nested expressions
+ <iif ($a --gt 10 --and $b --lt 5) "valid" "invalid">
+
+=head1 SUPPORTED OPERATORS
+
+C<E<lt>iifE<gt>> supports all Bedrock boolean expression operators:
+
+=head2 Unary Operators
+
+ --not      ! value
+ --exists   defined and exists check
+ --defined  defined check
+ --array    is array object
+ --hash     is hash object
+ --scalar   is scalar value
+ --ref      has reference
+ --blessed  is blessed object
+ --plugin   is plugin/BLM
+ --cached   is cached value
+
+=head2 Binary Operators
+
+ --eq, --ne  equality (string or numeric)
+ --gt, --ge  greater than/equal
+ --lt, --le  less than/equal
+ --and       logical and
+ --or        logical or
+ --re        regex match
+ --ref       reference type check
+ --reftype   reftype check
+ --exists    hash key existence
+ --file      file test operation
 
 =head1 OPTIONS
 
@@ -75,14 +145,42 @@ None.
 
 =head1 NOTES
 
-This is equivalent to:
+=over 4
 
-  <if $this>that<else>other</if>
+=item * This is equivalent to C<E<lt>ifE<gt>> but returns a value instead of controlling flow
 
-...which may or may not be more readable.  TIMTOWTDI.
+=item * Comparisons are numeric if both operands look like numbers, otherwise string
+
+=item * Expressions can be arbitrarily complex using parentheses
+
+=item * The C<value-if-true> and C<value-if-false> are always the last two arguments
+
+=item * Everything before the last two arguments forms the expression
+
+=back
+
+=head1 COMPARISON
+
+This:
+
+  <iif $foo "that" "other">
+
+Is equivalent to:
+
+  <if $foo>that<else>other</if>
+
+But C<E<lt>iifE<gt>> is more concise for inline value selection.
+
+This:
+
+  <iif $status --eq "active" "✓" "✗">
+
+Is equivalent to:
+
+  <if $status --eq "active">✓<else>✗</if>
 
 =head1 SEE ALSO
 
-C<E<lt>ifE<gt>>, C<E<lt>unlessE<gt>>
+C<E<lt>ifE<gt>>, C<E<lt>unlessE<gt>>, C<E<lt>caseE<gt>>, L<TagX::Expr::Evaluator>
 
 =cut

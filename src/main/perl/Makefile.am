@@ -121,7 +121,6 @@ testsdir = $(datadir)/bedrock/tests/perl
 
 dist_tests_DATA = \
     $(BEDROCK_TESTS) \
-    test-tag.pl \
     run-tests
 
 CLEANFILES = \

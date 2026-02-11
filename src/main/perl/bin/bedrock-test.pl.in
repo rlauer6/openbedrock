@@ -1,0 +1,224 @@
+package Bedrock::Test::Harness; ## no critic
+
+use strict;
+use warnings;
+
+use Bedrock qw(choose :booleans);
+use Bedrock::Constants qw(:booleans :chars);
+use Bedrock::Test;
+use Bedrock::LoadConfig qw(load_config);
+use Carp;
+use Cwd;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Find;
+use File::Spec;
+use File::Which;
+use List::Util qw(pairs);
+
+use TAP::Harness;
+
+use parent qw(CLI::Simple);
+
+caller or __PACKAGE__->main();
+
+our @CLEANUP_LINKS;
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  my $config_file = $self->get_config_file;
+
+  my $config = choose {
+    return {}
+      if !$config_file;
+
+    croak "ERROR: no such file: $config_file\n"
+      if !-f $config_file;
+
+    return load_config($config_file);
+  };
+
+  croak "ERROR: unable to load $config_file\n$EVAL_ERROR"
+    if !$config || $EVAL_ERROR;
+
+  $self->set_config($config);
+
+  my $env = $self->get_config->{env} // {};
+
+  foreach my $p ( pairs %{$env} ) {
+    my ( $k, $v ) = @{$p};
+    $ENV{$k} = $v; ## no critic
+  }
+
+  $ENV{BEDROCK_CONFIG_PATH} //= $self->get_bedrock_config_path;
+  $ENV{LOG_LEVEL}           //= $self->get_log_level;
+
+  my $runner = $self->get_runner ? File::Spec->rel2abs( $self->get_runner ) : which('bedrock-runner.pl');
+
+  croak "ERROR: could not find 'bedrock-runner.pl'\n"
+    if !$runner;
+
+  $self->set_runner($runner);
+
+  return $SUCCESS;
+}
+
+########################################################################
+sub cmd_run {
+########################################################################
+  my ($self) = @_;
+
+  $ENV{BEDROCK_CONFIG_PATH} //= cwd . 't/config';
+
+  warn "no BEDROCK_CONFIG_PATH found...you may have issues\n"
+    if !-d $ENV{BEDROCK_CONFIG_PATH};
+
+  my @tests = $self->_cmd_run_get_tests();
+
+  my @t_files;
+
+  foreach my $yml (@tests) {
+    my $t_file = $yml;
+    $t_file =~ s/[.]yml\z/.t/xsm;
+
+    my $link = File::Spec->rel2abs($t_file);
+    push @CLEANUP_LINKS, $link;
+
+    symlink $self->get_runner, $link;
+
+    push @t_files, $link;
+  }
+
+  my $harness = TAP::Harness->new( { verbosity => 1, lib => [qw(lib lib/Bedrock lib/Bedrock/Text)] } );
+
+  my $aggregator = $harness->runtests(@t_files);
+
+  return $aggregator->has_errors ? $TRUE : $FALSE;
+}
+
+########################################################################
+sub _cmd_run_get_tests {
+########################################################################
+  my ($self) = @_;
+
+  my ($test_file) = $self->get_args;
+
+  die "Test file(s) not found: $test_file\n"
+    if $test_file && !-e $test_file;
+
+  # TBD: allow directory, fetch list of test files
+  # TBD: if no $test_file tests must be specified in config
+  my $config = $self->get_config // {};
+
+  return ($test_file)
+    if $test_file;
+
+  my @tests;
+
+  if ( my $group = $self->get_group ) {
+    my @tests;
+    my $groups = $config->{groups} // {};
+
+    foreach ( @{$group} ) {
+      push @tests, @{ $groups->{$_} };
+    }
+
+    return @tests;
+  }
+
+  my $tests = $config->{tests};
+
+  return @tests
+    if is_array($tests);
+
+  $tests = File::Spec->rel2abs($tests);
+
+  return ($tests)
+    if -f $tests;
+
+  my @test_files;
+
+  find(
+    sub {
+      return if !/[.]yml$/xsm;
+      push @test_files, $File::Find::name;
+    },
+    $tests
+  );
+
+  print {*STDERR} Dumper( [ test_files => \@test_files ] );
+
+  return @test_files;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my @option_specs = qw(
+    help|h
+    config-file|c=s
+    bedrock-config-path|b=s
+    log-level|l=s
+    group|g=s@
+    runner|r=s
+  );
+
+  my %commands = (
+    default => \&cmd_run,
+    run     => \&cmd_run,
+  );
+
+  my @extra_options   = qw( config );
+  my $default_options = {
+    log_level => 'info',
+    runner    => 'bedrock-runner.pl',
+  };
+
+  my $cli = Bedrock::Test::Harness->new(
+    commands        => \%commands,
+    option_specs    => \@option_specs,
+    extra_options   => \@extra_options,
+    default_options => $default_options,
+  );
+
+  return $cli->run();
+}
+
+END {
+  foreach (@CLEANUP_LINKS) {
+    unlink $_;
+  }
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock:::Test::Harness
+
+=head1 SYNOPSIS
+
+ bedrock-test.pl [options] command
+
+=head1 USAGE
+
+=head2 Options
+
+=head2 Commands
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
+=head1 SEE ALSO
+
+L<Bedrock::Test>, L<Test::More>
+
+=cut

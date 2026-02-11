@@ -1,26 +1,86 @@
 #!/usr/bin/env perl
+package Bedrock::Test::Runner;
 
 use strict;
 use warnings;
 
-use File::Basename;
+use Bedrock::Test;
+use CLI::Simple::Constants qw(:booleans);
+use Cwd qw(abs_path cwd);
+use Data::Dumper;
 use English qw(-no_match_vars);
-use Cwd;
+use File::Basename qw(fileparse dirname);
+use File::Spec;
 
-use Bedrock::Test qw(run config);
+caller or __PACKAGE__->main;
+
+use parent qw(CLI::Simple);
 
 ########################################################################
-my ( $name, $path, $ext ) = fileparse( $PROGRAM_NAME, qr/[.][^.]+$/xsm );
+sub cmd_run {
+########################################################################
+  my ($self) = @_;
 
-my $test_path = $ENV{TEST_PATH} // cwd;
+  my ($test_file) = $self->get_args;
+  $test_file //= $PROGRAM_NAME;
 
-my $test_file = sprintf '%s/t/%s.yml', $test_path, $name;
+  my $abs_path = File::Spec->rel2abs($test_file);
 
-my $config = config( getcwd . '/t/config' );
+  my ( $name, $path, $ext ) = fileparse( $abs_path, qr/[.][^.]+$/xsm );
 
-$config->{LogLevel} = $ENV{LogLevel};
+  $test_file = sprintf '%s%s.yml', $path, $name;
 
-run( $test_file, yaml => 1, config => $config );
+  my $config_path = $ENV{BEDROCK_CONFIG_PATH} // sprintf '%s/t/config', cwd;
+
+  my $config = Bedrock::Test::config($config_path);
+
+  $config //= {};
+
+  if ( my $test_cfg = $ENV{BEDROCK_TEST_CONFIG} ) {
+    my $test_config = eval { load_config($test_cfg); };
+    # Apply overrides
+    foreach ( keys %{ $test_config->{overrides} // {} } ) {
+      $config->{$_} = $test_config->{overrides}->{$_};
+    }
+  }
+
+  $config->{LogLevel} //= $ENV{LogLevel};
+
+  Bedrock::Test::run( $test_file, yaml => $TRUE, config => $config );
+
+  Bedrock::Test::done_testing;
+
+  return 0;
+}
+
+########################################################################
+sub main {
+########################################################################
+  my %commands = (
+    run     => \&cmd_run,
+    default => \&cmd_run,
+  );
+
+  my @option_specs = qw(
+    config-path|c=s
+    help|h
+    log-level|l=s
+  );
+
+  my $default_options = {
+    config_path => $ENV{BEDROCK_CONFIG_PATH},
+    log_level   => $ENV{LOG_LEVEL},
+  };
+
+  my $cli = Bedrock::Test::Runner->new(
+    commands        => \%commands,
+    option_specs    => \@option_specs,
+    default_options => $default_options,
+  );
+
+  return $cli->run();
+
+}
 
 1;
 
