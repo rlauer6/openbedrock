@@ -84,6 +84,7 @@ PACKAGE_MODULES = \
     Bedrock/Request.pm \
     Bedrock/Request/Upload.pm \
     Bedrock/Role/Config.pm \
+    Bedrock/Role/TemplateHelper.pm \
     Bedrock/Router.pm \
     Bedrock/Serializer.pm \
     Bedrock/Serializer/BedrockXML.pm \
@@ -99,6 +100,7 @@ PACKAGE_MODULES = \
     Bedrock/Text/TagX.pm \
     Bedrock/Text/TagX/Error.pm \
     Bedrock/Text/TagX/Expr.pm \
+    Bedrock/Text/TagX/Expr/Evaluator.pm \
     Bedrock/Text/TagX/Func.pm \
     Bedrock/Text/TagX/Output.pm \
     Bedrock/Text/TagX/Parser.pm \

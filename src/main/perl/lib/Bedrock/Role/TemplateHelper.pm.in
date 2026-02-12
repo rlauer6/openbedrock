@@ -1,0 +1,172 @@
+package Bedrock::Role::TemplateHelper;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use English qw(-no_match_vars);
+use List::Util qw(pairs);
+use Scalar::Util qw(reftype);
+
+use Role::Tiny;
+
+########################################################################
+sub create_helper {
+########################################################################
+  my ( $self, %subs ) = @_;
+
+  my $class = sprintf '%s::_helper_', ref $self;
+
+  {
+    no strict 'refs'; ## no critic
+
+    foreach my $p ( pairs %subs ) {
+      my ( $name, $code ) = @{$p};
+
+      die "usage: create_helper(name => sub, ...)\n"
+        if !ref($code) || reftype($code) ne 'CODE';
+
+      my $sub_name = sprintf '%s::%s', $class, $name;
+
+      *{$sub_name} = $code;
+    }
+  }
+
+  return bless {}, $class;
+}
+
+1;
+
+__END__
+
+
+=pod
+
+=head1 NAME
+
+Bedrock::Role::TemplateHelper
+
+=head1 SYNOPSIS
+
+ use Role::Tiny::With;
+ with 'Bedrock::Role::TemplateHelper';
+
+ $self->create_helper( to_url => sub { ... } );
+
+=head1 DESCRIPTION
+
+Create a helper methods for use in templates.
+
+=head1 METHODS AND SUBROUTINES
+
+=head2 create_helper
+
+  my $helper = $self->create_helper( name => sub { ... }, ... );
+
+The C<create_helper> method provides a mechanism to inject custom
+logic into a Bedrock template without the overhead of creating a full
+Bedrock Plugin. By using this method, developers can keep templates
+focused on page construction and presentation while delegating
+algorithmic gymnastics to Perl closures.
+
+When invoked, the method dynamically injects the provided subroutines
+into a private I<_helper_> namespace unique to the calling class.
+This ensures that helpers defined in one service (e.g.,
+C<Bedrock::Service::DirectoryIndex>) do not collide with or overwrite
+helpers defined in another (e.g., C<Bedrock::Service::ServerStatus>).
+
+=head3 Implementation Details
+
+=over 4
+
+=item Isolation:
+
+Helpers are composed into a nested _helper_ package under the caller's
+namespace (e.g., C<MyService::_helper_>);
+
+=item Persistence:
+
+In persistent environments like the MiniServer, subroutines are
+re-assigned on every request to ensure closures capture the most
+recent lexical scope (such as request-specific mount points).  -
+Safety: The method enforces strict CODE reference checks and uses
+typeglob manipulation to safely update the symbol table at runtime.
+
+=back
+
+=head3 Best Practices
+
+=over 4
+
+=item Use Lexical Capturing
+
+Define helpers within the action method of your service to capture
+request-specific variables like $mount or $input, ensuring the helper
+is context-aware.
+
+=item Keep Logic Slim
+
+Helpers are intended for small-scale utility transformations; complex
+business logic that requires state should still be implemented as a
+formal Bedrock Plugin.
+
+=item Unique Naming
+
+While the _helper_ namespace provides isolation between different
+classes, avoid using generic names for the helper object itself in
+your template params (e.g., use 'index_util' instead of 'util') to
+improve template readability.
+
+=item Return Template-Ready Data
+
+Ensure your helper subroutines return strings or Bedrock-blessed
+objects (C<Bedrock::Array> or C<Bedrock::Hash>) so they can be used
+immediately by tags like <<var> or <foreach>.
+
+=back
+
+Example Usage:
+
+  # In your Bedrock::Service or CGI script
+  my $util = $self->create_helper(
+      to_url => sub {
+          my ( $self, $file ) = @_;
+          return sprintf '/public/%s/%s', $mount, $file;
+      }
+  );
+
+  # Pass the helper to the template
+  $self->parse( 'template.roc', util => $util );
+
+  # In your Bedrock template
+  <a href="<var $util.to_url($file)>">Download</a>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
+=head1 SEE ALSO
+
+L<Bedrock::Template>, L<Role::Tiny>
+
+=cut

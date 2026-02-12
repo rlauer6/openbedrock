@@ -55,6 +55,7 @@ EXCLUDE_LIST = \
     Bedrock/Plugin.pm \
     Bedrock/RegExp.pm \
     Bedrock/Role/Config.pm \
+    Bedrock/Role/TemplateHelper.pm \
     Bedrock/Serializer.pm \
     Bedrock/Serializer/BedrockXML.pm \
     Bedrock/Serializer/JSON.pm \

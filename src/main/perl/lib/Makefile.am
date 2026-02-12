@@ -201,6 +201,8 @@ perl5bedrocktexttagxlib_DATA = \
     Bedrock/Text/TagX/TAG.pm \
     Bedrock/Text/TagX/Term.pm
 
+BEDROCK_TEXT_TAGX=$(perl5bedrocktexttagxlib_DATA:.pm=.pm.in)
+
 perl5bedrocktexttagxexprlib_DATA = \
     Bedrock/Text/TagX/Expr/Evaluator.pm
 
@@ -283,11 +285,13 @@ BEDROCK_SERVICE=$(perl5bedrockservicelib_DATA:.pm=.pm.in)
 
 perl5bedrockrolelib_DATA = \
     Bedrock/Role/Config.pm \
-    Bedrock/Role/DocFinder.pm
+    Bedrock/Role/DocFinder.pm \
+    Bedrock/Role/TemplateHelper.pm
 
 perl5bedrockservicelib_DATA = \
     Bedrock/Service/Autocomplete.pm \
     Bedrock/Service/CLI.pm \
+    Bedrock/Service/DirectoryIndex.pm \
     Bedrock/Service/Docs.pm \
     Bedrock/Service/ServerStatus.pm
 

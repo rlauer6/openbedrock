@@ -1,0 +1,128 @@
+package Bedrock::Service::DirectoryIndex;
+
+use strict;
+use warnings;
+
+use Bedrock qw(choose);
+use Bedrock::Constants qw(:http);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Find;
+use File::Spec;
+use Number::Format qw(format_bytes);
+use Date::Format qw(strftime);
+
+use Role::Tiny::With;
+with 'Bedrock::Role::TemplateHelper';
+
+use parent qw(Bedrock::Service);
+
+caller or __PACKAGE__->new->handler;
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, %args ) = @_;
+
+  return $class->SUPER::new( %args, dispatch_map => { q{/} => 'index', } );
+}
+
+########################################################################
+sub action_index {
+########################################################################
+  my ($self) = @_;
+
+  my $r = $self->request;
+
+  $r->log->warn('entering service...');
+
+  my $mount         = $self->base_uri();
+  my $server_config = $self->server_config      // {};
+  my $aliases       = $server_config->{aliases} // {};
+
+  my $directory_index = sprintf '%s/htdocs/directory-index.roc', $Bedrock::BEDROCK_DIST_DIR;
+
+  if ( !-e $directory_index ) {
+    $self->display_error( 'Missing directory-index.roc', 404 );
+    return;
+  }
+
+  my $fs_path = $aliases->{$mount} ? $aliases->{$mount} : $r && $r->can('filename') ? $r->filename : q{};
+
+  if ( !$fs_path ) {
+    if ( $ENV{SERVER_SOFTWARE} !~ /apache/xsmi ) {
+      $r->status(302);
+      $r->headers_out( Location => '/not-found.html' );
+      return;
+    }
+
+    $r->status(404);
+    return;
+  }
+
+  my $file_list = {};
+
+  my @stat_cols = qw(
+    dev
+    ino
+    mode
+    nlink
+    uid
+    gid
+    rdev
+    size
+    atime
+    mtime
+    ctime
+    blksize
+    blocks
+  );
+
+  find(
+    sub {
+      return if /\A[.]/xsm;
+      my $stat = bless {}, 'Bedrock::Hash';
+      @{$stat}{@stat_cols} = stat $_;
+      $file_list->{$_} = $stat;
+    },
+    File::Spec->rel2abs($fs_path)
+  );
+
+  bless $file_list, 'Bedrock::Hash';
+
+  my $util = $self->create_helper(
+    to_url => sub {
+      my ( $self, $file ) = @_;
+      return $file
+        if $file !~ /[.]md\z/xsmi;
+
+      $file =~ s/\A(.*?)[.]md\z/$1/xsm;
+      return sprintf '/markdown%s/%s', $mount, $file;
+    },
+    format_date => sub {
+      my ( $self, $time ) = @_;
+
+      my @lt = localtime $time;
+      return strftime( '%Y-%m-%d %I:%M:%S %p', @lt );
+    },
+    format_bytes => sub {
+      my ( $self, $size ) = @_;
+      return format_bytes($size);
+    },
+  );
+
+  my @mtime_order = sort { $file_list->{$a}->{mtime} <=> $file_list->{$b}->{mtime} } keys %{$file_list};
+
+  my %params = (
+    index       => $file_list,
+    directory   => $mount,
+    util        => $util,
+    mtime_order => bless( \@mtime_order, 'Bedrock::Array' ),
+  );
+
+  my $html = $self->parse( $directory_index, %params );
+
+  return $self->print($html);
+}
+
+1;

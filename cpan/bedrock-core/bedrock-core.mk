@@ -57,7 +57,7 @@ $(TARBALL): buildspec.yml
 	  test -e "$$project_root/share/bedrock/tests/perl/$$a"; \
 	  echo "$$project_root/share/bedrock/tests/perl/$$a" >>$$include_files; \
 	done; \
-	echo $$project_root/share/bedrock/tests/perl/test-tag.pl >>$$include_files; \
+	echo $$project_root/share/bedrock/tests/perl/bedrock-runner.pl >>$$include_files; \
 	include_files_sorted=$$(mktemp); \
 	sort -u $$include_files > $$include_files_sorted; \
 	comm -23 $$install_files $$include_files_sorted | xargs -r rm -f; \

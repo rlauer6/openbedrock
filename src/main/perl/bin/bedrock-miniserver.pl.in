@@ -102,6 +102,20 @@ sub handle_request {
 
   local @ENV{ keys %{$env} } = values %{$env};
 
+  if ( my ( $mount, $service ) = $self->_exact_service_match($cgi) ) {
+    my $ret_val = $self->_service( $cgi, $service, $mount );
+    $self->_log_complete(
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+    );
+    return $ret_val;
+  }
+  else {
+    $logger->debug( 'no exact service match for ', $cgi->path_info );
+  }
+
   # check to see if request is for static or template asset
   if ( $self->_serve_alias($cgi) ) {
     $self->_log_complete(
@@ -114,7 +128,7 @@ sub handle_request {
     return;
   }
 
-  my ( $template, $route_params ) = $self->_resolve_template_route($cgi);
+  my ( $template, $route_params, $path_translated ) = $self->_resolve_template_route($cgi);
 
   if ($template) {
     # Resolve against PEBBLE_DIR like Apache::Bedrock
@@ -127,7 +141,7 @@ sub handle_request {
 
     if ( -r $fs_path ) {
       $logger->debug('File found and readable. Invoking _serve_template.');
-      $self->_serve_template( $cgi, $fs_path, $route_params );
+      $self->_serve_template( $cgi, $fs_path, $route_params, $path_translated );
 
       return $self->_log_complete(
         path         => $cgi->path_info,
@@ -161,38 +175,103 @@ sub handle_request {
 }
 
 ########################################################################
+sub _exact_service_match {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $path = $cgi->path_info;
+
+  my $services = $self->bedrock_server_config->{service_registry} // {};
+
+  # Check exact match (with or without trailing slash)
+  foreach my $mount ( keys %{$services} ) {
+    $self->get_logger->debug( sprintf 'checking service mount %s <=> %s', $mount, $path );
+
+    return ( $mount, $services->{$mount} )
+      if $path eq $mount || $path eq "$mount/";
+  }
+
+  return;
+}
+
+########################################################################
 sub _resolve_template_route {
 ########################################################################
   my ( $self, $cgi ) = @_;
+
   my $logger = Log::Log4perl->get_logger( ref $self );
 
   require Bedrock::Router;
-  my $routes_config = $self->bedrock_server_config->{routes} || {};
+
+  my $routes_config = $self->bedrock_server_config->{routes}  || {};
+  my $aliases       = $self->bedrock_server_config->{aliases} || {};
 
   foreach my $mount ( keys %{$routes_config} ) {
     next if index( $cgi->path_info, $mount ) != 0;
 
     my $rel_path = substr $cgi->path_info, length $mount;
-    $rel_path = "/$rel_path" if $rel_path !~ m{^/}xsm;
+
+    if ( $rel_path !~ m{^/}xsm ) {
+      $rel_path = "/$rel_path";
+    }
 
     # DIAGNOSTIC: Check structure before passing to Router
     my $rules = $routes_config->{$mount};
 
     # If rules is a HASH, we must convert it to an ARRAY for Bedrock::Router
     if ( ref($rules) eq 'HASH' ) {
-      $logger->debug("Converting HASH routes to ARRAY for mount: $mount");
+      $logger->debug( sprintf 'Converting HASH routes to ARRAY for mount: %s', $mount );
       $rules = [ map { { pattern => $_, template => $rules->{$_} } } keys %{$rules} ];
     }
 
-    $logger->debug("Attempting route match: Mount[$mount] Path[$rel_path]");
+    $logger->debug( sprintf 'Attempting route match: Mount[%s] Path[%s]', $mount, $rel_path );
 
     my $router = Bedrock::Router->new( { routes => $rules } );
     if ( my $match = $router->match($rel_path) ) {
-      $logger->info("Route Match Found! Template: $match->{template}");
-      return ( $match->{template}, $match->{params} );
+      $logger->info( sprintf 'Route Match Found! Template: %s', $match->{template} );
+      # NEW: Resolve PATH_TRANSLATED from route params
+      my $path_translated = $self->_resolve_path_translated( $match->{params}, $aliases, $logger );
+
+      return ( $match->{template}, $match->{params}, $path_translated );
     }
   }
-  $logger->debug( "No route matched for: " . $cgi->path_info );
+
+  $logger->debug( sprintf 'No route matched for: %s', $cgi->path_info );
+
+  return;
+}
+
+########################################################################
+sub _resolve_path_translated {
+########################################################################
+  my ( $self, $route_params, $aliases, $logger ) = @_;
+
+  # Extract the captured path from route params (e.g., 'path' from /markdown/*path)
+  my $captured_path = $route_params->{path} || return;
+
+  $logger->debug( sprintf 'Resolving PATH_TRANSLATED for captured path: %s', $captured_path );
+
+  # Find which alias this path belongs to by checking prefixes
+  foreach my $alias_prefix ( _sort_by_longest($aliases) ) {
+    next if index( "/$captured_path", $alias_prefix ) != 0;
+
+    my $alias_base = $aliases->{$alias_prefix};
+
+    # Strip the alias prefix and append to the filesystem base
+    my $rel_part = substr "/$captured_path", length $alias_prefix;
+    my $fs_path  = $alias_base . $rel_part;
+
+    # Convert to absolute path if it's relative
+    if ( $fs_path !~ m{^/}xsm ) {
+      require File::Spec;
+      require Cwd;
+      $fs_path = File::Spec->rel2abs( $fs_path, Cwd::getcwd() );
+    }
+
+    $logger->debug( sprintf 'PATH_TRANSLATED resolved: %s -> %s', $captured_path, $fs_path );
+    return $fs_path;
+  }
+
   return;
 }
 
@@ -228,7 +307,7 @@ sub _service {
 
   if ($err) {
     handle_error( $r, $err );
-    $logger->error("CRITICAL ERROR in $mount: $err");
+    $logger->error( sprintf 'CRITICAL ERROR in %s: %s', $mount, $err );
   }
 
   return $path_info;
@@ -417,7 +496,7 @@ sub _sort_by_longest {
 ########################################################################
 sub _serve_template {
 ########################################################################
-  my ( $self, $cgi, $fs_path, $route_params ) = @_;
+  my ( $self, $cgi, $fs_path, $route_params, $path_translated ) = @_;
 
   # This simply re-uses the logic from _serve_static but bypasses
   # the alias/filesystem existence checks because we've already
@@ -425,13 +504,13 @@ sub _serve_template {
 
   # We call _serve_static but pass the full file path as the local_base
   # to force it to treat the file as the target.
-  return $self->_serve_static( $cgi, $cgi->path_info, $fs_path, $route_params );
+  return $self->_serve_static( $cgi, $cgi->path_info, $fs_path, $route_params, $path_translated );
 }
 
 ########################################################################
 sub _serve_static {
 ########################################################################
-  my ( $self, $cgi, $alias_url, $local_base, $route_params ) = @_;
+  my ( $self, $cgi, $alias_url, $local_base, $route_params, $path_translated ) = @_;
 
   my $logger = Log::Log4perl->get_logger( ref $self );
 
@@ -466,6 +545,11 @@ sub _serve_static {
   if ( !-e $fs_path || !-r $fs_path ) {
     $logger->error("File system check failed for: $fs_path");
     return $FALSE;
+  }
+
+  if ( -d $fs_path ) {
+    $logger->debug("Path is a directory, declining: $fs_path");
+    return $FALSE;  # Let it fall through to services
   }
 
   # --- If we get here, we are definitely serving this file ---
@@ -513,9 +597,11 @@ sub _serve_static {
     # into thinking it is running inside the alias.
     # Everything else (Method, Query String, Extra Env) is already in global %ENV.
 
-    local $ENV{SCRIPT_NAME} = $alias_url eq $SLASH ? $EMPTY : $alias_url;
-    local $ENV{PATH_INFO}   = $rel_file;
-    # ------------------------------------------------------
+    local $ENV{SCRIPT_NAME}     = $alias_url eq $SLASH ? $EMPTY : $alias_url;
+    local $ENV{PATH_INFO}       = $rel_file;
+    local $ENV{SCRIPT_FILENAME} = $path_translated if $path_translated;  # Apache standard
+    local $ENV{PATH_TRANSLATED} = $path_translated if $path_translated;  # CGI fallback
+      # ------------------------------------------------------
 
     require Bedrock::Template;
     require BLM::Startup::Header;
@@ -556,12 +642,13 @@ sub _serve_static {
 
     $tpl = Bedrock::Template->new(
       $content,
-      header  => $header,
-      input   => $input,
-      session => $session,
-      config  => bless( $tagx_config, 'BLM::Startup::Config' ),
-      env     => $env,
-      bedrock => $bedrock,
+      header        => $header,
+      input         => $input,
+      session       => $session,
+      config        => bless( $tagx_config, 'BLM::Startup::Config' ),
+      env           => $env,
+      bedrock       => $bedrock,
+      server_config => bless( $server_config, 'Bedrock::Hash' ),
     );
 
     $tpl->set_source($fs_path);
@@ -674,6 +761,7 @@ sub _serve_static_content {
   }
 
   print "\r\n";
+
   print scalar slurp_file($path);
 
   return $TRUE;
