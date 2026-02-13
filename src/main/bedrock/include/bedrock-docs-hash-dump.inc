@@ -7,9 +7,9 @@
         <code><var $key></code>
       </div>
       <div class="bedrock-hash-value">
-        <if --ref $value>
+        <if ((--array $value) --or (--hash $value))>
           <pre><var $value.compact()></pre>
-        <else>
+        <elsif --scalar $value>
           <null:value $value.chomp()>
           <if $value><pre><var $value.chomp()></pre></if>
         </if>

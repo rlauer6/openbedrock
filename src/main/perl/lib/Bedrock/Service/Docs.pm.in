@@ -21,7 +21,8 @@ use File::Temp qw(tempfile);
 use File::Find;
 use JSON;
 use Markdown::Render;
-use List::Util qw(any pairs none);
+use Module::Load;
+use List::Util qw(any pairs none uniq);
 use LWP::UserAgent;
 use Digest::MD5 qw(md5_hex);
 use Scalar::Util qw(reftype blessed);
@@ -446,14 +447,24 @@ sub action_tag {
     return $self->show_pod( $file, 'tag', 'tag_' . $tag );
   }
 
-  my $tags = $self->get_tag_list;
+  my $tags       = $self->get_tag_list;
+  my $tag_groups = $self->get_tag_groups;
 
-  return $self->print_json( { tags => $tags } )
+  $tag_groups = [ map { $_ => $tag_groups->{$_} } sort keys %{$tag_groups} ];
+
+  return $self->print_json( { groups => $tag_groups, tags => $tags } )
     if $self->is_api;
 
-  my @links = map { sprintf '<a href="%s/tag/%s">%s</a>', $admin_dir, $_, $_ } @{$tags};
+  my $template = $self->fetch_template('bedrock-docs-tag-groups');
 
-  return $self->render_listing( 'Bedrock Tag Listing', @links );
+  my $head = $self->listing_head('Bedrock Tag Listing');
+
+  return $self->render_page(
+    $template,
+    head      => $head,
+    groups    => $tag_groups,
+    admin_dir => $admin_dir
+  );
 }
 
 ########################################################################
@@ -1000,23 +1011,97 @@ sub find_tag_file {
 
   my $found;
 
-  find( sub { $found = $File::Find::name if lc($_) eq "$tag.pm"; }, @stubs );
+  find(
+    sub {
+      if ( lc($_) eq "$tag.pm" ) {
+        $found = $File::Find::name;
+      }
+    },
+    @stubs
+  );
 
   return $found;
 }
 
 our @TAG_LIST;
+our %TAG_META;
 
 ########################################################################
 sub get_tag_list {
 ########################################################################
-  return \@TAG_LIST if @TAG_LIST;
+  my ( $self, $tagdir ) = @_;
+
+  return \@TAG_LIST
+    if @TAG_LIST;
 
   if ( $Bedrock::Constants::OPENTAG_EXPR =~ /^\^[(](.*?)[)]/xsm ) {
     @TAG_LIST = sort split /[|]/xsm, $1;
     @TAG_LIST = grep { !/[#]|else|else[?]if|blm|[?]/xsm } @TAG_LIST;
   }
+
+  if ( !$tagdir ) {
+    my $libdir = dirname $INC{'Bedrock.pm'};
+
+    $tagdir = sprintf '%s/Bedrock/Text/TagX', $libdir;
+  }
+
+  print {*STDERR} "tagdir: $tagdir\n";
+
+  foreach my $tag (@TAG_LIST) {
+    my ($is_block) = $Bedrock::Constants::CLOSETAG_EXPR =~ /\/($tag)/xsmi;
+
+    my $tag_path;
+
+    find(
+      sub {
+        if ( $File::Find::name =~ /TAG\/(?:.*?)\/${tag}[.]pm\z/xsmi ) {
+          $tag_path = $File::Find::name;
+        }
+      },
+      $tagdir
+    );
+
+    next if !$tag_path;
+
+    my $class = $tag_path;
+
+    $class =~ s/\A.*(TagX\/TAG\/.*)[.]pm(?:\.in)?\z/$1/xsm;
+    $class =~ s/\//::/gxsm;
+    eval { load $class; };
+    next if $EVAL_ERROR;
+
+    my $is_loop = $tag_path =~ /loop/xsmi;
+
+    $TAG_META{$tag} = {
+      block   => $is_block ? 1 : 0,
+      loop    => $is_loop  ? 1 : 0,
+      options => { $class->can('define_options') ? $class->define_options() : () },
+      name    => $tag,
+      group   => $class->can('group') ? $class->group() : q{},
+    };
+  }
+
   return \@TAG_LIST;
+}
+
+########################################################################
+sub get_tag_groups {
+########################################################################
+  my ($self) = @_;
+
+  if ( !@TAG_LIST ) {
+    $self->get_tag_list;
+  }
+
+  my %tags_by_group;
+
+  my @groups = uniq( map { $TAG_META{$_}->{group} } @TAG_LIST );
+
+  foreach my $group (@groups) {
+    $tags_by_group{$group} = [ map { $group eq $TAG_META{$_}->{group} ? $_ : () } @TAG_LIST ];
+  }
+
+  return \%tags_by_group;
 }
 
 # --- Path Helpers ---
@@ -1066,7 +1151,8 @@ sub render_listing {
   my ( $self, $title, @items ) = @_;
 
   my $template = $self->fetch_template('bedrock-docs-listing');
-  my $head     = $self->listing_head($title);
+
+  my $head = $self->listing_head($title);
 
   return $self->render_page( $template, head => $head, listing => \@items );
 }
