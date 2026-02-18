@@ -1,10 +1,12 @@
 #!/usr/bin/env perl
 
+package Bedrock::Plugin::CLI;
+
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -25,209 +27,107 @@ use strict;
 use warnings;
 
 use Archive::Tar qw(COMPRESS_GZIP);
+use Bedrock qw(slurp_file :booleans choose toPascalCase);
 use Bedrock::Constants qw(:chars :booleans);
-use Bedrock qw(slurp_file);
-use Getopt::Long qw(:config no_ignore_case);
+use Carp;
 use Cwd;
-use Pod::Usage;
-
-use Role::Tiny::With;
-with 'Bedrock::Logger';
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Basename qw(basename);
+use File::Temp qw(tempfile);
+use List::Util qw(pairs);
 
 our $VERSION = '@PACKAGE_VERSION@';
 
+use parent qw(CLI::Simple);
+
+caller or __PACKAGE__->main();
+
 ########################################################################
-sub version {
+sub cmd_version {
 ########################################################################
-  my ($donot_exit) = @_;
+  my ( $self, $donot_exit ) = @_;
 
   print <<"END_OF_VERSION";
-bedrock-plugin $VERSION
+bedrock-plugin v$VERSION
 END_OF_VERSION
 
-  exit if !$donot_exit;
-
-  return;
+  return $SUCCESS;
 }
 
 ########################################################################
-sub help {
+sub cmd_create_plugin {
 ########################################################################
-  return pod2usage(1);
-}
+  my ($self) = @_;
 
-########################################################################
-sub main {
-########################################################################
-  my %options = (
-    test    => $TRUE,
-    replace => $FALSE,
-    tarball => $TRUE,
-    author  => 'Anonymouse',
-    email   => 'anonymouse@example.org',
-  );
+  my $module  = $self->get_module;
+  my $binding = $self->get_binding;
+  my $plugin  = $self->get_plugin;
 
-  my @option_specs = qw(
-    binding=s
-    help
-    loglevel|l=s
-    module=s
-    test|t
-    tarball|T
-    plugin
-    replace
-    version|v
-    verbose|V
-    author|a=s
-    email|e=s
-  );
+  croak "ERROR: no module name, usage: bedrock-plugin -m module-name\n"
+    if !$module;
 
-  my $success = GetOptions( \%options, @option_specs );
+  my $module_name = $module;
+  $module_name =~ s/\-/_/xsmg;
+  my ($class_suffix) = reverse %{ toPascalCase($module_name) };
 
-  if ( !$success || $options{help} ) {
-    help();
+  $self->set_class_suffix($class_suffix);
+  $self->set_class_name( $plugin  ? "BLM::$class_suffix"     : "BLM::Startup::$class_suffix" );
+  $self->set_module_path( $plugin ? "BLM/${class_suffix}.pm" : "BLM/Startup/${class_suffix}.pm}" );
+
+  if ( !$binding && !$plugin ) {
+    $binding = lc $module_name;
+  }
+  elsif ($binding) {
+    $binding = lc $binding;
   }
 
-  if ( $options{version} ) {
-    version();
+  $binding //= $EMPTY;
+  $self->set_binding($binding);
+
+  $self->set_module( ucfirst $module );
+
+  $self->set_plugin_file( $self->create_plugin_file );
+
+  if ( !$plugin ) {
+    $self->set_config_file( $self->create_config_file );
   }
 
-  my $logger = get_logger();
+  $self->set_unit_test_file( $self->create_test_file );
 
-  my $loglevel = $options{loglevel} ? $options{loglevel} : $options{verbose} ? 'info' : 'error';
+  $self->create_tarball;
 
-  txt2level( $logger, $loglevel );
-
-  $options{logger} = $logger;
-
-  if ( !$options{module} && !$options{binding} ) {
-    $logger->error('You must specify one of --module or --binding.');
-    help();
-  }
-
-  if ( $options{binding} && $options{plugin} ) {
-    $logger->warn("no binding needed for Plugins. Only useful for Application Plugins...ignoring $options{binding}.");
-    delete $options{binding};
-  }
-
-  if ( $options{plugin} && !$options{module} ) {
-    $logger->error('You must supply a module name for Plugins.');
-    exit;
-  }
-  else {
-    if ( !$options{binding} && !$options{plugin} ) {
-      $options{binding} = lc $options{module};
-    }
-
-    if ( !$options{module} ) {
-      $options{module} = ucfirst $options{binding};
-    }
-  }
-
-  my $plugin_type = $options{plugin} ? 'Plugin' : 'Application Plugin';
-  $options{plugin_type} = $plugin_type;
-
-  my $plugin_path = $options{plugin} ? 'BLM' : 'BLM/Startup';
-
-  my $test_file = $options{plugin} ? lc $options{module} : $options{binding};
-
-  my $config_file = $options{plugin} ? $EMPTY : lc $options{module};
-
-  my $binding = $options{binding} // $EMPTY;
-
-  my $summary = <<"END_OF_SUMMARY";
-
-\tOptions
-\t-------
-\tmodule:  [$options{module}]
-\tbinding: [$binding]
-\ttype:    [$plugin_type]
-END_OF_SUMMARY
-
-  $logger->info($summary);
-
-  my $config = sprintf '%s.xml', lc $options{module};
-  my $plugin = sprintf '%s.pm',  $options{module};
-  my $test   = sprintf '%s.roc', $test_file;
-
-  if ( !$options{replace} && ( -s $plugin || -s $config ) ) {
-    $logger->error('plugin or config already exists. Specify -r to replace.');
-    exit;
-  }
-  else {
-    if ( -s $plugin ) {
-      $logger->warn("$plugin will be replaced.");
-    }
-
-    if ( -s $config ) {
-      $logger->warn("$config will be replaced.");
-    }
-
-    if ( $options{test} && -s $test ) {
-      $logger->warn("$test will be replaced.");
-    }
-  }
-
-  create_plugin_file( $plugin, %options );
-
-  create_config_file( $config, %options );
-
-  create_test_file( $test, %options );
-
-  if ( -s $plugin ) {
-    $logger->info("created: $plugin");
-  }
-
-  if ( -s $config ) {
-    $logger->info("created: $config");
-  }
-
-  if ( -s $test ) {
-    $logger->info("created: $test");
-  }
-
-  my $copy_path = $options{plugin} ? 'BLM/' : 'BLM/Startup';
-
-  $logger->info("Copy $options{module} to the $copy_path directory.\n");
-
-  if ( !$options{plugin} ) {
-    $logger->info("Copy $config to Bedrock's configuration directory.\n");
-  }
-
-  create_tarball(
-    %options,
-    plugin_path => $plugin_path,
-    plugin      => scalar( slurp_file($plugin) ),
-    config_file => "$config_file.xml",
-    test_file   => "$test_file.roc"
-  );
-
-  return 0;
+  return $SUCCESS;
 }
 
 ########################################################################
 sub create_tarball {
 ########################################################################
-  my (%options) = @_;
-
-  return
-    if !$options{tarball};
+  my ($self) = @_;
 
   my $tar = Archive::Tar->new();
 
-  my $plugin_path = sprintf '%s/%s.pm', $options{plugin_path}, $options{module};
+  my $module       = $self->get_module;
+  my $class_suffix = $self->get_class_suffix;
 
-  $tar->add_data( $plugin_path, $options{plugin} );
+  my $plugin_path = $self->get_plugin ? 'BLM' : 'BLM/Startup';
 
-  # only relevant for application plugins?
-  if ( -e $options{config_file} ) {
-    $tar->add_files( $options{config_file} );
+  my @files = (
+    $self->get_plugin_file    => ( sprintf '%s/%s.pm',    $plugin_path, $class_suffix ),
+    $self->get_config_file    => ( sprintf '%s.xml',      lc $module ),
+    $self->get_unit_test_file => ( sprintf 't/00-%s.yml', lc $module ),
+  );
+
+  foreach my $p ( pairs @files ) {
+    my ( $file, $name ) = @{$p};
+    next if !$file;
+
+    $tar->add_files($file);
+    $tar->rename( $file, $name );
+    unlink $file;
   }
 
-  if ( $options{test_file} ) {
-    $tar->add_files( $options{test_file} );
-  }
-  my $tarball = sprintf '%s.tgz', $options{module};
+  my $tarball = sprintf '%s.tgz', $class_suffix;
 
   if ( -e $tarball ) {
     unlink $tarball;
@@ -241,80 +141,108 @@ sub create_tarball {
 ########################################################################
 sub create_plugin_file {
 ########################################################################
-  my ( $plugin, %options ) = @_;
+  my ($self) = @_;
 
-  open my $fh, '>', $plugin
-    or die "Could not open $plugin for writing.";
+  my ( $fh, $tempfile ) = tempfile( 'plugin-XXXXX', UNLINK => $FALSE );
 
-  my $module = $options{module};
+  my $module      = $self->get_module;
+  my $author      = $self->get_author;
+  my $email       = $self->get_email;
+  my $class_name  = $self->get_class_name;
+  my $suffix_name = $self->get_class_suffix;
 
-  if ( $options{plugin_type} eq 'Plugin' ) {
-    print {$fh} sprintf _create_plugin(), $module, $module, $module, $options{author}, $options{email};
+  if ( $self->get_plugin ) {
+    print {$fh} sprintf _create_plugin(), $class_name, $module, $suffix_name, $author, $email;
   }
   else {
-    print {$fh} sprintf _create_application_plugin(), $module, $module, $options{binding}, $module,
-      $options{author}, $options{email};
+    my $binding = $self->get_binding;
+    print {$fh} sprintf _create_application_plugin(), $class_name, $class_name, $binding, $class_name, $author, $email;
   }
 
-  return close $fh;
+  close $fh;
+
+  return $tempfile;
 }
 
 ########################################################################
 sub create_config_file {
 ########################################################################
-  my ( $config, %options ) = @_;
-
-  return
-    if $options{plugin};
+  my ($self) = @_;
 
   my $xml = <<'END_OF_XML';
 <object>
   <scalar name="binding">%s</scalar>
-  <scalar name="module">BLM::Startup::%s</scalar>
+  <scalar name="module">%s</scalar>
   <object name="config">
   <!-- your config info here -->
   </object>
 </object>
 END_OF_XML
 
-  open my $fh, '>', $config
-    or die "Could not open $config for writing.";
+  my ( $fh, $tempfile ) = tempfile( 'config-XXXXX', UNLINK => $FALSE );
 
-  print {$fh} sprintf $xml, $options{binding}, $options{module};
+  print {$fh} sprintf $xml, $self->get_binding, $self->get_class_name;
 
-  return close $fh;
+  close $fh;
+
+  return $tempfile;
 }
 
 ########################################################################
 sub create_test_file {
 ########################################################################
-  my ( $test, %options ) = @_;
+  my ($self) = @_;
 
-  return
-    if !$options{test};
+  my $binding = $self->get_binding;
+  my $module  = $self->get_module;
 
-  open my $fh, '>', $test
-    or die "Could not open $test for writing.\n";
+  my ( $fh, $tempfile ) = tempfile( 'test-XXXXX', UNLINK => $FALSE );
 
-  if ( $options{plugin} ) {
-    my $module = $options{module};
-    print {$fh} sprintf "<plugin:%s><var \$%s.version()>\n", $module, $module;
+  my $class_name = $self->get_class_name;
+
+  if ( !$self->get_plugin ) {
+    my $unit_test = <<'END_OF_TEST';
+---
+name: %s
+config:
+  MODULES:
+    - binding: %s
+      module: %s
+test: |
+  <var $%s.version()>
+result: 1.0.0
+chomp: all
+END_OF_TEST
+    print {$fh} sprintf $unit_test, $class_name, $binding, $class_name, $binding;
   }
   else {
-    print {$fh} sprintf "<var \$%s.version()>\n", $options{binding};
+    my $unit_test = <<'END_OF_TEST';
+name: %s
+test: |
+  <plugin:%s><var $_>
+result: 1
+chomp: all
+END_OF_TEST
+    print {$fh} sprintf $unit_test, $class_name, $self->get_class_suffix;
   }
 
-  return close $fh;
+  close $fh;
+
+  return $tempfile;
 }
 
 ########################################################################
 sub _create_plugin {
 ########################################################################
   my $class = <<'END_OF_PLUGIN';
-package BLM::%s;
+package %s;
 
 use strict;
 use warnings;
+
+use Bedrock::Constants qw(:booleans);
+use Data::Dumper;
+use English qw(-no_match_vars);
 
 use parent qw(BLM::Plugin);
 
@@ -325,7 +253,7 @@ sub init_plugin {
 ########################################################################
   my ($self, @args) = @_;
 
-  return 1;
+  return $TRUE;
 }
 
 ########################################################################
@@ -346,7 +274,7 @@ END_OF_PLUGIN
  
  =head1 PUBLIC
  
- BLM::%s
+ %s
  
  =head1 SYNOPSIS
  
@@ -375,10 +303,14 @@ sub _create_application_plugin {
 ########################################################################
 
   my $class = <<'END_OF_PLUGIN';
-package BLM::Startup::%s;
+package %s;
 
 use strict;
 use warnings;
+
+use Bedrock::Constants qw(:booleans);
+use Data::Dumper;
+use English qw(-no_match_vars);
 
 use parent qw(Bedrock::Application::Plugin);
 
@@ -389,7 +321,7 @@ sub init_plugin {
 ########################################################################
   my ($self) = @_;
 
-  return 1;
+  return $TRUE;
 }
 
 ########################################################################
@@ -410,7 +342,7 @@ END_OF_PLUGIN
   
  =head1 PUBLIC
  
- BLM::Startup::%s
+ %s
  
  =head1 SYNOPSIS
  
@@ -438,7 +370,49 @@ END_OF_POD
   return sprintf "%s\n%s", $class, $pod;
 }
 
-exit main();
+########################################################################
+sub main {
+########################################################################
+  my %default_options = (
+    author => 'Anonymouse',
+    email  => 'anonymouse@example.org',
+  );
+
+  my @extra_options = qw(
+    unit_test_file
+    config_file
+    plugin_file
+    class_name
+    class_suffix
+    module_path
+  );
+
+  my @option_specs = qw(
+    binding=s
+    help
+    module=s
+    plugin
+    author|a=s
+    email|e=s
+  );
+
+  my %commands = (
+    version => \&cmd_version,
+    create  => \&cmd_create_plugin,
+    default => \&cmd_create_plugin,
+  );
+
+  my $cli = Bedrock::Plugin::CLI->new(
+    commands        => \%commands,
+    option_specs    => \@option_specs,
+    default_options => \%default_options,
+    extra_options   => \@extra_options,
+  );
+
+  $cli->run();
+
+  return 0;
+}
 
 1;
 
@@ -448,38 +422,64 @@ __END__
 
 =head1 NAME
 
-bedrock-plugin
+bedrock-plugin - create Bedrock plugin scaffolding
 
 =head1 SYNOPSIS
 
-bedrock-plugin --module Foo --binding foo
+bedrock-plugin --module foo 
 
 =head1 DESCRIPTION
 
 Provides a quick and easy way to create the scaffolding for a new
-application plugin.
+application plugin or plain plugin. The script creates a tarball
+containing the plugin module, a unit test file and possibly a
+configuration file (application plugins only).
 
-=head1 OPTIONS
+=head1 Options
  
-  -r, --replace       replace modules, files if they exist
-  -b, --binding=NAME  name of the variable to bind the Plugin to
-  -m, --module=NAME   name of perl module (ex: MyPlugin)
-  -p, --plugin        create a simple Plugin instead of an Application Plugin
+  -h, --help          this help
+  -m, --module=NAME   plugin name
+  -b, --binding=NAME  name of the variable to bind the plugin to. default: module name
+  -p, --plugin        create a simple Plugin instead of an application plugin
+  -a, --author        plugin author
+  -e, --email         email of author
 
- Examples:
- 
-   bedrock-plugin -r -m Foo
- 
-   bedrock-plugin -r -b foo
- 
- Creates the scaffolding for an Application or simple Plugin for
- Bedrock. The files are created in your current working directory.
- 
- Creates the files:
- 
-   MODULE-NAME.pm      => perl module stub
-   BINDING-NAME.xml    => application plugin configuration file
-   BINDING-NAME.roc    => example test file
+=head2 Examples
+
+=over 4
+
+=item * Create an application plugin
+
+ bedrock-plugin.pl -m foo
+ tar tfz Foo.tgz  
+ BLM/Startup/Foo.pm
+ foo.xml
+ t/00-foo.yml
+
+=item * Create a simple plugin
+
+ bedrock-plugin -m foo -
+ tar tfz Foo.tgz  
+ BLM/Foo.pm
+ t/00-foo.yml
+
+=back 
+
+=head2 Notes
+
+=over 4
+
+=item 1. Plugin names in lower or snake case (or hyphenated) are
+converted to PascalCase.
+
+=item 2. The F<.yml> unit test files are suitable for use with
+C<bedrock-test.pl>.
+
+ bedrock-plugin.pl -m foo
+ tar xfvz Foo.tgz
+ bedrock-test.pl -I . run t/00-foo.yml
+
+=back
 
 =head1 AUTHOR
 
@@ -487,6 +487,6 @@ Rob Lauer - <bigfoot@cpan.org>
 
 =head1 SEE ALSO
 
-L<Bedrock::Application::Plugin>
+L<Bedrock::Application::Plugin>, L<BLM::Plugin>
 
 =cut

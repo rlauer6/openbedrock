@@ -1,20 +1,44 @@
+#!/usr/bin/env perl
+
 package Bedrock::Test::Harness; ## no critic
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
 
 use strict;
 use warnings;
 
 use Bedrock qw(choose :booleans);
 use Bedrock::Constants qw(:booleans :chars);
-use Bedrock::Test;
 use Bedrock::LoadConfig qw(load_config);
+use Bedrock::XML qw(writeXML);
 use Carp;
 use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Find;
 use File::Spec;
+use File::Temp qw(tempfile tempdir);
+
 use File::Which;
-use List::Util qw(pairs);
+use List::Util qw(pairs none uniq);
 
 use TAP::Harness;
 
@@ -23,6 +47,7 @@ use parent qw(CLI::Simple);
 caller or __PACKAGE__->main();
 
 our @CLEANUP_LINKS;
+our @CLEANUP_FILES;
 
 ########################################################################
 sub init {
@@ -41,25 +66,27 @@ sub init {
     return load_config($config_file);
   };
 
-  croak "ERROR: unable to load $config_file\n$EVAL_ERROR"
-    if !$config || $EVAL_ERROR;
+  if ($config_file) {
+    croak "ERROR: unable to load $config_file\n$EVAL_ERROR"
+      if !$config || $EVAL_ERROR;
+  }
+  else {
+    if ( $self->get_warning ) {
+      warn "WARNING: You haven't provided a test configuration file. Testing proceeding...\n";
+    }
+
+    $config = {};
+  }
 
   $self->set_config($config);
-
-  my $env = $self->get_config->{env} // {};
-
-  foreach my $p ( pairs %{$env} ) {
-    my ( $k, $v ) = @{$p};
-    $ENV{$k} = $v; ## no critic
-  }
 
   $ENV{BEDROCK_CONFIG_PATH} //= $self->get_bedrock_config_path;
   $ENV{LOG_LEVEL}           //= $self->get_log_level;
 
-  my $runner = $self->get_runner ? File::Spec->rel2abs( $self->get_runner ) : which('bedrock-runner.pl');
+  my ($runner) = $self->get_runner ? File::Spec->rel2abs( $self->get_runner ) : which('bedrock-runner.pl');
 
-  croak "ERROR: could not find 'bedrock-runner.pl'\n"
-    if !$runner;
+  croak "ERROR: could not find 'bedrock-runner.pl'?\n"
+    if !$runner || !-e $runner;
 
   $self->set_runner($runner);
 
@@ -73,85 +100,330 @@ sub cmd_run {
 
   $ENV{BEDROCK_CONFIG_PATH} //= cwd . 't/config';
 
+  if ( !-d $ENV{BEDROCK_CONFIG_PATH} ) {
+    $ENV{BEDROCK_CONFIG_PATH} = sprintf '%s/config', $Bedrock::BEDROCK_DIST_DIR; ## no critic
+  }
+
   warn "no BEDROCK_CONFIG_PATH found...you may have issues\n"
     if !-d $ENV{BEDROCK_CONFIG_PATH};
 
-  my @tests = $self->_cmd_run_get_tests();
+  my $test_defs = $self->_cmd_run_get_test_defs();
 
-  my @t_files;
+  # merge root env into test
+  my %root_env = %{ $test_defs->{root}->{env} };
 
-  foreach my $yml (@tests) {
-    my $t_file = $yml;
-    $t_file =~ s/[.]yml\z/.t/xsm;
+  foreach my $group ( keys %{$test_defs} ) {
+    next if $group eq 'root';
 
-    my $link = File::Spec->rel2abs($t_file);
-    push @CLEANUP_LINKS, $link;
-
-    symlink $self->get_runner, $link;
-
-    push @t_files, $link;
+    my $env = $test_defs->{$group}->{env} // {};
+    $test_defs->{$group}->{env} = { %root_env, %{$env} };
   }
 
-  my $harness = TAP::Harness->new( { verbosity => 1, lib => [qw(lib lib/Bedrock lib/Bedrock/Text)] } );
+  my $root_overrides_dir;
 
-  my $aggregator = $harness->runtests(@t_files);
+  if ( my $overrides = $test_defs->{root}->{config} ) {
+    if ( %{$overrides} ) {
+      $root_overrides_dir = tempdir( CLEANUP => $TRUE );
+      my $overrides_file = sprintf '%s/overrides-%s.xml', $root_overrides_dir, $PID;
 
-  return $aggregator->has_errors ? $TRUE : $FALSE;
+      writeXML( $overrides, $overrides_file );
+    }
+  }
+
+  my $has_errors;
+
+  my $bedrock_config_path = $root_env{BEDROCK_CONFIG_PATH} // $ENV{BEDROCK_CONFIG_PATH};
+
+  foreach my $group ( uniq 'root', keys %{$test_defs} ) {
+    # %ENV overrides
+    local %ENV = %ENV;
+
+    if ( my $env = $test_defs->{$group}->{env} ) {
+      if ( is_hash($env) ) {
+        foreach ( keys %{$env} ) {
+          $ENV{$_} = $env->{$_}; ## no critic
+        }
+      }
+    }
+
+    my $base_config_path = $ENV{BEDROCK_CONFIG_PATH} // $bedrock_config_path;
+
+    my $overrides = $test_defs->{$group}->{config};
+
+    if ( is_hash($overrides) && %{$overrides} && $group ne 'root' ) {
+      my (@config_paths) = tempdir( CLEANUP => $TRUE );
+      my $overrides_file = sprintf '%s/overrides-%s.xml', $config_paths[0], $PID;
+
+      writeXML( $overrides, $overrides_file );
+      # each test may have its own override file
+      push @config_paths, $root_overrides_dir ? $root_overrides_dir : ();
+      push @config_paths, $base_config_path;
+      $ENV{BEDROCK_CONFIG_PATH} = join q{:}, @config_paths; ## no critic
+    }
+    elsif ($root_overrides_dir) {
+      $ENV{BEDROCK_CONFIG_PATH} = "$root_overrides_dir:$base_config_path"; ## no critic
+    }
+
+    my @t_files;
+
+    # setup symlinks
+    foreach my $test_file ( @{ $test_defs->{$group}->{tests} // [] } ) {
+      my $t_file = $test_file;
+      $t_file =~ s/[.]yml\z/.t/xsm;
+
+      my $link = File::Spec->rel2abs($t_file);
+      push @CLEANUP_LINKS, $link;
+
+      # [ai]: might want to use logger?
+      print {*STDERR} sprintf "creating symlink %s => %s\n", $self->get_runner, $link;
+
+      symlink $self->get_runner, $link;
+
+      push @t_files, $link;
+    }
+
+    my ( $setup_script, $teardown_script, $test_files ) = @{ $test_defs->{$group} }{qw(setup teardown tests)};
+
+    my $setup_retval = choose {
+      return $SUCCESS
+        if !$setup_script;
+
+      return _run_script( type => 'setup', name => $group, script_path => $setup_script );
+    };
+
+    my @lib = ( @{ $self->get_inc || [] }, @INC );
+
+    if ( $setup_retval == $SUCCESS && @t_files ) {
+      my $harness = TAP::Harness->new(
+        { verbosity => 1,
+          lib       => \@lib,
+        }
+      );
+
+      # [ai]: is this already being eval'd?
+      my $aggregator = eval { $harness->runtests(@t_files); };
+      my $err        = $EVAL_ERROR;
+
+      if ( !$aggregator || $err ) {
+        print {*STDERR} "ERROR: an error was encountered attempting to run tests\n$err";
+        return $FAILURE;  # hmmm...abort on first group failure?
+      }
+
+      $has_errors ||= $aggregator->has_errors;
+
+      $test_defs->{$group}->{aggregator} = $aggregator;
+      $test_defs->{$group}->{error}      = $err;
+    }
+
+    # run teardown script for group unless group is root...
+    next
+      if !$teardown_script || $group eq 'root';
+
+    _run_script( type => 'teardown', name => $group, script_path => $teardown_script );
+  }
+
+  # we should probably run teardown scripts even if setup script failed...
+  if ( my $teardown_script = $test_defs->{root}->{teardown} ) {
+    _run_script( type => 'teardown', name => 'root', script_path => $teardown_script );
+  }
+
+  return $has_errors ? $FAILURE : $SUCCESS;
 }
 
 ########################################################################
-sub _cmd_run_get_tests {
+sub _run_script {
+########################################################################
+  my %args = @_;
+
+  my ( $script_path, $type, $name ) = @args{qw(script_path type name)};
+
+  my $retval = system $script_path;
+  print {*STDERR} sprintf "script [%s] for group: [%s] ran with %s\n", $script_path, $name, $retval ? 'errors' : ' no errors';
+  return $retval;
+}
+
+########################################################################
+# Creates hash of hashes where each element of the hash represents a
+# "group" of tests to run.  Each group may define its own
+# configuration file and environment overrides
+#
+# Example test definition structure:
+#
+# name => {
+#          config   => {}, # configuration file overrides
+#          env      => {}, # environment overrides
+#          tests    => [], # *.yml test files...might be empty for root group
+#          setup    => '', # setup script path
+#          teardown => '', # teardown script path
+#         };
+########################################################################
+sub _cmd_run_get_test_defs {
 ########################################################################
   my ($self) = @_;
 
-  my ($test_file) = $self->get_args;
+  my ($test_file) = $self->get_args;  # bedrock-test.pl -c test-config.yml run t/05-iif.yml
+
+  my $group = $self->get_group;  # could be a list of groups -g foo -g bar
+
+  croak "ERROR: use --group or provide a test file argument but not both\n"
+    if $group && $test_file;
 
   die "Test file(s) not found: $test_file\n"
     if $test_file && !-e $test_file;
 
-  # TBD: allow directory, fetch list of test files
-  # TBD: if no $test_file tests must be specified in config
   my $config = $self->get_config // {};
 
-  return ($test_file)
+  # 1 test file...specified on command line
+  return { root => $self->_init_test_def( $config, 'root', [$test_file] ) }
     if $test_file;
 
-  my @tests;
+  if ( my $tests = $config->{tests} ) {
+    return { root => $self->_init_test_def( $config, 'root', $tests ) }
+      if is_array($tests) && !$group;
 
-  if ( my $group = $self->get_group ) {
-    my @tests;
-    my $groups = $config->{groups} // {};
+    die "ERROR: tests must be an array of tests or the name of a directory or file\n"
+      if ref $tests || ( !-d $tests && !-f $tests );
 
-    foreach ( @{$group} ) {
-      push @tests, @{ $groups->{$_} };
-    }
+    # tests is a file or a directory
+    $tests = File::Spec->rel2abs($tests);
+    return { root => $self->_init_test_def( $config, 'root', [$tests] ) }
+      if -f $tests && !$group;
 
-    return @tests;
+    my @test_files;
+
+    find(
+      sub {
+        return if !/[.]yml$/xsm;
+        push @test_files, $File::Find::name;
+      },
+      $tests
+    );
+
+    # note that we have resolved the root test files even if we have groups
+    $config->{tests} = \@test_files;
+
+    return { root => $self->_init_test_def( $config, 'root' ) }
+      if !$group;
   }
 
-  my $tests = $config->{tests};
+  die "ERROR: no tests defined on command line or in configuration\n"
+    if !$group;
 
-  return @tests
-    if is_array($tests);
+  my @groups = keys %{ $config->{groups} // {} };
 
-  $tests = File::Spec->rel2abs($tests);
+  die "ERROR: no groups defined in configuration file\n"
+    if !@groups;
 
-  return ($tests)
-    if -f $tests;
+  if ( @{$group} == 1 && $group->[0] eq 'all' ) {
+    $group = \@groups;
+  }
+  else {  # check specified groups against configuration file
+    foreach my $g ( @{$group} ) {
+      die sprintf "ERROR: group [%s] is not a valid group name\n"
+        if none { $g eq $_ } @groups;
+    }
+  }
 
-  my @test_files;
+  # we always need a root group...
+  my %test_defs = ( root => $self->_init_test_def( $config, 'root' ) );
 
-  find(
-    sub {
-      return if !/[.]yml$/xsm;
-      push @test_files, $File::Find::name;
-    },
-    $tests
-  );
+  foreach my $g ( @{$group} ) {
+    my $group_config = $config->{groups}->{$g};
+    $test_defs{$g} = $self->_init_test_def( $group_config, $g );
+  }
 
-  print {*STDERR} Dumper( [ test_files => \@test_files ] );
+  return \%test_defs;
+}
 
-  return @test_files;
+########################################################################
+sub _init_test_def {
+########################################################################
+  my ( $self, $config, $name, $tests ) = @_;
+
+  if ( defined $tests ) {
+    $tests = is_array($tests) ? $tests : [$tests];
+  }
+
+  my $test_def = {
+    config => $config->{config} // {},
+    env    => $config->{env}    // {},
+    tests  => $tests            // $config->{tests} // [],
+  };
+
+  # setup/teardown scripts?
+  foreach my $type (qw(setup teardown)) {
+
+    my $script = $config->{$type};
+    next if !$script;
+
+    my $script_path = $self->_cmd_run_script(
+      script => $script,
+      name   => $name,
+      run    => $FALSE
+    );
+
+    $test_def->{$type} = $script_path;
+  }
+
+  return $test_def;
+}
+
+########################################################################
+sub _cmd_run_script {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  my ( $script, $name, $run ) = @args{qw(script name run)};
+  $run  //= $TRUE;
+  $name //= 'root';
+
+  my $script_path = choose {
+
+    if ( ref $script eq 'HASH' && $script->{exe} ) {
+      my $script_path = File::Spec->rel2abs( $script->{exe} );
+
+      die sprintf "ERROR: %s script not found: %s\n", $name, $script_path
+        if !-e $script_path;
+
+      die sprintf "ERROR: %s script not executable: %s\n", $name, $script_path
+        if !-x $script_path;
+
+      return $script_path;
+    }
+
+    # add #!/bin/sh if no executable specified
+    if ( $script !~ /\A[#]!/xsm ) {
+      $script = "#!/bin/sh\n\n$script";
+    }
+
+    my ( $fh, $filename ) = tempfile(
+      TEMPLATE => sprintf( 'bedrock-test-%s-XXXXX', $name ),
+      UNLINK   => $FALSE,
+      SUFFIX   => '.sh'
+    );
+
+    print {$fh} $script;
+    close $fh;
+    chmod 0755, $filename;
+
+    my $script_path = File::Spec->rel2abs($filename);
+
+    if ( $self->get_unlink ) {
+      push @CLEANUP_FILES, $script_path;
+    }
+
+    return $script_path;
+  };
+
+  return $script_path
+    if !$run;
+
+  my $retval = system $script_path;
+
+  die sprintf "ERROR: %s (%s) script failed.\n", $script_path, $name
+    if $retval;
+
+  return $script_path;
 }
 
 ########################################################################
@@ -164,6 +436,9 @@ sub main {
     log-level|l=s
     group|g=s@
     runner|r=s
+    unlink!
+    warning!
+    inc|I=s@
   );
 
   my %commands = (
@@ -171,10 +446,12 @@ sub main {
     run     => \&cmd_run,
   );
 
-  my @extra_options   = qw( config );
+  my @extra_options = qw( config teardown );
+
   my $default_options = {
     log_level => 'info',
-    runner    => 'bedrock-runner.pl',
+    unlink    => $TRUE,
+    warning   => $TRUE,
   };
 
   my $cli = Bedrock::Test::Harness->new(
@@ -191,9 +468,16 @@ END {
   foreach (@CLEANUP_LINKS) {
     unlink $_;
   }
+
+  foreach (@CLEANUP_FILES) {
+    unlink $_;
+  }
+
 }
 
 1;
+
+## no critic
 
 __END__
 
@@ -201,17 +485,185 @@ __END__
 
 =head1 NAME
 
-Bedrock:::Test::Harness
+bedrock-test.pl - The Bedrock Test Harness
 
 =head1 SYNOPSIS
 
- bedrock-test.pl [options] command
+ bedrock-test.pl -c test.yml -g cache run
 
-=head1 USAGE
+ bedrock-test.pl -c test.yml run t/05-iif.yml
 
-=head2 Options
+=head1 DESCRIPTION
 
-=head2 Commands
+F<bedrock-test.pl> is a command-line utility designed to automate the
+execution of Bedrock unit tests. It acts as a wrapper around
+L<TAP::Harness> and manages the lifecycle of a test run.
+
+The harness performs the following primary tasks:
+
+=over 4
+
+=item * Dynamic Link Creation
+
+It creates temporary .t symbolic links that point to F<bedrock-runner.pl>
+for every YAML test file identified.
+
+=item * Environment Setup
+
+It initializes the testing environment by loading configuration files
+and setting environment variables like BEDROCK_CONFIG_PATH and 
+LOG_LEVEL.
+
+=item * Execution
+
+It uses C<TAP::Harness> to execute the tests, ensuring the proper 
+Bedrock libraries are in the Perl include path.
+
+=item * Cleanup
+
+It automatically unlinks the temporary .t files upon completion of 
+the test suite via an END block.
+
+=back
+
+=head1 COMMANDS
+
+=over 4
+
+=item run (default)
+
+Executes the test suite.
+
+=item help
+
+Displays usage information.
+
+=back
+
+=head1 OPTIONS
+
+=over 4
+
+=item -c, --config-file
+
+Path to a YAML/JSON file containing test harness settings, such as
+group definitions or environment overrides.
+
+=item -b, --bedrock-config-path
+
+Sets the path to your Bedrock XML configuration directory. 
+Defaults to t/config.
+
+=item -l, --log-level
+
+Sets the logging verbosity (error, warn, info, debug, trace).
+
+=item -g, --group
+
+Executes a specific group of tests defined in your configuration 
+file. You can supply multiple groups.
+
+ -g sql -g cache
+
+=item -r, --runner
+
+Specifies the path to the test runner script. If no C<--runner> is
+passed the script will attempt to find the executable.
+
+
+=item -u, --unlink
+
+Remove setup, teardown tempfiles and links. Use C<--no-unlink> for
+debugging.
+
+default: true
+
+
+=back
+
+=head1 TEST CONFIGURATION FILE
+
+The harness is driven by a YAML configuration file passed via
+C<--config-file>. This file controls environment setup, test
+grouping, and lifecycle scripts.
+
+ config:
+   ALLOW_FILE_WRITE: yes
+
+ env:
+   BEDROCK_CONFIG_PATH: t/config
+
+ setup: |
+   mkdir -p /tmp/foo
+
+ teardown: |
+   rm -rf /tmp/foo
+
+ groups:
+   general:
+     tests:
+       - t/00-var.yml
+       - t/03-if.yml
+
+   cache:
+     description: Shared memory caching tests
+     setup: |
+       #!/usr/bin/env bash
+       bedrock-cache.pl -c
+     teardown: |
+       #!/usr/bin/env bash
+       bedrock-cache.pl --destroy
+     tests:
+       - t/24-cache.yml
+       - t/25-sink-cache.yml
+
+=over 4
+
+=item config
+
+A hash of Bedrock configuration values to override in C<tagx.xml>.
+
+=item env
+
+A hash of environment variables injected before tests run.
+
+=item setup
+
+A shell script executed once before any tests. The harness writes it
+to a temp file and runs it. Failure aborts the test run. By default
+setup and teardown scripts are executed using C</bin/sh>. You can
+override that using a shebang and specifying the executable.
+
+ setup:
+   #!/usr/bin/env bash
+
+   ...
+
+Alternatively, reference an external script:
+
+ setup:
+   exe: t/setup/cache-init.sh
+
+=item teardown
+
+A shell script executed after all tests complete, even if tests
+failed. Teardown scripts run in reverse registration order
+(group teardowns before root teardown).
+
+=item groups
+
+A hash of named test groups. Each group can define its own
+C<setup>, C<teardown>, C<config>, C<env>, C<description>,
+and a C<tests> array of YAML file paths.
+
+Root-level C<env> values are merged into each group's
+environment, with group-level values taking precedence.
+Root-level C<config> overrides are applied to all groups.
+
+=back
+
+For the format of individual test YAML files, see
+L<Bedrock::Test/"METHODS AND SUBROUTINES">.
 
 =head1 AUTHOR
 
@@ -219,6 +671,6 @@ Rob Lauer - <rlauer@treasurersbriefcase.com>
 
 =head1 SEE ALSO
 
-L<Bedrock::Test>, L<Test::More>
+L<Bedrock::Test>, L<TAP::Harness>, L<bedrock-runner.pl>
 
 =cut

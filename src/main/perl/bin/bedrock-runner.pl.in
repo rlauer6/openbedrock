@@ -4,7 +4,9 @@ package Bedrock::Test::Runner;
 use strict;
 use warnings;
 
+use Bedrock qw(choose);
 use Bedrock::Test;
+use Bedrock::LoadConfig qw(load_config);
 use CLI::Simple::Constants qw(:booleans);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
@@ -30,25 +32,18 @@ sub cmd_run {
 
   $test_file = sprintf '%s%s.yml', $path, $name;
 
-  my $config_path = $ENV{BEDROCK_CONFIG_PATH} // sprintf '%s/t/config', cwd;
+  my $config_path = $self->get_config_path;
+  $config_path //= $ENV{BEDROCK_CONFIG_PATH} // sprintf '%s/t/config', cwd;
 
   my $config = Bedrock::Test::config($config_path);
 
   $config //= {};
 
-  if ( my $test_cfg = $ENV{BEDROCK_TEST_CONFIG} ) {
-    my $test_config = eval { load_config($test_cfg); };
-    # Apply overrides
-    foreach ( keys %{ $test_config->{overrides} // {} } ) {
-      $config->{$_} = $test_config->{overrides}->{$_};
-    }
-  }
-
   $config->{LogLevel} //= $ENV{LogLevel};
 
-  Bedrock::Test::run( $test_file, yaml => $TRUE, config => $config );
+  Bedrock::Test::run( $test_file, yaml => $TRUE, config => $config, );
 
-  Bedrock::Test::done_testing;
+  Bedrock::Test::finalize;
 
   return 0;
 }
@@ -92,22 +87,23 @@ __END__
 
 =head1 PUBLIC
 
-test-tag.pl - run a unit test described by a YAML file
+ bedrock-runner.pl - run a unit test described by a YAML file
 
-=head1 USAGE
+=head1 SYNOPSIS
 
- ln -s test-tag.pl t/00-some-test.t
+ ln -s bedrock-runner.pl t/00-some-test.t
 
  prove -v t/00-some-test.t
 
 =head1 DESCRIPTION
 
 This is a script interface to a test harness (L<Bedrock::Test>) based
-on L<Test::More> that is used to test Bedrock tags.
+on L<Test::More> that is used to test Bedrock snippets.
 
-Bedrock unit tests for tags are implemented using a YAML file that
-describes each test and the success criteria.  Each F<YAML> file
-specifies a snippet of Bedrock which exercises some feature of a tag.
+I<Bedrock unit tests> are implemented using a YAML file that describes
+each test and the success criteria.  Each F<YAML> file specifies a
+snippet of Bedrock which exercises some unit of functionality
+implemented in Bedrock.
 
 A suitable environment (logging, configuration) for the test is
 initialized by the harness similar to that provided by Bedrock when it
@@ -116,9 +112,32 @@ I<snippet> to Bedrock's tag processor. Test results are analyzed by
 the L<Bedrock::Test> harness using L<Test::More> comparison methods
 and the criteria for success you provide in the YAML file.
 
-The F<test-tag.pl> script uses the name portion of the F<.t> symbolic
-link to determine the name of the F<.yml> test description that will
-be passed to the C<Bedrock::Test::run()> method.
+The F<bedrock-runner.pl> script uses the name portion of the F<.t>
+symbolic link to determine the name of the F<.yml> test description
+that will be passed to the C<Bedrock::Test::run()> method.
+
+=head1 OPTIONS
+
+=over 4
+
+=item --config-path
+
+Path to Bedrock's configuration files.
+
+default: $ENV{BEDROCK_CONFIG_PATH}, F<t/config>
+
+=item --log-level
+
+Logging level for the request handler. One of:
+
+ error
+ warn
+ info
+ debug
+
+default: 'debug'
+
+=back
 
 =head1 FORMAT OF TEST DESCRIPTIONS
 
@@ -153,7 +172,7 @@ An arbitrary comment to help you remember what the test does.
 
 =item * test
 
-Th Bedrock snippet that defines the test.
+The snippet that defines the test.
 
 =item * include
 
@@ -191,7 +210,7 @@ result of the test.
 default: C<is>
 
 When using the C<like> operator, you should specify the regular
-expression in the same way you would in a a Perl script by placing
+expression in the same way you would in a Perl script by placing
 the regular expression between two slashes. Some examples from actual tests:
 
  t/01-multi-line.yml-result: /foo,bar,biz/
@@ -205,6 +224,15 @@ the regular expression between two slashes. Some examples from actual tests:
  t/19-pebble.yml-result: /foo\s=>\s.*<var\s+\$ARGV\.join\(","\)>/xsm
  t/20-benchmark.yml-result: /2\..* wallclock/
  t/21-sqlselect.yml-result: /[\da-f]{32}/
+
+In additon to the C<Test::More> operations you can specify the
+operation C<any> and provide an array of strings to test.
+
+ op: any
+ result:
+   - "Manny"
+   - "Moe"
+   - "Jack"
 
 =item * error
 
@@ -261,29 +289,44 @@ determine if Bedrock throws the proper exception. In general, tests
 should be short and use the minimum amount of Bedrock processing that
 exercises the precise feature you are testing.>
 
- name: <sqlconnect> dsn, but no user
- env:
-   DBI_USER:
-   DBI_PASS:
- config:
-   DBI_USER:
-   DBI_PASS:
-   DBI_DSN:
-   DBI_HOST:
- test: |
-   <sqlconnect:dbi --verbose dbi:mysql:bedrock:localhost mysql_socket $env.DBI_SOCKET>
- result: '/no user found/'
- op:like
+=item * param
+
+A hash of named values to inject into the Bedrock environment
+before the snippet executes. Values are accessible as top-level
+Bedrock variables (e.g. C<$foo>). Hashes and arrays are
+automatically promoted to C<Bedrock::Hash> and C<Bedrock::Array>
+objects.
+
+ param:
+   name: Fred
+   colors:
+     - red
+     - blue
+   address:
+     city: Boston
+     state: MA
+
+In your snippet:
+
+ <var $name>
+ <var $colors.[0]>
+ <var $address.city>
+
+Note that promotion is one level deep: nested structures
+within a promoted object remain plain Perl references.
+
+YAML flow syntax can be used for compact declarations:
+
+ param: {name: Fred, colors: [red, blue]}
 
 =back
-
 
 =head2 Testing Tips
 
 =head3 Testing Exceptions
 
 To test the value of an exception thrown by Bedrock, set the key
-C<error` instead of `result>.  Use regular expression (enclosed in //)
+C<error> instead of C<result>.  Use regular expression (enclosed in //)
 for the C<like> operator.
 
  name: invalid type
@@ -321,7 +364,7 @@ Of course, feel free to flex your regexp prowess!!
 
 Remember that Bedrock is a templating tool and preserves all of your
 whitespace including newlines. Remember to include the new line
-character in your regular expresssions if you have new lines in your
+character in your regular expressions if you have new lines in your
 tests.
 
 Note in the test below that we have multiple tests of the output, each
@@ -345,6 +388,10 @@ on a new line.
 
 =head1 AUTHOR
 
-Rob Lauer - rclauer@gmail.com
+Rob Lauer - <rlauer@treasurersbriefcase.com>
+
+=head1 SEE ALSO
+
+L<Bedrock::Test>, L<bedrock-test.pl>
 
 =cut

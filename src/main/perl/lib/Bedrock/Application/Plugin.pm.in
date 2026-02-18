@@ -2,7 +2,7 @@ package Bedrock::Application::Plugin;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
-#    Copyright (C) 2025, TBC Development Group, LLC.
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
@@ -23,6 +23,7 @@ package Bedrock::Application::Plugin;
 use strict;
 use warnings;
 
+use Bedrock qw($BEDROCK_DIST_DIR);
 use Bedrock::Constants qw(:chars :booleans);
 use Bedrock::DBI::Utils qw(load_dsn_from_config);
 use BLM::DBHandler qw(easy_connect);
@@ -32,7 +33,7 @@ use Log::Log4perl;
 use List::Util qw(pairs);
 use Scalar::Util qw(reftype);
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
+our $VERSION = '@PACKAGE_VERSION@';
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -56,7 +57,7 @@ sub TIEHASH {
 
   $self->auto_connect( $config->{auto_connect} // $TRUE );
 
-  die "plugin $class failed to initialize properly\n"
+  die sprintf "ERROR: plugin %s failed to initialize properly\n", $class
     if !$self->init_plugin;
 
   return $self;
@@ -150,8 +151,8 @@ sub _dbi_connect {
 
   my %config = %{ $self->config };
 
-  # a plugin must define the database connect parameters for auto
-  # connnect, we're not going to assume that the enviroment might hold
+  # A plugin must define the database connect parameters for auto
+  # connect, we're not going to assume that the environment might hold
   # the values (for now)
 
   # backward compatibility
@@ -336,14 +337,14 @@ sub dump_plugin {
 
   $plugin_config = $plugin_config->devolve;
 
-  die "no plugin config found in distribution\n"
+  die "ERROR: no plugin config found in distribution\n"
     if !$plugin_config;
 
   my $data = $self->get_data // Data::NestedKey->new($plugin_config);
 
   my $format = $self->get_format // 'xml';
 
-  die "unknown formatter\n"
+  die "ERROR: unknown formatter ($format)\n"
     if $format !~ /^(?:xml|ya?ml|json|dumper|storable)$/ixsm;
 
   my %formatter = (
@@ -527,14 +528,18 @@ sub find_plugin_config {
   die $EVAL_ERROR
     if !defined $is_core && $EVAL_ERROR;
 
-  die "not a core plugin\n"
+  die "ERROR: not a core plugin\n"
     if $core && !$is_core;
 
   my $dist_dir_name = $plugin;
   $dist_dir_name =~ s/::/-/xsmg;
 
-  my $dist_dir
-    = eval { return $core ? File::ShareDir::dist_dir('Bedrock') : File::ShareDir::dist_dir($dist_dir_name); };
+  my $dist_dir = eval {
+    return $BEDROCK_DIST_DIR
+      if $core;
+
+    return File::ShareDir::dist_dir($dist_dir_name);
+  };
 
   die "no plugin distribution named $plugin\n"
     if !$core && !$dist_dir;
@@ -616,55 +621,34 @@ Bedrock::Application::Plugin - base class for Bedrock Application Plugins
 
  package BLM::Startup::Foo;
 
- use Bedrock::Application::Plugin;
-
  use parent qw( Bedrock::Application::Plugin );
+
+ sub foo {
+   return 'foo';
+ };
 
  1;
 
 =head1 DESCRIPTION
 
 C<Bedrock::Application::Plugin> is a base class that can be used to
-provide the basic plumbing for your typical Bedrock application plugin
+provide the basic plumbing for your Bedrock application plugins
 (aka Startup BLMs). Application plugins, as opposed to plain plugins
 like L<BLM::Date> are pre-loaded by Bedrock and available without
 having to load them using the C<plugin> tag. These plugins are bound
 to a variable name of your choosing set in the plugin's configuration
-file. Using the plugin done by referencing the variable name
-and perhaps calling one of its methods.
+file. Using the plugin is done by referencing the variable name
+and calling one of its methods.
 
- <trace --output $session>
- <null $session.set('foo', 'bar')>
+ <null $shopping_cart.set('qty', $input.qty)>
 
-The plugin's configuration is read by Bedrock and passed to your
-plugin's implementation allowing it to do whatever it needs to do in
-order to initialize itself.  For example the C<$session> plugin might
-open a database for persisiting user data.
+When a plugin is instantiated, the plugin's configuration is read by
+Bedrock and passed to your plugin's implementation allowing it to do
+whatever it needs to do in order to initialize itself.  For example
+the C<$foo> plugin might open a database for persisiting user
+data.
 
-An example plugin:
-
- package BLM::Startup::Foo;
-
- use parent qw(Bedrock::Application::Plugin);
-
- # typically your plugin implements some application specific
- # initialization code
-
- sub init_plugin {
-   my $self = shift;
-
-   $self->SUPER::init_plugin;
-
-   # your code goes here...
-
-   return 1;
- }
-
- sub hello_world {
-   return "Hello World!";
- }
- 
- 1;
+=head1 CONFIGURING PLUGINS
 
 Create a Bedrock XML file that defines your Application Plugin and
 drop this file in the C<$ENV{CONFIG_PATH}/config.d/startup> directory.
@@ -708,17 +692,17 @@ scaffolding for both application plugins and plugins you can load with
 the C<E<lt>pluginE<gt>> tag. See C<bedrock-plugin --help> for more
 information.
 
-=head1 CONVENIENCE METHODS
+=head1 CONVIENCE METHODS
 
 The C<Bedrock::Application::Plugin> module provides some convenience
-methods and functionality that is usually required when writing an
-application plugin. Plugins typically interact with databases, access
-configuration information and possibly the userE<039>s session data.
+methods thar are usually required when writing plugins. Plugins
+typically interact with databases, access configuration information
+and possibly the userE<039>s session data.
 
 =head2 Opening a Database
 
 The default C<init_plugin()> method will look in your pluginE<039>s
-C<config> object for the database parameters C<DBI_DSN, DBI_USER,
+C<config> object for the database parameters C<DBI_DSN, DBI_HOST, DBI_USER,
 DBI_PASS, RaiseError, PrintError, AutoCommit>, and attempt to connect
 to the database for you. If successful, you can use the C<dbi()> method
 to fetch the database handle.
@@ -739,12 +723,12 @@ Example configuration:
       <scalar name="DBI_DSN">dbi:mysql:bedrock</scalar>
       <scalar name="DBI_USER">fred</scalar>
       <scalar name="DBI_PASS">flintstone</scalar>
+      <scalar name="DBI_HOST">localhost</scalar>
       <scalar name="RaiseError">1</scalar>
       <scalar name="PrintError">1</scalar>
       <scalar name="AutoCommit">1</scalar>
       <scalar name="auto_connect">1</scalar>
     </object>
-
   </object>
 
 =head2 Session Access
@@ -794,13 +778,11 @@ method.>
 
 =head2 Logging
 
-Starting with version 3.2.0 logging is done using
-L<Log::Log4perl>. Bedrock no longer I<directly> supports the notion of
-separate page logs. Bedrock tags and other Bedrock Perl modules will
-attempt to use L<Log::Log4perl> categories for logging. When Bedrock
-initializes the environment it will look for a file named
-F<log4perl.conf> in the configuration directories. If it finds one, it
-will call C<Log::Log4perl-E<gt>init()>.
+Bedrock tags and other Bedrock modules will attempt to use
+L<Log::Log4perl> categories for logging. When Bedrock initializes the
+environment it will look for a file named F<log4perl.conf> in the
+configuration directories. Modify the the F<log4perl.conf> file to
+change the logging level of categories or to add new categories.
 
 More information about Bedrock logging can be found in
 L<Bedrock::Logger>.
@@ -1014,8 +996,7 @@ C<$session> object.
 As noted previously, application plugins are available on your page by
 referencing the variable name set in the configuration file. These
 plugins are lazy loaded by Bedrock when the page is processed. Let's
-take a closer look...
-
+take a closer look.
 
 =head2 Plugin Lifecycle
 
@@ -1046,7 +1027,7 @@ configuration variable.
     );
   }
 
-Bedrock's symbol table C<Text::TagX> is a tied hash whose C<FETCH()>
+Bedrock's symbol table is a tied hash whose C<FETCH()>
 method executes this subroutine the first time your page references
 the bind variable and replaces the value with a reference to your
 instantiated plugin.
@@ -1090,7 +1071,8 @@ like this:
 
 =over 5
 
-=item * Create a configuration file and place it Bedrock's F<config.d/plugin> directory.
+=item * Create a configuration file and place it Bedrock's
+F<config.d/plugin> directory.
 
  <object>
    <scalar name="module">MyPlugin</scalar>
@@ -1108,10 +1090,8 @@ like this:
     my ( $class, $context, $config, $tagx ) = @_;
   
     my $self = bless {}, $class;
-  
-    $self->{ctx} = $context;
-    $self->{config} = $config;
-    $self->{tagx} = $tagx;
+
+    @{$self}{qw(ctx config tagx)} = ($context, $config, $tagx);
   
     return $self;
   }
@@ -1128,17 +1108,16 @@ like this:
 
 =back
 
-You don't need to store the C<TIEHASH> input parameters if you don't
-need them. You might find them useful though ;-)
-
 =over 5
 
 =item ctx
 
-The C<$ctx> object provides methods like C<request()> that
-gives you access to Apache's request handler, C<cgi_header_in()> to
+The C<$ctx> object provides methods like C<request()> that gives you
+access to the HTTP server's request handler, C<headers_in()> to
 access the input headers and other useful methods for developing web
-applications. See L<Bedrock::Context> for more details.
+applications.
+
+See L<Bedrock::Context> for more details.
 
 =item config
 
@@ -1149,7 +1128,7 @@ The C<$config> object contains Bedrock's merged configuration file.
 The C<$tagx> object is an instance of C<Text::TagX> which processed
 the tag that loaded your plugin. In general you shouldn't muck with this
 object, however if you are rolling your own lightweight plugin you can
-access variables and export variables to Bedrock's context.
+access variables and export variables to Bedrock's context!
 
   my $tagx = $self->{tagx};
 
@@ -1165,6 +1144,6 @@ L<Bedrock::Plugin>, L<Bedrock::Context>, L<Bedrock::Hash>, L<Bedrock::Logger>
 
 =head1 AUTHOR
 
-Rob Lauer - <rclauer@gmail.com>
+Rob Lauer - <rlauer@treasurersbriefcase.com>
 
 =cut

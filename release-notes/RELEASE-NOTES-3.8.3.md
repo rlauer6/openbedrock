@@ -13,7 +13,7 @@ A new `pairs()` method has been added to `Bedrock::Array`, inspired by
 pairs and returns an array of hashes with `key` and `value` properties
 — a natural fit for Bedrock templates.
 
-```html
+```
 <null --define-array="arr" name "Rob" language "Perl">
 <foreach $arr.pairs()>
   <var $_.key> = <var $_.value>

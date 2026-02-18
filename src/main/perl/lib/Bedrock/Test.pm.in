@@ -60,11 +60,12 @@ sub new {
     if $HANDLER;
 
   my $self = bless {}, $class;
+
   $HANDLER = $self;
 
   $self->{_log_level} = $LOG_LEVELS{ $level // 'info' } // $LOG_LEVELS{info};
 
-  my $logfile = sprintf 'bedrock-%s.log', $PID;
+  my $logfile = sprintf 'bedrock-test-error-%s.log', $PID;
 
   my $fh;
 
@@ -273,26 +274,19 @@ sub run {
 
   if ( !ref $tests ) {
     $tests = load( $tests, %options );
-
-    die "could not load [$tests]\n"
-      if !ref $tests;
   }
 
-  die "test object is not an array\n"
+  die "ERROR: unable to load tests ($tests)\n"
     if !is_array($tests);
 
   foreach my $t ( @{$tests} ) {
+
     check_test($t);
 
-    my $tempfile
-      = $t->{tempfile} ? create_temp_file( %{ $t->{tempfile} } ) : $EMPTY;
+    my $tempfile = $t->{tempfile} ? create_temp_file( %{ $t->{tempfile} } ) : $EMPTY;
 
-    # override configuration values if config section present
-    if ( $t->{config} ) {
-      for ( keys %{ $t->{config} } ) {
-        $config->{$_} = $t->{config}->{$_};
-      }
-    }
+    # each test should have its own config
+    my $local_config = init_local_config( $t, $config );
 
     local %ENV = %ENV;
 
@@ -315,7 +309,7 @@ sub run {
       name     => $name,
       env      => $env,
       param    => $t->{param},
-      config   => $config,
+      config   => $local_config,
       tempfile => $tempfile,
     );
 
@@ -372,11 +366,11 @@ sub run {
         }->{$chomp} // 'all';
       }
 
-      if ( $chomp =~ /(?:front|all)$/xsm ) {
+      if ( $chomp =~ /(?:end|all)$/xsm ) {
         $result =~ s/\n*\z//xsm;
       }
 
-      if ( $chomp =~ /(?:end|all)$/xsm ) {
+      if ( $chomp =~ /(?:front|all)$/xsm ) {
         $result =~ s/\A\n*//xsm;
       }
 
@@ -443,6 +437,45 @@ sub run {
 }
 
 ########################################################################
+sub init_local_config {
+########################################################################
+  my ( $t, $config ) = @_;
+
+  my %local_config = %{$config};
+
+  if ( $t->{config} ) {
+    for my $k ( keys %{ $t->{config} } ) {
+
+      # plugins...
+      if ( $k eq 'MODULES' ) {
+        # check type of MODULES...I can see how someone might not grok this format:
+        # config:
+        #   MODULES:
+        #     - binding: foo
+        #       module: BLM::Startup::Foo
+        #     - binding: bar
+        #       module: BLM::Startup::Bar
+
+        croak "ERROR: MODULES must be an array of module configurations\n"
+          if !is_array( $t->{config}->{MODULES} ) || any { !is_hash($_) } @{ $t->{config}->{MODULES} };
+
+        my %additional_modules = map { ( $_->{binding} => $_ ) } @{ $t->{config}->{MODULES} // [] };
+        my %modules            = map { ( $_->{binding} => $_ ) } @{ $local_config{MODULES}  // [] };
+
+        # new modules win...
+        %modules = ( %modules, %additional_modules );
+        $local_config{MODULES} = [ values %modules ];
+        next;
+      }
+
+      $local_config{$k} = $t->{config}->{$k};
+    }
+  }
+
+  return bless \%local_config, 'Bedrock::Config';
+}
+
+########################################################################
 sub finalize {
 ########################################################################
 
@@ -463,7 +496,11 @@ sub config {
     $ENV{CONFIG_PATH} = $config_path; ## no critic
   }
 
-  return Bedrock::Handler->new( Faux::ApacheHandler->new($log_level) )->config;
+  my $r = Faux::ApacheHandler->new($log_level);
+
+  my $bedrock_handler = Bedrock::Handler->new($r);
+
+  return $bedrock_handler->config;
 }
 
 # loads the t/{file}.txt file
@@ -519,7 +556,10 @@ sub bedrock {
 
   $tx->param( %param, config => $config );
 
-  my $bootstrap = Bedrock::Bootstrap->new( request => $ctx->request, );
+  my $bootstrap = Bedrock::Bootstrap->new(
+    request              => $ctx->request,
+    benchmarking_enabled => $ENV{BEDROCK_BENCHMARK},
+  );
 
   $bootstrap->config($config);
 
@@ -540,6 +580,8 @@ sub bedrock {
     local %ENV = %faux_env;
 
     $tx->output;
+
+    $bootstrap->log_benchmark('Bedrock tag processing complete');
   };
 
   return (
@@ -603,7 +645,7 @@ Bedrock::Test - unit test framework for Bedrock
 =head1 DESCRIPTION
 
 L<Bedrock::Test> implements a testing framework built using Bedrock
-templating and L<Test::More>.  L<Bedrock::Test> can be use to create
+templating and L<Test::More>.  L<Bedrock::Test> can be used to create
 unit tests for just about anything, it is not just a framework for
 testing Bedrock applications.  Think of L<Bedrock::Test> as a
 templating language's attempt to create a testing language, driven by
@@ -794,7 +836,7 @@ default: false
 
 =item op
 
-The C<Test::More> operation to use for comparing the ouput of the
+The C<Test::More> operation to use for comparing the output of the
 snippet to the result.  Valid values are:
 
 =over 10
@@ -808,6 +850,17 @@ snippet to the result.  Valid values are:
 =item like
 
 =item unlike
+
+=item any
+
+In additon to the C<Test::More> operations you can specify the
+operation C<any> and provide an array of strings to test.
+
+ op: any
+ result:
+   - "Manny"
+   - "Moe"
+   - "Jack"
 
 =back
 
@@ -853,7 +906,7 @@ just that test.
 =item default_env
 
 Works similarly to C<env> but will not override a previously set
-environment varialble.
+environment variable.
 
 =item config
 
@@ -890,7 +943,7 @@ create I<a Bedrock environment suitable for executing your BLMs>.
  load( file, [options] )
 
 Loads the tests from either a YAML or JSON formatted file. See
-L</run_tests> documentation for a description of the what a test
+L</run> documentation for a description of what a test
 object should like.
 
 =over 5
@@ -919,7 +972,7 @@ Boolean that indicates the file is in YAML format.
 
  bedrock(snippet, options)
 
-I<This method is run internally by C<run_tests> and you should
+I<This method is run internally by C<run> and you should
 normally not need to execute this directly.>
 
 Executes a Bedrock snippet. C<options> is hash of options described
@@ -937,7 +990,7 @@ snippet.
 Name that will be used as part of the log file for this snippet.  You
 typically want to pass the name portion of the YAML file that contains
 the snippet, although this name is up to you.  If you do not pass a
-name, the a name will be fabricated as using the template:
+name, the name will be fabricated using the template:
 C<bedrock-test_{PID}>.
 
 =item config
@@ -952,13 +1005,17 @@ C<BEDROCK_CONFIG_PATH> in the environment prior to running your tests.
 
 =item logdir
 
-Speficies the directory for the tests logs.  Defaults to F</tmp>.
+Specifies the directory for the tests logs.  Defaults to F</tmp>.
 
 =back
 
 Returns a hash containing:
 
 =over 5
+
+=item include
+
+Include another snippet.
 
 =item input
 

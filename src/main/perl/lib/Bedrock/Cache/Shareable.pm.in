@@ -1,4 +1,4 @@
-package Bedrock::Cache::Shareable; ## no critic
+package Bedrock::Cache::Shareable;
 
 use strict;
 use warnings;
@@ -11,7 +11,7 @@ use IPC::SharedMem;
 use String::CRC32;
 use Time::HiRes qw(time);
 use List::Util qw(pairs);
-use Storable qw(freeze);
+use Storable qw(freeze thaw);
 use Compress::Zlib qw(memGzip memGunzip);
 
 use Role::Tiny::With;
@@ -87,6 +87,7 @@ sub _init_memory {
 
   # 2. Determine SIZE
   my $size;
+
   if ( $self->{size} ) {
     $size = $self->{size};
   }
@@ -122,10 +123,6 @@ sub _init_memory {
 }
 
 ########################################################################
-# INTERFACE CONTRACT
-########################################################################
-
-########################################################################
 sub native_serialization { return 1; }
 ########################################################################
 # Signals to Bedrock::Cache that we handle serialization internally
@@ -155,27 +152,6 @@ sub _prune {
   return;
 }
 
-package Bedrock::Cache::Shareable; ## no critic
-
-use strict;
-use warnings;
-
-use Carp;
-use Data::Dumper;
-use English qw(-no_match_vars);
-use IPC::Shareable;
-use IPC::SharedMem;
-use String::CRC32;
-use Time::HiRes qw(time);
-use List::Util qw(pairs);
-use Storable qw(freeze thaw);  # [Req] Native Serialization
-use Compress::Zlib qw(memGzip memGunzip);  # [NEW] Compression
-
-use Role::Tiny::With;
-with 'Bedrock::Cache::Engine';
-
-# ... (Constants and Monkey Patch remain unchanged) ...
-
 ########################################################################
 # INTERFACE CONTRACT
 ########################################################################
@@ -192,7 +168,8 @@ sub set { ## no critic
 
   # 1. SERIALIZE (Turn Ref into String)
   # Even if it's a scalar, freeze ensures consistency
-  my $frozen = freeze($value);
+  my $to_freeze = ref $value ? $value : \$value;
+  my $frozen    = freeze($to_freeze);
 
   # 2. COMPRESS (Shrink the String)
   # This massively reduces the footprint in Shared Memory
@@ -239,10 +216,11 @@ sub get {
   # 2. DESERIALIZE
   my $thawed = eval { thaw($data_to_thaw) };
 
-  if ($EVAL_ERROR) {
-    # Fallback: Maybe it wasn't frozen? Return raw.
-    return $data_to_thaw;
-  }
+  return $data_to_thaw
+    if $EVAL_ERROR;  # maybe it wasn't frozen? Return raw.
+
+  return ${$thawed}
+    if defined $thawed && ref $thawed eq 'SCALAR';
 
   return $thawed;
 }
@@ -257,7 +235,8 @@ sub touch {
   my $cache    = $self->{_cache};
   my $envelope = $cache->{$key};
 
-  return 0 if !$envelope;
+  return 0
+    if !$envelope;
 
   $envelope->{e} = $ttl ? ( time() + $ttl ) : 0;
   $cache->{$key} = $envelope;
@@ -265,7 +244,12 @@ sub touch {
   # Return the Decompressed/Thawed data to be consistent with get()
   my $payload  = $envelope->{d};
   my $unzipped = memGunzip($payload) // $payload;
-  return eval { thaw($unzipped) } // $unzipped;
+  my $thawed   = eval { thaw($unzipped) };
+
+  return ${$thawed}
+    if defined $thawed && ref $thawed eq 'SCALAR';
+
+  return $thawed // $unzipped;
 }
 
 ########################################################################
