@@ -53,9 +53,8 @@ $(TARBALL): buildspec.yml
 	  cp $$a "$$project_root/share/bedrock/$$a"; \
 	  echo "$$project_root/share/bedrock/$$a" >>$$include_files; \
 	done; \
-	for a in $(ALL_TESTS); do \
-	  test -e "$$project_root/share/bedrock/tests/perl/$$a"; \
-	  echo "$$project_root/share/bedrock/tests/perl/$$a" >>$$include_files; \
+	for a in $$(find "$$project_root/share/bedrock/tests/perl/" -name '*.yml'); do \
+	  echo "$$a" >>$$include_files; \
 	done; \
 	echo $$project_root/share/bedrock/tests/perl/bedrock-runner.pl >>$$include_files; \
 	include_files_sorted=$$(mktemp); \

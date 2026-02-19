@@ -7,31 +7,6 @@ PROJECT_ROOT=$(builddir)
 
 all:
 
-BEDROCK_TESTS = \
-    00-var.yml \
-    01-multi-line.yml \
-    02-null.yml \
-    03-if.yml \
-    04-foreach.yml \
-    05-iif.yml \
-    06-open.yml \
-    07-plugin.yml \
-    08-reftype.yml \
-    09-sink.yml \
-    10-try.yml \
-    11-snippet.yml \
-    14-flush.yml \
-    15-include.yml \
-    16-case.yml \
-    17-array.yml \
-    18-hash.yml \
-    19-pebble.yml \
-    20-benchmark.yml \
-    22-include.yml
-
-ALL_TESTS = \
-    $(BEDROCK_TESTS)
-
 SHELL_MODULES = \
     Bedrock/Apache/Request/Shell.pm \
     Bedrock/Context.pm \

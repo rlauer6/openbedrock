@@ -9,6 +9,9 @@ TESTS = $(check_SCRIPTS)
 TEST_LOG_DRIVER = env AM_TAP_AWK='$(AWK)' $(SHELL) \
               $(top_srcdir)/autotools/tap-driver.sh
 
+########################################################################
+# NOTE: These tests are injected into the final CPAN distribution.
+########################################################################
 BEDROCK_TESTS = \
     t/00-var.yml \
     t/00-chomp.yml \
@@ -34,6 +37,9 @@ BEDROCK_TESTS = \
     t/27-replace.yml \
     t/28-matches.yml
 
+########################################################################
+# NOTE: These are NOT injected into the final CPA distirbution
+########################################################################
 BEDROCK_CACHE_TESTS = \
     t/24-cache.yml \
     t/25-sink-cache.yml \
@@ -57,17 +63,10 @@ BEDROCK_TEST_HARNESS = \
 	test -d "$$(dirname "$@")" || $(INSTALL) -d "$$(dirname "$@")"
 	$(do_subst) $< > $@
 
-# NOTE:
-#
-# Each test is represented by a .yml (YAML) file. We create a symbolic
-# link for each .yml file of the form t/test.t to the generic
-# `test.tag.pl`.  This script figures out which test to run based on
-# the basename of the test being executed.  Accordingly because we
-# create the symbolic links to a test directory so we are only saving
-# the .yml files to the project
-#
-# See `perldoc lib/Test/Bedrock.pm` for more information about
-# creating Bedrock tests.
+########################################################################
+# NOTE: See `perldoc Bedrock::Test` for more information about
+# creating and running Bedrock tests.
+########################################################################
 
 GBEDROCK_TEST_HARNESS = $(BEDROCK_TEST_HARNESS:.pm.in=.pm)
 
