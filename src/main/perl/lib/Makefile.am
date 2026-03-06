@@ -102,6 +102,7 @@ perl5bedrocklib_DATA = \
     Bedrock/Handler.pm \
     Bedrock/Hash.pm \
     Bedrock/Install.pm \
+    Bedrock/Iterator.pm \
     Bedrock/LoadConfig.pm \
     Bedrock/Logger.pm \
     Bedrock/Log.pm \

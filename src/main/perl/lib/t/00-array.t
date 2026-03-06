@@ -176,19 +176,50 @@ subtest 'bedrock_xml' => sub {
 ########################################################################
 subtest 'devolve' => sub {
 ########################################################################
+
+  # basic - top level array is unblessed
   my $array = Bedrock::Array->new( 0 .. 9 );
+  my $plain = $array->devolve;
 
-  ok( !blessed $array->devolve, 'not blessed' );
+  ok( !blessed $plain,               'top-level array is unblessed' );
+  is( reftype($plain), 'ARRAY',      'top-level is a plain arrayref' );
+  is_deeply( $plain, [ 0 .. 9 ],     'scalar values preserved' );
+
+  # nested Bedrock::Hash devolved
   require Bedrock::Hash;
+  my $foo      = Bedrock::Hash->new( foo => Bedrock::Array->new( 1, 2, 3 ) );
+  my $with_hash = Bedrock::Array->new( $foo, 'scalar', Bedrock::Array->new( 0 .. 9 ) );
+  my $plain_with_hash = $with_hash->devolve;
 
-  my $foo = Bedrock::Hash->new( foo => $array );
-  $array = $array->new( $foo, 0, 2, 4, $array->new( 0 .. 9 ) );
+  ok( !blessed $plain_with_hash->[0],          'nested hash is unblessed' );
+  is( reftype($plain_with_hash->[0]), 'HASH',  'nested hash is plain hashref' );
+  ok( !blessed $plain_with_hash->[2],          'nested array is unblessed' );
+  is( reftype($plain_with_hash->[2]), 'ARRAY', 'nested array is plain arrayref' );
+  is( $plain_with_hash->[1], 'scalar',         'scalar value preserved' );
 
-  my $new_array = $array->devolve;
+  # nested array within hash within array - deep structure
+  my $deep = Bedrock::Array->new(
+    Bedrock::Hash->new(
+      level2 => Bedrock::Array->new(
+        Bedrock::Hash->new( leaf => 'value' )
+      )
+    )
+  );
+  my $plain_deep = $deep->devolve;
 
-  ok( !blessed $new_array,      'new array not blessed' );
-  ok( !blessed $new_array->[0], 'hash not blessed' );
-  ok( !blessed $new_array->[4], '4th element not blessed' );
+  ok( !blessed $plain_deep->[0],                    'level1 hash unblessed' );
+  ok( !blessed $plain_deep->[0]{level2},            'level2 array unblessed' );
+  ok( !blessed $plain_deep->[0]{level2}[0],         'leaf hash unblessed' );
+  is( $plain_deep->[0]{level2}[0]{leaf}, 'value',   'deep scalar preserved' );
+
+  # generic blessed arrayref - the new generic behaviour
+  my $arbitrary = bless [ 1, 2, 3 ], 'Some::RandomClass';
+  my $with_arbitrary = Bedrock::Array->new( $arbitrary, 'x' );
+  my $plain_arbitrary = $with_arbitrary->devolve;
+
+  ok( !blessed $plain_arbitrary->[0],           'arbitrary blessed arrayref devolved' );
+  is( reftype($plain_arbitrary->[0]), 'ARRAY',  'arbitrary blessed arrayref is plain arrayref' );
+  is_deeply( $plain_arbitrary->[0], [ 1, 2, 3 ], 'values preserved from arbitrary blessed ref' );
 };
 
 ########################################################################

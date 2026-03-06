@@ -385,12 +385,13 @@ port 8080.  The setup Looks something like this...
 
 ```
 
->Note: By default Chrome on your Chromebook is unable to access ports
->opened in your Linux container.  You must configure your Chromebook
->for port forwarding. Do this by going to the settings menu on your
->Chromebook. Go to the setting menu on your Chromebook, then click on
->_About ChromeOS_. In the Developers section click on _Linux development
->environment_. Click on _Port forwarding_. Enable 8080 port forwarding.
+>Note: By default the Chrome browser on your Chromebook is unable to
+>access ports opened in your Linux container.  You must configure your
+>Chromebook for port forwarding. Do this by going to the settings menu
+>on your Chromebook. Go to the setting menu on your Chromebook, then
+>click on _About ChromeOS_. In the Developers section click on _Linux
+>development environment_. Click on _Port forwarding_. Enable 8080
+>port forwarding.
 
 Additionally, all ports are normally blocked to my EC2 except
 port 22. In this scenario we open port 80 of my EC2 to the bastion
@@ -416,32 +417,30 @@ ssh -i ~/.ssh/id_rsa -f -N -L 8080:$REMOTE_IP:$REMOTE_PORT $REMOTE_USER@$REMOTE_
 * $REMOTE_USER - remote user used to access bastion host
 * $REMOTE_BASTION - public IP of the bastion host
 
-Here's the helper script that accomplishes the same thing:
+There's a helper script ([docker/web-tunnel](docker/web-tunnel) that
+basically accomplishes the same thing:
 
 ```
-#!/bin/bash
-
-BASTION=xx.xx.xx.xx
-REMOTE_IP=10.1.4.191
-USER=ec2-user
-REMOTE_PORT=80
-LOCAL_PORT=8080
-
-ssh -i ~/.ssh/id_rsa -f -N -L $LOCAL_PORT:$REMOTE_IP:$REMOTE_PORT $USER@$BASTION -v
+./web-tunnel -u ec2-user -i 10.1.4.206 -b xx.xx.xx.xx -p 80 -l 8080 up
 ```
-
-_or use the `web-tunnel` script in this directory._
-
-```
-./web-tunnel -u ec2-user -i 10.1.4.206 -b 18.212.108.51 -p 80 -l 8080 up
-```
-
-
 ..to stop port forwarding
 
 ```
 ./web-tunnel -u ec2-user -i 10.1.4.191 -b xx.xx.xx.xx -p 80 -l 8080 down
 ```
+
+### More Details
+
+Your chromebook can open up other ports to your local development
+environment as well. The challeng is DNS names. To avoid the hassles
+of trying to make you Chromebook's native Chrome browswer resolve your
+application domain names you can simply run Firefox or Chromium inside
+penguin. Then edit the `/etc/hosts` file inside your container and add
+the domain name to the list of domains for 127.0.0.1.
+
+There are reports of ways for you to resolve these domain names to
+your local development environment but they rely on you resetting
+Chrome's DNS server and essentially running one inside your container.
 
 # Installing from RPMs
 

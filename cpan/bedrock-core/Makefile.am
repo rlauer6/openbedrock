@@ -38,6 +38,7 @@ PACKAGE_MODULES = \
     Bedrock/Handle.pm \
     Bedrock/Hash.pm \
     Bedrock/HTML/Helper.pm \
+    Bedrock/Iterator.pm \
     Bedrock/LoadConfig.pm \
     Bedrock/Log.pm \
     Bedrock/Logger.pm \

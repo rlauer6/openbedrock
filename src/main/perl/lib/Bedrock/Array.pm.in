@@ -19,102 +19,15 @@
 #    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #
 
-########################################################################
-package Bedrock::Iterator; ## no critic
-########################################################################
-
-use strict;
-use warnings;
-
-use Bedrock::Constants qw(:booleans);
-use Data::Dumper;
-
-########################################################################
-sub new {
-########################################################################
-  my ( $class, $array ) = @_;
-
-  $class = ref $class || $class;
-
-  my $self = {
-    array => $array,
-    cur   => 0,
-  };
-
-  return bless $self, $class;
-}
-
-########################################################################
-sub pos { ## no critic (ProhibitBuiltinHomonyms)
-########################################################################
-  my ($self) = @_;
-
-  if ( $self->{cur} > @{ $self->{array} } ) {
-    $self->{cur} = @{ $self->{array} };
-  }
-
-  return $self->{cur};
-}
-
-########################################################################
-sub begin {
-########################################################################
-  my ($self) = @_;
-
-  return $self->{cur} = 0;
-}
-
-########################################################################
-sub end {
-########################################################################
-  my ($self) = @_;
-
-  return $self->{cur} = @{ $self->{array} };
-}
-
-########################################################################
-sub curr {
-########################################################################
-  my ($self) = @_;
-
-  return $self->{array}->[ $self->{cur} ];
-}
-
-########################################################################
-sub next { ## no critic (ProhibitBuiltinHomonyms)
-########################################################################
-  my ($self) = @_;
-
-  return $self->{array}->[ $self->{cur}++ ];
-}
-
-########################################################################
-sub prev {
-########################################################################
-  my ($self) = @_;
-
-  return $self->{array}->[ --$self->{cur} ];
-}
-
-########################################################################
-sub valid {
-########################################################################
-  my ($self) = @_;
-
-  my $cur = $self->{cur};
-
-  return $cur >= 0 && $cur < @{ $self->{array} } ? $TRUE : $FALSE;
-}
-
-########################################################################
 package Bedrock::Array;
-########################################################################
+
 use strict;
 use warnings;
 
 use Bedrock qw(force_array :booleans);
 use Bedrock::BedrockJSON;
 use Bedrock::Constants qw( :chars :booleans);
+use Bedrock::Iterator;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use List::Util qw(any none);
@@ -125,13 +38,7 @@ use XML::Simple; ## no critic
 use Role::Tiny::With;
 with 'Bedrock::Dumper';
 
-our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
-
-BEGIN {
-  use Exporter ();
-  use vars qw (@ISA);
-  @ISA = qw (Tie::StdArray); ## no critic (ProhibitExplicitISA)
-}
+our $VERSION = '@PACKAGE_VERSION@';
 
 use parent -norequire => qw(Tie::StdArray);
 
@@ -174,21 +81,22 @@ sub coalesce {
 ########################################################################
 sub devolve {
 ########################################################################
-  my ($this) = @_;
+  my $this = shift;
 
-  if ( ref($this) =~ /^HASH|ARRAY$/xsm ) {
-    return $this;
+  my $type = reftype($this) // return $this;
+
+  if ( $type eq 'HASH' ) {
+    my $that = {};
+    for my $key ( keys %{$this} ) {
+      $that->{$key} = devolve( $this->{$key} );
+    }
+    return $that;
   }
-  elsif ( ref($this) =~ /Bedrock::Hash/xsm ) {
-    my %that = map { $_ => devolve( $this->{$_} ) } keys %{$this};
-    return \%that;
-  }
-  elsif ( ref($this) =~ /Bedrock::Array/xsm ) {
+  elsif ( $type eq 'ARRAY' ) {
     return [ map { devolve($_) } @{$this} ];
   }
-  else {
-    return $this;
-  }
+
+  return $this;
 }
 
 ########################################################################
@@ -569,7 +477,8 @@ use Bedrock qw(:booleans force_array);
 use Bedrock::Constants qw(:chars);
 use Data::Dumper;
 use English qw(-no_match_vars);
-use Scalar::Util qw(reftype);
+use List::Util qw(all);
+use Scalar::Util qw(looks_like_number reftype);
 
 ########################################################################
 sub new {
@@ -631,10 +540,10 @@ sub sort { ## no critic (ProhibitBuiltinHomonyms)
     my $type  = shift @args;
 
     die "invalid order\n"
-      if $order !~ /^asc|desc$/xsm;
+      if $order !~ /^(?:asc|desc)$/xsm;
 
     die "invalid type\n"
-      if $type !~ /^num|alpha$/xsm;
+      if $type !~ /^(?:num|alpha)$/xsm;
 
     push @sort_string, sprintf q($%s->{%s} %s $%s->{%s}), ## no critic (RequireInterpolationOfMetachars)
       ( $order =~ /^asc/ixsm ) ? 'a' : 'b',
@@ -654,6 +563,66 @@ sub sort { ## no critic (ProhibitBuiltinHomonyms)
     if $EVAL_ERROR;
 
   return Bedrock::RecordSet->new( \@sorted_array );
+}
+
+########################################################################
+sub _analyze_field {
+########################################################################
+  my ( $records, $field ) = @_;
+
+  # Collect all defined, non-empty values for this field across all records
+  my @values = grep { defined $_ && $_ ne $EMPTY }
+    map { $_->{$field} } @{$records};
+
+  # If every value looks numeric, sort numerically and fill missing with 0
+  # Otherwise sort alphabetically and fill missing with ''
+  my $is_numeric = @values && all { looks_like_number($_) } @values;
+
+  return {
+    numeric => $is_numeric,
+    fill    => $is_numeric ? 0 : $EMPTY,
+  };
+}
+
+########################################################################
+sub smart_sort {
+########################################################################
+  my ( $self, @fields ) = @_;
+
+  die "smart_sort requires at least one field\n"
+    if !@fields;
+
+  my %field_info = map { $_ => _analyze_field( $self, $_ ) } @fields;
+
+  my @sorted = sort {
+    my $result = 0;
+
+    for my $field (@fields) {
+      my $info  = $field_info{$field};
+      my $fill  = $info->{fill};
+      my $a_val = defined $a->{$field} ? $a->{$field} : $fill;
+      my $b_val = defined $b->{$field} ? $b->{$field} : $fill;
+
+      $result
+        = $info->{numeric}
+        ? $a_val <=> $b_val
+        : $a_val cmp $b_val;
+
+      last if $result;
+    }
+
+    $result;
+  } @{$self};
+
+  return Bedrock::RecordSet->new( \@sorted );
+}
+
+########################################################################
+sub smart_sort_desc {
+########################################################################
+  my ( $self, @fields ) = @_;
+
+  return Bedrock::RecordSet->new( [ reverse @{ $self->smart_sort(@fields) } ] );
 }
 
 ########################################################################
@@ -747,47 +716,166 @@ Implements a Bedrock array object with many interesting methods.
 
 =head1 METHODS AND SUBROUTINES
 
-See the documentation for the C<&ltarray&gt> and C<&ltvar&gt> tags.
+For full examples and template usage see L<TagX::TAG::NoBody::Array>.
 
-=head2 bedrock_xml
+=head2 new( list )
 
-Returns the array in Bedrock XML format.
+Creates a new C<Bedrock::Array> object from an optional list of values.
 
-=head2 coalesce
+  my $array = Bedrock::Array->new( 1, 2, 3 );
 
- <var $foo.coalesce()>
+=head2 bedrock_xml( 0[name] )
 
-Return the first non-null value.
+Returns the array serialized as a Bedrock XML string. If a name is given,
+wraps the array in a named C<E<lt>objectE<gt>> element.
 
-=head2 get
+=head2 coalesce()
 
-=head2 grep
+Returns the first defined, non-empty value in the array.
 
-=head2 join
+=head2 devolve()
 
-=head2 json
+Recursively strips all blessed references from the structure, returning plain
+Perl arrayrefs and hashrefs. Works on any blessed arrayref or hashref
+regardless of class - not just Bedrock objects.
 
-=head2 isEmpty
+  my $plain = $array->devolve;
 
-=head2 length
+=head2 get( index )
 
-=head2 list
+Returns the element at the given integer index.
 
-=head2 map
+=head2 grep( pattern )
 
-=head2 pop
+Returns a C<Bedrock::Array> of elements matching the given string or C<qr//>
+pattern.
 
-=head2 push
+=head2 isEmpty()
 
-=head2 set
+Returns true if the array has no elements. Consider using C<length()> instead.
 
-=head2 sort
+=head2 iterator()
 
-=head2 splice
+Returns a C<Bedrock::Iterator> object for sequential traversal of the array.
 
-=head2 unshift
+  my $it = $array->iterator;
+  while ( $it->valid ) { my $val = $it->next; }
 
-=head2 xml
+=head2 join( [str] )
+
+Joins array elements into a string using the given separator. Defaults to
+the empty string.
+
+=head2 json()
+
+Returns the array serialized as a JSON string.
+
+=head2 length()
+
+Returns the number of elements in the array.
+
+=head2 list()
+
+Returns the array as a plain Perl list.
+
+=head2 map( fmt )
+
+Applies a C<sprintf> format string to each element, returning a
+C<Bedrock::Array> of formatted strings.
+
+=head2 matches( pattern, [flags] )
+
+Returns a C<Bedrock::Array> of elements (or sub-matches when using C<g> flag)
+that match the pattern. Flags can include C<i>, C<m>, C<s>, and C<g>.
+
+=head2 pairs()
+
+Treats the array as a flat list of key/value pairs and returns a
+C<Bedrock::Array> of C<Bedrock::Hash> objects each with C<key> and C<value>
+members. Requires an even number of elements.
+
+  my $pairs = Bedrock::Array->new( foo => 1, bar => 2 )->pairs;
+
+=head2 pop( [n] )
+
+With no argument, removes and returns the last element. With an integer
+argument, removes and returns the last C<n> elements as a C<Bedrock::Array>.
+
+=head2 push( args )
+
+Appends one or more elements to the end of the array. Returns the new length.
+
+=head2 recordset()
+
+Converts the array to a C<Bedrock::RecordSet> object. The array must contain
+only hashrefs with consistent keys.
+
+=head2 reverse()
+
+Returns a new C<Bedrock::Array> with elements in reverse order. Does not
+modify the original.
+
+=head2 set( index, value )
+
+Sets the element at the given integer index to the given value. Returns the
+previous value.
+
+=head2 shift( [n] )
+
+With no argument, removes and returns the first element. With an integer
+argument, removes and returns the first C<n> elements as a C<Bedrock::Array>.
+
+=head2 sort( [dir, [type]] )
+
+Returns a sorted C<Bedrock::Array>. Direction is C<asc> (default) or C<desc>.
+Type is C<alpha> (default) or C<numeric>.
+
+=head2 splice( offset, [length, [list]] )
+
+Behaves like Perl's built-in C<splice>. Returns a new C<Bedrock::Array>
+reflecting the result of the operation.
+
+=head2 unshift( args )
+
+Prepends one or more elements (or all elements of an arrayref) to the front
+of the array. Returns the new length.
+
+=head2 xml( options )
+
+Returns the array as an XML document string via C<XML::Simple>. Accepts
+C<XML::Simple> options as key/value pairs.
+
+=head1 Bedrock::RecordSet METHODS
+
+C<Bedrock::RecordSet> is a subclass of C<Bedrock::Array> where every element
+is a hash reference. It is typically created from database query results or
+by calling C<recordset()> on a C<Bedrock::Array> of hashes.
+
+For full examples and template usage see L<TagX::TAG::NoBody::RecordSet>.
+
+=head2 sort( field, order, type, ... )
+
+Sorts the recordset by one or more fields using explicit triplets of
+C<field>, C<order> (C<asc> or C<desc>), and C<type> (C<alpha> or C<num>).
+All records must have identical keys.
+
+  my $sorted = $rs->sort( 'lastname', 'asc', 'alpha', 'age', 'asc', 'num' );
+
+=head2 smart_sort( field, ... )
+
+Sorts the recordset ascending by one or more fields. Type (numeric or
+alphabetic) is inferred automatically by inspecting all values for each
+field across the entire recordset. Records with missing values for a sort
+field are filled with C<0> (numeric fields) or C<''> (alpha fields) and
+sort first. Records are not required to have identical keys.
+
+  my $sorted = $rs->smart_sort( 'lastname', 'firstname' );
+
+=head2 smart_sort_desc( field, ... )
+
+Identical to C<smart_sort> but returns results in descending order.
+
+  my $sorted = $rs->smart_sort_desc( 'score' );
 
 =head1 AUTHOR
 

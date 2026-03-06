@@ -2,6 +2,7 @@
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
 #    Copyright (C) 2001, Charles Jones, LLC.
+#    Copyright (C) 2026, Charles Jones, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,24 +21,30 @@
 
 package BLM::Startup::BaseSession;
 
-use parent qw(Bedrock::Hash);
-
 use strict;
 use warnings;
 
 our $VERSION = '@PACKAGE_VERSION@'; ## no critic (RequireInterpolationOfMetachars)
 
-use Bedrock qw(is_hash);
-use Bedrock::XML;
+use Bedrock qw(:booleans);
+use Bedrock::Constants qw(:chars);
+use Bedrock::XML qw(writeXMLString loadXML);
 use Carp;
+use Crypt::URandom qw(urandom);
 use Data::Dumper;
-use Digest::MD5;
 use English qw(-no_match_vars);
 use File::Path;
 use File::Temp qw(tempfile);
 use JSON;
-use List::Util qw(pairs any);
+use List::Util qw(pairs any none);
+use Log::Log4perl::Level;
 use POSIX qw(strftime);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+with 'Bedrock::CSRF';
+
+use parent qw(Bedrock::Hash);
 
 # +---------------------------------------------------------------+
 # | ->CONNECT( %options )                                         |
@@ -123,6 +130,21 @@ sub KILL_SESSION {
   return;
 }
 
+# +---------------------------------------------------------------+
+# | ->SESSION_CLEANUP( %options )                                 |
+# |                                                               |
+# | config => configuration object                                |
+# |                                                               |
+# | Purpose: This function is called prior to destruction of the  |
+# |          session object to give the implementation a chance   |
+# |          to clean up stale sessions.                          |
+# | Returns: reference to session data if successful              |
+# +---------------------------------------------------------------+
+sub SESSION_CLEANUP {
+  my ( $self, %options ) = @_;
+  return;
+}
+
 ########################################################################
 sub clear {
 ########################################################################
@@ -162,9 +184,116 @@ sub kill_session {
 }
 
 ########################################################################
+sub session_root {
+########################################################################
+  my ($obj) = @_;
+
+  return $obj->context->{CONFIG}->{SESSION_DIR};
+}
+
+########################################################################
+sub create_session_directory { goto &create_session_dir; }
+########################################################################
+sub create_session_dir {
+########################################################################
+  my ( $obj, $sub_dir ) = @_;
+
+  my $self = tied %{$obj} || $obj;
+
+  $sub_dir //= $EMPTY;
+
+  my $session_id = $self->{session};
+
+  my $session_dir = $self->session_root;
+
+  die "No SESSION_DIR defined in your configuration.\n"
+    if !$session_dir;
+
+  die "no such directory ($session_dir)\n"
+    if !-d $session_dir;
+
+  $session_dir = sprintf '%s/%s/%s', $session_dir, $session_id, $sub_dir;
+
+  if ( !-d $session_dir ) {
+
+    $self->get_logger->debug("creating directory $session_dir");
+
+    my ($created_dir) = eval { return mkpath($session_dir); };
+
+    if ( !$created_dir || $EVAL_ERROR || !-d $session_dir ) {
+      $self->get_logger->error(
+        sub {
+          return "Unable to create $session_dir\n" . "$EVAL_ERROR\n" . "$OS_ERROR";
+        }
+      );
+
+      die "Unable to create $session_dir\n";
+    }
+
+  }
+  else {
+    $self->get_logger->debug('session directory already exists');
+  }
+
+  return $session_dir;
+}
+
+########################################################################
+sub context {
+########################################################################
+  my ($obj) = @_;
+
+  my $self = tied %{$obj} || $obj;
+
+  return $self->{ctx};
+}
+
+########################################################################
+sub cleanup_session_dir {
+########################################################################
+  my ( $self, $cleanup ) = @_;
+
+  if ( defined $cleanup ) {
+    $self->config( cleanup_session_dir => $cleanup );
+  }
+
+  $cleanup = $self->config('cleanup_session_dir') // $EMPTY;
+
+  return $cleanup =~ /y/ixsm;
+}
+
+########################################################################
+sub create_session_tempfile {
+########################################################################
+  my ( $self, $template, %options ) = @_;
+
+  my $name = delete $options{NAME};
+
+  my $suffix = delete $options{SUFFIX};
+
+  my $dir = $self->create_session_dir( $options{dir} );
+
+  if ($name) {
+    $template = 'tempXXXXX';
+  }
+
+  my ( $fh, $filename ) = tempfile(
+    $template,
+    DIR => $dir,
+    $name ? () : ( SUFFIX => $suffix // '.html' ),
+  );
+
+  if ($name) {
+    rename "$dir/$filename", "$dir/$name";
+  }
+
+  return Bedrock::Array( $fh, $name || $filename );
+}
+
+########################################################################
 sub create_session_file {
 ########################################################################
-  my ( $self, $filename, $content ) = @_;
+  my ( $self, $filename, $content, $ttl ) = @_;
 
   my $session_dir = $self->create_session_dir;
 
@@ -174,10 +303,7 @@ sub create_session_file {
   my $path = sprintf '%s%s', $session_dir, $filename;
 
   if ( is_hash($content) || is_array($content) ) {
-    $content
-      = is_hash($content)
-      ? Bedrock::Hash->new( %{$content} )
-      : Bedrock::Array->new( @{$content} );
+    $content = is_hash($content) ? Bedrock::Hash->new( %{$content} ) : Bedrock::Array->new( @{$content} );
 
     $content = JSON->new->encode( $content->devolve );
   }
@@ -189,90 +315,11 @@ sub create_session_file {
 
   close $fh;
 
+  if ($ttl) {
+    $self->set_session_file_ttl( $path, $ttl );
+  }
+
   return $path;
-}
-
-########################################################################
-sub create_session_dir {
-########################################################################
-  my ( $obj, $sub_dir ) = @_;
-
-  $sub_dir //= q{};
-
-  my $self = tied %{$obj};
-
-  my $session_id = $self->{'session'};
-
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
-  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
-
-  die "No SESSION_DIR defined.\n"
-    if !$session_dir;
-
-  $session_dir .= "/$session_id";
-
-  if ( !-d "$session_dir/$sub_dir" ) {
-    eval { mkpath("$session_dir/$sub_dir"); };
-
-    die "Unable to create $session_dir/$sub_dir\n"
-      if $EVAL_ERROR;
-  }
-
-  return "$session_dir/$sub_dir";
-}
-
-########################################################################
-sub cleanup_session_dir {
-########################################################################
-  my ( $self, @args ) = @_;
-
-  if ( @args > 0 ) {
-    @args = ( 'cleanup_sesion_dir', $args[0] ? 'yes' : 'no' );
-  }
-  else {
-    @args = 'cleanup_sesion_dir';
-  }
-
-  return $self->config(@args);
-}
-
-########################################################################
-sub create_session_tempfile {
-########################################################################
-  my ( $obj, $template, %options ) = @_;
-
-  my $self = tied %{$obj};
-
-  my $session_id = $self->{'session'};
-
-  my ( $verbose, $ctx, $config ) = @{$self}{qw(verbose ctx config)};
-
-  my $session_dir = $ctx->{'CONFIG'}->{'SESSION_DIR'};
-
-  die "No SESSION_DIR defined.\n"
-    if !$session_dir;
-
-  $session_dir .= "/$session_id";
-
-  if ( !-d $session_dir ) {
-    $obj->create_session_dir($session_dir);
-  }
-
-  my %local_options;
-
-  if ( $options{DIR} ) {
-    $session_dir .= $options{DIR};
-  }
-
-  $local_options{DIR} = $session_dir;
-
-  if ( exists $options{SUFFIX} ) {
-    $local_options{SUFFIX} = $options{SUFFIX};
-  }
-
-  my ( $fh, $filename ) = tempfile( $template, %local_options );
-
-  return Bedrock::Array->new( $fh, $filename );
 }
 
 ########################################################################
@@ -305,20 +352,20 @@ sub cookieless_session {
   $self->SESSION_CLEANUP( config => $self->{config} );
 
   if ($id) {
-    $self->{'new_session'} = 0;
+    $self->{new_session} = 0;
   }
 
-  $self->{'session'} = $id || $self->{'session'};
+  $self->{session} = $id || $self->{'session'};
   $self->read_data($id);
 
-  $config->{'cookieless_sessions'} = 1;
+  $config->{cookieless_sessions} = 1;
 
   # kill the cookie if cookies are enabled, since on instantiation,
   # UserSession ($session) will create a cookie
   $self->cookie(
-    $self->{'name'},
-    'value'   => 'killed',
-    'expires' => -864_000
+    $self->{name},
+    value   => 'killed',
+    expires => -864_000
   );
 
   return $self->send_cookie;
@@ -329,14 +376,21 @@ sub cookie {
 ########################################################################
   my ( $self, $name, @args ) = @_;
 
-  my %cookies = ref $args[0] ? %{ $args[0] } : @args;
+  my %cookie = ref $args[0] ? %{ $args[0] } : @args;
 
-  $self->{'cookies'} //= {};
-  $self->{'cookies'}->{$name} //= {};
+  # secure defaults
+  %cookie = ( %cookie, HttpOnly => undef, $ENV{HTTPS} ? ( Secure => undef ) : () );
+  $cookie{SameSite} //= 'Strict';
 
-  my $cref = $self->{'cookies'}->{$name};
+  $cookie{path}    //= q{/};
+  $cookie{expires} //= 86_400;
 
-  foreach my $p ( pairs %cookies ) {
+  $self->{cookies} //= {};
+  $self->{cookies}->{$name} //= {};
+
+  my $cref = $self->{cookies}->{$name};
+
+  foreach my $p ( pairs %cookie ) {
     my ( $key, $value ) = @{$p};
     $cref->{$key} = $value;
   }
@@ -347,13 +401,7 @@ sub cookie {
 ########################################################################
 sub digest {
 ########################################################################
-  my $md5 = Digest::MD5->new;
-
-  my @seed = ( time, ( $ENV{REMOTE_ADDR} // q{} ), $PID, rand );
-
-  $md5->add( sprintf '%012d:%20s:%08d:%.10f', @seed );
-
-  return $md5->hexdigest;
+  return unpack 'H*', urandom(16);
 }
 
 ########################################################################
@@ -361,9 +409,28 @@ sub expiry {
 ########################################################################
   my ($expires) = @_;
 
-  return if !$expires;
+  return
+    if !$expires;
 
   return POSIX::strftime( '%a, %d-%b-%Y %T GMT', gmtime time + $expires );
+}
+
+########################################################################
+sub bake_cookie {
+########################################################################
+  my ( $self, $name, %cookie ) = @_;
+
+  $cookie{expires} = expiry( $cookie{expires} );
+
+  my $value  = delete $cookie{value};
+  my @header = ("$name=$value");
+
+  foreach my $p ( pairs %cookie ) {
+    my ( $k, $v ) = @{$p};
+    push @header, defined $v ? "$k=$v" : $k;
+  }
+
+  return join '; ', @header;
 }
 
 ########################################################################
@@ -374,21 +441,10 @@ sub send_cookie {
   return
     if !$self->{cookies};
 
-  my $header;
-
   for my $name ( keys %{ $self->{cookies} } ) {
-    my %cookie = %{ $self->{cookies}->{$name} };
+    my $cookie = $self->bake_cookie( $name => %{ $self->{cookies}->{$name} } );
 
-    $cookie{expires} = expiry( $cookie{expires} );
-    $cookie{path} //= q{/};
-    $cookie{SameSite} = 'none';
-
-    my @cookie = map { "$_=" . $cookie{$_} }
-      grep { defined $cookie{$_} } qw(path domain expires SameSite);
-
-    $header = join q{; }, "$name=$cookie{value}", @cookie, 'Secure;';
-
-    $self->{ctx}->headers_out( 'Set-Cookie' => $header );
+    $self->{ctx}->headers_out( 'Set-Cookie' => $cookie );
   }
 
   return;
@@ -409,21 +465,18 @@ sub newSessionID {
 ########################################################################
   my ($self) = @_;
 
-  my $config = $self->{'config'};
-  my $ctx    = $self->{'ctx'};
-  my $id     = $self->{'session'} = digest();
+  my ( $config, $ctx ) = @{$self}{qw(config ctx)};
 
-  my $secs = $config->{'cookie'}->{'expiry_secs'} || 86_400;
-  $self->{'expires'} = $secs;
+  my $id = $self->digest();
+  $self->{session} = $id;
 
-  if ( !$config->{'cookieless_sessions'} ) {
+  my $secs = $config->{cookie}->{expiry_secs} || 86_400;
+  $self->{expires} = $secs;
+
+  if ( !$config->{cookieless_sessions} ) {
 
     # Set the cookie header
-    $self->cookie(
-      $self->{'name'},
-      'value'   => $id,
-      'expires' => $secs
-    );
+    $self->cookie( $self->{name}, value => $id, expires => $secs );
 
     $self->send_cookie;
   }
@@ -472,7 +525,7 @@ sub serialize_session {
   my ( $self, $data ) = @_;
 
   # this is one way to serialize data...
-  return Bedrock::XML::writeXMLString($data);
+  return writeXMLString($data);
 }
 
 ########################################################################
@@ -483,7 +536,7 @@ sub deserialize_session {
   return
     if !$raw_session;
 
-  my $data = eval { return Bedrock::XML->newFromString($raw_session); };
+  my $data = eval { return loadXML($raw_session); };
 
   return $data
     if $data;
@@ -544,46 +597,109 @@ sub read_data {
 }
 
 ########################################################################
+sub set_log_level {
+########################################################################
+  my ( $self, $level ) = @_;
+
+  $level //= 'info';
+
+  $level = lc $level;
+
+  if ( none { $level eq $_ } qw(0 1 2 3 4 error warn info debug trace) ) {
+    $level = 'info';
+  }
+
+  my %levels = (
+    error => 0,
+    warn  => 1,
+    info  => 2,
+    debug => 3,
+    trace => 4,
+  );
+
+  if ( $level !~ /^\d$/xsm ) {
+    $level = $levels{$level};
+  }
+
+  $self->{verbose} = $level;
+
+  $self->{log_level} = { reverse %levels }->{$level};
+
+  my $log4perl_level = ( $ERROR, $WARN, $INFO, $DEBUG, $TRACE )[$level];
+
+  $self->get_logger->level($log4perl_level);
+  $self->get_logger->debug( sprintf 'logging at the %s level', $self->{log_level} );
+
+  return $self->{log_level};
+}
+
+########################################################################
 sub TIEHASH {
 ########################################################################
   my ( $class, $ctx, $config ) = @_;
 
   # What is the name of the session variable being used?
   my ( $name, $verbose ) = @{$config}{qw(param verbose)};
+  $name //= $config->{cookie}->{name};
 
-  die "$class->TIEHASH(): `param' not set in config\n"
+  croak q{set 'param' or cookie->name in config}
     if !$name;
 
   # Create session object
   my $self = bless {}, $class;
 
-  @{$self}{qw(ctx name config verbose)} = ( $ctx, $name, $config, $verbose );
+  @{$self}{qw(ctx name config)} = ( $ctx, $name, $config );
+
+  # verbosity level can be set in config with 'verbose' or 'log_level'
+  # log_level -> error, warn, info, debug, trace
+  # verbose   -> 0, 1, 2, 3, 4
+  my $verbosity_level = exists $config->{verbose} ? $config->{verbose} : $config->{log_level};
+
+  my $log_level = $self->set_log_level($verbosity_level);
 
   # Initialize session
   $self->startSession($config);
+  my $session = $self->_fetch_session( $config, $ctx, $name );
 
-  # Check for an existing session
-  my $id
-    = $config->{cookieless_sessions}
-    ? $ctx->getInputValue($name)
-    : $ctx->getCookieValue($name);
-
-  # Get the session data only if a session exists
-  if ( defined $id ) {
-    my $session = $self->read_data($id);
-
-    return $self
-      if $session;
-  }
+  return $self
+    if $session;
 
   # everything failed -- need to create a new session
-  my $session = $self->newSession;
+  $session = $self->newSession;
 
-  $self->{data}->{prefs}->{expiry_secs}
-    = $self->{config}->{cookie}->{expiry_secs};
+  $self->{data}->{prefs}->{expiry_secs} = $self->{config}->{cookie}->{expiry_secs};
 
   # And return the session object
   return $self;
+}
+
+########################################################################
+sub _fetch_session {
+########################################################################
+  my ( $self, $config, $ctx, $name ) = @_;
+
+  # Check for an existing session
+  my $id = $config->{cookieless_sessions} ? $ctx->getInputValue($name) : $ctx->getCookieValue($name);
+
+  # Get the session data only if a session exists
+  return
+    if !$id;
+
+  $self->get_logger->trace(
+    sub {
+      return sprintf q{Reading user's session: [%s]}, $id;
+    }
+  );
+
+  my $session = $self->read_data($id) // $EMPTY;
+
+  $self->get_logger->trace(
+    sub {
+      return sprintf 'User session [%s]', $session;
+    }
+  );
+
+  return $session;
 }
 
 ########################################################################
@@ -591,21 +707,22 @@ sub FETCH {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  if ( $key eq 'session' ) {
-    return $self->{$key};
-  }
-  elsif ( any { $key eq $_ } qw( username firstname lastname email config) ) {
-    return $self->{data}->{$key};
-  }
-  elsif ( exists $self->{data}->{prefs}->{$key} ) {
-    return $self->{data}->{prefs}->{$key};
-  }
-  else {
-    return $self->{config}->{default_prefs}->{$key};
-  }
+  return $self->{$key}
+    if $key eq 'session';
+
+  my $data = $self->{data};
+
+  return $data->{$key}
+    if any { $key eq $_ } qw( username firstname lastname email config);
+
+  return $data->{prefs}->{$key}
+    if exists $data->{prefs}->{$key};
+
+  return $self->{config}->{default_prefs}->{$key};
 }
 
 # Just store the value in the session and return the value
+
 ########################################################################
 sub STORE {
 ########################################################################
@@ -696,12 +813,10 @@ sub DELETE {
 ########################################################################
   my ( $self, $key ) = @_;
 
-  if ( any { $key eq $_ } qw(session username firstname lastname email password) ) {
-    die "Cannot delete `$key': illegal operation.\n";
-  }
-  else {
-    return delete $self->{data}->{prefs}->{$key};
-  }
+  die "Cannot delete `$key': illegal operation.\n"
+    if any { $key eq $_ } qw(session username firstname lastname email password);
+
+  return delete $self->{data}->{prefs}->{$key};
 }
 
 ########################################################################
@@ -713,43 +828,63 @@ sub CLEAR {
 }
 
 ########################################################################
-sub closeBLM {
+sub closeBLM { ## no critic (Capitalization)
 ########################################################################
   my ($obj) = @_;
 
-  my $self = tied %{$obj};
+  my $self = tied %{$obj} || $obj;
+
+  my ( $verbose, $session ) = @{$self}{qw(verbose session)};
 
   my $prefs = $self->{data}->{prefs};
 
   # this is a very implementation specific session rule that says, if
   # there is no session, then if there is a 'default_prefs' set in the
   # session configuration, then map that to the session data...
-
-  if ( keys %{$prefs} == 0 ) {
-    $prefs = $self->{config}->{default_prefs} // {};
+  if ( !keys %{$prefs} ) {
+    $prefs = $self->{config}->{default_prefs};
   }
 
   # there are certain situations where Bedrock may call closeBLM() more than once
   # if that happens, we don't want to alter the object since the second call will fail
   # because the prefs object was already converted to XML...so we create a clone
   # object that is written to the database
+  my $data = {};
 
-  my $data = { prefs => $self->serialize_session($prefs) };
+  COPY_DATA:
+  foreach my $key ( keys %{ $self->{data} } ) {
+    next COPY_DATA if $key eq 'prefs';
 
-  for ( keys %{ $self->{data} } ) {
-    next if $_ eq 'prefs';
-
-    $data->{$_} = $self->{data}->{$_};
+    $data->{$key} = $self->{data}->{$key};
   }
 
-  return $self->STORE_SESSION(
-    verbose => $self->{verbose},
-    session => $self->{session},
+  $data->{prefs} = $self->serialize_session( $prefs || {} );
+
+  $self->STORE_SESSION(
+    verbose => $verbose,
+    session => $session,
     data    => $data,
     expires => $self->{expires},
     new     => $self->{new_session},
-    config  => $self->{config}
+    config  => $self->{config},
   );
+
+  # in the event someone calls closeBLM again, we don't want to create
+  # a second session row...however implementations of session handlers
+  # should probably be smart enough not to create multiple instances
+  # of the same session object (however they store them).
+
+  delete $self->{new_session};
+
+  my $nrows = $self->SESSION_CLEANUP( config => $self->{config} );
+
+  $self->get_logger->trace(
+    sub {
+      "Cleaned up $nrows rows";
+    }
+  );
+
+  return $self->DISCONNECT( config => $self->{config} );
 }
 
 1;
