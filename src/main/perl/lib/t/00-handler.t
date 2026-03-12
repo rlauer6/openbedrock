@@ -14,7 +14,7 @@ use English qw(-no_match_vars);
 use File::Temp qw(tempfile tempdir);
 use File::Basename qw(basename);
 use List::Util qw(pairs);
-use YAML qw(Dump);
+use YAML::XS qw(Dump);
 use Bedrock::XML qw(writeXML);
 use JSON qw(encode_json);
 use Bedrock::Handler;

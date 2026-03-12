@@ -9,7 +9,7 @@ use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
 use JSON;
-use YAML::Tiny qw(DumpFile);
+use YAML::XS qw(DumpFile);
 use Bedrock::XML;
 use File::Temp qw(tempfile);
 use File::Basename qw(fileparse);

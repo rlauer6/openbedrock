@@ -3,8 +3,8 @@ package TagX::TAG::WithBody::Loop::Foreach;
 #
 #    This file is a part of Bedrock, a server-side web scripting tool.
 #    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
 #    Copyright (C) 2001, Charles Jones, LLC.
-#    Copyright (C) 2024, TBC Development Group, LLC.
 #
 #    This program is free software; you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@ package TagX::TAG::WithBody::Loop::Foreach;
 use strict;
 use warnings;
 
-use Bedrock qw(:booleans);
+use Bedrock qw(:booleans promote_object);
 use Bedrock::Constants qw(:booleans :chars);
 use Data::Dumper;
 use Scalar::Util qw(reftype);
@@ -48,8 +48,8 @@ sub define_options {
     'alias=s'             => undef,
     'counter-increment=i' => 1,
     'counter-start=i'     => 0,
-    'define-counter=s'    => undef,
-    'define-index=s'      => undef,
+    'define-counter=s'    => '_counter',
+    'define-index=s'      => '_index',
     'define-var=s'        => $UNDERSCORE,
     'end-index=i'         => undef,
     'max-items=i'         => undef,
@@ -117,7 +117,7 @@ sub finalize {
       $value //= 'value';
       $index //= 'index';
 
-      # iterate over a hash where $_ eq {}
+      # iterate over a hash
       if ( is_hash($data) ) {
         $logger->debug( sub { sprintf 'argument [%s] is a hash', Dumper $data } );
 
@@ -125,20 +125,21 @@ sub finalize {
         my $tmp = [];
 
         foreach my $k ( keys %{$data} ) {
-          push @{$tmp},
-            {
+
+          my $item = {
             $index => $idx++,
             $key   => $k,
-            $value => $data->{$k}
-            };
+            $value => promote_object( $data->{$k} ),
+          };
+
+          push @{$tmp}, $item;
         }
 
         $data = $tmp;
       }
-
-      # promote a scalar to 1 element array
+      # promote a scalar to 1 element Bedrock::Array
       else {
-        $data = [$data];
+        $data = promote_object( [$data] );
       }
     }
 
@@ -171,17 +172,9 @@ sub finalize {
     $end = $num_items - 1;
   }
 
-  my $define_index;
+  my $define_index = $options{'define-index'};
 
-  if ( exists $options{'define-index'} ) {
-    $define_index = $options{'define-index'};
-  }
-
-  my $counter;
-
-  if ( exists $options{'define-counter'} ) {
-    $counter = $options{'define-counter'};
-  }
+  my $counter = $options{'define-counter'};
 
   if ( !defined $start && !defined $end && $options{range} ) {
     my @range = $tx->parse_range( $options{range} );
@@ -257,7 +250,6 @@ sub finalize {
     if ( is_hash($loop_data) ) {
       push @loop_args, $loop_data;
 
-      # echo the loop data if requested
       $logger->trace(
         sub {
           my @str = "Loop $i >>";
@@ -271,7 +263,7 @@ sub finalize {
       );
     }
 
-    $self->{'finalize_children'}->( $self->{subobjs}, @loop_args, @context );
+    $self->{finalize_children}->( $self->{subobjs}, @loop_args, @context );
   }
 
   return;
@@ -307,9 +299,9 @@ Use the C<foreach> tag to iterate over an array, hash, recordsets or lists.
  --alias             = "var-name" (deprecated)
  --counter-increment = integer|expression
  --counter-start     = integer|expression
- --define-counter    = "var-name"
- --define-index      = "var-name"
- --define-var        = "var-name" (default = '_') | "key,value,[index]"
+ --define-counter    = "var-name" (default = '_counter')
+ --define-index      = "var-name" (default = '_index')
+ --define-var        = "var-name" (default = '_' | "key,value,[index]")
  --end-index         = integer|expression
  --max-items         = integer|expression
  --range             = "start,stop"
@@ -349,14 +341,20 @@ Name of a variable which will be incremented by the counter increment
 
 Start value of the counter variable.
 
+default: 0
+
 =item --define-counter
 
-Name of a variable to use as an alternate indexing variable. The default is C<$_>.
+Name of a variable to use as an alternate counter variable.
+
+default: _counter
 
 =item --define-index
 
 Name of a variable which will be incremented by the counter increment
-(default is 1) each time through the loop.
+each time through the loop.
+
+default: _index
 
 =item --end-index
 
@@ -377,11 +375,34 @@ values with one or more non-digits (Example: 0..10, 0,10 0:10, etc)
 
 Offset into the array to begin the iteration.
 
+default: 0
+
 =back
 
 =head1 NOTES
 
 =over 5
+
+=item * --start-index vs --counter-start
+
+You can independently control where in an array you start the
+iteration and the starting value of the counter.
+
+C<--start-index> controls where you start, the default is at the first
+element (0).
+
+C<--counter-start> controls the value of the first counter variable
+(default 0). For example you can start the iteration at the element in the
+fourth position (index 3) and start your counter at 1.
+
+ <null:array 1 2 3 4 5 6>
+ <foreach --start-index=3 --counter-start=1 --define-counter="i" $array->
+ <var $i>: <var $_>
+ </foreach->
+
+ 1: 4
+ 2: 5
+ 3: 6
 
 =item * Limiting loop execution
 
@@ -399,9 +420,10 @@ index (default 0) will be processed.
 =item * Iterating over hashes
 
 Iterating over hashes entails traversing the hash in key order
-I<(which in Bedrock 2 happens to be the order in which the hash was
-defined)> and presenting a three-element hash (C<$_>) within the scope of the
-loop.  The hash members are named  C<key> and C<value>, and C<index>.
+I<(which in Bedrock happens to be the order in which the hash was
+defined for C<Bedrock::Hash> objects)> and presenting a three-element
+hash (C<$_>) within the scope of the loop.  The hash members are named
+C<key> and C<value>, and C<index>.
 
   $_.key   => the current hash key 
   $_.value => the current hash value associate with that key
@@ -416,11 +438,11 @@ equivalent would look something like:
    print $_->key . ': . $_->value . "\n";
  } 
 
-I<All hashes (created by Bedrock) are ordered hashes, thus they are
+I<All hashes (created by Bedrock tags) are ordered hashes, thus they are
 traversed in the order in which they were defined.>
 
-The key and value are stored in the default variable C<$_> unless you
-override that using C<--define-var>. In that case the
+The key and value are also stored as hash keys in the default variable
+C<$_> unless you override that using C<--define-var>. In that case the
 key, value and index are scalars with the names you have provided.
 
  <foreach --define-var="key,value,index">
@@ -431,12 +453,13 @@ body of the C<foreach> tag.
 
 =item * Iterating over Recordsets
 
-The  I<recordset> object is an array of hashes. Recordsets are returned when using the Bedrock
-C<E<lt>sqlselectE<gt>> tag.
+The I<recordset> object is an array of hashes. Recordsets are returned
+when using the Bedrock C<E<lt>sqlselectE<gt>> tag.
 
  <sqlselect "select * from customer" --define-var="rs"></sqlselect>
 
-Recordsets are also returned by the C<BLM::IndexedTableHandler> C<select_list()> method.
+Recordsets are also returned by the C<BLM::IndexedTableHandler>
+C<select_list()> method.
 
  <null:list $customer.select_list("select * from customer where state='PA')>
 
@@ -445,7 +468,7 @@ L<E<lt>recordsetE<gt>> tag for more information).
 
 You can iterate over recordsets using the C<E<lt>foreachE<gt>> tag.
 When iterating over recordsets the hash members of each array element
-is exposed as a scalar.  These scalars are I<lexically scoped>, that
+are exposed as a scalar. These scalars are I<lexically scoped>, that
 is, they only exist within the context of the C<E<lt>foreachE<gt>>
 tag.
 
@@ -460,17 +483,20 @@ I<TIMTOWTDI>
  <foreach $list>
    <var $name>
    <var $address>
-   <var $city>, <var $state> <var $zip></foreach>
+   <var $city>, <var $state> <var $zip>
+ </foreach>
 
  <foreach $list>
    <var $_.name>
    <var $_.address>
-   <var $_.city>, <var $_.state> <var $_.zip></foreach>
+   <var $_.city>, <var $_.state> <var $_.zip>
+ </foreach>
 
  <foreach --define-var="c" $list>
    <var $c.name>
    <var $c.address>
-   <var $c.city>, <var $c.state> <var $c.zip></foreach>
+   <var $c.city>, <var $c.state> <var $c.zip>
+ </foreach>
 
 =back
 

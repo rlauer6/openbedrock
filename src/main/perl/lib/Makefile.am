@@ -535,6 +535,7 @@ ALL_TESTS = \
     t/00-request-cgi.t \
     t/00-scalar.t \
     t/00-session.t \
+    t/00-serializer.t \
     t/00-table-name.t \
     t/00-tagx-log.t \
     t/00-template.t \

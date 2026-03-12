@@ -12,7 +12,7 @@ use Data::Dumper;
 use English qw(-no_match_vars);
 use File::Temp qw(tempfile);
 use JSON;
-use YAML qw(Dump Load);
+use YAML::XS qw(Dump Load);
 use List::Util qw( any );
 
 use Test::More;
@@ -275,13 +275,17 @@ subtest 'json' => sub {
 
   my $json = $config->to_json();
 
-  ok( $json,       'to_json()' );
+  ok( $json, 'to_json()' )
+    or diag( Dumper( [ json => $json ] ) );
+
   ok( !ref($json), 'is scalar' );
 
   my $filename = write_config( $json, 'json' );
 
   my $obj = JSON->new->utf8->decode($json);
-  is_deeply( $obj, $config, 'is_deeply' ) or diag($obj);
+
+  is_deeply( $obj, $config, 'is_deeply' )
+    or diag( Dumper( [ json => $json, obj => $obj, config => $config ] ) );
 
   my $json_config = Bedrock::Config->new( cwd . q{/} . $filename );
   $json_config->config_path(undef);

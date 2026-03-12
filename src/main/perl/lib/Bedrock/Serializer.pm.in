@@ -30,10 +30,11 @@ use Bedrock::Constants qw(:booleans);
 
 use Data::Dumper;
 use English qw(-no_match_vars);
+use Scalar::Util qw(blessed reftype);
 
 use parent qw(Exporter);
 
-our @EXPORT_OK = qw(evolve devolve);
+our @EXPORT_OK = qw(evolve devolve clone);
 
 ########################################################################
 sub new {
@@ -109,30 +110,19 @@ sub devolve {
 ########################################################################
   my ($this) = @_;
 
-  if ( is_hash($this) ) {
+  if ( defined($this) && ref $this && reftype($this) eq 'HASH' ) {
     my $that = {};
-
-    foreach ( keys %{$this} ) {
-      $that->{$_} = devolve( $this->{$_} );
+    for my $key ( keys %{$this} ) {
+      $that->{$key} = devolve( $this->{$key} );
     }
 
     return $that;
   }
-  elsif ( is_array($this) ) {
-    my $that = [];
 
-    foreach ( @{$this} ) {
-      push @{$that}, devolve($_);
-    }
+  return $this
+    if !defined($this) || !ref $this || reftype($this) ne 'ARRAY';
 
-    return $that;
-  }
-  elsif ( ref $this ) {
-    die "invalid object\n";
-  }
-  else {
-    return $this;
-  }
+  return [ map { devolve($_) } @{$this} ];
 }
 
 # promote regular Perl objects -> Bedrock objects
@@ -141,33 +131,65 @@ sub evolve {
 ########################################################################
   my ($this) = @_;
 
-  if ( is_hash($this) ) {  ## no critic (ProhibitCascadingIfElse)
-    bless $this, 'Bedrock::Hash';
+  if ( is_hash($this) && !blessed($this) ) {
+    $this = bless $this, 'Bedrock::Hash';
 
     foreach ( keys %{$this} ) {
-      $this->{$_} = evolve( $this->{$_} );
+      $this->{$_} = clone( $this->{$_} );
     }
 
     return $this;
   }
-  elsif ( is_array($this) ) {
-    bless $this, 'Bedrock::Array';
+
+  if ( is_array($this) && !blessed($this) ) {
+    $this = bless $this, 'Bedrock::Array';
 
     for my $idx ( 0 .. $#{$this} ) {
-      $this->[$idx] = evolve( $this->[$idx] );
+      $this->[$idx] = clone( $this->[$idx] );
     }
 
     return $this;
   }
-  elsif ( ref($this) =~ /boolean/xsmi ) {
-    return $this ? $TRUE : $FALSE;
-  }
-  elsif ( ref $this ) {
+
+  return $this ? $TRUE : $FALSE
+    if ref($this) =~ /boolean/xsmi;
+
+  return $this;
+}
+
+# promote regular Perl objects -> Bedrock objects
+########################################################################
+sub clone {
+########################################################################
+  my ($this) = @_;
+
+  require Bedrock::Hash;
+  require Bedrock::Array;
+
+  if ( is_hash($this) && !blessed($this) ) {
+    $this = Bedrock::Hash->new( %{$this} );
+
+    foreach ( keys %{$this} ) {
+      $this->{$_} = clone( $this->{$_} );
+    }
+
     return $this;
   }
-  else {
+
+  if ( is_array($this) && !blessed($this) ) {
+    $this = Bedrock::Array->new( @{$this} );
+
+    for my $idx ( 0 .. $#{$this} ) {
+      $this->[$idx] = clone( $this->[$idx] );
+    }
+
     return $this;
   }
+
+  return $this ? $TRUE : $FALSE
+    if ref($this) =~ /boolean/xsmi;
+
+  return $this;
 }
 
 1;
@@ -205,8 +227,8 @@ Bedrock::Serializer - role used when creating Bedrock serializers
 
 =head1 DESCRIPTION
 
-This class is used internally by Bedrock as a base class for creating
-serializers used by the C<&lt;var&gt; tag>.
+This class is used internally by Bedrock as a base class or role for
+creating serializers used by the C<&lt;var&gt; tag>.
 
  <var --json $foo>
 
@@ -227,10 +249,25 @@ Bedrock objects after or before serialization.
 
  my $new_obj = evolve($obj);
 
+Promotes an object and any sub-objects to C<Bedrock::Array>s and
+C<Bedrock::Hash>es. Typically used after deserialization of JSON or
+YAML objects.
+
+=over 4
+
+=item * JSON boolean objects will be converted to 0 or 1
+
+=item * This method uses C<bless> to promote objects - it does not
+create new copies of your objects.
+
+=back
+
 =head1 AUTHOR
 
 Rob Lauer - rlauer6@comcast.net
 
 =head1 SEE ALSO
+
+L<Role::Tiny::With>
 
 =cut

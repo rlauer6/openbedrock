@@ -20,5 +20,6 @@ dist_img_DATA = \
     right_tab_darkred.gif \
     right_tab_purple.gif \
     right_tab_red.gif \
+    bedrock-dino.png \
     caveman.png \
     not-found.png

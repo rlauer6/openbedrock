@@ -106,8 +106,6 @@ subtest 'update returns a Bedrock::Hash' => sub {
 
     $file_info = $ctx->upload_file('uploaded_file');
 
-    diag( Dumper( [ file_info => $file_info ] ) );
-
     close $fh;
   }
 

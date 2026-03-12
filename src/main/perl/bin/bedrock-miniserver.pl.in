@@ -32,8 +32,10 @@ package Bedrock::MiniServer; ## no critic
 use strict;
 use warnings;
 
-use Apache::Request::CGI;
+# make sure Bedrock is first to fix @INC
 use Bedrock qw(slurp_file is_hash is_array to_boolean benchmark choose $BEDROCK_DIST_DIR);
+
+use Apache::Request::CGI;
 use Bedrock::Constants qw(:chars %LOG4PERL_LOG_LEVELS :booleans :http);
 use Bedrock::BedrockConfig;
 use Bedrock::Error qw(handle_error resolve_error_page);
@@ -53,7 +55,7 @@ use POSIX qw(strftime);
 use Module::Load;
 use Scalar::Util qw(blessed reftype);
 use Text::URLEncode qw(Htmlencode);
-use YAML::Tiny;
+use YAML::XS;
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -115,6 +117,18 @@ sub handle_request {
   }
   else {
     $logger->debug( 'no exact service match for ', $cgi->path_info );
+  }
+
+  # Check directory index before alias resolution
+  if ( $self->_resolve_directory_index($cgi) ) {
+    $self->_log_complete(
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+    );
+
+    return;
   }
 
   # check to see if request is for static or template asset
@@ -402,6 +416,57 @@ sub _is_service {
 }
 
 ########################################################################
+sub _resolve_directory_index {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $logger        = $self->get_logger;
+  my $server_config = $self->bedrock_server_config;
+  my $dir_index     = $server_config->{directory_index} // {};
+  my $aliases       = $server_config->{aliases}         // {};
+  my $path          = $cgi->path_info;
+
+  # Find the longest matching directory_index prefix for this request
+  foreach my $dir ( reverse sort { length($a) <=> length($b) } keys %{$dir_index} ) {
+    # Normalize: /foo, /foo/, and /foo/index.roc all match /foo
+    my $norm_dir = $dir;
+    $norm_dir =~ s{/\z}{}xsm;
+
+    next if $path ne $norm_dir && $path ne "$norm_dir/";
+
+    my $candidates = $dir_index->{$dir};
+    $candidates = [$candidates] if !is_array($candidates);
+
+    # Resolve the filesystem base for this directory via aliases
+    my $base = $EMPTY;
+    foreach my $alias ( reverse sort { length($a) <=> length($b) } keys %{$aliases} ) {
+      my $norm_alias = $alias;
+      $norm_alias =~ s{/\z}{}xsm;
+      next if $norm_dir ne $norm_alias && index( "$norm_dir/", "$norm_alias/" ) != 0;
+      $base = $aliases->{$alias};
+      last;
+    }
+
+    # Try each candidate in order, serve the first readable one
+    foreach my $f ( @{$candidates} ) {
+      my $fs_path = "${base}${f}";
+
+      $logger->debug( sprintf 'directory_index: trying [%s]', $fs_path );
+
+      if ( -r $fs_path ) {
+        $logger->info( sprintf 'directory_index: serving [%s] for [%s]', $fs_path, $path );
+        return $self->_serve_static( $cgi, $path, $fs_path );
+      }
+    }
+
+    $logger->debug( sprintf 'directory_index: no candidate found for [%s]', $path );
+    return;  # matched the dir but nothing readable — stop looking
+  }
+
+  return;
+}
+
+########################################################################
 sub _serve_alias {
 ########################################################################
   my ( $self, $cgi ) = @_;
@@ -576,10 +641,6 @@ sub _serve_static {
 
   my $tagx_config = Bedrock::Config->new('tagx.xml');
 
-  foreach ( keys %{$global_config} ) {
-    $tagx_config->{$_} = $global_config->{$_};
-  }
-
   if ( $global_config->{overrides} && is_hash( $global_config->{overrides} ) ) {
     my %processed_overrides;
     my $raw_overrides = $global_config->{overrides};
@@ -646,6 +707,14 @@ sub _serve_static {
 
     $header->content_type($type);
 
+    my $server_config_lite = Bedrock::Hash->new(
+      map  { $_ => $server_config->{$_} }
+      grep { exists $server_config->{$_} }
+        qw(aliases routes env log_level parse_templates
+        template_extensions mime_types error_document
+        directory_index port services session)
+    );
+
     $tpl = Bedrock::Template->new(
       $content,
       header        => $header,
@@ -654,7 +723,7 @@ sub _serve_static {
       config        => bless( $tagx_config, 'BLM::Startup::Config' ),
       env           => $env,
       bedrock       => $bedrock,
-      server_config => bless( $server_config, 'Bedrock::Hash' ),
+      server_config => $server_config_lite,
     );
 
     $tpl->set_source($fs_path);
@@ -889,8 +958,10 @@ use Carp;
 use Cwd;
 use Data::Dumper;
 use English qw(-no_match_vars);
+use File::Path qw(make_path);
 use Module::Load;
 use List::Util qw(pairs);
+use YAML qw(DumpFile);
 
 our $VERSION = '@PACKAGE_VERSION@';
 
@@ -928,7 +999,7 @@ sub main {
 
   my %commands = (
     default => \&cmd_start_server,
-    start   => \&cmd_start_server
+    start   => \&cmd_start_server,
   );
 
   my $cli = Bedrock::MiniServer::CLI->new(
@@ -983,6 +1054,7 @@ sub cmd_start_server {
 
   $runtime_config{error_document}  = $server_config->{error_document} || {};
   $runtime_config{parse_templates} = $server_config->{parse_templates};
+  $runtime_config{directory_index} = $server_config->{directory_index} || {};
 
   # default template extensions
   $runtime_config{template_extensions} = { map { $_ => 1 } qw(roc rock jroc jrock) };
@@ -1024,35 +1096,17 @@ sub cmd_start_server {
     $self->_mount_service( \%runtime_config, $mount, $class, $global_service_config );
   }
 
+  my $final_registry = {
+    map { $_ => ref $runtime_config{service_registry}->{$_} }
+      keys %{ $runtime_config{service_registry} }
+  };
+
+  foreach my $instance ( values %{ $runtime_config{service_registry} } ) {
+    $instance->registry($final_registry);
+  }
+
   $runtime_config{aliases} = { %{ $runtime_config{aliases} }, %{ $aliases_cfg // {} } };
   _resolve_paths( $runtime_config{aliases} );
-
-  #
-  # Create default alias for directory paths (e.g. /bedrock => index.roc
-  #
-  # directory_index:
-  #   /bedrock:
-  #     - index.html
-  #     - index.roc
-  #
-  if ( my $directory_index = $server_config->{directory_index} ) {
-    foreach my $dir ( keys %{$directory_index} ) {
-      my $index = $directory_index->{$dir};
-      my $file  = is_array($index) ? $index : [$index];
-
-      $dir =~ s{/\z}{}xsm;
-
-      foreach my $f ( @{$file} ) {
-        my $target
-          = $runtime_config{aliases}->{$dir}
-          ? "$runtime_config{aliases}->{$dir}$f"
-          : $f;
-        $runtime_config{aliases}->{$dir}      = $target;
-        $runtime_config{aliases}->{"$dir/"}   = $target;
-        $runtime_config{aliases}->{"$dir/$f"} = $target;
-      }
-    }
-  }
 
   my $port        = $self->get_port // $server_config->{port} // 8080;
   my $line_length = 80;
@@ -1136,8 +1190,13 @@ sub _mount_service {
 
     my $instance = $class->new(
       service_config => $config,
-      registry       => $runtime_config->{service_registry},
-      server_config  => $runtime_config,
+      server_config  => {
+        map { $_ => $runtime_config->{$_} }
+          qw(aliases routes env log_level parse_templates
+          template_extensions mime_types error_document
+          directory_index port)
+      },
+      start_time => time,
     );
 
     $runtime_config->{service_registry}->{$mount} = $instance;
@@ -1183,13 +1242,19 @@ sub _init_server_config {
 ########################################################################
   my ( $self, $config_file ) = @_;
 
+  if ( !$config_file && -e 'bedrock-miniserver.yml' ) {
+    $config_file = 'bedrock-miniserver.yml';
+  }
+
+  my $has_config = $config_file;
+
   if ( !$config_file ) {
     $config_file = sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
     $self->get_logger->warn( sprintf 'WARNING: attempting to use default miniserver configuration: %s', $config_file );
   }
 
-  croak "Configuration file not found: $config_file"
-    if !-r $config_file;
+  die "ERROR: Configuration file not found: $config_file"
+    if $has_config && !-r $config_file;
 
   my $config = slurp_file($config_file);
 
@@ -1205,6 +1270,38 @@ sub _init_server_config {
   }
 
   close $fh;
+
+  if ( !$has_config ) {
+    my ($document_root) = $self->get_args;
+    $document_root //= 'html/';
+
+    if ( !-d $document_root ) {
+      make_path($document_root);
+    }
+
+    if ( !-e "$document_root/index.roc" || !-e "$document_root/index.html" ) {
+      open my $fh, '>', "$document_root/index.roc"
+        or die "ERROR: could not open $document_root/index.roc for writing\n";
+
+      print {$fh} q{<null $header.location("/bedrock-server-status")>};
+      close $fh;
+    }
+
+    die "ERROR: no such directory $document_root\n"
+      if !-d $document_root;
+
+    $conf->{aliases} //= {};
+    $conf->{aliases}->{q{/}} = $document_root;
+    $conf->{directory_index} = { q{/} => [qw(index.roc index.html)] };
+
+    DumpFile( 'bedrock-miniserver.yml', $conf );
+
+    if ( -e 'html/index.roc' ) {
+      # let's add an index page here...perhaps one that shows the configuration?
+    }
+
+    warn "Configuration file 'bedrock-miniserver.yml' created.\n";
+  }
 
   # validate the configuration against our schema
   $self->validate_config($conf);
@@ -1249,7 +1346,7 @@ use warnings;
 
 use Data::Dumper;
 use English qw(-no_match_vars);
-use YAML::Tiny;
+use YAML::XS;
 
 my $defaults = eval {
   local $RS = undef;
@@ -1288,16 +1385,37 @@ bedrock-miniserver.pl - Multi-tenant application server and template accelerator
 
 =head1 SYNOPSIS
 
-  # Run a full stack using a configuration file (Recommended)
-  bedrock-miniserver.pl --config app.yml
+ # Start a Bedrock enabled web server with the default config
+ bedrock-miniserver.pl -p 80
 
-  # Run a static-only server (No services, just files/templates)
-  bedrock-miniserver.pl --config static.yml
-
-  # Run a single service (Legacy/Quick-start mode)
-  bedrock-miniserver.pl --service MyApp::Service --port 8080
+ # Start the miniserver with your own config
+ bedrock-miniserver.pl -c app.yml
 
 =head1 QUICK START
+
+=head2 Start a New Application
+
+ bedrock-miniserver.pl
+
+This is the minimal way to start writing a Bedrock application. After
+launching the miniserver:
+
+=over 5
+
+=item * The default configuration file (C<bedrock-miniserver.yml>)
+will be copied to your current working directory.
+
+=item * An F<html> directory will be created in the current working directory
+
+=item * The configuration file will be updated to include set F<html> as you document root.
+
+=item * The server will listen on the default port (8080).
+
+=back
+
+Now add an index page to your F<html> directory and visit http://localhost/ in your browswer
+
+=head2 Testing a New Service
 
 You've scaffolded a Bedrock service and want to test it locally.
 Here's the minimal configuration to get running.
@@ -1330,7 +1448,7 @@ template accelerator:
  aliases:
    /: ./htdocs/
 
-Now C<.roc? files under F<./htdocs/> are parsed as Bedrock templates,
+Now C<.roc> files under F<./htdocs/> are parsed as Bedrock templates,
 and C</api> routes hit your service.
 
 To verify your service routes match what you expect:
