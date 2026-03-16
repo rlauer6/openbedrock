@@ -1,5 +1,25 @@
 package Bedrock::CSRF;
 
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
 use strict;
 use warnings;
 
@@ -10,8 +30,9 @@ use Role::Tiny;
 
 # ----------------------------------------------------------------------
 # Generates or retrieves the current CSRF token
-# ----------------------------------------------------------------------
+########################################################################
 sub csrf_token {
+########################################################################
   my ($obj) = @_;
 
   my $self = tied %{$obj} || $obj;
@@ -26,8 +47,9 @@ sub csrf_token {
 
 # ----------------------------------------------------------------------
 # Verifies a submitted token against the stored session token
-# ----------------------------------------------------------------------
+########################################################################
 sub check_csrf_token {
+########################################################################
   my ( $obj, $submitted_token ) = @_;
 
   my $self = tied %{$obj} || $obj;
@@ -51,8 +73,9 @@ sub check_csrf_token {
 
 # ----------------------------------------------------------------------
 # Rotates the token (useful after login/logout to prevent fixation)
-# ----------------------------------------------------------------------
+########################################################################
 sub rotate_csrf_token {
+########################################################################
   my ($obj) = @_;
 
   my $self = tied %{$obj} // $obj;
@@ -64,3 +87,193 @@ sub rotate_csrf_token {
 }
 
 1;
+
+## no critic (RequirePodSections)
+
+__END__
+
+=pod
+
+=head1 NAME
+
+Bedrock::CSRF - CSRF token generation, validation, and rotation for Bedrock sessions
+
+=head1 SYNOPSIS
+
+In a Bedrock template (form with hidden token):
+
+ <form method="POST" action="/submit">
+   <input type="hidden" name="csrf_token"
+          value="<var $session.csrf_token()>">
+   <input type="text" name="username">
+   <button type="submit">Submit</button>
+ </form>
+
+In the receiving template or service (validation):
+
+ <if $session.check_csrf_token($input.csrf_token)>
+   <!-- token valid, process the form -->
+ <else>
+   <!-- token invalid or missing, reject the request -->
+   <raise "CSRF token validation failed">
+ </if>
+
+In Perl (within a Bedrock service or plugin):
+
+ my $token  = $session->csrf_token;
+ my $valid  = $session->check_csrf_token($submitted_token);
+ my $rotated = $session->rotate_csrf_token;
+
+=head1 DESCRIPTION
+
+C<Bedrock::CSRF> is a L<Role::Tiny> role that provides Cross-Site
+Request Forgery protection for Bedrock session objects. It is
+composed into L<BLM::Startup::BaseSession>, which means all Bedrock
+session managers (including L<BLM::Startup::SessionManager> and its
+subclasses) automatically have CSRF support.
+
+The role stores the CSRF token inside the session's preferences hash
+(C<< $self->{data}->{prefs}->{csrf_token} >>), so tokens persist
+across requests for the lifetime of the session and are automatically
+saved and restored by the session manager's serialization.
+
+Tokens are generated using 32 bytes from L<Crypt::URandom>,
+producing a 64-character hex string. This provides 256 bits of
+cryptographically secure randomness, making tokens resistant to
+brute-force guessing.
+
+=head1 METHODS
+
+=head2 csrf_token
+
+ my $token = $session->csrf_token;
+
+Returns the current CSRF token for the session. If no token exists
+(new session or after rotation), one is generated automatically and
+stored in the session.
+
+Call this method when rendering forms to embed the token as a hidden
+field. The same token is returned on repeated calls within the same
+session until it is rotated.
+
+=head2 check_csrf_token
+
+ my $valid = $session->check_csrf_token($submitted_token);
+
+Validates a submitted token against the token stored in the session.
+Returns true if the tokens match, false otherwise. Returns false
+immediately if either the submitted token or the stored token is
+empty or undefined.
+
+B<The token is rotated after every call to C<check_csrf_token>>,
+regardless of whether validation succeeded. This prevents replay
+attacks where an attacker reuses a previously intercepted token.
+The next call to C<csrf_token> will return the new token.
+
+=head2 rotate_csrf_token
+
+ my $new_token = $session->rotate_csrf_token;
+
+Deletes the current CSRF token and generates a new one. Returns
+the new token. Use this explicitly after login, logout, or privilege
+escalation to prevent token fixation attacks.
+
+You do not normally need to call this directly -- C<check_csrf_token>
+rotates automatically after each validation attempt.
+
+=head1 USAGE PATTERNS
+
+=head2 Standard Form Protection
+
+The simplest pattern: embed the token in a hidden field and validate
+on submission.
+
+ <!-- form.roc -->
+ <form method="POST" action="/process">
+   <input type="hidden" name="csrf_token"
+          value="<var $session.csrf_token()>">
+   ...
+ </form>
+
+ <!-- process.roc -->
+ <unless $session.check_csrf_token($input.csrf_token)>
+   <raise "invalid or missing CSRF token">
+ </unless>
+ <!-- safe to process the form -->
+
+=head2 AJAX with Token Refresh
+
+Since C<check_csrf_token> rotates the token after validation, AJAX
+handlers must return the new token to the client. A common pattern
+is to include the new token in every JSON response:
+
+ <!-- api handler (jroc) -->
+ <if $env.REQUEST_METHOD --eq 'POST'>
+   <unless $session.check_csrf_token($input.csrf_token)>
+     <raise "CSRF validation failed">
+   </unless>
+ </if>
+
+ <!-- include fresh token in response -->
+ <hash:response status "ok" csrf_token $session.csrf_token()>
+ <var --json $response>
+
+The client-side JavaScript updates the stored token from the
+response:
+
+ fetch('/api/action', {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ csrf_token: currentToken, ...data })
+ })
+ .then(r => r.json())
+ .then(data => {
+   currentToken = data.csrf_token;  // refresh for next request
+ });
+
+=head2 Token Rotation on Login
+
+Rotate the token after authentication to prevent session fixation:
+
+ <!-- after successful login -->
+ <null $session.rotate_csrf_token()>
+
+=head1 SECURITY NOTES
+
+=over 4
+
+=item *
+
+Tokens are 64 hex characters (256 bits) generated by
+L<Crypt::URandom>, which reads from the OS cryptographic random
+source (C</dev/urandom> on Linux).
+
+=item *
+
+Tokens are stored server-side in the session. They are never
+derivable from client-visible data.
+
+=item *
+
+Token comparison uses direct string equality. Timing attacks are
+not a practical concern here because the token is rotated after
+every check, making any information leaked by timing moot.
+
+=item *
+
+Automatic rotation after C<check_csrf_token> means each token is
+single-use. A second submission of the same form (e.g., double-click)
+will fail validation.
+
+=back
+
+=head1 SEE ALSO
+
+L<BLM::Startup::BaseSession>, L<BLM::Startup::SessionManager>,
+L<Crypt::URandom>, L<Role::Tiny>
+
+=head1 AUTHOR
+
+Rob Lauer - <rlauer6@comcast.net>
+
+=cut

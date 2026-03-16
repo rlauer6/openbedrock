@@ -86,7 +86,11 @@ sub new {
 ########################################################################
 sub bedrock_server_config {
 ########################################################################
-  my ($self) = @_;
+  my ( $self, $config ) = @_;
+
+  if ($config) {
+    $self->{_bedrock_runtime} = $config;
+  }
 
   return $self->{_bedrock_runtime} // {};
 }
@@ -639,20 +643,7 @@ sub _serve_static {
   my $headers_out = $EMPTY;
   my $io          = IO::Scalar->new( \$headers_out );
 
-  my $tagx_config = Bedrock::Config->new('tagx.xml');
-
-  if ( $global_config->{overrides} && is_hash( $global_config->{overrides} ) ) {
-    my %processed_overrides;
-    my $raw_overrides = $global_config->{overrides};
-
-    foreach my $k ( keys %{$raw_overrides} ) {
-      my $v = $raw_overrides->{$k};
-      $v =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg;
-      $processed_overrides{$k} = $v;
-    }
-
-    @{$tagx_config}{ keys %processed_overrides } = values %processed_overrides;
-  }
+  my $tagx_config = $server_config->{bedrock_config};
 
   eval {
     # We only need to override the path info to trick the template
@@ -683,18 +674,6 @@ sub _serve_static {
     my $header  = BLM::Startup::Header->new( $ctx, $tagx_config->get_module_config('Header')   || {} );
     my $bedrock = BLM::Startup::Bedrock->new( $ctx, $tagx_config->get_module_config('Bedrock') || {} );
     my $env     = BLM::Startup::Env->new;
-
-    ################################################################
-    # Important!
-    ################################################################
-    # The miniserver expects that if you want session a object,
-    # you declare it explicitly in the server configuration
-    # file. You do this by setting a session section. If you use
-    # the default `bedrock-miniserver.yml` configuration file, the
-    # BLM::Startup::MemorySession session object will be created
-    # for you. The miniserver will NOT search the MODULES array
-    # for a session object (one where session=yes)!
-    ################################################################
 
     my $session = _init_session( $ctx, $global_config );
 
@@ -953,6 +932,7 @@ package Bedrock::MiniServer::CLI; ## no critic
 use Bedrock qw(choose slurp_json slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
 use Bedrock::Constants qw(%LOG4PERL_LOG_LEVELS);
 use Bedrock::LoadConfig qw(load_config);
+use Bedrock::XML qw(writeXML);
 use CLI::Simple::Constants qw(:booleans :chars);
 use Carp;
 use Cwd;
@@ -961,7 +941,7 @@ use English qw(-no_match_vars);
 use File::Path qw(make_path);
 use Module::Load;
 use List::Util qw(pairs);
-use YAML qw(DumpFile);
+use YAML::XS qw(DumpFile);
 
 our $VERSION = '@PACKAGE_VERSION@';
 
@@ -1033,9 +1013,44 @@ sub cmd_start_server {
     $server_config->{PEBBLE_DIR} = $server_root;
   }
 
+  # ================================================================
+  # Load the fully merged Bedrock config (tagx.xml + config.d/*)
+  # ================================================================
+
+  $ENV{BEDROCK_CONFIG_PATH} //= $server_config->{env}->{BEDROCK_CONFIG_PATH} // sprintf '%s/config', $BEDROCK_DIST_DIR;
+
+  my $bedrock_config = eval {
+    require Bedrock::FauxHandler;
+    require Bedrock::Handler;
+
+    my $faux_handler = Bedrock::FauxHandler->new(
+      log       => $logger,
+      log_level => $log_level,
+    );
+
+    return Bedrock::Handler->new($faux_handler)->config;
+  };
+
+  if ( !$bedrock_config || $EVAL_ERROR ) {
+    $logger->warn( sprintf 'Could not load Bedrock config: %s', $EVAL_ERROR // 'unknown error' );
+    $logger->warn('Falling back to minimal configuration');
+
+    $bedrock_config = eval { return Bedrock::Config->new('tagx.xml'); } // {};
+  }
+
+  # Apply miniserver overrides to the bedrock config once
+  if ( $server_config->{overrides} && is_hash( $server_config->{overrides} ) ) {
+    foreach my $k ( keys %{ $server_config->{overrides} } ) {
+      my $v = $server_config->{overrides}->{$k};
+      $v =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg;
+      $bedrock_config->{$k} = $v;
+    }
+  }
+
   # --- initialize runtime configuration
   my %runtime_config = (
     global_config    => $server_config,
+    bedrock_config   => $bedrock_config,
     aliases          => $self->get_aliases,
     mime_types       => $self->get_mime_types,
     error_document   => {},
@@ -1077,7 +1092,26 @@ sub cmd_start_server {
 
   _resolve_paths($global_service_config);  # in case any values here are paths with [@]dist_dir[@]
 
-  $runtime_config{routes} = $server_config->{routes} || {};
+  # ================================================================
+  # Merge routes: Bedrock config routes as baseline, miniserver
+  # YAML routes override. Bedrock config routes (from routes.xml)
+  # are a flat array — they apply to the root mount point.
+  # ================================================================
+  my %merged_routes;
+
+  if ( is_array( $bedrock_config->{routes} ) ) {
+    $merged_routes{$SLASH} = $bedrock_config->{routes};
+    $logger->info( sprintf 'Loaded %d route(s) from Bedrock config', scalar @{ $bedrock_config->{routes} } );
+  }
+
+  # miniserver YAML routes overlay (same keys win)
+  my $yaml_routes = $server_config->{routes} || {};
+
+  foreach my $mount ( keys %{$yaml_routes} ) {
+    $merged_routes{$mount} = $yaml_routes->{$mount};
+  }
+
+  $runtime_config{routes} = \%merged_routes;
 
   my ( $services_cfg, $aliases_cfg ) = @{$server_config}{qw(services aliases)};
 
@@ -1115,6 +1149,9 @@ sub cmd_start_server {
   $logger->notice( sprintf 'BEDROCK MINISERVER RUNNING ON PORT: %s', $port );
 
   $logger->notice( q{-} x $line_length );
+  $logger->notice( sprintf 'BEDROCK_CONFIG_PATH: %s', $ENV{BEDROCK_CONFIG_PATH} // '(not set)' );
+
+  $logger->notice( q{-} x $line_length );
   $logger->notice('Services:');
   $logger->notice( q{-} x $line_length );
 
@@ -1149,6 +1186,27 @@ sub cmd_start_server {
     }
   }
 
+  if ( keys %merged_routes ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Routes:');
+    $logger->notice( q{-} x $line_length );
+
+    foreach my $mount ( sort keys %merged_routes ) {
+      my $routes = $merged_routes{$mount};
+
+      if ( is_array($routes) ) {
+        foreach my $r ( @{$routes} ) {
+          $logger->notice( sprintf '  %-20s %s -> %s', $mount, $r->{pattern} // '?', $r->{template} // '?' );
+        }
+      }
+      elsif ( is_hash($routes) ) {
+        foreach my $pattern ( keys %{$routes} ) {
+          $logger->notice( sprintf '  %-20s %s -> %s', $mount, $pattern, $routes->{$pattern} );
+        }
+      }
+    }
+  }
+
   if ( $runtime_config{parse_templates} ) {
     $logger->notice( q{-} x $line_length );
     $logger->notice( sprintf '* Bedrock template parsing ENABLED for (%s) files.',
@@ -1158,7 +1216,12 @@ sub cmd_start_server {
   $logger->notice( q{=} x $line_length );
 
   # Instantiate with runtime_config
-  Bedrock::MiniServer->new( $port, undef, bedrock_runtime => \%runtime_config )->run();
+  $runtime_config{port} = $port;
+
+  my $server = Bedrock::MiniServer->new($port);
+  $server->bedrock_server_config( \%runtime_config );
+
+  $server->run();
 
   return 0;
 }
@@ -1275,9 +1338,10 @@ sub _init_server_config {
     my ($document_root) = $self->get_args;
     $document_root //= 'html/';
 
-    if ( !-d $document_root ) {
-      make_path($document_root);
-    }
+    make_path( $document_root, qw(config config.d/plugin config.d/startup pebbles include session) );
+
+    die "ERROR: no such directory $document_root\n"
+      if !-d $document_root;
 
     if ( !-e "$document_root/index.roc" || !-e "$document_root/index.html" ) {
       open my $fh, '>', "$document_root/index.roc"
@@ -1287,18 +1351,21 @@ sub _init_server_config {
       close $fh;
     }
 
-    die "ERROR: no such directory $document_root\n"
-      if !-d $document_root;
-
     $conf->{aliases} //= {};
-    $conf->{aliases}->{q{/}} = $document_root;
-    $conf->{directory_index} = { q{/} => [qw(index.roc index.html)] };
+    $conf->{aliases}->{q{/}}            = $document_root;
+    $conf->{directory_index}            = { q{/} => [qw(index.roc index.html)] };
+    $conf->{env}->{BEDROCK_CONFIG_PATH} = sprintf '%s/config', Cwd::getcwd;
 
     DumpFile( 'bedrock-miniserver.yml', $conf );
 
-    if ( -e 'html/index.roc' ) {
-      # let's add an index page here...perhaps one that shows the configuration?
-    }
+    # create a reference tagx.xml
+    my $tagx_file = sprintf '%s/config/tagx.xml', $BEDROCK_DIST_DIR;
+    my $tagx      = load_config($tagx_file);
+    @{$tagx}{qw(PEBBLE_DIR SESSION_DIR INCLUDE_DIR)} = qw(./pebbles ./session ./include);
+    $tagx->{REPLACE_CONFIG}    = 'yes';
+    $tagx->{ALLOW_SNIPPET_TAG} = 'yes';
+
+    writeXML( $tagx, 'config/tagx.xml' );
 
     warn "Configuration file 'bedrock-miniserver.yml' created.\n";
   }
@@ -1381,15 +1448,18 @@ aliases:
 
 =head1 NAME
 
-bedrock-miniserver.pl - Multi-tenant application server and template accelerator for Bedrock
+bedrock-miniserver.pl - Bedrock development server
 
 =head1 SYNOPSIS
 
- # Start a Bedrock enabled web server with the default config
- bedrock-miniserver.pl -p 80
+ # Start a new application (zero-config quick start)
+ bedrock-miniserver.pl
 
- # Start the miniserver with your own config
+ # Start with a specific config
  bedrock-miniserver.pl -c app.yml
+
+ # Start on a specific port
+ bedrock-miniserver.pl -p 80
 
 =head1 QUICK START
 
@@ -1397,23 +1467,42 @@ bedrock-miniserver.pl - Multi-tenant application server and template accelerator
 
  bedrock-miniserver.pl
 
-This is the minimal way to start writing a Bedrock application. After
-launching the miniserver:
+Running the miniserver with no arguments and no existing
+configuration file scaffolds a complete Bedrock application
+directory. The following structure is created in the current
+working directory:
 
-=over 5
+ ./bedrock-miniserver.yml    # server configuration
+ ./html/                     # document root
+ ./html/index.roc            # default index (redirects to status page)
+ ./config/                   # Bedrock configuration
+ ./config/tagx.xml           # application config (seeded from distribution)
+ ./config.d/                 # additional config overlays
+ ./config.d/plugin/          # application plugin configs
+ ./config.d/startup/         # startup module configs
+ ./pebbles/                  # Bedrock pebble templates
+ ./include/                  # include files
+ ./session/                  # session file storage
 
-=item * The default configuration file (C<bedrock-miniserver.yml>)
-will be copied to your current working directory.
+The generated F<tagx.xml> is a copy of the distribution's reference
+configuration with paths adjusted for local development
+(C<PEBBLE_DIR>, C<SESSION_DIR>, C<INCLUDE_DIR> set to the relative
+directories above). C<REPLACE_CONFIG> is set to C<yes> so the local
+config stands alone, and C<ALLOW_SNIPPET_TAG> is enabled for
+development convenience.
 
-=item * An F<html> directory will be created in the current working directory
+The generated F<bedrock-miniserver.yml> sets C<BEDROCK_CONFIG_PATH>
+in the C<env:> block, pointing at the local F<config/> directory.
+This ensures the miniserver loads your application's Bedrock
+configuration on startup.
 
-=item * The configuration file will be updated to include set F<html> as you document root.
+The server listens on port 8080 by default. Visit
+C<http://localhost:8080/> in your browser to see the server status
+page.
 
-=item * The server will listen on the default port (8080).
-
-=back
-
-Now add an index page to your F<html> directory and visit http://localhost/ in your browswer
+To start building your application, edit or replace
+F<html/index.roc> and add templates to F<html/>. Add plugin
+configurations to F<config.d/plugin/> as your application grows.
 
 =head2 Testing a New Service
 
@@ -1434,7 +1523,7 @@ Run it:
 
  bedrock-miniserver.pl --config miniserver.yml
 
-Your service is now live at `http://localhost:8080/api/`.
+Your service is now live at C<http://localhost:8080/api/>.
 
 To serve Bedrock templates alongside your service, enable the
 template accelerator:
@@ -1461,20 +1550,20 @@ See L</CONFIGURATION> below for the full set of options.
 
 This script provides a standalone HTTP server for Bedrock
 applications, built on top of C<HTTP::Server::Simple::CGI>. It serves
-three distinct purposes:
+three roles:
 
 =over 4
 
 =item 1. B<Application Server>: Hosts multiple Bedrock Services
-simultaneously on a single port, dispatching requests based on a
-routing table.
+mounted at configurable URL prefixes, with full route translation
+and rewriting.
 
 =item 2. B<Template Accelerator>: Serves and parses static Bedrock
-templates (F<.roc> files) directly from the filesystem, providing a
-simulated Bedrock environment for rapid development.
+templates (F<.roc>, F<.jroc>) with the full Bedrock runtime
+environment.
 
 =item 3. B<Static File Server>: Serves raw assets (Images, CSS, JS)
-with efficient MIME-type handling and caching headers.
+from aliased directories.
 
 =back
 
@@ -1484,41 +1573,96 @@ with efficient MIME-type handling and caching headers.
 
 =item B<--config | -c>
 
-The path to the YAML configuration file defining the services,
-aliases, and environment.
+Path to the YAML configuration file. If not specified, the server
+looks for F<bedrock-miniserver.yml> in the current directory. If
+that is not found, it scaffolds a new application directory.
 
 =item B<--service | -s>
 
-The Perl class name of a Bedrock Service to run (e.g.,
-C<MyApp::Service>).
+Perl class name of a single service to mount (quick-start mode).
 
 =item B<--mount-point | -m>
 
-The URL prefix where the CLI-specified service will be
-mounted. Defaults to C</>.
+URL prefix for a service specified via C<--service> (default: /).
 
 =item B<--port | -p>
 
-The port to listen on. Defaults to C<8080>.
+TCP port to listen on (default: 8080).
 
 =item B<--strict | --no-strict>
 
-Enables or disables formal configuration validation. When enabled (default), 
-the server validates the YAML configuration against a JSON schema 
-(miniserver-schema.json) before startup. Use C<--no-strict> to bypass 
-this check[cite: 1, 34, 37].
+Enable or disable strict schema validation of the configuration
+file. Enabled by default. Use C<--no-strict> to bypass validation
+(miniserver-schema.json) before startup. Use C<--no-strict> to bypass
+validation at your own risk.
 
 =item B<--log-level | -l>
 
-Overrides the C<log_level> defined in the configuration file. This 
-affects the verbosity of the server from the earliest stages of the 
-boot process, including configuration validation and service mounting[cite: 1, 21, 22].
+Server log verbosity: debug, info, warn, error, fatal.
+Overrides the C<log_level> setting in the YAML config.
 
 =back
 
+=head1 BEDROCK CONFIGURATION
+
+At startup, the miniserver loads the fully merged Bedrock
+configuration using the same pipeline as C<Apache::Bedrock>. This
+means:
+
+=over 4
+
+=item * F<tagx.xml> is located via C<BEDROCK_CONFIG_PATH>
+
+=item * Multiple F<tagx.xml> files along the config path are merged
+
+=item * Plugin configs in F<config.d/plugin/> are discovered and
+merged into the C<MODULES> array
+
+=item * Startup module configs in F<config.d/startup/> are likewise
+merged
+
+=item * Data sources from F<data-sources.xml> files are registered
+
+=back
+
+The resulting config object is cached for the life of the server
+process and used for every template request. This is the same config
+object that would be available via C<$config> in your templates under
+Apache.
+
+The miniserver's YAML C<overrides:> block is applied on top of the
+merged Bedrock config at startup, allowing you to override specific
+values (such as C<BEDROCK_IMAGE_URL> or C<ABSOLUTE_PATHS>) without
+editing your F<tagx.xml>.
+
+If the Bedrock config cannot be loaded (missing F<tagx.xml>, invalid
+paths), the miniserver falls back to a bare C<Bedrock::Config>
+object and logs a warning.
+
+=head2 Configuration Tree Layout
+
+The standard Bedrock configuration tree that the miniserver expects
+mirrors the production layout used with Apache:
+
+ config/
+ config/tagx.xml              # main Bedrock config
+ config.d/
+ config.d/startup/            # system startup modules (e.g., session)
+ config.d/plugin/             # application plugins (BLMs)
+
+Plugin configuration files in F<config.d/plugin/> must define at
+least a C<module> and C<binding> key. They are automatically merged
+into the config's C<MODULES> array at startup.
+
+This layout is created for you by the zero-config quick start. If
+you are adapting an existing application, point
+C<BEDROCK_CONFIG_PATH> at your existing config tree (or symlink it
+locally) and the miniserver will load it as-is.
+
 =head1 BEDROCK TEMPLATE PARSING
 
-In addition to hosting Services, the Miniserver acts as a "Smart Static Server."
+In addition to hosting Services, the Miniserver acts as a "Smart
+Static Server."
 
 When a request matches a file with a Bedrock extension (configured via
 C<template_extensions>, typically F<.roc>), the server does B<not>
@@ -1526,14 +1670,18 @@ serve the raw source code. Instead, it:
 
 =over 4
 
-=item 1. B<Instantiates the Bedrock Stack>: It manually loads the "Big
-5" startup objects that Bedrock pages expect:
+=item 1. B<Instantiates the Bedrock Stack>: The fully merged Bedrock
+config (loaded at startup) provides the C<MODULES> array. The
+miniserver instantiates the core startup objects that Bedrock pages
+expect:
 
 =over 8
 
 =item * C<$bedrock> (Utilities)
 
-=item * C<$config> (Configuration, merged with F<tagx.xml>)
+=item * C<$config> (Configuration)
+
+=item * C<$cookie> (Cookie access)
 
 =item * C<$env> (Environment variables)
 
@@ -1543,20 +1691,23 @@ serve the raw source code. Instead, it:
 
 =back
 
-=item 2. B<Enables Sessions>: If a session manager is explicitly configured
-in the miniserver YAML, it initializes the session. 
+Any additional modules defined in your F<tagx.xml> or
+F<config.d/plugin/> are available in the config object. Application
+plugins (BLMs) that are declared in your C<MODULES> array can be
+used in templates via the C<E<lt>pluginE<gt>> tag.
 
-I<Note: The miniserver does I<not> auto-discover session managers from your 
-F<tagx.xml> configuration. You must add a C<session> block to your
-F<bedrock-miniserver.yml>.>
+=item 2. B<Enables Sessions>: If a session manager is configured in
+the miniserver YAML (via the C<session:> block), it is initialized
+for each request.
 
-A simple session manager to use is the SQLite manager. You can install the
-C<BLM::Startup::SQLiteSession plugin> from the Bedorck CPAN repository.
+A simple session manager to use for development is the SQLite
+manager. You can install the C<BLM::Startup::SQLiteSession> plugin
+from the Bedrock CPAN repository.
 
 L<http://cpan.openbedrock.net>
 
 You'll find a SQL script you can use to create your database and
-session table in plugin's distribution directory.
+session table in the plugin's distribution directory.
 
  perl -MFile::ShareDir=dist_file \
    -e 'print dist_file("BLM-Startup-SQLiteSession", "create-session-table.sql");'
@@ -1593,35 +1744,50 @@ file accessed via that alias will be parsed automatically.
 
   # Accessing http://localhost:8080/birds/index.roc now renders the template!
 
-While F<.roc> is the standard extension, the list of extensions that 
-trigger the accelerator is fully configurable via C<template_extensions> 
-in the YAML. This allows for specialized templates, such as F<.jroc> for 
-dynamic JSON generation[cite: 1, 23].
+While F<.roc> is the standard extension, the list of extensions that
+trigger the accelerator is fully configurable via C<template_extensions>
+in the YAML. This allows for specialized templates, such as F<.jroc> for
+dynamic JSON generation.
 
 =head1 ARCHITECTURE
 
-=head2 The Phase Gate (Overlay Routing)
+=head2 Request Pipeline
 
-The server uses a "Phase Gate" architecture to handle requests that
-might be static files OR dynamic service calls.
+The server processes each incoming request through a series of
+resolution stages. The first stage to match handles the request:
 
 =over 4
 
-=item 1. B<Alias Check>: The server first checks if the request
-matches a configured C<alias>.
+=item 1. B<Exact Service Match>: If the request path exactly matches
+a mounted service (with or without trailing slash), the service
+handles the request immediately.
 
-=item 2. B<Existence Check>: If the request matches an alias, it
-checks the filesystem.
+=item 2. B<Directory Index>: If the request matches a
+C<directory_index> prefix, the server tries each candidate file in
+order and serves the first readable one.
 
-=item 3. B<Fallthrough>: If the file does B<not> exist, the server
-does not return a 404.  Instead, it allows the request to "fall
-through" to the Service Registry.
+=item 3. B<Alias Resolution>: The server checks if the request
+matches a configured C<alias> and the target file exists on disk.
+If the file has a Bedrock template extension, it is parsed. Otherwise
+it is served as a static asset.
+
+=item 4. B<Template Route Matching>: The server checks the C<routes>
+configuration (merged from both Bedrock config and miniserver YAML)
+using C<Bedrock::Router>. If a route matches, the target template is
+resolved relative to C<PEBBLE_DIR> and rendered.
+
+=item 5. B<Service Prefix Match>: The server checks if the request
+path starts with a mounted service prefix (longest prefix wins) and
+dispatches to that service.
+
+=item 6. B<404 Not Found>: If none of the above match, the server
+returns a 404 response.
 
 =back
 
-This allows you to mount a Service at C</> while still serving static
-assets from an alias like C</css>, or to have specific static files 
-"overlay" a dynamic application.
+This layered approach allows you to mount a Service at C</> while
+still serving static assets from an alias like C</css>, or to have
+specific static files "overlay" a dynamic application.
 
 =head2 The Service Registry
 
@@ -1631,6 +1797,10 @@ Prefix Match" routing.
   /       -> Bedrock::Service::RootApp
   /birds  -> Bedrock::Service::Autocomplete
 
+After all services are mounted, the registry is finalized and each
+service receives a copy mapping mount points to class names (via the
+C<registry> accessor on C<Bedrock::Service>).
+
 =head2 Route Translation
 
 When a request matches a service, the server B<translates> the path by
@@ -1639,26 +1809,58 @@ services to be written without knowledge of where they are mounted.
 
 =head2 Advanced Routing (Regex Rewrites)
 
-In addition to simple prefix stripping, the server supports complex 
-URL remapping via the C<routes> configuration block. This allows 
-mapping RESTful URLs to internal service paths using named captures 
+In addition to simple prefix stripping, the server supports complex
+URL remapping via the C<routes> configuration block. This allows
+mapping RESTful URLs to internal service paths using named captures
 and variable substitution.
 
-Example:
+Example (miniserver YAML):
 
   routes:
     /api:
       '^/user/(:id)$': '/user/view?id=$1'
 
-In this example, a request to C</api/user/123> is translated to 
+In this example, a request to C</api/user/123> is translated to
 C</user/view?id=123> before being handed to the service.
+
+=head2 Template Routes (Bedrock Config)
+
+Routes defined in your Bedrock configuration (typically
+F<routes.xml>) are also supported. These use C<Bedrock::Router>
+pattern syntax with named parameters and wildcards:
+
+ <object name="routes">
+   <array>
+     <object>
+       <scalar name="pattern">/user/:id</scalar>
+       <scalar name="template">user_profile.roc</scalar>
+     </object>
+     <object>
+       <scalar name="pattern">/docs/*path</scalar>
+       <scalar name="template">markdown.roc</scalar>
+     </object>
+   </array>
+ </object>
+
+Bedrock config routes are loaded at startup and merged under the
+root (C</>) mount point. Miniserver YAML routes take precedence on
+a per-mount-point basis -- if both define routes for C</api>, the
+YAML version wins.
+
+Captured parameters are available in templates via C<$input>:
+
+ # Route: /user/:id
+ # URL: /user/123
+ <var $input.id>  <!-- prints: 123 -->
+
+See L<Bedrock::Router> for complete pattern syntax.
 
 =head2 Environment Virtualization
 
-To ensure that Services and Templates are portable, the Miniserver 
-manages the environment for each request. It manually calculates and 
-overrides C<SCRIPT_NAME> and C<PATH_INFO> based on the mount point 
-or alias, allowing code to operate correctly regardless of its 
+To ensure that Services and Templates are portable, the Miniserver
+manages the environment for each request. It manually calculates and
+overrides C<SCRIPT_NAME> and C<PATH_INFO> based on the mount point
+or alias, allowing code to operate correctly regardless of its
 location in the public URL space.
 
 =head1 CONFIGURATION
@@ -1667,14 +1869,17 @@ The server configuration is driven by a YAML file (e.g.,
 F<bedrock-miniserver.yml>).
 
   port: 8080
-  
+
   # Control server verbosity (debug, info, warn, error, fatal)
   # Default: info
-  log_level: debug 
+  log_level: debug
 
   # 1. Environment Injection
   #    These variables are injected into %ENV at startup.
+  #    BEDROCK_CONFIG_PATH tells the miniserver where to find
+  #    your Bedrock configuration tree (tagx.xml, config.d/, etc.)
   env:
+    BEDROCK_CONFIG_PATH: ./config
     DBI_TRACE: 1
     MY_API_KEY: "secret"
 
@@ -1689,8 +1894,8 @@ F<bedrock-miniserver.yml>).
     /:    ./htdocs/root/
 
   # 4. Directory Indices
-  #    Automatically creates aliases for root paths.
-  #    If multiple files are listed, they are prioritized in order.
+  #    Define which file(s) to serve when a directory is requested.
+  #    If multiple files are listed, they are tried in order.
   directory_index:
     /bedrock:
       - index.html
@@ -1716,8 +1921,11 @@ F<bedrock-miniserver.yml>).
     config:
       persistence_enabled: yes
 
+  # 8. Overrides
+  #    Values here are applied on top of the merged Bedrock config
+  #    (tagx.xml) at startup.
   overrides:
-    BEDROCK_CONFIG_PATH: ./config
+    ALLOW_SNIPPET_TAG: yes
 
 =over 4
 
@@ -1725,38 +1933,71 @@ F<bedrock-miniserver.yml>).
 
 The TCP port on which the server will listen (default: 8080).
 
+=item env:
+
+A hash of variables to be injected into the system environment
+(C<%ENV>) at startup. C<BEDROCK_CONFIG_PATH> is particularly
+important -- it tells the miniserver where to find your Bedrock
+configuration tree. If not set, the miniserver falls back to the
+distribution's default config.
+
+=item services:
+
+A hash mapping URL prefixes to Perl class names. Each class must
+be a subclass of C<Bedrock::Service>.
+
+=item aliases:
+
+A hash mapping URI prefixes to physical filesystem paths for static
+asset or template serving.
+
+The miniserver will provide these additional aliases automatically:
+
+ aliases:
+   /bedrock/img: '@dist_dir@/img'
+   /bedrock/css: '@dist_dir@/css'
+   /bedrock/javascript: '@dist_dir@/css'
+
+B<Trailing Slashes in Aliases>
+
+When aliasing a directory (e.g., mapping C</> to C<html>), a trailing
+slash must be included in both the path and the target (C</: html/>).
+Without the slash, the translation logic performs a literal
+string substitution, which may result in incorrect filenames (e.g.,
+C</foo.roc> becoming C<htmlfoo.roc>). This behavior is intentional as
+it allows for prefix-based filename remapping.
+
+=item directory_index:
+
+A hash mapping directory paths to an ordered list of candidate files
+to serve when that directory is requested. Resolution happens at
+request time, before alias resolution.
+
+ directory_index:
+   /release-notes:
+     - index.roc
+
 =item routes:
 
-A hash of URI-to-resource mappings or regex rewrite rules for complex 
-URL remapping.
-
-=item overrides:
-
-A hash of Bedrock-specific configuration values that override 
-settings in your F<tagx.xml>.
+A hash of URI-to-resource mappings or regex rewrite rules for complex
+URL remapping. Routes defined here are merged with any routes found
+in your Bedrock configuration (F<routes.xml>). Bedrock config routes
+serve as the baseline under the root (C</>) mount; miniserver YAML
+routes take precedence on a per-mount-point basis.
 
 =item parse_templates:
 
-Boolean flag to enable the Bedrock Template Accelerator for files 
+Boolean flag to enable the Bedrock Template Accelerator for files
 matching C<template_extensions>.
 
 =item template_extensions:
 
-An array of file extensions that trigger Bedrock template parsing 
+An array of file extensions that trigger Bedrock template parsing
 (default: roc, rock, jroc, jrock).
 
 I<Note: .rock and .jrock extensions are typically used in the Apache
 environment to specifically request that these files be handled by
 C<mod_cgi> rather than C<mod_perl>.>
-
-=item directory_index:
-
-A hash map that defining which file(s) to serve when a directory is
-requested (e.g., index.roc).
-
- directory_index:
-   /release-notes:
-     - index.roc
 
 =item mime_types:
 
@@ -1764,16 +2005,16 @@ A mapping of file extensions to Content-Type headers required for
 correctly serving static assets. A default list of mime types is
 provided for you.
 
-mime_types: 
-  css:  text/css
-  js:   application/javascript
-  png:  image/png
-  jpg:  image/jpeg
-  gif:  image/gif
-  html: text/html
-  roc:  text/html
-  jroc: application/json
-  ico:  image/x-icon
+ mime_types:
+   css:  text/css
+   js:   application/javascript
+   png:  image/png
+   jpg:  image/jpeg
+   gif:  image/gif
+   html: text/html
+   roc:  text/html
+   jroc: application/json
+   ico:  image/x-icon
 
 =item error_document:
 
@@ -1786,12 +2027,12 @@ A mapping of HTTP status codes to custom error page locations.
 
 =item mount_point:
 
-The URL prefix used when a service is specified via the CLI 
+The URL prefix used when a service is specified via the CLI
 (default: /).
 
 =item session:
 
-Configures the session manager module and its parameters for use 
+Configures the session manager module and its parameters for use
 by templates and services.
 
 B<Example:>
@@ -1808,87 +2049,105 @@ B<Example:>
      log_level: info
      persistence_enable: no
 
-=item env:
+=item overrides:
 
-A hash of variables to be injected into the system environment 
-(C<%ENV>) at startup.
+A hash of Bedrock-specific configuration values that are applied on
+top of the merged F<tagx.xml> config at startup. Use this to override
+individual settings without modifying your configuration tree.
 
 =item log_level:
 
-The verbosity level for the server logs (debug, info, warn, 
+The verbosity level for the server logs (debug, info, warn,
 error, fatal).
-
-=item aliases:
-
-A hash mapping URI prefixes to physical filesystem paths for static 
-asset or template serving.
-
-The miniserver will provide these additional aliases:
-
- aliases:
-   /bedrock/img: '@dist_dir@/img'
-   /bedrock/css: '@dist_dir@/css'
-   /bedrock/javascript: '@dist_dir@/css'
-
-B<Trailing Slashes in Aliases>
-
-When aliasing a directory (e.g., mapping C</> to C<html>), a trailing
-slash must be included in both the path and the target (C</: html/>). 
-Without the slash, the translation logic performs a literal
-string substitution, which may result in incorrect filenames (e.g.,
-C</foo.roc> becoming C<htmlfoo.roc>).  This behavior is intentional as
-it allows for prefix-based filename remapping.
 
 =back
 
 =head1 CONFIGURATION VALIDATION
 
-As of version 3.7.5, the Miniserver performs strict validation of its 
-configuration file using B<JSON Schema>. This prevents misconfigurations 
+As of version 3.7.5, the Miniserver performs strict validation of its
+configuration file using B<JSON Schema>. This prevents misconfigurations
 from being interpreted as runtime server bugs.
 
 The server looks for the schema definition at:
 C<@dist_dir@/config/miniserver-schema.json>.
 
-If the configuration contains unknown keys or invalid data types (e.g., 
-providing a string where an array is expected for C<directory_index>), 
-the server will refuse to start and provide a specific path to the 
+If the configuration contains unknown keys or invalid data types (e.g.,
+providing a string where an array is expected for C<directory_index>),
+the server will refuse to start and provide a specific path to the
 error within the YAML file.
 
 I<You can override this check using the C<--no-strict> option...although caveat emptor.>
 
-=head1 ROUTE RESOLUTION 
+=head1 ROUTE RESOLUTION
 
-The MiniServer employs a specific precedence logic when resolving incoming
-requests to ensure behavior parity with C<Apache::Bedrock>.
+The MiniServer employs a specific precedence logic when resolving
+incoming requests:
 
 =over 4
 
-=item 1. Explicit Route Matching
+=item 1. Exact Service Match
 
-The server first iterates through the C<routes:> list in the order defined
-in the YAML configuration. The first route 
-with a C<path> that matches the beginning of the request URI is selected.
+If the request path exactly matches a mounted service (with or
+without trailing slash), the service handles the request immediately.
+No further resolution is attempted.
 
-=item 2. Default File Fallback
+=item 2. Directory Index
 
-If no explicit route matches, the server attempts to locate a physical
-file relative to the C<SERVER_ROOT>. If a directory is requested, it
-searches for C<index.roc> or C<index.html> within that directory (if
-the C<directory_index> object was specified for that directory.
+If the request matches a C<directory_index> prefix, the server
+resolves the filesystem base via aliases and tries each candidate
+file in order. The first readable file is served.
 
-=item 3. MIME Type Dependency
+=item 3. Alias Resolution
 
-For B<alias> routes serving static assets, the server relies on the 
-C<mime_types:> hash to set the C<Content-Type> header. 
-If an extension is not defined in the configuration, the server defaults 
-to C<text/plain>.
+The server checks whether the request path matches a configured
+alias. If the target file exists, it is served (parsed as a template
+if its extension matches C<template_extensions>, or served raw
+otherwise). If the target does not exist on disk, the request falls
+through.
 
-=item 4. Path Sovereignty
+=item 4. Template Route Matching
 
-All C<mount>, C<alias>, and C<resource> paths are resolved relative to 
-the C<SERVER_ROOT>, which is automatically determined by the location of 
-the configuration file unless explicitly overridden.
+The merged C<routes> (from both Bedrock config and miniserver YAML)
+are checked using C<Bedrock::Router>. If a route matches, the
+target template is resolved relative to C<PEBBLE_DIR> and rendered.
+
+=item 5. Service Prefix Match
+
+The server checks if the request path starts with a mounted service
+prefix (longest prefix wins). Route translation and regex rewrites
+are applied before the service handles the request.
+
+=item 6. Not Found
+
+If none of the above match, a 404 response is returned. If an
+C<error_document> is configured for 404, that page is served instead.
+
+=back
+
+=head1 MIGRATION TO PRODUCTION
+
+The miniserver is designed as a development environment that mirrors
+the production deployment model. The scaffolded directory layout and
+configuration files are structured to transfer directly to an Apache
+deployment:
+
+=over 4
+
+=item * F<config/tagx.xml> and F<config.d/> move to your Apache
+site's config directory. Update absolute paths as needed.
+
+=item * Services defined in the miniserver YAML are deployed as
+C<LocationMatch> blocks with C<PerlResponseHandler> directives. Use
+C<bedrock-service.cgi --service MyService install> to generate the
+Apache configuration.
+
+=item * Route rewrites from the miniserver YAML become
+C<RewriteRule> directives in your Apache configuration.
+
+=item * Template routes from F<routes.xml> work identically under
+both the miniserver and C<Apache::Bedrock>.
+
+=item * Aliases become Apache C<Alias> directives.
 
 =back
 
@@ -1902,3 +2161,4 @@ fails to load or the configuration is invalid.
 Rob Lauer - <bigfoot@cpan.org>
 
 =cut
+

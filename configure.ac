@@ -497,6 +497,7 @@ AC_CONFIG_FILES(
         [bin/Makefile]
         [cpan/Makefile]
         [cpan/bedrock-core/Makefile]
+        [release-notes/Makefile]
         [docker/Makefile]
         [src/Makefile]
         [src/main/Makefile]

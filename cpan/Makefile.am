@@ -161,7 +161,7 @@ $(TARBALL):
 else
 tmpdir := $(shell mktemp -d)
 
-$(TARBALL): buildspec.yml
+$(TARBALL): buildspec.yml requires
 	if [[ -z "$(DESTDIR)" ]]; then \
 	  rm -f exclude_files; \
 	  for a in $(EXCLUDE_LIST); do \
@@ -187,6 +187,12 @@ $(TARBALL): buildspec.yml
 	$(CPAN_DIST_MAKER) $$PROJECT_ROOT $$REQUIRES \
 	  $$DRYRUN $$SCANDEPS $$NOVERSION $$NOCLEANUP $$DEBUG -b $<;
 endif
+
+.PHONY: bedrock-lite
+
+bedrock-lite:
+	cp requires-no-apache requires
+	$(MAKE) cpan
 
 cpandir = $(datadir)/bedrock
 

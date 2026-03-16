@@ -1,6 +1,5 @@
 # -*- mode: makefile; -*-
-
-SUBDIRS = bin src cpan docker .
+SUBDIRS = bin src cpan docker release-notes .
 
 # The ACLOCAL_AMFLAGS are used by 'autoreconf' and by the Makefile
 # rebuild rule when they need to run 'aclocal'.
