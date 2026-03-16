@@ -1,0 +1,503 @@
+package Bedrock::MiniServer::CLI;
+
+#
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+use strict;
+use warnings;
+
+use Bedrock qw(choose slurp_json slurp_file $BEDROCK_DIST_DIR to_boolean is_hash is_array);
+use Bedrock::Constants qw(%LOG4PERL_LOG_LEVELS);
+use Bedrock::LoadConfig qw(load_config);
+use Bedrock::MiniServer;
+use Bedrock::XML qw(writeXML);
+use CLI::Simple::Constants qw(:booleans :chars);
+use Carp;
+use Cwd;
+use Data::Dumper;
+use English qw(-no_match_vars);
+use File::Path qw(make_path);
+use JSON::Schema::Validate;
+use Module::Load;
+use Log::Log4perl;
+use List::Util qw(pairs);
+use YAML::XS qw(DumpFile);
+
+our $VERSION = '@PACKAGE_VERSION@';
+
+use parent qw(CLI::Simple);
+
+__PACKAGE__->use_log4perl;
+
+########################################################################
+sub main {
+########################################################################
+  my ( $class, $defaults ) = @_;
+
+  my @option_specs = qw(
+    config|c=s
+    help|h
+    log-level|l=s
+    mount-point|m=s
+    port|p=s
+    service|s=s
+    strict!
+  );
+
+  my @extra_options = qw(
+    aliases
+    dist_dir
+    mime_types
+    server_config
+  );
+
+  my $default_options = {
+    mime_types => $defaults->{mime_types},
+    aliases    => $defaults->{aliases},
+    strict     => $TRUE,
+  };
+
+  my %commands = (
+    default => \&cmd_start_server,
+    start   => \&cmd_start_server,
+  );
+
+  my $cli = Bedrock::MiniServer::CLI->new(
+    option_specs    => \@option_specs,
+    extra_options   => \@extra_options,
+    default_options => $default_options,
+    commands        => \%commands,
+  );
+
+  return $cli->run();
+}
+
+########################################################################
+sub cmd_start_server {
+########################################################################
+  my ($self) = @_;
+
+  my $server_config = $self->get_server_config;
+
+  # Set log level EARLY for startup messages
+  my $log_level = $server_config->{log_level} || 'info';
+  my $logger    = Log::Log4perl->get_logger('Bedrock::MiniServer');
+  $logger->level( $LOG4PERL_LOG_LEVELS{$log_level} // $LOG4PERL_LOG_LEVELS{info} );
+
+  # Capture the 'sovereign' launch root
+  my $server_root = Cwd::getcwd();
+  local $ENV{SERVER_ROOT} = $server_root;
+
+  # Ensure PEBBLE_DIR defaults to this root if set to '.' or undefined
+  if ( ( $server_config->{PEBBLE_DIR} // $EMPTY ) eq $DOT || !$server_config->{PEBBLE_DIR} ) {
+    $server_config->{PEBBLE_DIR} = $server_root;
+  }
+
+  # ================================================================
+  # Load the fully merged Bedrock config (tagx.xml + config.d/*)
+  # ================================================================
+
+  $ENV{BEDROCK_CONFIG_PATH} //= $server_config->{env}->{BEDROCK_CONFIG_PATH} // sprintf '%s/config', $BEDROCK_DIST_DIR;
+
+  my $bedrock_config = eval {
+    require Bedrock::FauxHandler;
+    require Bedrock::Handler;
+
+    my $faux_handler = Bedrock::FauxHandler->new(
+      log       => $logger,
+      log_level => $log_level,
+    );
+
+    return Bedrock::Handler->new($faux_handler)->config;
+  };
+
+  if ( !$bedrock_config || $EVAL_ERROR ) {
+    $logger->warn( sprintf 'Could not load Bedrock config: %s', $EVAL_ERROR // 'unknown error' );
+    $logger->warn('Falling back to minimal configuration');
+
+    $bedrock_config = eval { return Bedrock::Config->new('tagx.xml'); } // {};
+  }
+
+  # Apply miniserver overrides to the bedrock config once
+  if ( $server_config->{overrides} && is_hash( $server_config->{overrides} ) ) {
+    foreach my $k ( keys %{ $server_config->{overrides} } ) {
+      my $v = $server_config->{overrides}->{$k};
+      $v =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg;
+      $bedrock_config->{$k} = $v;
+    }
+  }
+
+  # --- initialize runtime configuration
+  my %runtime_config = (
+    global_config    => $server_config,
+    bedrock_config   => $bedrock_config,
+    aliases          => $self->get_aliases,
+    mime_types       => $self->get_mime_types,
+    error_document   => {},
+    service_registry => {},
+    routes           => {},
+    env              => {},
+    log_level        => $server_config->{log_level} || 'info',
+  );
+
+  $server_config->{env} //= {};
+
+  foreach my $k ( keys %{ $server_config->{env} } ) {
+    $ENV{$k} = $server_config->{env}->{$k}; ## no critic
+    $runtime_config{env}->{$k} = $server_config->{env}->{$k};
+  }
+
+  $runtime_config{error_document}  = $server_config->{error_document} || {};
+  $runtime_config{parse_templates} = $server_config->{parse_templates};
+  $runtime_config{directory_index} = $server_config->{directory_index} || {};
+
+  # default template extensions
+  $runtime_config{template_extensions} = { map { $_ => 1 } qw(roc rock jroc jrock) };
+
+  if ( is_array( $server_config->{template_extensions} ) ) {
+    $runtime_config{template_extensions} = { map { $_ => 1 } @{ $server_config->{template_extensions} } };
+  }
+
+  $runtime_config{mime_types} = { %{ $self->get_mime_types }, %{ $server_config->{mime_types} // {} } };
+
+  my $global_service_config = $server_config->{service_config} // {};
+
+  if ( $server_config->{session} ) {
+    $global_service_config->{session} = $server_config->{session};
+  }
+
+  if ( $server_config->{overrides} ) {
+    $global_service_config->{overrides} = $server_config->{overrides};
+  }
+
+  _resolve_paths($global_service_config);  # in case any values here are paths with [@]dist_dir[@]
+
+  # ================================================================
+  # Merge routes: Bedrock config routes as baseline, miniserver
+  # YAML routes override. Bedrock config routes (from routes.xml)
+  # are a flat array — they apply to the root mount point.
+  # ================================================================
+  my %merged_routes;
+
+  if ( is_array( $bedrock_config->{routes} ) ) {
+    $merged_routes{$SLASH} = $bedrock_config->{routes};
+    $logger->info( sprintf 'Loaded %d route(s) from Bedrock config', scalar @{ $bedrock_config->{routes} } );
+  }
+
+  # miniserver YAML routes overlay (same keys win)
+  my $yaml_routes = $server_config->{routes} || {};
+
+  foreach my $mount ( keys %{$yaml_routes} ) {
+    $merged_routes{$mount} = $yaml_routes->{$mount};
+  }
+
+  $runtime_config{routes} = \%merged_routes;
+
+  my ( $services_cfg, $aliases_cfg ) = @{$server_config}{qw(services aliases)};
+
+  $services_cfg //= {};
+
+  my $mount_point = $self->get_mount_point // $server_config->{mount_point} // $SLASH;
+  if ( my $service = $self->get_service ) {
+    $services_cfg->{$mount_point} = $self->get_service;
+  }
+
+  carp q{WARNING: No services defined! Use --service or add a 'services' block to your config.}
+    if !keys %{$services_cfg};
+
+  foreach my $mount ( keys %{$services_cfg} ) {
+    my $class = $services_cfg->{$mount};
+    $self->_mount_service( \%runtime_config, $mount, $class, $global_service_config );
+  }
+
+  my $final_registry = {
+    map { $_ => ref $runtime_config{service_registry}->{$_} }
+      keys %{ $runtime_config{service_registry} }
+  };
+
+  foreach my $instance ( values %{ $runtime_config{service_registry} } ) {
+    $instance->registry($final_registry);
+  }
+
+  $runtime_config{aliases} = { %{ $runtime_config{aliases} }, %{ $aliases_cfg // {} } };
+  _resolve_paths( $runtime_config{aliases} );
+
+  my $port        = $self->get_port // $server_config->{port} // 8080;
+  my $line_length = 80;
+
+  $logger->notice( q{=} x $line_length );
+  $logger->notice( sprintf 'BEDROCK MINISERVER RUNNING ON PORT: %s', $port );
+
+  $logger->notice( q{-} x $line_length );
+  $logger->notice( sprintf 'BEDROCK_CONFIG_PATH: %s', $ENV{BEDROCK_CONFIG_PATH} // '(not set)' );
+
+  $logger->notice( q{-} x $line_length );
+  $logger->notice('Services:');
+  $logger->notice( q{-} x $line_length );
+
+  foreach my $mount ( sort keys %{ $runtime_config{service_registry} } ) {
+    my $svc = $runtime_config{service_registry}->{$mount};
+    $logger->notice( sprintf '  %-20s -> %s', $mount, ref $svc );
+  }
+
+  if ( keys %{ $runtime_config{error_document} } ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Error Documents:');
+    $logger->notice( q{-} x $line_length );
+    foreach my $code ( sort keys %{ $runtime_config{error_document} } ) {
+      $logger->notice( sprintf '  %-5s -> %s', $code, $runtime_config{error_document}->{$code} );
+    }
+  }
+
+  $logger->notice( q{-} x $line_length );
+  $logger->notice('MIME Types:');
+  $logger->notice( q{-} x $line_length );
+  foreach my $type ( sort keys %{ $runtime_config{mime_types} } ) {
+    $logger->notice( sprintf '  %-5s -> %s', $type, $runtime_config{mime_types}->{$type} );
+  }
+
+  if ( keys %{ $runtime_config{aliases} } ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Static Asset Aliases:');
+    $logger->notice( q{-} x $line_length );
+
+    foreach my $alias ( sort keys %{ $runtime_config{aliases} } ) {
+      $logger->notice( sprintf '  %-20s -> %s', $alias, $runtime_config{aliases}->{$alias} );
+    }
+  }
+
+  if ( keys %merged_routes ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice('Routes:');
+    $logger->notice( q{-} x $line_length );
+
+    foreach my $mount ( sort keys %merged_routes ) {
+      my $routes = $merged_routes{$mount};
+
+      if ( is_array($routes) ) {
+        foreach my $r ( @{$routes} ) {
+          $logger->notice( sprintf '  %-20s %s -> %s', $mount, $r->{pattern} // '?', $r->{template} // '?' );
+        }
+      }
+      elsif ( is_hash($routes) ) {
+        foreach my $pattern ( keys %{$routes} ) {
+          $logger->notice( sprintf '  %-20s %s -> %s', $mount, $pattern, $routes->{$pattern} );
+        }
+      }
+    }
+  }
+
+  if ( $runtime_config{parse_templates} ) {
+    $logger->notice( q{-} x $line_length );
+    $logger->notice( sprintf '* Bedrock template parsing ENABLED for (%s) files.',
+      join ', ', keys %{ $runtime_config{template_extensions} } );
+  }
+
+  $logger->notice( q{=} x $line_length );
+
+  # Instantiate with runtime_config
+  $runtime_config{port} = $port;
+
+  my $server = Bedrock::MiniServer->new($port);
+  $server->bedrock_server_config( \%runtime_config );
+
+  $server->run();
+
+  return 0;
+}
+
+########################################################################
+sub _resolve_paths {
+########################################################################
+  my ($path_map) = @_;
+
+  foreach my $p ( values %{$path_map} ) {
+    next if $p !~ /[@]dist_dir[@]/xsm;
+    $p =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsm;
+  }
+
+  return;
+}
+
+########################################################################
+sub _mount_service {
+########################################################################
+  my ( $self, $runtime_config, $mount, $class, $config ) = @_;
+
+  if ( $class !~ /\ABedrock::Service/xsm ) {
+    $class = "Bedrock::Service::$class";
+  }
+
+  eval {
+    load $class;
+
+    my $instance = $class->new(
+      service_config => $config,
+      server_config  => {
+        map { $_ => $runtime_config->{$_} }
+          qw(aliases routes env log_level parse_templates
+          template_extensions mime_types error_document
+          directory_index port)
+      },
+      start_time => time,
+    );
+
+    $runtime_config->{service_registry}->{$mount} = $instance;
+  };
+
+  croak "Failed to mount $class at $mount: $EVAL_ERROR"
+    if $EVAL_ERROR;
+
+  return;
+}
+
+########################################################################
+sub init {
+########################################################################
+  my ($self) = @_;
+
+  $self->set_dist_dir($BEDROCK_DIST_DIR);
+
+  my $config_file = $self->get_config;
+
+  if ($config_file) {
+    my @paths = grep {defined} ( $EMPTY, $ENV{BEDROCK_CONFIG_PATH}, $ENV{CONFIG_PATH}, "$BEDROCK_DIST_DIR/config" );
+
+    foreach my $p (@paths) {
+      if ( $p && $p !~ m{\z/}xsm ) {
+        $p = "$p/";
+      }
+
+      next if !-r "$p$config_file";
+
+      $config_file = "$p$config_file";
+      last;
+    }
+  }
+
+  $self->_init_server_config($config_file);
+
+  return;
+}
+
+########################################################################
+sub _init_server_config {
+########################################################################
+  my ( $self, $config_file ) = @_;
+
+  if ( !$config_file && -e 'bedrock-miniserver.yml' ) {
+    $config_file = 'bedrock-miniserver.yml';
+  }
+
+  my $has_config = $config_file;
+
+  if ( !$config_file ) {
+    $config_file = sprintf '%s/config/bedrock-miniserver.yml', $BEDROCK_DIST_DIR;
+    $self->get_logger->warn( sprintf 'WARNING: attempting to use default miniserver configuration: %s', $config_file );
+  }
+
+  die "ERROR: Configuration file not found: $config_file"
+    if $has_config && !-r $config_file;
+
+  my $config = slurp_file($config_file);
+
+  while ( $config =~ s/[@]dist_dir[@]/$BEDROCK_DIST_DIR/xsmg ) { }
+
+  open my $fh, '<', \$config
+    or croak "ERROR: could not open handle on scalar\n";
+
+  my $conf = load_config( $fh, 1 );
+
+  if ( my $log_level = $self->get_log_level ) {
+    $conf->{log_level} = $log_level;
+  }
+
+  close $fh;
+
+  if ( !$has_config ) {
+    my ($document_root) = $self->get_args;
+    $document_root //= 'html/';
+
+    make_path( $document_root, qw(config config.d/plugin config.d/startup pebbles include session) );
+
+    die "ERROR: no such directory $document_root\n"
+      if !-d $document_root;
+
+    if ( !-e "$document_root/index.roc" || !-e "$document_root/index.html" ) {
+      open my $fh, '>', "$document_root/index.roc"
+        or die "ERROR: could not open $document_root/index.roc for writing\n";
+
+      print {$fh} q{<null $header.location("/bedrock-server-status")>};
+      close $fh;
+    }
+
+    $conf->{aliases} //= {};
+    $conf->{aliases}->{q{/}}            = $document_root;
+    $conf->{directory_index}            = { q{/} => [qw(index.roc index.html)] };
+    $conf->{env}->{BEDROCK_CONFIG_PATH} = sprintf '%s/config', Cwd::getcwd;
+
+    DumpFile( 'bedrock-miniserver.yml', $conf );
+
+    # create a reference tagx.xml
+    my $tagx_file = sprintf '%s/config/tagx.xml', $BEDROCK_DIST_DIR;
+    my $tagx      = load_config($tagx_file);
+    @{$tagx}{qw(PEBBLE_DIR SESSION_DIR INCLUDE_DIR)} = qw(./pebbles ./session ./include);
+    $tagx->{REPLACE_CONFIG}    = 'yes';
+    $tagx->{ALLOW_SNIPPET_TAG} = 'yes';
+
+    writeXML( $tagx, 'config/tagx.xml' );
+
+    warn "Configuration file 'bedrock-miniserver.yml' created.\n";
+  }
+
+  # validate the configuration against our schema
+  $self->validate_config($conf);
+
+  $conf->{_source} = $config_file;
+
+  $self->set_server_config($conf);
+
+  return $conf;
+}
+
+########################################################################
+sub validate_config {
+########################################################################
+  my ( $self, $conf ) = @_;
+
+  # Path to the schema file defined above
+  my $schema_path = "$BEDROCK_DIST_DIR/config/miniserver-schema.json";
+
+  return $TRUE
+    if !-e $schema_path || !$self->get_strict;
+
+  my $schema = slurp_json($schema_path);
+
+  my $v  = JSON::Schema::Validate->new($schema);
+  my $ok = $v->validate($conf);
+
+  if ( !$ok ) {
+    my $err = $v->error;
+    croak sprintf "ERROR: CONFIGURATION ERROR at %s: %s\n", $err->{path}, $err->{message};
+  }
+
+  return $TRUE;
+}
+
+1;

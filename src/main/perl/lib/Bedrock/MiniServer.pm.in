@@ -1,0 +1,946 @@
+package Bedrock::MiniServer;
+#-*- mode: cperl-mode; -*-
+
+#    This file is a part of Bedrock, a server-side web scripting tool.
+#    Check out http://www.openbedrock.net
+#    Copyright (C) 2026, TBC Development Group, LLC.
+#    Copyright (C) 2001, Charles Jones, LLC.
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+#
+
+use strict;
+use warnings;
+
+# make sure Bedrock is first to fix @INC
+use Bedrock qw(slurp_file is_hash is_array to_boolean benchmark choose $BEDROCK_DIST_DIR);
+
+use Apache::Request::CGI;
+use Bedrock::Constants qw(:chars %LOG4PERL_LOG_LEVELS :booleans :http);
+use Bedrock::BedrockConfig;
+use Bedrock::Error qw(handle_error resolve_error_page);
+use Bedrock::MiniServer::Context;
+use Bedrock::Router;
+use Benchmark;
+use Data::Dumper;
+use Carp;
+use Cwd qw(cwd getcwd);
+use English qw(-no_match_vars);
+use File::Basename;
+use IO::Scalar;
+use List::Util qw(pairs);
+use Log::Log4perl;
+use POSIX qw(strftime);
+use Module::Load;
+use Scalar::Util qw(blessed reftype);
+use Text::URLEncode qw(Htmlencode);
+use YAML::XS;
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
+
+our $version = '@PACKAGE_VERSION@';
+
+use parent qw(HTTP::Server::Simple::CGI);
+
+{
+  no warnings 'once'; ## no critic
+  $Log::Log4perl::Config::ALLOW_CODE = 1;  # allow us to use cspec for Log::Log4perl
+}
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, $port, $family, %args ) = @_;
+
+  my $bedrock_runtime = delete $args{bedrock_runtime} // {};
+
+  my $self = $class->SUPER::new( $port, $family, %args );
+
+  $self->{_bedrock_runtime} = $bedrock_runtime;
+
+  return $self;
+}
+
+########################################################################
+sub bedrock_server_config {
+########################################################################
+  my ( $self, $config ) = @_;
+
+  if ($config) {
+    $self->{_bedrock_runtime} = $config;
+  }
+
+  return $self->{_bedrock_runtime} // {};
+}
+
+########################################################################
+sub handle_request {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $t0 = benchmark();
+
+  # init logging for miniserver...
+  my $logger = $self->_init_miniserver_logger( $self->bedrock_server_config->{log_level} );
+
+  my $env = $self->bedrock_server_config->{env} // {};
+
+  local @ENV{ keys %{$env} } = values %{$env};
+
+  if ( my ( $mount, $service ) = $self->_exact_service_match($cgi) ) {
+    my ( $ret_val, $status ) = $self->_service( $cgi, $service, $mount );
+    $self->_log_complete(
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+      status       => $status,
+    );
+    return $ret_val;
+  }
+  else {
+    $logger->debug( 'no exact service match for ', $cgi->path_info );
+  }
+
+  # Check directory index before alias resolution
+  if ( my $status = $self->_resolve_directory_index($cgi) ) {
+    $self->_log_complete(
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+      status       => $status,
+    );
+
+    return;
+  }
+
+  # check to see if request is for static or template asset
+  if ( my $status = $self->_serve_alias($cgi) ) {
+    $self->_log_complete(
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+      status       => $status,
+    );
+
+    return;
+  }
+
+  my ( $template, $route_params, $path_translated ) = $self->_resolve_template_route($cgi);
+
+  if ($template) {
+    # Resolve against PEBBLE_DIR like Apache::Bedrock
+    my $pebble_dir = $self->bedrock_server_config->{PEBBLE_DIR} // $ENV{SERVER_ROOT} // Cwd::getcwd();
+
+    my $fs_path = "$pebble_dir/$template";
+
+    $logger->debug( sprintf 'Route matched! Checking filesystem for: [%s]', $fs_path );
+    $logger->debug( sprintf 'Current Working Directory: %s',                Cwd::getcwd() );
+
+    if ( -r $fs_path ) {
+      $logger->debug('File found and readable. Invoking _serve_template.');
+      my $status = $self->_serve_template( $cgi, $fs_path, $route_params, $path_translated );
+
+      return $self->_log_complete(
+        path         => $cgi->path_info,
+        request_time => benchmark($t0)->[0],
+        cgi          => $cgi,
+        logger       => $logger,
+        status       => $status,
+      );
+    }
+    else {
+      $logger->error( sprintf 'ROUTING FAILURE: Match found (%s) but file not readable at [%s]', $template, $fs_path );
+    }
+  }
+
+  # see if the request is handled by a service
+  my ( $mount, $service ) = $self->_is_service($cgi);
+
+  if ( !$service ) {
+    $self->_not_found();
+
+    $self->_log_complete(
+      status       => $HTTP_NOT_FOUND,
+      path         => $cgi->path_info,
+      request_time => benchmark($t0)->[0],
+      cgi          => $cgi,
+      logger       => $logger,
+    );
+
+    return;
+  }
+
+  my ( $path_info, $status ) = $self->_service( $cgi, $service, $mount );
+
+  $self->_log_complete(
+    cgi          => $cgi,
+    request_time => benchmark($t0)->[0],
+    path         => $cgi->path_info,
+    path_info    => $path_info,  # the possibly remapped path
+    logger       => $logger,
+    status       => $status,
+  );
+
+  return;
+}
+
+########################################################################
+sub _exact_service_match {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $path = $cgi->path_info;
+
+  my $services = $self->bedrock_server_config->{service_registry} // {};
+
+  # Check exact match (with or without trailing slash)
+  foreach my $mount ( keys %{$services} ) {
+    $self->get_logger->debug( sprintf 'checking service mount %s <=> %s', $mount, $path );
+
+    return ( $mount, $services->{$mount} )
+      if $path eq $mount || $path eq "$mount/";
+  }
+
+  return;
+}
+
+########################################################################
+sub _resolve_template_route {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $logger = Log::Log4perl->get_logger( ref $self );
+
+  require Bedrock::Router;
+
+  my $routes_config = $self->bedrock_server_config->{routes}  || {};
+  my $aliases       = $self->bedrock_server_config->{aliases} || {};
+
+  foreach my $mount ( keys %{$routes_config} ) {
+    next if index( $cgi->path_info, $mount ) != 0;
+
+    my $rel_path = substr $cgi->path_info, length $mount;
+
+    if ( $rel_path !~ m{^/}xsm ) {
+      $rel_path = "/$rel_path";
+    }
+
+    # DIAGNOSTIC: Check structure before passing to Router
+    my $rules = $routes_config->{$mount};
+
+    # If rules is a HASH, we must convert it to an ARRAY for Bedrock::Router
+    if ( ref($rules) eq 'HASH' ) {
+      $logger->debug( sprintf 'Converting HASH routes to ARRAY for mount: %s', $mount );
+      $rules = [ map { { pattern => $_, template => $rules->{$_} } } keys %{$rules} ];
+    }
+
+    $logger->debug( sprintf 'Attempting route match: Mount[%s] Path[%s]', $mount, $rel_path );
+
+    my $router = Bedrock::Router->new( { routes => $rules } );
+    if ( my $match = $router->match($rel_path) ) {
+      $logger->info( sprintf 'Route Match Found! Template: %s', $match->{template} );
+      # NEW: Resolve PATH_TRANSLATED from route params
+      my $path_translated = $self->_resolve_path_translated( $match->{params}, $aliases, $logger );
+
+      return ( $match->{template}, $match->{params}, $path_translated );
+    }
+  }
+
+  $logger->debug( sprintf 'No route matched for: %s', $cgi->path_info );
+
+  return;
+}
+
+########################################################################
+sub _resolve_path_translated {
+########################################################################
+  my ( $self, $route_params, $aliases, $logger ) = @_;
+
+  # Extract the captured path from route params (e.g., 'path' from /markdown/*path)
+  my $captured_path = $route_params->{path} || return;
+
+  $logger->debug( sprintf 'Resolving PATH_TRANSLATED for captured path: %s', $captured_path );
+
+  # Find which alias this path belongs to by checking prefixes
+  foreach my $alias_prefix ( _sort_by_longest($aliases) ) {
+    next if index( "/$captured_path", $alias_prefix ) != 0;
+
+    my $alias_base = $aliases->{$alias_prefix};
+
+    # Strip the alias prefix and append to the filesystem base
+    my $rel_part = substr "/$captured_path", length $alias_prefix;
+    my $fs_path  = $alias_base . $rel_part;
+
+    # Convert to absolute path if it's relative
+    if ( $fs_path !~ m{^/}xsm ) {
+      require File::Spec;
+      require Cwd;
+      $fs_path = File::Spec->rel2abs( $fs_path, Cwd::getcwd() );
+    }
+
+    $logger->debug( sprintf 'PATH_TRANSLATED resolved: %s -> %s', $captured_path, $fs_path );
+    return $fs_path;
+  }
+
+  return;
+}
+
+########################################################################
+sub _service {
+########################################################################
+  my ( $self, $cgi, $service, $mount ) = @_;
+
+  my $logger = Log::Log4perl->get_logger( ref $self );
+
+  my $path_info = $self->_service_route( $cgi, $mount );
+
+  # Virtualize the Environment for the Service
+  local $ENV{SCRIPT_NAME} = $mount eq $SLASH ? $EMPTY : $mount;
+  local $ENV{PATH_INFO}   = $path_info;
+
+  $service->request(undef);
+  $service->context(undef);
+  $service->bedrock_handler(undef);
+
+  my $r = Apache::Request::CGI->new();
+
+  eval { $service->handler($r); };
+
+  my $err    = $EVAL_ERROR;
+  my $status = $r->status // $HTTP_OK;
+
+  if ( my $session = $service->session ) {
+    if ( $session->can('closeBLM') ) {
+      $session->closeBLM;
+      $service->set( session => undef );  # so DESTROY does not try to closeBLM either
+    }
+  }
+
+  if ($err) {
+    handle_error( $r, $err );
+    $logger->error( sprintf 'CRITICAL ERROR in %s: %s', $mount, $err );
+    $status = $HTTP_INTERNAL_SERVER_ERROR;
+  }
+
+  return ( $path_info, $status );
+}
+
+########################################################################
+sub _service_route {
+########################################################################
+  my ( $self, $cgi, $mount ) = @_;
+
+  # Calculates the "Service-Relative Path" (PATH_INFO).
+  #
+  # This logic enables "Virtual Mounting" by isolating the Service from
+  # its public URL prefix. It prioritizes:
+  # 1. Regex Rewrites: Checks the 'routes' config for complex mappings.
+  # 2. Prefix Stripping: If mounted at '/api', a request to '/api/users'
+  #    is translated to '/users' so the Service handles it correctly.
+  # 3. Normalization: Ensures the path is never empty (defaults to '/').
+
+  my $path_info = $self->_xlate_path( $mount, $cgi );
+
+  if ( !$path_info && $mount ne $SLASH ) {
+    $path_info = substr $cgi->path_info, length $mount;
+  }
+
+  $path_info ||= $SLASH;
+
+  return $path_info;
+}
+
+########################################################################
+sub _xlate_path {
+########################################################################
+  my ( $self, $mount, $cgi ) = @_;
+
+  my $routes = $self->bedrock_server_config->{routes} || {};
+
+  my $rules = $routes->{$mount};
+
+  return
+    if !$rules;
+
+  # Route Translation / Rewriting
+  my $path_info;
+
+  my $path = $cgi->path_info;
+
+  foreach my $pattern ( _sort_by_longest($rules) ) {
+    my $regex = $pattern;
+    my @vars;
+
+    while ( $regex =~ m{(:[[:alnum:]_]+)}xsm ) {
+      push @vars, $1;
+      $regex =~ s/$1/([^\/]+)/xsm;
+    }
+
+    if ( my @captures = $path =~ m{\A$regex\z}xsm ) {
+      my $target = $rules->{$pattern};
+
+      for my $i ( 0 .. $#vars ) {
+        my $token = $vars[$i];
+        my $val   = $captures[$i];
+
+        $target =~ s/$token/$val/xsm;
+      }
+
+      $path_info = $target;
+      last;
+    }
+  }
+
+  return $path_info;
+}
+
+########################################################################
+sub _is_service {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $registry = $self->bedrock_server_config->{service_registry} || {};
+
+  my $path = $cgi->path_info();
+
+  foreach my $m ( _sort_by_longest($registry) ) {
+    next if index( $path, $m ) != 0;
+
+    return ( $m, $registry->{ $m // q{} } );
+  }
+
+  return;
+}
+
+########################################################################
+sub _resolve_directory_index {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $logger        = $self->get_logger;
+  my $server_config = $self->bedrock_server_config;
+  my $dir_index     = $server_config->{directory_index} // {};
+  my $aliases       = $server_config->{aliases}         // {};
+  my $path          = $cgi->path_info;
+
+  # Find the longest matching directory_index prefix for this request
+  foreach my $dir ( reverse sort { length($a) <=> length $b } keys %{$dir_index} ) {
+    # Normalize: /foo, /foo/, and /foo/index.roc all match /foo
+    my $norm_dir = $dir;
+    $norm_dir =~ s{/\z}{}xsm;
+
+    next if $path ne $norm_dir && $path ne "$norm_dir/";
+
+    my $candidates = $dir_index->{$dir};
+
+    if ( !is_array($candidates) ) {
+      $candidates = [$candidates];
+    }
+
+    # Resolve the filesystem base for this directory via aliases
+    my $base = $EMPTY;
+
+    foreach my $alias ( reverse sort { length($a) <=> length($b) } keys %{$aliases} ) {
+      my $norm_alias = $alias;
+      $norm_alias =~ s{/\z}{}xsm;
+      next if $norm_dir ne $norm_alias && index( "$norm_dir/", "$norm_alias/" ) != 0;
+      $base = $aliases->{$alias};
+      last;
+    }
+
+    # Try each candidate in order, serve the first readable one
+    foreach my $f ( @{$candidates} ) {
+      my $fs_path = "${base}${f}";
+
+      $logger->debug( sprintf 'directory_index: trying [%s]', $fs_path );
+
+      if ( -r $fs_path ) {
+        $logger->info( sprintf 'directory_index: serving [%s] for [%s]', $fs_path, $path );
+        return $self->_serve_static( $cgi, $path, $fs_path );
+      }
+    }
+
+    $logger->debug( sprintf 'directory_index: no candidate found for [%s]', $path );
+    return;  # matched the dir but nothing readable — stop looking
+  }
+
+  return;
+}
+
+########################################################################
+sub _serve_alias {
+########################################################################
+  my ( $self, $cgi ) = @_;
+
+  my $aliases = $self->bedrock_server_config->{aliases} // {};
+
+  my $path = $cgi->path_info;
+
+  foreach my $alias ( _sort_by_longest($aliases) ) {
+    next if index( $path, $alias ) != 0;
+
+    return $self->_serve_static( $cgi, $alias, $aliases->{$alias} );
+  }
+
+  return;
+}
+
+########################################################################
+sub _init_miniserver_logger {
+########################################################################
+  my ( $self, $log_level ) = @_;
+
+  my $logger = get_logger( ref $self );
+
+  $log_level //= 'info';
+  $logger->level( $LOG4PERL_LOG_LEVELS{$log_level} // $LOG4PERL_LOG_LEVELS{info} );
+
+  return $logger;
+}
+
+########################################################################
+sub _log_complete {
+########################################################################
+  my ( $self, %args ) = @_;
+
+  $args{path_info} //= q{};
+  $args{status}    //= $HTTP_OK;
+
+  foreach (qw(request_method user_agent referer)) {
+    $args{$_} = $args{cgi}->$_ // q{};
+  }
+
+  $args{logger}->notice( sprintf '%s %s %s (%s) %s %s', @args{qw(request_method status path request_time referer user_agent)} );
+
+  return;
+}
+
+########################################################################
+sub _not_found {
+########################################################################
+  my ($self) = @_;
+
+  my $error_docs = $self->bedrock_server_config->{error_document} // {};
+  my $aliases    = $self->bedrock_server_config->{aliases}        // {};
+
+  my $error_page = $error_docs->{$HTTP_NOT_FOUND};
+
+  my $not_found_page = choose {
+    return "$BEDROCK_DIST_DIR/htdocs/not-found.html"
+      if !$error_page;
+
+    # could be set as an absolute path
+    return $error_page
+      if -r $error_page;
+
+    # or an alias
+    foreach my $alias ( _sort_by_longest($aliases) ) {
+      next if index( $error_page, $alias ) != 0;
+
+      my $err_fs = $aliases->{$alias} . substr $error_page, length $alias;
+      return $err_fs;
+    }
+
+    return;
+  };
+
+  my $content = -r $not_found_page ? slurp_file($not_found_page) : 'File not found';
+
+  print "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n";
+  print "Connection: close\r\n\r\n";
+  print $content;
+
+  return;
+}
+
+########################################################################
+sub _sort_by_longest {
+########################################################################
+  my ($hash) = @_;
+
+  return reverse sort { length($a) <=> length $b } keys %{$hash};
+}
+
+########################################################################
+sub _serve_template {
+########################################################################
+  my ( $self, $cgi, $fs_path, $route_params, $path_translated ) = @_;
+
+  # This simply re-uses the logic from _serve_static but bypasses
+  # the alias/filesystem existence checks because we've already
+  # resolved the path.
+
+  # We call _serve_static but pass the full file path as the local_base
+  # to force it to treat the file as the target.
+  return $self->_serve_static( $cgi, $cgi->path_info, $fs_path, $route_params, $path_translated );
+}
+
+########################################################################
+sub _serve_static {
+########################################################################
+  my ( $self, $cgi, $alias_url, $local_base, $route_params, $path_translated ) = @_;
+
+  my $logger = Log::Log4perl->get_logger( ref $self );
+
+  my $path = $cgi->path_info();
+
+  # Calculate relative path
+  my $rel_file = substr $path, length $alias_url;
+
+  # 1. Security Check: Block directory traversal
+  if ( $rel_file =~ /[.]{2}/xsm ) {
+    print "HTTP/1.0 403 Forbidden\r\nConnection: close\r\n\r\n";
+    return $HTTP_FORBIDDEN;
+  }
+
+  # 2. Shadowing Detection
+  # If alias maps to a FILE, but request implies it's a directory, decline.
+  my $is_file_alias = ( -e $local_base && !-d $local_base )
+    || ( !-e $local_base && $local_base =~ m{[.][[:alnum:]]+$}xsm );
+
+  if ( $is_file_alias && length($rel_file) > 0 && $rel_file ne $SLASH ) {
+    $logger->debug("serve_static: Shadowing detected for $path. Declining.");
+    return $FALSE;
+  }
+
+  # Inside _serve_static
+  my $fs_path = $local_base;
+  if ( length $rel_file && $rel_file ne $SLASH ) {
+    $fs_path .= $rel_file;
+  }
+
+  # Add this log to catch the 404 source
+  if ( !-e $fs_path || !-r $fs_path ) {
+    $logger->error("File system check failed for: $fs_path");
+    return $FALSE;
+  }
+
+  if ( -d $fs_path ) {
+    $logger->debug("Path is a directory, declining: $fs_path");
+    return $FALSE;  # Let it fall through to services
+  }
+
+  # --- If we get here, we are definitely serving this file ---
+  my ($ext) = $fs_path =~ /[.]([^.]+)$/xsm;
+  $ext = lc( $ext || $EMPTY );
+
+  my $server_config = $self->bedrock_server_config;
+
+  my $type = $server_config->{mime_types}->{$ext} || 'text/plain';
+
+  my $global_config = $server_config->{global_config} || {};
+
+  if ( !$server_config->{parse_templates} || !$server_config->{template_extensions}->{$ext} ) {
+    _serve_static_content( $fs_path, $type, $server_config->{no_cache} );
+    return $HTTP_OK;
+  }
+
+  my $tpl;
+
+  # Create capture buffer and IO handle
+  my $headers_out = $EMPTY;
+  my $io          = IO::Scalar->new( \$headers_out );
+
+  my $tagx_config = $server_config->{bedrock_config};
+
+  my $status_code;
+
+  eval {
+    # We only need to override the path info to trick the template
+    # into thinking it is running inside the alias.
+    # Everything else (Method, Query String, Extra Env) is already in global %ENV.
+
+    local $ENV{SCRIPT_NAME}     = $alias_url eq $SLASH ? $EMPTY : $alias_url;
+    local $ENV{PATH_INFO}       = $rel_file;
+    local $ENV{SCRIPT_FILENAME} = $path_translated if $path_translated;  # Apache standard
+    local $ENV{PATH_TRANSLATED} = $path_translated if $path_translated;  # CGI fallback
+      # ------------------------------------------------------
+
+    require Bedrock::Template;
+    require BLM::Startup::Header;
+    require BLM::Startup::Input;
+    require BLM::Startup::Env;
+    require BLM::Startup::Bedrock;
+    require BLM::Startup::Config;
+
+    my $ctx = Bedrock::MiniServer::Context->new(
+      $io,
+      cgi          => $cgi,
+      config       => $tagx_config,
+      route_params => $route_params || {},
+    );
+
+    my $input   = BLM::Startup::Input->new( $ctx, $tagx_config->get_module_config('Input')     || {} );
+    my $header  = BLM::Startup::Header->new( $ctx, $tagx_config->get_module_config('Header')   || {} );
+    my $bedrock = BLM::Startup::Bedrock->new( $ctx, $tagx_config->get_module_config('Bedrock') || {} );
+    my $env     = BLM::Startup::Env->new;
+
+    my $session = _init_session( $ctx, $global_config );
+
+    my $cwd = getcwd();
+
+    my $content = slurp_file($fs_path);
+    my ( undef, $path ) = fileparse( $fs_path, qr/[.][^.]+$/xsm );
+
+    chdir $path;
+
+    $header->content_type($type);
+
+    my $server_config_lite = Bedrock::Hash->new(
+      map  { $_ => $server_config->{$_} }
+      grep { exists $server_config->{$_} }
+        qw(aliases routes env log_level parse_templates
+        template_extensions mime_types error_document
+        directory_index port services session)
+    );
+
+    $tpl = Bedrock::Template->new(
+      $content,
+      header        => $header,
+      input         => $input,
+      session       => $session,
+      config        => bless( $tagx_config, 'BLM::Startup::Config' ),
+      env           => $env,
+      bedrock       => $bedrock,
+      server_config => $server_config_lite,
+    );
+
+    $tpl->set_source($fs_path);
+
+    my $output = eval {
+      # Execute parsing first (populates $buffer via $ctx)
+      return $tpl->parse();
+    };
+
+    my $err = $EVAL_ERROR;
+
+    chdir $cwd;
+
+    die $err
+      if $err;
+
+    # ...better do these now, while $header still has its headers...
+    my $status_text = $header->get_status_line();
+    ($status_code) = $status_text =~ /^(\d+)/xsm;
+
+    my $is_redirect = $header->is_redirect;
+
+    # BLMs must be explicitly closed
+    foreach my $plugin ( $header, $input, $session, $env, $bedrock ) {
+      next if !$plugin || !$plugin->can('closeBLM');
+
+      $plugin->closeBLM;
+    }
+
+    # 1. Get the status line from the Header plugin logic
+    # Returns "200 OK", "302 Found", etc.
+
+    # 2. Delegate header printing...and there go the headers!
+    $header->print_header($ctx);
+    $io->close;
+
+    print "HTTP/1.0 $status_text\r\n";
+    print "Connection: close\r\n";
+
+    if ( my $h_obj = $ctx->headers_out ) {
+      foreach my $key ( sort keys %{$h_obj} ) {
+        my $val    = $h_obj->{$key};
+        my @values = is_array($val) ? @{$val} : ($val);
+
+        foreach my $v (@values) {
+          print "$key: $v\r\n";
+        }
+      }
+    }
+
+    print "\r\n";
+
+    # 3. Only print body if NOT a redirect
+    if ( !$is_redirect ) {
+      print $output;
+    }
+  };
+
+  my $err = $EVAL_ERROR;
+
+  return $status_code // $HTTP_OK
+    if !$err;
+
+  $logger->error( Dumper( [ err => $err ] ) );
+
+  $ENV{BEDROCK_ERROR_LOCATION} = resolve_error_page($tagx_config); ## no critic
+
+  require Apache::Request::CGI;
+
+  my $r = Apache::Request::CGI->new();
+
+  my $buffer = $EMPTY;
+  $tpl->set_output_handler( IO::Scalar->new( \$buffer ) );
+
+  ######################################################################
+  # Note: handle_error() usually requires a Text::TagX instance, but
+  # actually only needs a 'show_error()' method. Bedrock::Template
+  # instantiates a Text::TagX instances, stores it and provides a
+  # show_error() method itself that delegates to the Text::TagX
+  # instance...so yes this works.
+  ######################################################################
+  handle_error( $r, $err, $tpl );
+
+  my $err_msg = "$err";
+
+  if ( blessed($err) ) {
+    if    ( $err->can('as_string') ) { $err_msg = $err->as_string; }
+    elsif ( $err->can('mesg') )      { $err_msg = $err->mesg; }
+    elsif ( $err->can('to_string') ) { $err_msg = $err->to_string; }
+    else                             { $err_msg = Dumper($err); }
+  }
+
+  $logger->error("Template Parsing Failed for $fs_path: $err_msg");
+
+  $buffer ||= $err_msg;
+
+  print "HTTP/1.0 500 Internal Server Error\r\n";
+  print "Content-Type: text/html\r\n";
+  print "Connection: close\r\n\r\n";
+  print $buffer;
+
+  return $HTTP_INTERNAL_SERVER_ERROR;
+}
+
+########################################################################
+sub _serve_static_content {
+########################################################################
+  my ( $path, $content_type, $no_cache ) = @_;
+
+  print "HTTP/1.0 200 OK\r\n";
+  print "Content-Type: $content_type\r\n";
+  print "Connection: close\r\n";
+
+  if ( !to_boolean($no_cache) ) {
+    my $last_modified = ( stat $path )[9];
+    my $http_date     = strftime( '%a, %d %b %Y %H:%M:%S GMT', gmtime $last_modified );
+
+    print "Last-Modified: $http_date\r\n";
+    print "Cache-Control: max-age=86400, public\r\n";
+  }
+
+  print "\r\n";
+
+  print scalar slurp_file($path);
+
+  return $TRUE;
+}
+
+########################################################################
+sub _init_session {
+########################################################################
+  my ( $ctx, $config ) = @_;
+
+  my $session_config = $config->{session};
+
+  return
+    if !$session_config;
+
+  my $class = $session_config->{module};
+
+  load $class;
+
+  my $session = $class->new( $ctx, $session_config->{config} // {} );
+
+  return $session;
+}
+
+########################################################################
+sub _render_template_error {
+########################################################################
+  my ( $err, $file_path ) = @_;
+
+  my $msg = "$err";
+
+  my $line;
+
+  # Inspect Exception Object
+  if ( blessed($err) ) {
+    # 1. Try standard 'line' method
+    if ( $err->can('line') ) {
+      $line = $err->line;
+    }
+    # 2. Try TagX array-ref structure
+    elsif ( is_array($err) && @{$err} && is_hash( $err->[0] ) ) {
+      $line = $err->[0]->{line};
+    }
+
+    # 3. Extract Message
+    if ( $err->can('as_string') ) {
+      $msg = $err->as_string;
+    }
+    elsif ( is_array($err) && @{$err} && is_hash( $err->[0] ) ) {
+      $msg = $err->[0]->{text} || "$err";
+    }
+  }
+  # Fallback: Parse string for line number
+  elsif ( $msg =~ /line\s+(\d+)/ixsm ) {
+    $line = $1;
+  }
+
+  $msg = Htmlencode($msg);
+
+  my $source = eval { slurp_file($file_path) } // $EMPTY;
+
+  my @lines = split /\n/, $source;
+
+  my $listing = $EMPTY;
+
+  for my $i ( 0 .. $#lines ) {
+    my $class = $line && $i == $line - 1 ? 'error' : 'code';
+    $listing .= sprintf qq{<span class="%s"'>%4d: %s</span>\n}, $class, $i + 1, Htmlencode( $lines[$i] );
+  }
+
+  my $html = <<"END_OF_HTML";
+<html>
+  <head>
+    <title>Template Error</title>
+  </head>
+  <body>
+    <style>
+    .error {
+       background-color: #ffcccc;
+       display: block;
+       width: 100%;
+     }
+
+    .code {
+      display: block:
+      width: 100%;     
+     }
+    </style>
+
+    <h1 style='color:red'>Template Error</h1>
+    <pre><strong>$msg</strong></pre>
+    <div style='border:1px solid #ccc; background:#f9f9f9; padding:10px; overflow:auto'>
+      <pre>$listing</pre>
+    </div>
+  </body>
+</html>
+END_OF_HTML
+
+  return $html;
+}
+
+1;

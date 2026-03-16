@@ -35,6 +35,8 @@ PACKAGE_MODULES = \
     Bedrock/DBI/Locator.pm \
     Bedrock/Dump.pm \
     Bedrock/Dumper.pm \
+    Bedrock/Error.pm \
+    Bedrock/Exception.pm \
     Bedrock/Handle.pm \
     Bedrock/Hash.pm \
     Bedrock/HTML/Helper.pm \

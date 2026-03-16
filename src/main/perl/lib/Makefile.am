@@ -107,6 +107,7 @@ perl5bedrocklib_DATA = \
     Bedrock/LoadConfig.pm \
     Bedrock/Logger.pm \
     Bedrock/Log.pm \
+    Bedrock/MiniServer.pm \
     Bedrock/Model.pm \
     Bedrock/Object.pm \
     Bedrock/Pager.pm \
@@ -307,7 +308,8 @@ perl5bedrockserializerlib_DATA = \
 BEDROCK_SERIALIZER = $(perl5bedrockserializerlib_DATA:.pm=.pm.in)
 
 perl5bedrockminiserverlib_DATA = \
-    Bedrock/MiniServer/Context.pm
+    Bedrock/MiniServer/Context.pm \
+    Bedrock/MiniServer/CLI.pm
 
 BEDROCK_MINISERVER = $(perl5bedrockminiserverlib_DATA:.pm=.pm.in)
 
