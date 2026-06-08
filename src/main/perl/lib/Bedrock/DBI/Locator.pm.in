@@ -7,7 +7,7 @@ use Bedrock::Constants qw(:chars :booleans);
 use Carp;
 use Data::Dumper;
 use List::Util qw(none);
-use Scalar::Util qw(reftype);
+use Scalar::Util qw(reftype blessed);
 
 use Role::Tiny::With;
 with 'Bedrock::Logger';
@@ -100,7 +100,7 @@ sub get_from_data_sources {
 
   # Assuming config object exposes dbnames() or similar storage for data-sources.xml
   # If not, we might need to adjust how we access that specific XML tree
-  my $dbnames = $config->can('dbnames') ? $config->dbnames : {};
+  my $dbnames = blessed $config && $config->can('dbnames') ? $config->dbnames : {};
 
   return
     if !$dbnames->{$key};
@@ -132,3 +132,190 @@ sub _fetch {
 }
 
 1;
+
+__END__
+
+=pod
+
+=encoding utf8
+
+=head1 NAME
+
+Bedrock::DBI::Locator - Credential resolution for Bedrock DBI connections
+
+=head1 SYNOPSIS
+
+  use Bedrock::DBI::Locator;
+
+  # Resolve credentials using default strategy order
+  my ( $dsn, $user, $pass, $host, $socket, $source ) =
+    Bedrock::DBI::Locator->resolve( config => $config );
+
+  # Override with explicit tag attributes
+  my ( $dsn, $user, $pass, $host, $socket, $source ) =
+    Bedrock::DBI::Locator->resolve(
+      config  => $config,
+      options => {
+        dsn      => 'dbi:mysql:mydb',
+        username => 'myuser',
+        password => 's3cr3t',
+      },
+    );
+
+  # Restrict or reorder the strategies used
+  my ( $dsn, $user ) =
+    Bedrock::DBI::Locator->resolve(
+      config     => $config,
+      strategies => [qw( environment config )],
+    );
+
+=head1 DESCRIPTION
+
+C<Bedrock::DBI::Locator> implements a priority-ordered credential resolution
+strategy for Bedrock database connections. Rather than hardcoding where
+database credentials come from, it tries a series of I<strategies> in order
+and returns the first complete set of credentials (DSN + user) it finds.
+
+This separates credential discovery from connection logic, making it easier
+to support multiple deployment environments without changing application code.
+
+=head2 Strategies
+
+The following strategies are tried in order by default:
+
+=over 4
+
+=item 1. C<environment>
+
+Reads C<DBI_DSN>, C<DBI_USER>, C<DBI_PASS>, C<DBI_HOST>, and C<DBI_SOCKET>
+from C<%ENV>.
+
+=item 2. C<options>
+
+Reads credentials from explicit tag attributes passed to the SQL tag, such as
+C<data-source>, C<username>, C<password>, and C<hostname>.
+
+=item 3. C<data_sources>
+
+Looks up a named DSN key (from the C<dsn> option) in the data sources registry
+exposed by the config object via C<dbnames()>. Useful for named connection
+profiles defined in C<data-sources.xml>.
+
+=item 4. C<config>
+
+Reads C<DBI_DSN>, C<DBI_USER>, C<DBI_PASS>, C<DBI_HOST>, and C<DBI_SOCKET>
+directly from the Bedrock config object.
+
+=back
+
+A strategy succeeds when it produces both a DSN and a username. The password,
+host, and socket are optional — they may be embedded in the DSN or supplied
+by the driver.
+
+The strategy list and order can be overridden via the C<strategies> argument
+to L</resolve>.
+
+=head1 METHODS
+
+=head2 resolve
+
+  my ( $dsn, $user, $pass, $host, $socket, $source_used ) =
+    Bedrock::DBI::Locator->resolve( %args );
+
+  my $dsn = Bedrock::DBI::Locator->resolve( %args );
+
+Class method. Iterates through the configured strategies in order and returns
+the first complete set of credentials found.
+
+In list context returns:
+
+  ( $dsn, $user, $pass, $host, $socket, $source_used )
+
+where C<$source_used> is the name of the winning strategy (one of
+C<environment>, C<options>, C<data_sources>, or C<config>). In scalar context
+returns only C<$dsn>.
+
+B<Arguments> (key/value pairs):
+
+=over 4
+
+=item config
+
+Required. A Bedrock config object or plain hashref containing site
+configuration. Must expose C<DBI_DSN>, C<DBI_USER>, etc. either as hash keys
+or via a C<get()> method.
+
+=item options
+
+Optional hashref of per-invocation overrides, typically sourced from SQL tag
+attributes. Recognised keys: C<data-source>, C<dsn>, C<username>, C<password>,
+C<hostname>.
+
+=item strategies
+
+Optional arrayref overriding the default strategy order. Each element must be
+one of: C<environment>, C<options>, C<data_sources>, C<config>. Croaks on
+unknown strategy names.
+
+=back
+
+B<TODO>: The localhost injection logic (C<DBI_HOST> interpolation into a
+bare three-part DSN) is currently a placeholder and not yet implemented.
+This was preserved from the original C<SQLConnect.pm> behaviour and needs
+to be completed.
+
+=head1 INTERNAL METHODS
+
+=for internal use
+
+The following methods implement individual credential strategies. They are
+called by L</resolve> and are not part of the public API.
+
+=head2 get_from_environment
+
+=for internal use
+
+  my @creds = $self->get_from_environment( $config, $options );
+
+Fetches credentials from C<%ENV>.
+
+=head2 get_from_options
+
+=for internal use
+
+  my @creds = $self->get_from_options( $config, $options );
+
+Fetches credentials from the C<$options> hashref (tag attributes).
+
+=head2 get_from_data_sources
+
+=for internal use
+
+  my @creds = $self->get_from_data_sources( $config, $options );
+
+Looks up a named connection profile from the config's C<dbnames> registry.
+Returns an empty list if no C<dsn> key is present in C<$options> or the
+key is not found in the registry.
+
+=head2 get_from_config
+
+=for internal use
+
+  my @creds = $self->get_from_config( $config, $options );
+
+Fetches credentials from the Bedrock config object, supporting both plain
+hashrefs and objects with a C<get()> accessor.
+
+=head1 ROLES
+
+Consumes L<Bedrock::Logger> via L<Role::Tiny>.
+
+=head1 SEE ALSO
+
+L<Bedrock::DBI>, L<DBI>
+
+=head1 AUTHOR
+
+Bedrock Development Team
+
+=cut

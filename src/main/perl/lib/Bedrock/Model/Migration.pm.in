@@ -26,9 +26,14 @@ use warnings;
 
 use Bedrock qw(:booleans force_hash);
 use Bedrock::Constants qw(:booleans);
+use Carp qw(croak);
+use Carp::Always;
 use English qw(-no_match_vars);
 use Data::Dumper;
 use Scalar::Util qw(reftype blessed);
+
+use Role::Tiny::With;
+with 'Bedrock::Logger';
 
 use parent qw(Class::Accessor::Fast);
 
@@ -49,6 +54,7 @@ sub new {
   my ( $class, @args ) = @_;
 
   my $options = force_hash(@args);
+  $options->{ignore_unknown_keys} //= $TRUE;
 
   my $self = $class->SUPER::new($options);
 
@@ -71,7 +77,11 @@ sub migrate {
 
   my $model = $self->get_model();  # model class
 
-  die "no model defined\n"
+  my $table = $self->get_model->get_table;
+
+  my $dbi = $self->get_model->get_dbi;
+
+  croak "ERROR: no model defined\n"
     if !$model->get_model() || reftype( $model->get_model ) ne 'HASH';
 
   # the actual model (code defined target state)
@@ -83,6 +93,10 @@ sub migrate {
   my @modify_these;
   my @add_these;
   my @drop_these;
+
+  my $key_info = $dbi->selectall_hashref( sprintf( 'SHOW INDEX FROM %s', $table ), 'Column_name' );
+
+  $self->get_logger->debug( Dumper( [ key_info => $key_info ] ) );
 
   # How can we tell if the table definition has changed?
 
@@ -191,13 +205,10 @@ sub migrate {
       $tmf_as_string =~ s/\s//gxsm;
 
       if ( $ts_as_string ne $tmf_as_string ) {
-        ## no critic (ProhibitPostfixControls)
-
-        print {*STDERR} lc( $table_state_field->as_string ), "\t"
-          if $self->get_debug;
-
-        print {*STDERR} lc( $target_model_field->as_string ), "\n"
-          if $self->get_debug;
+        if ( $self->get_debug ) {
+          print {*STDERR} lc( $table_state_field->as_string ),  "\t";
+          print {*STDERR} lc( $target_model_field->as_string ), "\n";
+        }
 
         push @modify_these, $field;
       }
@@ -216,8 +227,6 @@ sub migrate {
   }
 
   my %migration;
-
-  my $table = $self->get_model->get_table;
 
   foreach (@modify_these) {
     $migration{$_} = sprintf 'alter table %s modify %s;', $table, $model->get_model->{$_}->as_string;
@@ -265,13 +274,15 @@ sub execute {
 
   if ( !$self->get_dry_run ) {
     foreach my $stmnt (@sql_statements) {
-      eval { $dbi->do($stmnt); };
+      my $rv = eval { $dbi->do($stmnt); };
 
       my $err = $EVAL_ERROR;
 
       if ($err) {
-        $dbi->rollback unless $dbi->{AutoCommit};
-        die "[$err] $EVAL_ERROR";
+        if ( !$dbi->{AutoCommit} ) {
+          $dbi->rollback;
+        }
+        croak "[$err] $EVAL_ERROR";
       }
     }
 

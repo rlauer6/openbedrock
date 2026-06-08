@@ -1,6 +1,10 @@
 # -*- mode: makefile; -*-
 SUBDIRS = bin src cpan docker release-notes .
 
+SHELL := /usr/bin/env bash
+
+VERSION ?= $(shell cat VERSION);
+
 # The ACLOCAL_AMFLAGS are used by 'autoreconf' and by the Makefile
 # rebuild rule when they need to run 'aclocal'.
 ACLOCAL_AMFLAGS = -I autotools
@@ -45,7 +49,23 @@ DISTCHECK_CONFIGURE_FLAGS = --enable-distcheck-hack
 
 include version.mk
 
+include release-notes.mk
+
+.PHONY: cpan
+
+cpan:
+	set -oue pipefail; \
+	$(MAKE) clean && $(MAKE); \
+	cd $(top_srcdir)/cpan/bedrock-core; \
+	$(MAKE) cpan
+	cd $(top_srcdir)/cpan; \
+	$(MAKE) cpan
+	find $(top_builddir)/cpan -name '*.tar.gz'
+	cd $(top_srcdir); \
+	$(MAKE) release-notes
+
 clean-local:
 	for a in $$(ls bedrock*.tar.gz 2>/dev/null); do \
 	  rm -f $$a; \
 	done
+	rm -rf release-*.{tar.gz,lst,diffs}

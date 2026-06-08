@@ -41,13 +41,13 @@ cpanm -v Bedrock</pre>
       and <a href="https://github.com/rlauer6/OrePAN2-S3.git">OrePAN2-S3</a>
       projects that you can find on GitHub. Perl distribution tarballs for
       Bedrock and Bedrock plugins are uploaded to this site using the
-      <code>orepan2-s2></code> script.
+      <code>orepan2-s3</code> script.
     </p>
 
     <p class="about">
       The script updates the DarkPAN repo's index and tries to find
       some useful documentation that might exist in tarball. If
-      there's a `README.html` file in the tarball, the script will
+      there's a `README.md` file in the root of the distribution, the script will
       extract it, convert it to HTML and provide a link to the
       README. The script will also look for some pod in plugin
       modules, convert that to HTML and provide a second link to the
@@ -81,7 +81,7 @@ cpanm -v Bedrock</pre>
 
     <h1>Module Index</h1>
     
-[% FOREACH distribution = repo.sort %]
+[% FOREACH distribution = repo.keys.sort %]
       <h2>
        <span class="collapse-section-icon">&#9660;</span>
        [% distribution %]

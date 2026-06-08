@@ -1,0 +1,223 @@
+########################################################################
+package Bedrock::RecordSet;
+########################################################################
+
+use strict;
+use warnings;
+
+use parent -norequire => qw(Bedrock::Array::Reference);
+
+use Bedrock qw(:booleans force_array);
+use Bedrock::Constants qw(:chars);
+use Data::Dumper;
+use English qw(-no_match_vars);
+use List::Util qw(all);
+use Scalar::Util qw(looks_like_number reftype);
+
+########################################################################
+sub new {
+########################################################################
+  my ( $class, @args ) = @_;
+
+  $class = ref $class || $class;
+
+  my $ref = force_array(@args);
+
+  my $members;
+
+  my $record_idx = 0;
+
+  foreach ( @{$ref} ) {
+    die "invalid element type: must be hash reference - not [$_]\n"
+      if !is_hash($_);
+
+    if ( defined $members ) {
+      die sprintf "record %d is not a valid record of this set\n", $record_idx
+        if !keys %{$_} || $members ne join $COMMA, sort keys %{$_};
+    }
+    else {
+      die "elements of recordsets should have keys\n"
+        if !keys %{$_};
+
+      $members = join $COMMA, sort keys %{$_};
+    }
+
+    $record_idx++;
+  }
+
+  my $self = [];
+
+  return tie @{$self}, $class, $ref; ## no critic (ProhibitTies)
+}
+
+########################################################################
+# sort(array, field, order, type)
+########################################################################
+sub sort { ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $array, @args ) = @_;
+
+  if ( @args == 1 ) {  # default
+    push @args, 'asc', 'alpha';
+  }
+
+  die "invalid number of arguments\n"
+    if @args % 3;
+
+  ## no critic (RequireInterpolatinOfMetachars)
+  my @sort_string;
+
+  while (@args) {
+
+    my $field = shift @args;
+    my $order = shift @args;
+    my $type  = shift @args;
+
+    die "invalid order\n"
+      if $order !~ /^(?:asc|desc)$/xsm;
+
+    die "invalid type\n"
+      if $type !~ /^(?:num|alpha)$/xsm;
+
+    push @sort_string, sprintf q($%s->{%s} %s $%s->{%s}), ## no critic (RequireInterpolationOfMetachars)
+      ( $order =~ /^asc/ixsm ) ? 'a' : 'b',
+      $field,
+      ( $type  =~ /^num/ixsm ) ? '<=>' : 'cmp',
+      ( $order =~ /^asc/ixsm ) ? 'b'   : 'a',
+      $field;
+  }
+
+  my @sorted_array;
+
+  my $sort_cmd = '@sorted_array = sort { ' . ( CORE::join q{||}, @sort_string ) . ' } @{$array};';
+
+  eval "$sort_cmd"; ## no critic (ProhibitStringyEval)
+
+  die "error sorting: $EVAL_ERROR\n"
+    if $EVAL_ERROR;
+
+  return Bedrock::RecordSet->new( \@sorted_array );
+}
+
+########################################################################
+sub _analyze_field {
+########################################################################
+  my ( $records, $field ) = @_;
+
+  # Collect all defined, non-empty values for this field across all records
+  my @values = grep { defined $_ && $_ ne $EMPTY }
+    map { $_->{$field} } @{$records};
+
+  # If every value looks numeric, sort numerically and fill missing with 0
+  # Otherwise sort alphabetically and fill missing with ''
+  my $is_numeric = @values && all { looks_like_number($_) } @values;
+
+  return {
+    numeric => $is_numeric,
+    fill    => $is_numeric ? 0 : $EMPTY,
+  };
+}
+
+########################################################################
+sub smart_sort {
+########################################################################
+  my ( $self, @fields ) = @_;
+
+  die "smart_sort requires at least one field\n"
+    if !@fields;
+
+  my %field_info = map { $_ => _analyze_field( $self, $_ ) } @fields;
+
+  my @sorted = sort {
+    my $result = 0;
+
+    for my $field (@fields) {
+      my $info  = $field_info{$field};
+      my $fill  = $info->{fill};
+      my $a_val = defined $a->{$field} ? $a->{$field} : $fill;
+      my $b_val = defined $b->{$field} ? $b->{$field} : $fill;
+
+      $result
+        = $info->{numeric}
+        ? $a_val <=> $b_val
+        : $a_val cmp $b_val;
+
+      last if $result;
+    }
+
+    $result;
+  } @{$self};
+
+  return Bedrock::RecordSet->new( \@sorted );
+}
+
+########################################################################
+sub smart_sort_desc {
+########################################################################
+  my ( $self, @fields ) = @_;
+
+  return Bedrock::RecordSet->new( [ reverse @{ $self->smart_sort(@fields) } ] );
+}
+
+########################################################################
+sub STORE {
+########################################################################
+  my ( $obj, $key, $value ) = @_;
+
+  die "invalid element type: must be hash reference\n"
+    if !is_hash($value);
+
+  my $self = tied @{$obj};
+
+  return $self->SUPER::STORE( $key, $value );
+}
+
+########################################################################
+sub PUSH {
+########################################################################
+  my ( $obj, @args ) = @_;
+
+  foreach (@args) {
+    die "invalid element type: must be hash reference"
+      if !is_hash($_);
+  }
+
+  my $self = tied @{$obj};
+
+  return $self->SUPER::PUSH(@args);
+}
+
+########################################################################
+sub push { ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, @args ) = @_;
+
+  if ( is_array( $args[0] ) ) {
+    foreach ( @{ $args[0] } ) {
+      $self->SUPER::push($_);
+    }
+  }
+  elsif ( is_hash( $args[0] ) ) {
+    $self->SUPER::push( Bedrock::Hash->new( %{ $args[0] } ) );
+  }
+  else {
+    $self->SUPER::push( Bedrock::Hash->new(@args) );
+  }
+
+  return $self;
+}
+
+########################################################################
+sub grep { ## no critic (ProhibitBuiltinHomonyms)
+########################################################################
+  my ( $self, $key, $pattern ) = @_;
+
+  my $re = $pattern =~ /^qr/ ? eval $pattern : eval "qr/\$pattern/"; ## no critic
+
+  die "Invalid pattern - $EVAL_ERROR "
+    if $EVAL_ERROR;
+
+  return Bedrock::RecordSet->new( map { $_->{$key} =~ $re ? $_ : () } @{$self} );
+}
+
+1;
